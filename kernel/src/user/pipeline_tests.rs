@@ -121,12 +121,14 @@ fn the_line_is_refused_before_anything_is_spawned() {
     let n = transcript(&mut buf);
     let t = &buf[..n];
 
-    // A reader with nothing to read. On Unix this is a shell that appears to hang.
+    // A reader with nothing to read. On Unix this is a shell that appears to hang. The sentence
+    // names all three ways to feed it, and the first of them is milestone 31's operand form, so
+    // this doubles as the check that the refusal tells a person what to type next.
     let said = answer(t, b"wc");
     assert!(
         core::str::from_utf8(said)
             .unwrap_or("")
-            .contains("waits forever"),
+            .contains("name a file"),
         "`wc` alone should be refused for having no input, not run: {:?}",
         core::str::from_utf8(said).unwrap_or("<not utf-8>"),
     );

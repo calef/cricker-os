@@ -2,9 +2,10 @@
 //!
 //! The portable counterpart of hello's `init_boot` role (which is aarch64-wired only by living inside
 //! the PL011-tied `hello`). The kernel loads this as the boot process, maps the initrd, and grants it
-//! a budget (slot 0), the UART's registers as a device cap (slot 1), and the UART receive interrupt
-//! as an `Irq` cap (slot 2). From those, and nothing else, it builds the
-//! whole interactive system out of its own budget:
+//! a budget (slot 0), the UART's registers as a device cap (slot 1), the UART receive interrupt as an
+//! `Irq` cap (slot 2), a read-only mapping of the wall clock (slot 3), and, when this boot attached a
+//! RedoxFS disk, the file service and its shared page (slots 4 and 5). From those, and nothing else,
+//! it builds the whole interactive system out of its own budget:
 //!
 //! 1. the **console** server (output): reads text from a shared page, writes it to the UART;
 //! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
@@ -35,8 +36,20 @@ const UART_IRQ: u64 = 2; // the UART receive interrupt, an Irq cap to delegate i
 /// the FS server before it starts us and grants the service endpoint plus the page its clients
 /// share with it. The rights that endpoint carries arrive in `a2`, and **0 means this boot attached
 /// no RedoxFS disk**, in which case these two slots hold nothing at all.
-const FS_EP: u64 = 3;
-const FS_PAGE: u64 = 4;
+const FS_EP: u64 = 4;
+const FS_PAGE: u64 = 5;
+/// **The wall clock** (milestone 51's wiring): a `Frame` capability with `READ` and nothing else.
+///
+/// Granted ahead of the filesystem pair so its slot is the same on every boot, whether or not a disk
+/// was attached, and granted **unconditionally**: a boot with no clock service hands us a zeroed
+/// page, which reads as `clock_proto::state::UNKNOWN` and is the honest answer for a machine that
+/// does not know the time. init hands it on only to a child whose manifest declares a clock, and
+/// hands on `READ`, so nothing spawned from this prompt can set the time (DECISIONS §43).
+const CLOCK_PAGE: u64 = 3;
+
+/// Where a child that declares a clock maps it, read-only. Must match `user/src/date.rs`'s
+/// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
+const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
 
 const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
@@ -234,11 +247,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
             spinner.as_ref(),
             date.as_ref(),
             // `rm` (milestone 47) has a slot and **deliberately no ELF**: it is endowed a directory
-            // capability, and this boot wires no FS service, so there is nothing to narrow one from.
-            // The shell refuses the command before it reaches here ("you hold no such capability"),
-            // which is why an empty slot is honest rather than a hole: spawning `rm` with nothing to
-            // remove from would be the worst failure this model has, a program told to destroy
-            // something, holding nothing, saying nothing.
+            // capability, which means a `fs_subtree_caretaker` this init would have to build per
+            // invocation out of the FS endpoint it deletes above. Until it does, the shell refuses
+            // the command before it reaches here, which is why an empty slot is honest rather than a
+            // hole: spawning `rm` with nothing to remove from would be the worst failure this model
+            // has, a program told to destroy something, holding nothing, saying nothing.
             None,
             // `wc` (milestone 50). It needs no filesystem: everything it does is decided by what is
             // in its input slot, and the shell can fill that from a pipe out of its own budget.
@@ -307,6 +320,9 @@ fn spawn_service(
         };
 
         let elf = prog.and_then(|p| progs[p.id() as usize]);
+        // Read from the program's own declaration, not from the request: a clock is not something
+        // the command line can designate, so there is no bit on the wire for it (`Manifest::clock`).
+        let wants_clock = prog.is_some_and(|p| p.manifest().clock);
 
         if interruptible {
             // Build the whole child from the shell's job untyped, mapping the shared job frame; no
@@ -347,8 +363,18 @@ fn spawn_service(
             // is safe only because no manifest declares both today. `grant_plan` is where that stops
             // being true, and the order here is the contract; see notes/pipes.md's BUGS.
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
-            let mut caps = [out; 3];
+            let mut caps = [out; 4];
             let mut n = 1usize;
+            // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
+            // It comes from the manifest rather than from the request, because a person does not
+            // designate a clock: `date` declares that it reads one, and init is the only process
+            // here holding a page it could hand over. Before the source and the budget, so `date`'s
+            // clock is slot 1, which is unambiguous only because no manifest declares a clock *and*
+            // an input. That is the same ordered-slot debt notes/pipes.md's BUGS already records.
+            if wants_clock {
+                caps[n] = (CLOCK_PAGE, abi::rights::READ);
+                n += 1;
+            }
             if let Some(src) = source {
                 // READ only. A pipe's reader must not be able to write back up its own input, which
                 // would make a pipeline a two-way channel nobody asked for.
@@ -360,7 +386,9 @@ fn spawn_service(
                 caps[n] = (b, abi::rights::WRITE);
                 n += 1;
             }
-            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], &[]).ok());
+            let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
+            let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
+            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], maps).ok());
             let ok = match built {
                 Some(tcb) => {
                     let started = tcb_start(tcb, 0, arg, 0) == 0;

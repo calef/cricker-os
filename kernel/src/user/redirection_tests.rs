@@ -110,6 +110,35 @@ fn one_builtin_two_destinations_and_the_same_bytes() {
     );
 }
 
+/// **Naming the file is the operator, unwritten** (milestone 31's input operand).
+///
+/// `wc out.txt` and `wc < out.txt` are the same designation said two ways, so the only assertion
+/// worth making is that they answer the same thing: a pair that agrees cannot both have opened the
+/// wrong file, and a constant would not have caught either of them opening it.
+///
+/// **What the child holds is a stream, not a file capability**, and that is deliberate rather than a
+/// shortfall. The shell resolves the name and streams the bytes, so `wc` gets an endpoint it cannot
+/// seek, re-read or point at a second name, which is narrower than the per-file capability
+/// `fs_file_caretaker` serves. See notes/grant-expression.md.
+#[test_case]
+fn naming_a_file_to_a_reader_is_the_operator_left_out() {
+    let mut buf = [0u8; 3072];
+    let Some(n) = transcript(&mut buf) else {
+        crate::println!("    (no RedoxFS disk attached; skipping)");
+        return;
+    };
+    let t = &buf[..n];
+    let operand = counts(&answer(t, b"wc out.txt")[2..]);
+    assert_eq!(
+        operand,
+        counts(&answer(t, b"wc < out.txt")[2..]),
+        "the same file, named two ways, came out as two different files",
+    );
+    // And it is a real count rather than two matching refusals, which the equality alone would
+    // have been satisfied by.
+    assert_eq!(operand, listing_counts(answer(t, b"ls")));
+}
+
 /// **And the same claim for a program's output**, which is the half `>` shares with `|`.
 ///
 /// `date` is spawned twice from the same ELF. The first time the shell prints what arrives on

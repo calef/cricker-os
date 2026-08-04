@@ -90,10 +90,11 @@ pub enum Prog {
     Spinner,
     /// Print the wall-clock time (milestone 51, `user/src/date.rs`). It takes nothing from the
     /// command line: no argument, no memory, no file. **Its whole authority is a read-only mapping
-    /// of the clock page, which init endows and this shell cannot**, so at the interactive prompt
-    /// today it prints "the time is unknown: this process holds no clock capability" and that
-    /// sentence is true rather than a placeholder. See notes/grant-expression.md for what a shell
-    /// that could delegate a clock would need.
+    /// of the clock page, which init endows and this shell cannot**, and that asymmetry is why
+    /// [`Manifest::clock`] exists: the grant is real, it is just not something a person designates.
+    /// The interactive boot starts a clock service and hands init the page, so `date` at the prompt
+    /// prints a time; on a machine whose RTC the service did not believe it prints "the time is
+    /// unknown: the machine has no clock it believes", which is the other true sentence.
     Date,
     /// **Remove a name, and with `-r` the tree under it** (milestone 47, `user/src/rm.rs`).
     ///
@@ -117,6 +118,11 @@ pub enum Prog {
     /// Its output is [`OutputSpec::Bytes`] because it has to be: `wc`'s answer is text, so `echo a
     /// | wc | wc` composes, and a program that reported a number in a register could not be on the
     /// left of a pipe at all.
+    ///
+    /// And because it declares an input and declares no file, it is also the program that gives the
+    /// **input operand** its meaning: `wc report.txt` is `wc < report.txt` with the operator left
+    /// out, resolved by [`plan_against_with`] into a [`line::Source::File`]. See that function for
+    /// why what the child holds is narrower than a per-file capability rather than the same thing.
     Wc,
 }
 
@@ -206,6 +212,7 @@ impl Prog {
                 // is granted no interrupt channel. The shell waits for its result and no ^C tier
                 // applies (milestone 24).
                 interruptible: false,
+                clock: false,
             },
             Prog::Budgeter => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -221,6 +228,7 @@ impl Prog {
                 input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
+                clock: false,
             },
             // The two interrupt demonstrators. Both run until interrupted, take no argument and no
             // memory grant, and report through the shared job frame rather than the result endpoint
@@ -239,6 +247,7 @@ impl Prog {
                 input: InputSpec::Forbidden,
                 reports: false,
                 interruptible: true,
+                clock: false,
             },
             Prog::Spinner => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -250,6 +259,7 @@ impl Prog {
                 input: InputSpec::Forbidden,
                 reports: false,
                 interruptible: true,
+                clock: false,
             },
             // `date` declares an empty grant expression, and that is the interesting part: its
             // authority (a read-only mapping of the clock page) is not something the command line
@@ -278,6 +288,10 @@ impl Prog {
                 input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
+                // **The one program in this table that declares a clock**, and the reason the field
+                // exists. Nothing on the command line designates it, so init reads this to decide
+                // which children get the read-only mapping (milestone 51's wiring, notes/date.md).
+                clock: true,
             },
             // **The first program endowed a directory**, and the first with options. It takes no
             // integer and no memory: what it needs is the authority to take a name out of the
@@ -303,6 +317,7 @@ impl Prog {
                 input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
+                clock: false,
             },
             // **The consumer**, and the only program that declares an input. Everything else about
             // it is empty: no argument, no memory, no file, no directory, no options. What it does
@@ -317,6 +332,7 @@ impl Prog {
                 input: InputSpec::Required,
                 reports: true,
                 interruptible: false,
+                clock: false,
             },
         }
     }
@@ -490,6 +506,18 @@ pub struct Manifest {
     /// path for it; a program that finishes in one step (worker) declares `false` and is simply
     /// waited on. "Granted by default to interactive programs" is expressed here, per program.
     pub interruptible: bool,
+    /// **Endowed a read-only mapping of the wall clock** (milestone 51's wiring).
+    ///
+    /// The odd one out in this struct, and deliberately: every other field is about something the
+    /// command line can designate, and this is about something it cannot. A clock is not a name a
+    /// person types, so there is no token to place and no refusal to write; what the manifest is for
+    /// here is telling **init** which children to endow, and telling a person reading `caps date`
+    /// that the authority exists at all.
+    ///
+    /// It is a *read-only* mapping and nothing else, which is the whole of DECISIONS §43's split
+    /// made concrete: a program declaring this can read the time and has no object through which it
+    /// could set or propose one. See notes/date.md.
+    pub clock: bool,
 }
 
 /// A parsed command line. The shell dispatches on this; only [`Command::Run`] carries a grant
@@ -938,7 +966,7 @@ impl Refusal {
             }
             Refusal::InputForbidden => "reads no input; there is no slot for those bytes to go in",
             Refusal::InputRequired => {
-                "reads an input stream: give it one with '< name' or a pipe, or it waits forever"
+                "reads an input stream: name a file, redirect with '<', or pipe into it"
             }
             Refusal::NotAPipelineStage => {
                 "is a builtin that produces no stream, so it cannot be a stage of a pipeline"
@@ -1271,6 +1299,51 @@ pub fn plan_against_with(
             })
         }
     };
+
+    // **The input operand: `wc report.txt` is `wc < report.txt` with the operator left out.**
+    //
+    // This is milestone 47's move applied to the other direction. The `file:` prefix came out on the
+    // finding that the manifest was doing all the work, and it is doing all of it here too: a
+    // program that declares `InputSpec::Required` reads a stream and nothing else, so a bare name in
+    // the position after its declared grants can only be the thing feeding it. There is nothing for
+    // the parser to classify and no ambiguity to resolve, because a manifest declaring an input
+    // never also declares a file (a program that wanted both would need positional arity, which is
+    // the same widening `ArgSpec` is waiting on).
+    //
+    // **What the child ends up holding is narrower than a file capability**, and that is worth being
+    // exact about rather than claiming the headline. The shell opens the name and streams it, so the
+    // program is handed an endpoint carrying the bytes of that one file: it cannot seek, re-read,
+    // stat, or name a second thing, and it cannot tell a file from a pipe from a builtin. Typing the
+    // name is still what moves the authority (`wc` alone is refused at the prompt, before anything
+    // is spawned), which is designation-is-authorization; what it is *not* is the per-file capability
+    // `FileSpec::Required` describes, because `wc` deliberately does not speak the filesystem
+    // contract at all (milestone 50: "a `wc` that could open the file it counts would be a `wc` that
+    // could open any file").
+    //
+    // An explicit `<` wins, because it is the same designation said out loud: a line carrying both
+    // has named its input twice, and the operand then has nowhere to go and is unplaceable below.
+    let mut streams = streams;
+    if matches!(m.input, InputSpec::Required)
+        && matches!(streams.source, Source::None)
+        && let Some(&token) = pos.get(next)
+    {
+        let at = next;
+        next += 1;
+        // What the shell holds decides whether the designation can be backed at all, and it wins
+        // over the name's shape, exactly as it does for a file grant.
+        if !holds.dir {
+            return Err(Refusal::NoSuchCapability(CapKind::File));
+        }
+        let (dir, names) = designate(token, at, holds.cwd, expanded)?;
+        let name = names.only().ok_or(Refusal::AmbiguousFile)?;
+        streams.source = Source::File(FileGrant {
+            dir,
+            name: Name::new(name).ok_or(Refusal::FileNotNameable)?,
+            // A reader reads. The direction is the manifest's here as everywhere else, and
+            // `InputSpec` has only the one.
+            writable: false,
+        });
+    }
 
     // Anything left designates a slot this program does not have.
     if let Some(&extra) = pos.get(next) {
@@ -1842,6 +1915,7 @@ mod tests {
         input: InputSpec::Forbidden,
         reports: true,
         interruptible: false,
+        clock: false,
     };
 
     /// The writable twin: a program that is endowed a file it may write.
@@ -1864,6 +1938,7 @@ mod tests {
         input: InputSpec::Forbidden,
         reports: true,
         interruptible: false,
+        clock: false,
     };
 
     /// A shell that WAS granted a directory to narrow, standing at its root.
@@ -2189,11 +2264,58 @@ mod tests {
     #[test]
     fn a_reader_with_nothing_to_read_is_refused_at_the_prompt() {
         assert_eq!(plan_line(b"wc", WITH_DIR), Err((0, Refusal::InputRequired)));
-        // And the two ways to give it one both satisfy it.
+        // And the three ways to give it one all satisfy it.
+        assert!(plan_line(b"wc report.txt", WITH_DIR).is_ok());
         assert!(plan_line(b"wc < report.txt", WITH_DIR).is_ok());
         assert!(plan_line(b"date | wc", WITH_DIR).is_ok());
         let msg = Refusal::InputRequired.message();
-        assert!(msg.contains("waits forever"), "{msg}");
+        assert!(msg.contains("name a file"), "{msg}");
+    }
+
+    /// **`wc report.txt` is `wc < report.txt` with the operator left out**, and typing the name is
+    /// what moves the authority: the same command with no name is refused at the prompt, above.
+    ///
+    /// The manifest does all the work, exactly as it does for the `file:` prefix milestone 47
+    /// deleted. `wc` declares that it reads a stream and declares no file and no directory, so a
+    /// bare name after its declared grants can only be the thing feeding it.
+    ///
+    /// **What the child ends up holding is narrower than a file capability**, and the assertion is
+    /// written to say so: the plan puts the name in the *source*, not in `Endowment::file`. The
+    /// shell opens it and streams the bytes, so `wc` gets an endpoint it cannot seek, re-read, stat
+    /// or point at a second name, and cannot tell from a pipe.
+    #[test]
+    fn naming_a_file_to_a_reader_is_the_operator_left_out() {
+        let e = plan_line(b"wc report.txt", WITH_DIR).unwrap().0[0].unwrap();
+        let line::Source::File(g) = e.source else {
+            panic!("the name did not become the input: {:?}", e.source)
+        };
+        assert_eq!(g.name.as_bytes(), b"report.txt");
+        assert!(!g.writable, "a reader reads");
+        assert!(
+            e.file.is_none(),
+            "this is a stream, not the per-file capability FileSpec describes",
+        );
+        // The same line against a shell that holds no directory is the milestone's headline
+        // refusal, and it is a statement about a cspace rather than about the calendar.
+        assert_eq!(
+            plan_line(b"wc report.txt", Holdings::default()),
+            Err((0, Refusal::NoSuchCapability(CapKind::File))),
+        );
+    }
+
+    /// **An explicit `<` wins, and a line that names its input twice is refused**, because the
+    /// second name then has nowhere to go. Nothing is silently dropped: an operand the planner
+    /// cannot place is the same refusal it always was.
+    #[test]
+    fn an_input_named_twice_is_refused_rather_than_one_of_them_ignored() {
+        let e = plan_line(b"wc < a.txt", WITH_DIR).unwrap().0[0].unwrap();
+        let line::Source::File(g) = e.source else {
+            panic!()
+        };
+        assert_eq!(g.name.as_bytes(), b"a.txt");
+        assert!(plan_line(b"wc b.txt < a.txt", WITH_DIR).is_err());
+        // And a stage fed by a pipe has no room for an operand either.
+        assert!(plan_line(b"date | wc b.txt", WITH_DIR).is_err());
     }
 
     /// The mirror: a program that reads nothing, handed an input. Authority that moved for no

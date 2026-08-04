@@ -498,7 +498,7 @@ $ echo hello world | wc | wc
   1 3 7
 
 $ wc
-  wc: reads an input stream: give it one with '< name' or a pipe, or it waits forever
+  wc: reads an input stream: name a file, redirect with '<', or pipe into it
 
 $ worker 9 | wc
   worker: does not write a byte stream, so there is nothing for > or | to redirect
@@ -599,11 +599,31 @@ echo hello world > gate    -> nothing  the same bytes into a file the shell back
 wc < gate                  -> 1 2 12   ... and they are the same bytes
 echo hello world >> gate   -> nothing
 wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+wc gate                    -> 2 4 24   milestone 31: the name IS the grant, same bytes
+wc                         -> refused  ... and with no name there is nothing to read
+caps wc gate               -> input    ... and the preview says which file, and how
+date                       -> ...UTC   milestone 51's wiring: a clock init endowed
+caps date                  -> cap 1    ... and the visibility surface names it
 ```
 
 One line would have caught all three bugs. Five is still seconds, and it walks the whole endowment:
 a spawn through the real init, the FS service the real init narrowed into the shell, and both
 redirection operators.
+
+The `wc gate` trio is milestone 31's headline checked at the one interface a human touches. Its
+answer has to equal the `<` line's, because it is the same designation with the operator left out, and
+the pair is what makes that a claim about the machine rather than an assertion: one line reaches the
+file through an operator and one through a name, so if they disagree, one of them opened something
+else. `wc` alone is the negative control the pair would be weaker without, refused at the prompt
+before anything is spawned.
+
+The last two arrived with milestone 51's wiring lane and check a different half of the same boot.
+`date`'s answer cannot be a constant, so the assertion is `UTC`: `Format::Human` ends in the offset's
+name and **neither** unknown-clock sentence contains those three letters, so one word fails the gate
+if the clock service did not run, if the kernel granted init no page, if init did not endow `date`,
+or if `date` was handed a page nobody published to. `caps date` then requires that the shell's own
+visibility surface names the capability, because `caps` claims to print a process's whole authority
+and a clock endowed but not printed would make that claim false.
 
 **Two things the machine corrected while it was being written**, and both are the kind of thing a
 harness gets wrong quietly:
@@ -620,6 +640,31 @@ It drives `scripts/qemu-runner-aarch64.sh` directly rather than `cargo run`, so 
 QEMU (the runner `exec`s it) and the kill lands on the emulator instead of on cargo. It is not part
 of `script/test`, because it builds a second kernel and boots it twice.
 
+## The shell's stack, a third time, and what the pattern is now
+
+Milestone 50 hit "a boot that printed nothing" three times and one of them was four stack pages
+being one deep call short of the redirection path. Milestone 31's input operand hit the **same
+symptom in the same file** and it is worth naming the shape rather than the instance.
+
+`wc out.txt` reaches `run_pipeline` through `dispatch` -> `dispatch_one` -> `run`, where a line with
+an operator on it reaches it through `dispatch` -> `pipeline`. One frame deeper, on a program whose
+frames carry parsed lines and planned endowments **by value**, and the scripted wiring's six extra
+pages were not enough: a data abort one word below the lowest mapped page, mid-script, with `far`
+equal to `sp`.
+
+Two things came out of it, and the second is the one to keep:
+
+- **An `Endowment` is not small.** The first version of that arm declared
+  `[Option<Endowment>; MAX_STAGES]` for a line that is one stage by construction, and an `Endowment`
+  carries a whole `NameSet`. `run_pipeline` takes a slice, so `&[Some(endow)]` is the same call with
+  the array cost deleted. That alone was not enough, but it is the fix that should have been written
+  first: the reflex of reaching for the full-width array is what made a one-stage line pay for four.
+- **The two wirings gave the shell different stacks, and that was the real oddity.**
+  `system_initializer` maps eight pages and `pipeline_service` mapped seven, so the wiring that is
+  *not* the one a person types was the smaller one, and it is where the overflow landed. They are
+  both eight now. A test wiring with less headroom than the boot wiring will keep finding faults the
+  boot does not have, which is a bug in the harness rather than a signal.
+
 ## BUGS, named where the reader meets them
 
 - **`script/shell-check` is not in `script/test` or in CI.** It is the only gate on the real init and
@@ -634,14 +679,18 @@ of `script/test`, because it builds a second kernel and boots it twice.
   and the FS server would cost one process and would make the prompt's own authority as legible as
   the authority it hands out. It is the machine's own shell, so this is a defensible default rather
   than an oversight, but it is a default and not a decision anybody made on the record.
-- **`rm` is still not reachable from the prompt.** The shell now holds a directory, so the refusal
-  is no longer "you hold no such capability"; what is missing is the `fs_subtree_caretaker` init
-  would have to build per invocation, and `spawn` says so rather than spawning `rm` with nothing.
-  init deletes its copy of the FS endpoint after building the shell, so that is the line that
-  changes first.
-- **Slot 1 is the input source or the `--mem` untyped, whichever the request carries.** That is
-  unambiguous only because no manifest declares both, and `grant_plan` is where that stops being true. A
-  program endowed a budget *and* an input needs a numbered slot convention rather than an ordered
+- **`rm` is still not reachable from the prompt, and neither is a per-file capability.** The shell
+  holds a directory, so the refusal is no longer "you hold no such capability"; what is missing is
+  the caretaker init would have to build per invocation, and `spawn` says so rather than spawning
+  `rm` with nothing. init deletes its copy of the FS endpoint after building the shell, so that is
+  the line that changes first. The same gap is why `FileSpec::Required` has no consumer: `wc
+  gate.txt` grants a *stream* of one file (the shell opens it), which is narrower than the per-file
+  capability `fs_file_caretaker` serves and is not the same claim. See notes/grant-expression.md.
+- **Slot 1 is the clock, the input source, or the `--mem` untyped, whichever applies.** Three things
+  in one ordered position now (milestone 51's wiring added the clock, which init endows from the
+  program's manifest rather than from the request). It is unambiguous only because no manifest
+  declares two of them, and `grant_plan` is where that stops being true. A program endowed a budget
+  *and* an input, or a clock *and* an input, needs a numbered slot convention rather than an ordered
   one.
 - **A pipeline is full lockstep.** There is no buffer: every sixteen bytes is a rendezvous. Unix's
   64 KB pipe buffer lets a producer run ahead; this does not, and nothing here has been benchmarked

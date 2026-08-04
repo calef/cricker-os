@@ -18,7 +18,14 @@ const SH_BUDGET_PAGES: u64 = 128;
 /// Pages of stack **below** the one `run` maps. A shell needs more than a hand-sized program
 /// for `spawn_fs_client`'s measured reason, and milestone 50 added an array of planned
 /// endowments to what it carries by value.
-const SHELL_EXTRA_STACK: usize = 6;
+///
+/// **Seven since milestone 31 phase 3, which brings this wiring level with init's eight total.**
+/// The input operand (`wc out.txt`) reaches `run_pipeline` through `dispatch_one` and `run`, one
+/// frame deeper than a line with an operator on it, and six overflowed: a data abort one word below
+/// the lowest mapped page, in the middle of the redirection script, which is the third time this
+/// exact symptom has been a stack page short. The two wirings giving the shell different stacks was
+/// the underlying oddity, and `system_initializer`'s `CHILD_STACK_PAGES` is the number to match.
+const SHELL_EXTRA_STACK: usize = 7;
 
 /// What the kernel holds of a scripted shell.
 pub struct Wiring {

@@ -11,13 +11,18 @@
 //!
 //! What the shell can grant, it grants from what it *holds*. The headline is `prog --mem N`, which
 //! endows a program N pages of untyped **split from the shell's own budget** (slot 3) and delegated
-//! to it. A bare name in a file position is the second, and it is refused here with "you hold no
-//! such capability", which is a statement about this shell's cspace rather than a placeholder: the
-//! boot that starts it wires no FS service, so there is no directory to narrow. The mechanism a
-//! grant would use exists and is proven on both ISAs (`user/src/fs_file_caretaker.rs`); see
-//! [`holdings`] and notes/grant-expression.md for exactly what is left. `caps` prints the shell's
-//! whole endowment, and `caps <command>` previews exactly what that command would grant, making
-//! DECISIONS §14's "reading one literal tells you a process's whole authority" interactively true.
+//! to it. A bare name in a file position is the second, and whether it can be backed is a statement
+//! about this shell's cspace rather than about the calendar: a shell whose init granted it a
+//! directory (slot [`DIR_TERMINAL`]) resolves the name, and one granted none says "you hold no such
+//! capability". Milestone 50 made the first case real at the interactive prompt; see [`holdings`],
+//! notes/pipes.md and notes/grant-expression.md. `caps` prints the shell's whole endowment, and
+//! `caps <command>` previews exactly what that command would grant, making DECISIONS §14's "reading
+//! one literal tells you a process's whole authority" interactively true.
+//!
+//! **The clock is the one authority in a preview that no token designates** (milestone 51's wiring).
+//! `date` declares it in its manifest and *init* endows it, read-only; this shell holds no clock and
+//! could not hand one over. `caps date` prints it anyway, because a preview that showed only what the
+//! line designates would be off by exactly one capability.
 //!
 //! # The grammar lost two words in milestone 47
 //!
@@ -630,6 +635,8 @@ const PIPELINE_DONE: &[u8] = b"== pipelines done\n";
 /// - `ls > out.txt` writes a listing into a file; the `ls` after it prints **the same listing**
 ///   (nothing between them changes the directory), and `wc < out.txt` has to agree with what was
 ///   printed. One builtin, two destinations.
+/// - `wc out.txt` is the line above it with the `<` left out, and it has to give the same three
+///   numbers: naming a file to a program that declares an input is the operator, unwritten.
 /// - `date` and `date > date.txt` are one unmodified program sent two places, and `wc < date.txt`
 ///   has to report the length of what `date` printed.
 /// - The last two files are **the same two commands with one operator changed**, so what `>>` does
@@ -641,6 +648,9 @@ fn redirecting(rights: u64) -> ! {
         &b"ls > out.txt"[..],
         b"ls",
         b"wc < out.txt",
+        // The same designation with the operator left out (milestone 31's input operand). It has
+        // to answer what the line above it answered, or one of the two opened something else.
+        b"wc out.txt",
         // The same unmodified `date`, twice, to two destinations.
         b"date",
         b"date > date.txt",
@@ -773,7 +783,7 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
         // interception to find every arm.
         Command::Caps(tail) => caps(nav, tail),
         Command::Pwd => print_pwd(nav),
-        Command::Run(spec) => run(nav, spec),
+        Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
         Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) => {}
     }
@@ -801,7 +811,7 @@ fn help() {
 
 /// Resolve an invocation, then either refuse it at the prompt (a mismatch the manifest caught) or
 /// spawn it, granting exactly what the command named and nothing else.
-fn run(nav: &mut Nav, spec: RunSpec) {
+fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
     // **Expand first.** A pattern designates the names it matched, so the planner has to see the
     // set; and a pattern that matched nothing, or too much, is refused here with nothing spawned.
     let expanded = match expansion(nav, &spec) {
@@ -816,7 +826,25 @@ fn run(nav: &mut Nav, spec: RunSpec) {
         // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
         // spawned and waited on.
         Ok(endow) if endow.interruptible => spawn_interruptible(endow),
-        Ok(endow) => spawn(endow),
+        // **`wc report.txt`**, which is `wc < report.txt` with the operator left out: the planner
+        // put the designated name in the *source* (`grant_plan`'s input operand), so this line is a
+        // one-stage pipeline the shell feeds, and it runs down exactly the path a `<` runs down.
+        // There is no second mechanism here, which is the reason to do it this way: the bytes reach
+        // the child the same way, and the child still cannot tell a file from a pipe.
+        Ok(endow) => match endow.source {
+            Source::File(g) => {
+                // The line reparses into the one stage it is. It cannot fail (this command came out
+                // of it), and a `Line` is what `run_pipeline` reads its stage count off.
+                let Ok(l) = line::split(cmd) else { return };
+                // **One element, not `MAX_STAGES`**, and that is a stack decision rather than a
+                // tidiness one. An `Endowment` carries a whole `NameSet` by value, so a full-width
+                // array here overflowed the shell's stack at the *first* line this arm ran, which
+                // presented as a data abort one word below the lowest mapped stack page. This line
+                // is a single stage by construction, and `run_pipeline` takes a slice.
+                run_pipeline(nav, l, &[Some(endow)], false, None, Some(g));
+            }
+            _ => spawn(endow),
+        },
     }
 }
 
@@ -841,11 +869,12 @@ fn spawn(e: Endowment) {
         return;
     }
     // The same rule one rung up, and `rm` is the first shipped program it applies to. A directory
-    // grant is delivered by a `fs_subtree_caretaker` built from a directory this shell holds, and
-    // the boot that starts this shell wires no FS service, so `plan` has already refused with "you
-    // hold no such capability" and this line is what stops a future wiring from spawning `rm` with
-    // no capability at all. A silently ungranted `rm` would be the worst possible failure of this
-    // model: a program told to destroy something, holding nothing, saying nothing.
+    // grant is delivered by a `fs_subtree_caretaker`, and **init is the only process that can build
+    // one**: this shell's file-service endpoint carries no GRANT, so it holds nothing it could hand
+    // a caretaker. Since milestone 50 this shell does hold a directory, so `plan` no longer refuses
+    // the line, and this is what stops `rm` being spawned with no capability at all. A silently
+    // ungranted `rm` would be the worst possible failure of this model: a program told to destroy
+    // something, holding nothing, saying nothing.
     if e.dir.is_some() {
         print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
         return;
