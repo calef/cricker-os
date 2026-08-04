@@ -26,8 +26,11 @@ already existed for the canary.
 | Stack | Where declared | Size | Guarded? | Painted |
 |---|---|---|---|---|
 | Boot stack (boot core) | `link-aarch64.ld` / `link-riscv64.ld`, `__stack_bottom`..`__stack_top` | 64 KiB | guard page below | at `stack::init` time, canary to a margin below live `sp` |
-| Secondary stacks (per core) | `SECONDARY_STACKS` in `kernel/src/smp.rs`, `.bss` | 64 KiB x MAX_CPUS | **no guard page** | whole slot, before `CPU_ON` |
+| Secondary stacks (per core) | `SECONDARY_STACKS` in `kernel/src/smp.rs`, `.secondary_stacks` | 64 KiB x MAX_CPUS | guard page below (milestone 90) | whole stack, before `CPU_ON` |
 | Kernel thread stacks | `KernelStack` in `kernel/src/thread.rs` | 16 KiB (4 pages) | guard page below | whole stack, at allocation |
+
+The secondary row said `.bss` and **no guard page** when this note was written, and that asymmetry
+is what milestone 90 closed; the section below records how, and the numbers it did not change.
 
 There are no separate interrupt or exception stacks on either ISA, verified in the arch code rather
 than assumed: aarch64's `vectors.s` builds its 272-byte frame on `SP_EL1`, which is whatever kernel
@@ -40,6 +43,64 @@ The boot core's slot in `SECONDARY_STACKS` exists and is never used (the boot co
 linker-script stack); the report skips it. On RISC-V the boot hart is whichever one OpenSBI's
 lottery picked, so "the boot core's slot" is not always slot 0, and the skip follows
 `arch::boot_cpu_id()`.
+
+## The guard page under each secondary stack (milestone 90)
+
+The inventory above found an asymmetry rather than assuming symmetry, and the asymmetry was real: the
+boot stack and every kernel thread stack had an unmapped page beneath them, and the per-CPU secondary
+stacks did not. A secondary that ran deep did not fault. It wrote over whatever `.bss` sat below,
+which is the milestone 3 failure mode (notes/stack.md) on a core that is not the one running the
+tests.
+
+**Why it could not just be skipped where it stood.** The stacks were a plain array in `.bss`, and
+`map_everything` maps `.data`..`__bss_end` in a **single** call. There was nowhere to put a hole. So
+the fix is a move, and the move is what the milestone is: the array now carries
+`#[unsafe(link_section = ".secondary_stacks")]`, and each linker script anchors a page-aligned
+`(NOLOAD)` region around whatever it emits. The mapper then walks the slots in a loop, mapping only
+each stack and never naming the guard, which is the same thing the boot stack's `__stack_guard` gets
+by being skipped between `.bss` and `__stack_bottom`.
+
+**The layout, per core** (`kernel/src/smp.rs`):
+
+```
+  slot n:  [ guard 4 KiB, unmapped ][ stack 64 KiB, kernel_data ]   stride 68 KiB (0x11000)
+```
+
+The region is `MAX_CPUS` slots, page-aligned at both ends, and it sits inside `__image_start`..
+`__image_end`, so `image_size` in the arm64 Image header still covers it (the bootloader will not
+drop a device tree on a stack) and the direct map still skips it (there is no second, mapped alias of
+a guard page). On aarch64 it lands at `__stack_top`, 0x400fc000..0x40140000; on riscv64 at
+0x80266000..0x802aa000. `MAX_CPUS` stays in Rust and is **not** written again in either linker
+script, which is the drift `cseam` teaches to avoid; a test holds the emitted region against the
+reserved one from the other side.
+
+**`(NOLOAD)` is load-bearing, and one line of the linker script explains a quarter megabyte.** A
+zero-initialized Rust static in an explicitly named section becomes PROGBITS, and the flat binary
+that QEMU loads would then carry 272 KiB of zeroes. Marking the output section `(NOLOAD)` makes it
+`SHT_NOBITS` again: the ELF grew by nothing (`objcopy -O binary` still emits 421,888 bytes on
+aarch64). The cost of the whole feature is 16 KiB of address space and **zero physical frames**.
+Nothing zeroes the region either, which a stack does not need and the paint pass overwrites anyway.
+
+**The proof is a page-table walk, not an overflow.** `every_secondary_stack_sits_on_a_guard_page` (in
+`smp.rs`, portable, so it runs on both ISAs) asks the live tables, through the root read back out of
+`TTBR1_EL1` / `satp`, for each core's guard page and each side of it: the guard must not translate,
+the stack's bottom and top must. Deliberately not a deliberate overflow: a test that faults the
+kernel to pass is a test the suite cannot survive, and what would actually go wrong here is someone
+mapping the region as one range again, which the walk catches and an overflow test would too, but
+without killing the machine. `mmu::verify` checks the same thing per core before installing the map,
+where the boot stack's guard has always been checked, so a release build refuses to run on a map that
+lost the holes.
+
+**What it does not cover.** A secondary runs on the **coarse boot map** from `secondary_boot` until
+`mmu::init_secondary`, and on that map the guard page is inside a 2 MiB block and is mapped. That is
+a handful of instructions of Rust, and the boot stack's own guard has exactly the same window; it is
+noted here rather than fixed because closing it means fine-grained tables before the MMU is on.
+
+**Sizing was not the finding, and it is not taken here.** The secondaries run at 12% of 64 KiB. The
+move does make shrinking cheap in a way it was not before: the size is one constant in `smp.rs`,
+slot stride follows it, and nothing else in the image moves, so 16 KiB per secondary (4x the measured
+depth, matching the thread stacks) would return 192 KiB of address space and cost one edit. Recorded
+as an option; the guard, not the size, was the gap.
 
 ## Honest limits
 
@@ -99,6 +160,29 @@ context, so the boot stack carries the deepest call chain of the entire suite, e
 included. The secondary stacks carry only idle loops, trap frames, work stealing, and the SMP
 probes. Thread stacks carry every spawned kernel thread and every process's kernel side.
 
+### The guard-page move changed nothing (milestone 90)
+
+Re-measured after the secondary stacks left `.bss` for their own region, full suite, both ISAs, two
+runs each (host load average ~8):
+
+| Stack | aarch64, before | aarch64, after | riscv64, before | riscv64, after |
+|---|---|---|---|---|
+| boot | 53808 | **53808** | 54216 | **54216** |
+| core 1 / 2 / 3 | 8504 | **8504** | 8448 | **8448** |
+| thread max | 11352 (420 stacks) | **11352 (420 stacks)** | 11672 (415 stacks) | **11672 (415 stacks)** |
+
+Byte for byte, including the paint floors (640 and 1024) and the stack counts, and byte for byte
+across the two runs of each ISA as well. OpenSBI's lottery picked hart 0 for one riscv64 run and
+hart 3 for the other, so the second run's three numbers came from *different harts on different
+slots of the new region*, and were 8448 again. That is the same cross-hart reproduction milestone 84
+saw, now over the moved stacks.
+
+The stability is the expected result and it is worth stating why: depth is decided by which calls
+run, and moving a stack's base address changes no call. Anything else would have meant the move perturbed the code, and the number
+to explain would have been the difference. The suite grew by the two tests this milestone added
+(aarch64 223 to 225, riscv64 224 to 226), and even that did not move the boot stack's deepest byte,
+which says those tests are nowhere near the deepest chain.
+
 The FS server's *user* stack has its own watermark already (`the_fs_servers_stack_still_has_headroom`,
 in `kernel/src/user/tests.rs` and its RISC-V twin in `riscv_virtio_tests.rs`); this instrument is the
 kernel-stack complement.
@@ -113,7 +197,7 @@ limits on both ISAs, per the parity gate:
 | Stack | limit | over observed max | what a trip means |
 |---|---|---|---|
 | boot | 61440 | +7224 (13%) | the suite's deepest chain grew ~7 KiB; one page left before the guard |
-| secondary | 16384 | ~2x | something new is running deep on an idle-and-traps stack that has **no guard page** |
+| secondary | 16384 | ~2x | something new is running deep on an idle-and-traps stack |
 | thread | 14336 | +2664 | some kernel thread is 2 KiB from its guard; the FS-server incident's class |
 
 The margins are deliberately margins over *observed* depth, not fractions of the stack: the
@@ -122,6 +206,13 @@ drift while still failing long before the guard page would. If a nightly bump tr
 with an honest, reviewed growth, raise the limit with the new measurement in hand; that is the
 gate working, not failing.
 
+The secondary row's original entry read "an idle-and-traps stack that has **no guard page**", and
+said in the same breath that this assertion was the only tripwire there. Milestone 90 made that
+false, and the honest restatement is that all three rows now do the same job: they are the alarm
+that fires in the run that *drifts*, tens of kilobytes before the MMU would fire in the run that
+dies. That is worth having on top of a guard page, not instead of one, and it is the only one of
+the two that a release build does not get.
+
 ## BUGS
 
 - Depth reached before `paint_boot_stack` runs (a handful of early-boot frames) and never reached
@@ -129,4 +220,13 @@ gate working, not failing.
 - A stack whose deepest word happened to store the paint value reads one word shallow.
 - The live scans at end of suite are snapshots; a thread that deepens after being scanned is
   under-read by that run. Reaped thread stacks are exact.
-- The instrument is `cfg(test)` only: a shell or bench boot measures nothing.
+- The instrument is `cfg(test)` only: a shell or bench boot measures nothing. The guard pages are
+  not: they are in every build, which is what milestone 90 bought.
+- **The guards are absent on the coarse boot map**, so a secondary is unprotected between
+  `secondary_boot` and `mmu::init_secondary`, and the boot core between `_start` and `mmu::init`.
+  Both windows are a few frames deep and neither has ever been the problem, but neither is zero.
+- **Nothing checks the guards after boot except the suite.** `mmu::verify` runs once, before the
+  map is installed; a later mapping that filled a guard page in (nothing does this today, and the
+  mapper refuses to overwrite) would not be noticed until the test build ran.
+- The boot core's slot in the region is mapped and never used: `MAX_CPUS` slots exist, one is
+  wasted so that slot index can stay CPU id. 68 KiB of address space, no frames.

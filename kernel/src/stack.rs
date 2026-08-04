@@ -244,8 +244,10 @@ pub fn report_high_water() {
     //
     //   - boot 61440: +7.2 KiB over the observed max, and a trip still leaves a full page before
     //     the guard. Growth lands here first (test_main runs every test body on this stack).
-    //   - secondary 16384: ~2x observed. These stacks have NO guard page (smp.rs), so this check is
-    //     the only tripwire between "deeper than expected" and silent .bss corruption.
+    //   - secondary 16384: ~2x observed. Milestone 90 put a guard page under each of these stacks
+    //     (smp.rs), so this is no longer the only thing standing between a deep secondary and
+    //     silent .bss corruption; it is now what a guard page cannot be, an alarm that fires ~48
+    //     KiB BEFORE the fault, in the run that drifts rather than the run that dies.
     //   - thread 14336: +2.6 KiB over observed, ~8x the cross-ISA spread, trips 2 KiB before the
     //     thread guard. The tightest, deliberately: 16 KiB stacks are where recursion lives, and
     //     the FS-server incident was exactly this class outgrowing its allowance unnoticed.
@@ -257,7 +259,8 @@ pub fn report_high_water() {
     assert!(
         max_secondary <= 16384,
         "a secondary stack's high-water {max_secondary} exceeded 16384, ~2x anything measured; \
-         these stacks have no guard page, so do not raise this without reading smp.rs",
+         the guard page below it (smp.rs) would still catch a real overflow, but something is \
+         running much deeper on an idle-and-traps stack than the suite has ever measured",
     );
     assert!(
         tmax <= 14336,
