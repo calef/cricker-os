@@ -139,8 +139,14 @@ fi
 # Exit codes are the tool's verdict, not the script's: 2 means mutants survived and 3 means some
 # timed out, and both are the report this exists to produce. Everything else (1 usage, 4 the
 # unmutated tree failing its own tests) is a broken run and stays fatal.
+#
+# `--test-threads=4` (the trailing args reach libtest through cargo test): without it each of the
+# two jobs runs its test binaries at NCPUS threads, so a machine shared with other work sees
+# 2 x NCPUS bursts from what claims to be a two-job run. Four threads per job keeps the whole run
+# inside roughly the core budget -j 2 implies. It costs wall clock on the heavy suites and that is
+# the accepted trade; raise it only on a box this run has to itself.
 rc=0
-cargo mutants --workspace -j 2 "$@" || rc=$?
+cargo mutants --workspace -j 2 "$@" -- -- --test-threads=4 || rc=$?
 case "$rc" in
     0) echo "==> mutants: every mutant caught" ;;
     2|3) echo "==> mutants: survivors found (exit $rc); a report, not a gate. Triage per the note:" ;;
