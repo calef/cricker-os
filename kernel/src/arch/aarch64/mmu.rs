@@ -228,6 +228,19 @@ where
     // 4. The stack.
     map_range(m, stack_bottom(), stack_top(), Flags::kernel_data())?;
 
+    // 4b. THE PER-CPU SECONDARY STACKS, one slot at a time, so that the page at the bottom of each
+    // slot stays a hole (milestone 90). This is the same trick as step 3, one per core: the loop
+    // maps only `[bottom, top)` and never names the guard.
+    //
+    // It has to be a loop over slots rather than one range, and that is why the stacks left `.bss`.
+    // Step 2 maps `.data`..`__bss_end` in a single call, so while the stacks lived there the guards
+    // could not exist; a secondary that ran deep did not fault, it wrote over whatever `.bss` sat
+    // below it. See notes/stack-high-water.md.
+    for id in 0..crate::cpu::MAX_CPUS {
+        let (bottom, top) = crate::smp::secondary_stack_span(id);
+        map_range(m, bottom, top, Flags::kernel_data())?;
+    }
+
     // 5. The UART, as device memory, in the direct map. Without this the machine goes silent
     // the instant we switch tables, and a silent kernel cannot tell you why it is silent.
     direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
@@ -401,6 +414,17 @@ where
         m.translate(stack_guard()).is_none(),
         "the guard page IS mapped: stack overflow protection is off"
     );
+
+    // And the same for every secondary's guard page (milestone 90). Checked here, before the
+    // switch, for the reason the boot stack's is: a protection you discover is missing during an
+    // overflow is no protection at all. The suite checks it again against the live tables
+    // (`every_secondary_stack_sits_on_a_guard_page`), which is the release build's blind spot.
+    for id in 0..crate::cpu::MAX_CPUS {
+        assert!(
+            m.translate(crate::smp::secondary_stack_guard(id)).is_none(),
+            "a secondary's guard page IS mapped: its stack overflow protection is off"
+        );
+    }
 }
 
 /// Switch TTBR1 to the new tables, and take TTBR0 away.

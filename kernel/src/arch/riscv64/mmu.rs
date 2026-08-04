@@ -323,6 +323,15 @@ where
     // 4. The stack.
     map_range(m, stack_bottom(), stack_top(), Flags::kernel_data())?;
 
+    // 4b. The per-CPU secondary stacks, one slot at a time so the bottom page of each slot stays a
+    // hole (milestone 90). A loop rather than one range is the whole point, and it is why the
+    // stacks moved out of `.bss`, which step 2 maps wholesale. Mirrors the aarch64 map; see
+    // notes/stack-high-water.md.
+    for id in 0..crate::cpu::MAX_CPUS {
+        let (bottom, top) = crate::smp::secondary_stack_span(id);
+        map_range(m, bottom, top, Flags::kernel_data())?;
+    }
+
     // 5. The UART, device memory, in the direct map. Silence otherwise, the instant we switch.
     direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
 
@@ -447,6 +456,15 @@ where
         m.translate(stack_guard()).is_none(),
         "the guard page IS mapped: stack overflow protection is off"
     );
+
+    // Each secondary hart's guard page, the same check per slot (milestone 90). The harts are not
+    // up yet; this runs on the primary, on the map every hart will adopt in `init_secondary`.
+    for id in 0..crate::cpu::MAX_CPUS {
+        assert!(
+            m.translate(crate::smp::secondary_stack_guard(id)).is_none(),
+            "a secondary's guard page IS mapped: its stack overflow protection is off"
+        );
+    }
 }
 
 macro_rules! linker_symbol {

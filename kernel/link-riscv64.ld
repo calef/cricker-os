@@ -75,6 +75,18 @@ SECTIONS
     . += 0x10000;              /* 64 KiB */
     __stack_top = .;
 
+    /* The per-CPU secondary stacks (milestone 90), each with an unmapped page below it, exactly as
+     * the boot stack has above. The slot layout (and the core count) lives in kernel/src/smp.rs;
+     * this script only anchors a page-aligned region so the holes can exist, because the stacks
+     * used to be in `.bss`, which is mapped wholesale. (NOLOAD): a stack needs no file bytes, and
+     * nothing zeroes this region. Same shape as link-aarch64.ld; see notes/stack-high-water.md. */
+    .secondary_stacks (NOLOAD) : AT(ADDR(.secondary_stacks) - KERNEL_VA_BASE) ALIGN(4096) {
+        __secondary_stacks_start = .;
+        *(.secondary_stacks)
+        . = ALIGN(4096);
+        __secondary_stacks_end = .;
+    }
+
     __image_end = .;
     __image_size = __image_end - __image_start;
 

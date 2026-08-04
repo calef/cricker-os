@@ -99,6 +99,29 @@ SECTIONS
     . += 0x10000;              /* 64 KiB */
     __stack_top = .;
 
+    /* THE PER-CPU SECONDARY STACKS (milestone 90).
+     *
+     * Same mechanism as the boot stack's guard page above, one per core. The stacks used to be a
+     * plain array in `.bss`, which `map_everything` maps wholesale, so there was nowhere to put a
+     * hole: a secondary that ran deep did not fault, it scribbled on whatever `.bss` sat below.
+     *
+     * The slots and their guards are laid out by `SECONDARY_STACKS` in kernel/src/smp.rs, which is
+     * where MAX_CPUS lives; this script only anchors the region, page-aligned, so each slot's
+     * bottom page can be left unmapped. Deliberately NOT a second copy of the core count.
+     *
+     * (NOLOAD) because these are stacks: nothing needs to be in the file for them, and without it
+     * a zero-initialized static in an explicitly named section becomes PROGBITS and pads the flat
+     * binary with a quarter megabyte of zeroes. Nothing zeroes this region either (boot.s zeroes
+     * only `__bss_start`..`__bss_end`), which is fine for a stack and is why it can be NOLOAD.
+     *
+     * It is inside `__image_size` below, so the bootloader knows the memory is ours. */
+    .secondary_stacks (NOLOAD) : AT(ADDR(.secondary_stacks) - KERNEL_VA_BASE) ALIGN(4096) {
+        __secondary_stacks_start = .;
+        *(.secondary_stacks)
+        . = ALIGN(4096);
+        __secondary_stacks_end = .;
+    }
+
     /* `image_size` for the arm64 Image header.
      *
      * Runs all the way to __stack_top, not just to the end of .data. The flat binary stops
