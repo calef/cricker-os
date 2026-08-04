@@ -17,7 +17,7 @@ nothing to permit it); timing is then something an observer does with its own au
 the capability-model answer too, since the child's wall-clock duration is observable to anyone who
 can watch it start and stop. The alternative, delegating a clock to the child, would make `time` a
 grant and change what the child can do, which is a different tool. Decide it on the record in
-`DECISIONS.md` when built; this block records the leaning and the reason.
+`design/decisions/` when built; this block records the leaning and the reason.
 
 What the number means is bounded by what the shell can see: wall clock between spawn and the exit
 arriving on the supervision endpoint, on the clock page's resolution. Not CPU time, which is the

@@ -2,7 +2,7 @@
 
 Where random numbers come from on this machine, who is allowed to reach the device, and what
 `std::random` does when nobody granted you any. Milestone 56, the entropy half; the decision and its
-argument are [DECISIONS §44](../DECISIONS.md), the contract is `crates/entropy_proto`.
+argument are [DECISIONS §44](../design/decisions/44-entropy-capability.md), the contract is `crates/entropy_proto`.
 
 ## The thing this replaced
 
@@ -88,7 +88,7 @@ find out.
 
 ### Why the bytes ride in the reply and not in a shared page
 
-[§10](../DECISIONS.md) says bulk rides in a page and control rides in the message, and this contract
+[§10](../design/decisions/10-capability-microkernel.md) says bulk rides in a page and control rides in the message, and this contract
 deliberately does not. A page shared with a client is a place the bytes **persist** and a second
 party can read, and random bytes are the one payload whose entire value is that nobody else has seen
 them. Registers and the client's own stack are a smaller footprint than a page both parties map.
@@ -115,7 +115,7 @@ Transparent, and split where std already splits it:
 
 A program that calls `SystemRng` gets real entropy the moment it is granted the capability, with no
 cricker-specific API to learn. `fill_bytes` has no error channel, so the only loud refusal available
-is a panic, which is [§43](../DECISIONS.md)'s `SystemTime::now()` decision applied a second time: a
+is a panic, which is [§43](../design/decisions/43-clock-authority.md)'s `SystemTime::now()` decision applied a second time: a
 program that never asks is unaffected, and a program that asks gets told rather than quietly
 stamping a key with something guessable.
 
@@ -131,7 +131,7 @@ with no mapping alongside it, unlike the clock, whose read authority *is* a page
 
 ## Both transports, and a finding about interrupts
 
-virtio-mmio and PCIe, one binary, chosen by the wiring ([§18](../DECISIONS.md)'s seam). The PCIe
+virtio-mmio and PCIe, one binary, chosen by the wiring ([§18](../design/decisions/18-pcie-transport.md)'s seam). The PCIe
 instance sits behind the IOMMU and the test asserts it: the buffer this device writes is where the
 machine's key material comes from, so an unconfined device writing it is the last thing you would
 leave unchecked.

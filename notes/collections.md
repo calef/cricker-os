@@ -163,7 +163,7 @@ descriptors.
 
 `VecDeque::push_back` **can allocate**. If the buffer is full it grows: allocate, copy, free.
 
-Which collides head-on with [DECISIONS.md](../DECISIONS.md) §9:
+Which collides head-on with [DECISIONS](../design/decisions/09-irq-safe-locking.md) §9:
 
 > **Interrupt handlers do not allocate.**
 

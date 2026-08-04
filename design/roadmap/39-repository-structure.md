@@ -13,7 +13,7 @@ motive (atomic, rollback-able installs), which is the useful kind of convergence
 **Why it matters.** **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste
 
 **Status: analysis recorded, NO DECISION TAKEN (2026-07-30, Chris's request).** Deliberately a
-roadmap milestone rather than a `DECISIONS.md` section, because nothing was decided; §-sections are
+roadmap milestone rather than a `design/decisions/` entry, because nothing was decided; §-sections are
 for decisions, and recording an undecided question as one would be a lie about its status. This
 block exists so the analysis is not lost and so the eventual decision starts from evidence.
 

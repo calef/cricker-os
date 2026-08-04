@@ -193,7 +193,7 @@ sched::spawn(|| {
 });
 ```
 
-From [DECISIONS.md](../DECISIONS.md) §5, written before any of this existed:
+From [DECISIONS](../design/decisions/05-preemptive-threads.md) §5, written before any of this existed:
 
 > A userspace process is an arbitrary ELF binary. It has its own stack, **it never yields**, and
 > it will loop forever because we will write a bug. Under cooperative scheduling, one bad user

@@ -24,7 +24,7 @@ express.
 **What to decide.** Whether reclamation and construction are genuinely separable rights or only
 look it. The case against is that reaping a region hands its pages back to an allocator the holder
 can then draw from, so the separation may be narrower than it reads. That is the question, and it is
-a rights-model question, so it is settled in `DECISIONS.md` before any code.
+a rights-model question, so it is settled in `design/decisions/` before any code.
 
 ## Fork two: `Tcb::NAME`, or a tid that becomes a handle
 
@@ -61,4 +61,4 @@ decision on one does not commit the other.
 **No implementation is proposed here on purpose.** CLAUDE.md's rule is that a method not fitting the
 established model is a design fork raised before it is built, and a rights-model change is further
 out than that. The deliverable of *this* block is the statement; the deliverable of the milestone is
-whatever Chris decides plus its `DECISIONS.md` section.
+whatever Chris decides plus its `design/decisions/` entry.

@@ -1,6 +1,6 @@
 # Post-v1 milestone roadmap
 
-The eleven milestones in DECISIONS.md were the plan, and they are done; rows 1 to 11 record them,
+The eleven milestones in design/original-milestone-plan.md were the plan, and they are done; rows 1 to 11 record them,
 backfilled 2026-08-03 from the first commits' history (milestone 76). The rest is the roadmap past
 them. It began (see the git history of `design/roadmap.md`, this directory's predecessor) as an uncommitted `design/` proposal drawn from the
 architecture discussion comparing Windows NT, macOS/XNU, and Linux. It now has a **committed

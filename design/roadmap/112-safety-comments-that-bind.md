@@ -57,5 +57,5 @@ producing a rule.
 
 **No new gate is proposed here.** Neither lint can read a comment, and a lint that spots "SAFETY on a
 safe fn" would fire on the legitimate uses above. If the survey finds the distinction mechanical
-after all, that is a finding for `DECISIONS.md` §61's ledger (a lint is adopted on evidence from this
+after all, that is a finding for `DECISIONS` §61's ledger (a lint is adopted on evidence from this
 tree), not an assumption to start from.

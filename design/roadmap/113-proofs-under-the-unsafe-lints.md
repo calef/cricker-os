@@ -19,7 +19,7 @@ that sets up a proof is the code deciding what the proof is *about*. An undocume
 harness is an unexamined assumption inside the thing that exists to examine assumptions.
 
 **What the lane did not do, on purpose, and it is the right call to repeat here.** It did not write
-eleven SAFETY comments. `DECISIONS.md` §61 records the failure mode: a generated pass produced a
+eleven SAFETY comments. `DECISIONS` §61 records the failure mode: a generated pass produced a
 comment that was false at its first site, and `undocumented_unsafe_blocks` checks that a comment
 exists, never that it is true. Eleven comments no gate compiles would satisfy a reader and stop
 nothing, and the next harness added would skip them again. **The fix is a gate, and the comments
