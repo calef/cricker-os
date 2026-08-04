@@ -416,4 +416,15 @@ mod tests {
             "non-hex characters must not parse as zeros"
         );
     }
+
+    /// Uppercase hex is hex. Every other test round-trips through our own lowercase `to_hex`, so
+    /// the `b'A'..=b'F'` arm (and its `+ 10` arithmetic) was dead in the suite (milestone 85), and
+    /// a digest pasted from a tool that prints uppercase would have been refused.
+    #[test]
+    fn uppercase_hex_parses_to_the_same_digest() {
+        let lower = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let upper = lower.to_uppercase();
+        assert_eq!(parse_hex(&upper), parse_hex(lower));
+        assert_eq!(parse_hex(&upper).unwrap()[0], 0xBA);
+    }
 }
