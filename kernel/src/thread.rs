@@ -170,7 +170,7 @@ impl KernelStack {
         // failure, and this `KernelStack` has not been handed to a thread yet, so nothing is on it.
         #[cfg(test)]
         unsafe {
-            crate::stack::paint(bottom, top)
+            crate::stack::paint(bottom, top);
         };
 
         Some(KernelStack {
