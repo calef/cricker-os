@@ -695,8 +695,15 @@ capability.
   init    ── builds console, line_editor, input ──────────────────────── |
           ── builds the shell: slot 4 = the FS endpoint (WRITE, no GRANT)
                                           + the page at 0x60_0000
+                              slot 5 = the clock page (READ, no GRANT)  [milestone 86]
+                                          + the page at 0xd0_0000
           ── starts it with arg1 = the dir rights that endpoint carries
+                            arg2 = the clock's slot, 0 for none         [milestone 86]
 ```
+
+The clock is granted **after** the FS pair so a boot with no disk takes exactly the path it took
+before it existed, which means its slot moves (4 without a disk, 5 with one) and the shell is told
+the number rather than assuming one. See notes/time-command.md.
 
 `arg1` is `0` on a machine with no RedoxFS disk attached, and then the shell is exactly the shell it
 was: `Nav::empty()`, and every verb that would need a directory says so. **The same ELF is in both
@@ -910,6 +917,14 @@ That cost this milestone three manual bisects, and **all three presented as a bo
 nothing at all**: the shell's terminal page colliding with `FILE_VA_CLIENT`, init's sixteen-slot
 cspace overflowing when the kernel handed it two more grants, and four stack pages being one deep
 call short of the redirection path.
+
+**And the gap runs the other way too, which milestone 86 found.** The kernel's stand-in init put a
+spawned program's argument in `arg0`; both real inits put it in `arg1`, and `user/src/worker.rs`
+reads `arg1`. Nothing failed for two milestones, because no line in either script ever spawned a
+program that *takes* an argument: `date`, `wc` and `echo` take none, and `worker 9 | wc` is refused
+at the prompt before anything is built. The first script to type `time worker 3` got `3*3 = 0` back.
+So a harness that "the shell cannot tell apart" can still be wrong in a way no shell would notice,
+and the fix is the same one as above: the scripts have to exercise the shapes the boot exercises.
 
 `script/shell-check` closes it. It boots that system on both ISAs, types five lines at the prompt,
 and reads the answers back:
