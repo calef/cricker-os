@@ -43,7 +43,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   needs only a decoder (ARM never removed the CPU's self-description; RISC-V did, on purpose), how
   many call sites genuinely vary and which two of the four candidates dropped out, the three shapes
   that would have broken on the VisionFive 2, and the two things the machine corrected after the
-  host tests were green.
+  host tests were green. Its sequel, milestone 100, retires the last subsystem that assumed a board
+  rather than reading it: the PSCI conduit and function id, the core list, and RISC-V's counter rate
+  all come out of the device tree, and a core whose hardware id is not its logical id is now refused
+  by name instead of silently never started.
 - [The UART](uart.md): the serial port, and why every kernel learns to drive one first.
   What "asynchronous" actually means (there is no clock wire), and a line-by-line read of
   our own PL011 driver.
