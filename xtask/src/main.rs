@@ -1118,6 +1118,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "flaky",
             "--bin",
+            "job_reaper",
+            "--bin",
             "display",
             "--bin",
             "painter",
@@ -1220,6 +1222,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("sub_server_supervisor", "sub_server_supervisor"),
         ("flaky", "flaky"),
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): init
+        // endows every job it builds with one supervision endpoint and this collects the corpses, so
+        // a job's region comes back to init's budget. Portable, so both archives carry it.
+        ("job_reaper", "job_reaper"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
@@ -1500,6 +1506,9 @@ fn mkinitrd() -> bool {
         "spawner",
         "sub_server_supervisor",
         "flaky",
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): one
+        // endpoint capability and nothing else, so a job's region comes back to init's budget.
+        "job_reaper",
         "display",
         "painter",
         "c_confiner",
