@@ -41,6 +41,19 @@ jobs:
     # each; the shard re-runs its own baseline build first, and a few mutants (dtb's walker, the
     # calendar parser) legitimately burn their whole auto-timeout, two minutes and change apiece.
     # Under the 6-hour job ceiling so a hang still fails loudly rather than billing silent hours.
+    #
+    # **The mutant timeout is the budget item, not the job timeout.** The baseline found 96 mutants
+    # that hang rather than fail: a cursor `+=` becoming `-=` in a walker never terminates, so the
+    # only thing that ends the run is cargo-mutants' per-mutant timeout. That timeout is auto-derived
+    # from each package's own baseline test time (5x it, floor 20s), which on this tree came out at
+    # 112 seconds, and 96 of those is nearly three hours of wall clock spent proving that infinite
+    # loops are infinite. Sharded four ways it is about 45 minutes a shard, which is why the box
+    # below is 330 minutes and not 90.
+    #
+    # Do NOT remove the auto timeout, and think before overriding it with `--timeout`: too low and a
+    # legitimately slow mutant is recorded as a hang it is not, which corrupts the one column of the
+    # report that is supposed to mean "the tests noticed". If the hang budget ever needs cutting,
+    # cut it by killing the hangs (they are real findings) rather than by shortening the clock.
     timeout-minutes: 330
     strategy:
       # One shard failing (a flaky test, a runner death) should not scrap the other three quarters
