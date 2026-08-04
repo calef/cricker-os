@@ -241,3 +241,24 @@ fn the_base_frame_and_the_empty_range_are_exact() {
     let f = a.alloc().unwrap();
     assert_eq!(a.is_used(f), Some(true));
 }
+
+/// The other end of `index_of`, which the base-frame test above leaves open: the first frame past
+/// the last one we manage.
+///
+/// 60 frames in an 8-byte bitmap on purpose. Index 60 is then a real bit *inside* the bitmap, still
+/// 1 from the 0xff fill because `mark_free` clamps to `total`, so an inclusive upper bound answers
+/// `Some(true)` for an address we do not own instead of crashing on a byte past the end. That is the
+/// dangerous shape: `free` would find the bit set, sail past its double-free assert, clear a bit
+/// outside the range and decrement `used` for somebody else's frame.
+#[test]
+fn a_frame_past_the_last_one_is_not_ours() {
+    let mut bits = [0u8; 8];
+    let mut a = FrameAllocator::new(BASE, 60, &mut bits);
+    a.mark_free(BASE, 60 * FRAME_SIZE);
+
+    assert_eq!(
+        a.is_used(Frame::from_addr(BASE + 59 * FRAME_SIZE)),
+        Some(false)
+    );
+    assert_eq!(a.is_used(Frame::from_addr(BASE + 60 * FRAME_SIZE)), None);
+}

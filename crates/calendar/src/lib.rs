@@ -1218,6 +1218,10 @@ mod tests {
             ("2026-13-01T12:34:56Z", Error::BadMonth),
             ("2026-07-30T12:34:56+05:60", Error::BadOffset),
             ("2026-07-30T12:34:56+24:00", Error::BadOffset),
+            // Malformed twice over, and the offset is judged before the trailing byte is. The
+            // six-byte check ahead of the offset is a length check; a mutant that turns it into a
+            // trailing-bytes check refuses the same inputs and renames this refusal Syntax.
+            ("2026-07-30T12:34:56+05:60x", Error::BadOffset),
         ];
         for &(text, want) in cases {
             assert_eq!(DateTime::parse_rfc3339(text), Err(want), "{text:?}");
@@ -1249,6 +1253,11 @@ mod tests {
         assert_eq!(UtcOffset::from_minutes(1440), Err(Error::BadOffset));
         assert_eq!(UtcOffset::from_minutes(-1440), Err(Error::BadOffset));
         assert_eq!(UtcOffset::from_hm(5, -30), Err(Error::BadOffset)); // mixed signs
+        assert_eq!(UtcOffset::from_hm(-5, 30), Err(Error::BadOffset)); // and mixed the other way
+        // Both halves negative is one sign written twice, not mixed signs, and it is how -05:30 is
+        // written. Only the negative-hours row of the guard's truth table proves that; with 5, -30
+        // alone the `hours < 0` test can rot into anything and every case still lands right.
+        assert_eq!(UtcOffset::from_hm(-5, -30).unwrap().minutes(), -330);
         assert_eq!(UtcOffset::from_hm(0, 60), Err(Error::BadOffset));
 
         // A local reading can fall outside the range even when the instant is inside it. That edge

@@ -1005,6 +1005,10 @@ mod tests {
     fn the_cost_is_what_it_says_up_to_the_real_ceiling() {
         let c = Cost::new(256, 3, 2).unwrap();
         assert_eq!((c.m_kib(), c.t(), c.p()), (256, 3, 2));
+        // 1 GiB in KiB, hand-computed. The two assertions below name the ceiling by its own symbol,
+        // so both sides move together when the constant does: `1024 + 1024` is 2048, still above
+        // MIN_M_COST, and every symbolic check still passes while every real policy is refused.
+        assert_eq!(Cost::MAX_M_KIB, 1_048_576);
         // The ceiling itself is a legal cost (validation only; nothing allocates a gibibyte here).
         assert!(Cost::new(Cost::MAX_M_KIB, 1, 1).is_some());
         assert!(Cost::new(Cost::MAX_M_KIB + 1, 1, 1).is_none());

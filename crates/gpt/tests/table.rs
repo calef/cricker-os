@@ -184,6 +184,20 @@ fn a_partition_outside_the_usable_range_is_refused() {
     assert!(build(&[exact]).is_ok());
 }
 
+/// `last_lba` is inclusive, so a partition whose two bounds are the same block is one block long
+/// rather than empty, and legal. Every other partition in this suite and in `real_disks.rs` spans
+/// thousands of blocks, so the range check had only ever been met from far away: the equal case was
+/// never judged, and a `<=` there refuses a legal disk with nothing failing.
+#[test]
+fn a_partition_of_exactly_one_block_is_legal() {
+    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 2048);
+    let disk = build(&[one]).expect("first_lba == last_lba is one block, not none");
+
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let (_, e) = table.partitions().next().unwrap();
+    assert_eq!((e.first_lba, e.last_lba), (2048, 2048));
+}
+
 /// The smallest disk that can hold a 128-entry table is 68 blocks: MBR, header, 32 array blocks,
 /// one usable block, 32 array blocks, header. One block less and there is nowhere to put a
 /// partition, which is an error rather than a table with an empty usable range.
