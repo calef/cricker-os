@@ -28,7 +28,9 @@ approximation of "the paths".
 ## The first full run (2026-08-03, nightly-2026-08-03)
 
 Every host-testable workspace member (`--workspace` minus the three bare-metal crates), 41 packages.
-Wall time for the sequential per-crate triage sweep on the dev machine: about 31 minutes, of which
+After triage, the front door (`script/miri`, one `--workspace` invocation, 95 test binaries) runs
+green in 27 minutes of wall time on the dev machine with a warm compile cache.
+The sequential per-crate triage sweep took about 31 minutes, of which
 five packages are 79% (`xtask` 473 s, `cred` 452 s, `measured_boot` 334 s, `coremark` 190 s, `gpt`
 127 s); 30 of the 41 finish in under 10 s. The interpreter tax measured about three orders of
 magnitude where it was visible (`ntp_proto`'s 10^9-value sweep: 0.6 s native, a projected day-plus

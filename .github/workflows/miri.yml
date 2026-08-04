@@ -1,0 +1,48 @@
+# Miri over the host crates, weekly (milestone 79, notes/miri.md).
+#
+# **Why weekly rather than per-PR.** Miri interprets the host tests instead of executing them, at
+# roughly a thousandth of native speed, so the sampled run is tens of minutes where the host tests
+# are milliseconds. The class of bug it catches (aliasing, provenance, uninitialized reads) moves
+# at the pace of `unsafe` blocks, not of commits; a weekly sweep plus `workflow_dispatch` for
+# on-demand runs buys the coverage without growing a gate somebody waits on. Same reasoning that
+# keeps fuzzing out of script/test.
+#
+# A schedule only fires on the default branch, so this is always a run against `main`; a red here
+# is information about `main`, not about any PR, which is why nothing requires this check.
+#
+# The real work is script/miri (the "Scripts to Rule Them All" pattern, notes/scripts.md), so CI
+# runs exactly what a developer runs locally, and script/miri self-provisions the miri component
+# on the pinned toolchain.
+name: miri
+
+on:
+  schedule:
+    # 06:00 UTC Mondays: after the daily toolchain-drift run at 07:00 would be wrong to copy, this
+    # is an arbitrary quiet hour; the pin means no dependence on the nightly of the day.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN, the same one-liner every workflow here carries: this repo's
+# thesis is components holding the authority their job needs and nothing more, and this job only
+# reads the tree.
+permissions:
+  contents: read
+
+# A queued weekly run has nothing to say that the newer one will not say better.
+concurrency:
+  group: miri
+  cancel-in-progress: true
+
+jobs:
+  miri:
+    name: miri (host crates, sampled paths)
+    runs-on: ubuntu-24.04-arm
+    # The full sampled run measured 27 minutes wall on the dev machine (2026-08-03, 95 test
+    # binaries, warm compile cache); the budget leaves room for a slower runner, a cold cache,
+    # and for the suites to grow.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: script/miri
+        run: script/miri
