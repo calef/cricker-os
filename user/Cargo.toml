@@ -49,6 +49,16 @@ path = "src/line_editor.rs"
 test = false
 bench = false
 
+# `terminal_sink` (milestone 50's last remainder): the terminal as a destination for the sink
+# contract. A caretaker in `fs_file_caretaker`'s shape, and a separate process for a capability
+# reason rather than a scheduling one: the terminal endpoint also carries OP_READLINE, so a child
+# handed it as its output slot would hold the keyboard. **Provisional name.**
+[[bin]]
+name = "terminal_sink"
+path = "src/terminal_sink.rs"
+test = false
+bench = false
+
 # `swish` (milestone 19f.5): the shell, the last program lifted out of hello, and the most wired.
 # A swish is the shot that goes through the net touching nothing, which is least authority in one
 # word. `mkinitrd` packs it as "swish"; `system_initializer` loads it by that name.

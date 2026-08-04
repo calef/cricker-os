@@ -670,6 +670,10 @@ fn redirecting(rights: u64) -> ! {
         // And the refusals a directory does not rescue.
         b"wc < nosuch.txt",
         b"worker 9 > out.txt",
+        // **`2>` binds to a declaration** (DECISIONS §67). `wc` writes one stream and its
+        // diagnostics ride it, so the operator names nothing and the line does not run. The
+        // sentence is the assertion; what it is *not* is a permission.
+        b"wc out.txt 2> err.txt",
     ] {
         print(b"$ ");
         print(line);
@@ -841,7 +845,7 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
                 // array here overflowed the shell's stack at the *first* line this arm ran, which
                 // presented as a data abort one word below the lowest mapped stack page. This line
                 // is a single stage by construction, and `run_pipeline` takes a slice.
-                run_pipeline(nav, l, &[Some(endow)], false, None, Some(g));
+                run_pipeline(nav, l, &[Some(endow)], false, None, Some(g), None);
             }
             _ => spawn(endow),
         },
@@ -894,6 +898,11 @@ fn spawn(e: Endowment) {
     };
 
     // The request: program id, argument, page count, and the operators' answer (grant_plan::spawnproto).
+    //
+    // **`diagnostics` is false here and always will be** (DECISIONS §67). This path runs a line with
+    // no operators on it, so there is no `2>` and nothing for this shell to back; a program that
+    // declares a second stream gets the terminal's own sink, which init endows from the manifest the
+    // way it endows the clock. `2>` makes a line non-plain and goes down [`pipeline`].
     let (w0, w1, w2) = spawnproto::request(
         e.prog.id(),
         e.arg,
@@ -902,6 +911,7 @@ fn spawn(e: Endowment) {
             interruptible: false,
             sink: false,
             source: false,
+            diagnostics: false,
         },
     );
     send(SPAWN, w0, w1, w2);
@@ -916,7 +926,7 @@ fn spawn(e: Endowment) {
     // One reader, one word: a real program's answer, or init's spawn-failed sentinel. A program
     // whose manifest says it writes **bytes** is the exception: its answer is a stream, so it is
     // drained by a reader that knows the sink contract's framing.
-    if matches!(e.prog.manifest().output, grant_plan::OutputSpec::Bytes) {
+    if e.prog.manifest().output.is_byte_stream() {
         drain_text();
         return;
     }
@@ -956,6 +966,66 @@ fn drain_text() {
         }
     }
     print(b"\n  (output truncated: that program never said it was finished)\n");
+}
+
+// ---- the declared second stream, and where its bytes go (`2>`, DECISIONS §67) ----
+
+/// **This shell's diagnostic endpoint**, minted once and kept for the session. `u64::MAX` until
+/// something needs it, because most sessions never spawn a program that declares a second stream.
+///
+/// It is retyped straight out of [`BUDGET`] rather than out of a per-line region, and that is a
+/// decision rather than a shortcut: a pipeline's region is destroyed to turn a dead reader into
+/// `Gone`, and a stream this shell always drains to `OP_EOF` has no dead reader to signal. One
+/// endpoint for the session costs one page and saves a SPLIT and a DESTROY per `date`.
+static DIAG_EP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// The endpoint a declaring child's second stream arrives on, minting it if this session has not
+/// needed one yet. `None` when the budget cannot back it, and the caller then spawns without one:
+/// a program whose diagnostic slot is empty says what it has to say in-band, which is what every
+/// program did before §67.
+fn diag_endpoint() -> Option<u64> {
+    let held = DIAG_EP.load(core::sync::atomic::Ordering::Relaxed);
+    if held != u64::MAX {
+        return Some(held);
+    }
+    let ep = retype_endpoint(BUDGET)?;
+    DIAG_EP.store(ep, core::sync::atomic::Ordering::Relaxed);
+    Some(ep)
+}
+
+/// **Drain every declaring stage's second stream into `dest`, then hand it back.**
+///
+/// It runs **before** the output is drained, and the order is forced rather than chosen. In
+/// `date | wc` the shell is not the reader of `date`'s output (`wc` is), so a shell that drained the
+/// output first would be waiting on `wc`, which is waiting on `date`, which is blocked in a
+/// rendezvous `SEND` on this endpoint. Diagnostics first is the only order in which nobody waits on
+/// somebody who is waiting on them.
+///
+/// What that costs is a rule the declaring program has to keep, and it is in notes/pipes.md's BUGS:
+/// **say everything you have to say before you produce anything.** `date` does, because its
+/// complaints are all reasons it has no answer.
+///
+/// `writers` is how many stages were handed the endpoint, and the drain ends when that many have
+/// announced end of stream. Each declaring stage sends exactly one `OP_EOF`, so the count is the
+/// termination condition and no stage's silence can be mistaken for the line being over.
+fn drain_diagnostics(dest: &mut dyn ByteOut, writers: usize) {
+    let Some(ep) = diag_endpoint() else { return };
+    let mut done = 0usize;
+    for _ in 0..MAX_FILE_CHUNKS {
+        if done == writers {
+            break;
+        }
+        let (w0, w1, w2) = recv(ep);
+        let mut buf = [0u8; sink_proto::INLINE_MAX];
+        match sink_proto::unpack(w0, w1, w2, &mut buf) {
+            sink_proto::Msg::Bytes(n) => dest.push(&buf[..n]),
+            sink_proto::Msg::Eof => done += 1,
+            // init's failure sentinel arrives here too, as an `OP_EOF` it sends on this endpoint so
+            // this drain can end; anything else is a program that cannot spell the contract.
+            sink_proto::Msg::Malformed => done += 1,
+        }
+    }
+    dest.finish();
 }
 
 /// The most 16-byte chunks one program's output may take before the shell stops reading. Generous
@@ -1032,6 +1102,15 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
         },
         None => None,
     };
+    // `2>` names one destination for the **line**, because this shell mints one diagnostic endpoint
+    // and hands it to every stage that declares a second stream. See notes/pipes.md.
+    let diag_file = match l.diagnostics {
+        Some(t) => match grant_plan::redirect_target(t, holdings(nav), true) {
+            Ok(g) => Some((g, l.diagnostics_mode())),
+            Err(r) => return say(Say::Cannot(r)),
+        },
+        None => None,
+    };
 
     // Plan every stage. `head` is the one shape a stage may have that is not a program: a builtin
     // that produces text, at the head of the pipeline, whose bytes **the shell writes into the pipe
@@ -1050,6 +1129,7 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
                 let streams = Streams {
                     sink: l.sink_for(i, out),
                     source: l.source_for(i, inp),
+                    diagnostics: diag_file,
                 };
                 match grant_plan::plan_stage(&spec, holdings(nav), expanded, streams) {
                     Ok(e) => plans[i] = Some(e),
@@ -1062,6 +1142,14 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
             Command::Echo(_) | Command::Ls(_) | Command::Pwd
                 if i == 0 && matches!(l.source_for(0, inp), Source::None) =>
             {
+                // A builtin has no manifest, so it declares no second stream, so a `2>` on it names
+                // nothing. Same sentence a program that declares none gets, for the same reason.
+                if diag_file.is_some() {
+                    print(b"  ");
+                    print(Refusal::NoDiagnosticStream.message().as_bytes());
+                    print(b"\n");
+                    return;
+                }
                 head_builtin = true;
             }
             _ => {
@@ -1073,7 +1161,7 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
         }
     }
 
-    run_pipeline(nav, l, &plans, head_builtin, out, inp);
+    run_pipeline(nav, l, &plans, head_builtin, out, inp, diag_file);
 }
 
 /// Mint the pipes, open the files, spawn the stages, feed the head if the shell is the producer, and
@@ -1088,6 +1176,7 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
 ///
 /// What the child holds is unchanged by that, which is why it costs the milestone nothing: a
 /// redirected program holds an endpoint with `WRITE` and no way to ask what is behind it.
+#[allow(clippy::too_many_arguments)] // one parameter per operator, and there are four of them now
 fn run_pipeline(
     nav: &mut Nav,
     l: Line<'_>,
@@ -1095,6 +1184,7 @@ fn run_pipeline(
     head_builtin: bool,
     out: Option<grant_plan::FileGrant>,
     inp: Option<grant_plan::FileGrant>,
+    diag_file: Option<(grant_plan::FileGrant, line::Mode)>,
 ) {
     let n = l.stage_count();
 
@@ -1120,6 +1210,32 @@ fn run_pipeline(
         },
         None => None,
     };
+
+    // **The second stream's file, opened on the same terms as the output's** (DECISIONS §67). Held
+    // as an `Option` beside the sink, because a line may name both and they are two files.
+    let mut diag_sink = match diag_file {
+        Some((g, mode)) => match open_sink(nav, g, mode) {
+            Ok(f) => Some(f),
+            Err(s) => {
+                if let Some(f) = &mut sink {
+                    f.finish();
+                }
+                return say(s);
+            }
+        },
+        None => None,
+    };
+    // How many stages were handed the diagnostic endpoint, which is what [`drain_diagnostics`]
+    // counts end-of-stream messages against. It comes from the manifests rather than from the line:
+    // a declared stream exists whether or not a `2>` named a destination for it.
+    // Only the stages whose second stream this shell is backing, which is the ones a `2>` named a
+    // file for. A `Diagnostics::Printed` stage writes to the terminal's sink adapter and this shell
+    // never sees those bytes, which is the whole point of that component existing.
+    let declarers = plans
+        .iter()
+        .take(n)
+        .filter(|p| p.is_some_and(|e| matches!(e.diagnostics, line::Diagnostics::File(..))))
+        .count();
 
     // **A builtin with a file on its output spawns nothing at all.** `ls > out.txt` is one process:
     // the shell reads the directory and the shell writes the file. There is no pipe to mint, no
@@ -1171,9 +1287,27 @@ fn run_pipeline(
         let Some(e) = plans[i] else { continue };
         let stage_sink = if i + 1 < n { Some(pipes[i]) } else { None };
         let stage_source = if i > 0 { Some(pipes[i - 1]) } else { feed_pipe };
-        if !spawn_stage(e, stage_sink, stage_source) {
+        let stage_diag = match e.diagnostics {
+            line::Diagnostics::File(..) => diag_endpoint(),
+            _ => None,
+        };
+        if !spawn_stage(e, stage_sink, stage_source, stage_diag) {
             release_pipeline(region, &pipes[..minted]);
             return;
+        }
+    }
+
+    // **Diagnostics before anything else**, because in `date | wc` this shell is not the reader of
+    // `date`'s output and draining the output first would wait on `wc`, which waits on `date`, which
+    // is blocked in a rendezvous send on the diagnostic endpoint. See [`drain_diagnostics`].
+    if let Some(f) = &mut diag_sink {
+        if declarers > 0 {
+            drain_diagnostics(f, declarers);
+            f.report();
+        } else {
+            // A `2>` on a line where nothing was spawned to write to it. Close the file rather than
+            // leaving a handle open on a name the line created.
+            f.finish();
         }
     }
 
@@ -1585,7 +1719,12 @@ const MAX_FILE_CHUNKS: usize = 1024;
 /// result endpoint would have gone. Nothing here knows or can find out what is on the other end.
 ///
 /// Returns whether the stage started; a failure has already been printed.
-fn spawn_stage(e: Endowment, sink: Option<u64>, source: Option<u64>) -> bool {
+fn spawn_stage(
+    e: Endowment,
+    sink: Option<u64>,
+    source: Option<u64>,
+    diagnostics: Option<u64>,
+) -> bool {
     let mem_slot = if e.mem_pages > 0 {
         match untyped_split(e.mem_pages) {
             Some(slot) => Some(slot),
@@ -1602,6 +1741,7 @@ fn spawn_stage(e: Endowment, sink: Option<u64>, source: Option<u64>) -> bool {
         interruptible: false,
         sink: sink.is_some(),
         source: source.is_some(),
+        diagnostics: diagnostics.is_some(),
     };
     let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, wiring);
     send(SPAWN, w0, w1, w2);
@@ -1612,6 +1752,9 @@ fn spawn_stage(e: Endowment, sink: Option<u64>, source: Option<u64>) -> bool {
     }
     if let Some(slot) = source {
         delegate(slot, abi::rights::READ | abi::rights::GRANT);
+    }
+    if let Some(slot) = diagnostics {
+        delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
     }
     if let Some(slot) = mem_slot {
         delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
@@ -1720,6 +1863,10 @@ fn spawn_interruptible(e: Endowment) {
             interruptible: true,
             sink: false,
             source: false,
+            // A supervised job reports through the shared frame, not through a stream, and neither
+            // demonstrator declares a second one. `OutputSpec::Silent` and a diagnostic endpoint
+            // would be a contradiction the manifest can already refuse.
+            diagnostics: false,
         },
     );
     send(SPAWN, w0, w1, w2);

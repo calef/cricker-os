@@ -272,4 +272,17 @@ fn a_redirection_that_cannot_be_backed_is_still_refused() {
         "`worker 9 > out.txt` should be refused for having no bytes: {:?}",
         core::str::from_utf8(said).unwrap_or("<not utf-8>"),
     );
+
+    // **`2>` at a program that declares no second stream** (DECISIONS §67). The same shape as the
+    // two above and the same reason: the manifest decides, at the prompt, with nothing spawned and
+    // no file created. `wc` writes one stream and its diagnostics ride it, so there is nothing for
+    // the operator to bind to, and saying so is not a permission being refused.
+    let said = answer(t, b"wc out.txt 2> err.txt");
+    assert!(
+        core::str::from_utf8(said)
+            .unwrap_or("")
+            .contains("declares no second output"),
+        "`wc ... 2> err.txt` should be refused for having no second stream: {:?}",
+        core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+    );
 }

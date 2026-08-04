@@ -328,7 +328,7 @@ the program ids `spawnproto` already sends in word 0.
   shell: init retypes a page and retypes a kernel object on that slot and prints "construction budget
   dropped; retype answers NoSuchSlot" only when both answered `NoSuchSlot` (-1) rather than
   `NotPermitted` (-3). Gone, not narrowed; the other branch prints "NOT dropped" so a boot that kept
-  its budget fails loudly. The script then runs **eleven jobs through the six-job pool**, so a boot
+  its budget fails loudly. The script then runs **thirteen jobs through the six-job pool**, so a boot
   where nothing was collected answers "could not spawn (init is out of memory)" partway down instead
   of the arithmetic.
 
@@ -343,9 +343,9 @@ the program ids `spawnproto` already sends in word 0.
 - **Init still holds a writable mapping of everything it ever built.** `build_child`'s scratch window
   is never unmapped (it cannot be: nothing in the ABI unmaps a page), so init can read and write any
   page it laid down for a child. Reaping a job undoes this for jobs, because reclaiming a region
-  revokes every mapping of its pages first (§13), but the four boot servers are never reclaimed. So
-  the console's, the line editor's, the input driver's and the shell's memory is still reachable from
-  init, and giving the construction budget away does not touch that. It is the largest remaining
+  revokes every mapping of its pages first (§13), but the boot servers are never reclaimed. So the
+  console's, the line editor's, the input driver's, the shell's and the terminal sink adapter's memory
+  is still reachable from init, and giving the construction budget away does not touch that. It is the largest remaining
   residual and it wants an unmap primitive, not a smaller budget.
 - **The one line init prints costs one more of those**: the shell's output frame stays mapped in init
   for life, because `Frame::REVOKE` would take the page from the shell too.

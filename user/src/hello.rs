@@ -359,7 +359,7 @@ fn init(initrd_len: u64) -> ! {
 /// a worker that returns n*n, started with `n` in x1 (the multi-arg START of milestone 19e).
 ///
 /// **It no longer stays alive holding the kernel's whole construction budget** (milestone 22, the
-/// interactive increment). Once the four servers are built it carves a small scratch budget and a
+/// interactive increment). Once the boot servers are built it carves a small scratch budget and a
 /// bounded job pool off the root and deletes the root, gives back the UART device capability, the two
 /// interrupts and the file service, and proves the drop from the inside before the shell starts: a
 /// `RETYPE` on that slot must answer `NoSuchSlot`, and the sentence it prints is what
@@ -383,7 +383,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     const INIT_OWN_PAGES: u64 = 128;
     /// One job's region, and the pool it is carved from. Must match `system_initializer`: the two
     /// inits are the same system on two instruction sets, and `script/shell-check` runs the same
-    /// eleven jobs through both.
+    /// thirteen jobs through both.
     const JOB_REGION_PAGES: u64 = 40;
     const JOBS_BUDGET_PAGES: u64 = JOB_REGION_PAGES * 6;
     /// Where init maps the shell's output frame in its own space, to print the one line it prints.
@@ -447,8 +447,16 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else {
         halt_forever()
     };
+    // **The terminal's sink adapter** (milestone 50's last remainder). Optional on purpose: an
+    // initrd built without it still boots, and a program that declares a second stream then finds an
+    // empty slot and says what it has to say in-band. A missing component should cost a feature, not
+    // a prompt.
+    let sink_elf =
+        program(initrd_len, "terminal_sink").and_then(|bytes| elf::Elf::parse(bytes).ok());
     // The corpse collector (milestone 22, the interactive increment): one endpoint capability and
-    // nothing else, so a finished job's region comes back to init's pool.
+    // nothing else, so a finished job's region comes back to init's pool. Required rather than
+    // optional, unlike the adapter above: without it a bounded job pool fills and the prompt stops
+    // spawning, which is a broken system rather than a missing feature.
     let Some(reaper_bytes) = program(initrd_len, "job_reaper") else {
         halt_forever()
     };
@@ -597,6 +605,12 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // build a supervised child (which holds a job untyped and a job frame while build_child retypes
     // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter;
     // these originals were only init's to hand out.
+    //
+    // **Only the input frame, and the two that stay have a reason each.** `term_ep` is still init's
+    // to delegate: the sink adapter below is handed `WRITE` on it, and the drop announcement is a
+    // `CALL` on it. `term_out` is where that announcement stages its bytes. Both go back the moment
+    // their last use is done, a few dozen lines from here, and after that init holds no way to reach
+    // the terminal at all.
     cap_delete(term_in);
     // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
     // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
@@ -605,6 +619,43 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     if with_fs {
         cap_delete(FS_EP);
         cap_delete(FS_PAGE);
+    }
+
+    // 5. **The terminal's sink adapter** (notes/sink-protocol.md, DECISIONS §67). It holds the
+    // terminal `WRITE` and serves the sink contract on an endpoint of its own, so a child can be
+    // handed "the terminal" as a place to put bytes **without** being handed the terminal endpoint,
+    // which also carries `OP_READLINE` and would be the keyboard.
+    //
+    // **After the shell and before the giveaway, and both halves of that are load-bearing.**
+    //
+    // After the shell, because of this cspace's sixteen slots: building the adapter earlier put init
+    // one slot over while `build_child` was retyping the shell's address space, and the symptom was
+    // the one this file has seen twice, a boot that reaches userspace and then prints nothing at
+    // all. That constraint is about the shell's build, not about being the last thing built, and
+    // milestone 22 is what made the difference visible: the adapter is now the fifth of six boot
+    // components rather than the last of five, and the cspace has room either way.
+    //
+    // Before the giveaway, because this is a **system** component and the root untyped is what the
+    // system is built from. Everything below hands that budget away and proves it is gone, so an
+    // adapter built after it would have to come out of `own_ut`, the scratch budget milestone 22
+    // sized for page tables and nothing else. Spending a whole program out of that pool would be
+    // invisible here and would surface as some later child failing to map a scratch page.
+    let Ok(term_sink) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    if let Some(elf) = sink_elf.as_ref() {
+        let sink_caps: &[(u64, u64)] = &[
+            (term_sink, abi::rights::READ),
+            (term_ep, abi::rights::WRITE),
+        ];
+        let Ok(adapter) = build_child(UNTYPED, UNTYPED, elf, sink_caps, &[]) else {
+            halt_forever()
+        };
+        // Started here even though the shell deliberately is not: the adapter owns no page and
+        // prints only what a client sends it, and it has no clients until the spawn service below
+        // hands one its endpoint. It cannot write into the page the announcement below stages in.
+        check(tcb_start(adapter, 0, 0, 0) == 0);
+        cap_delete(adapter);
     }
 
     // **Give the construction budget away** (milestone 22, the interactive increment). Two bounded
@@ -729,6 +780,12 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         } else {
             None
         };
+        // The declared second stream (DECISIONS §67), in protocol order.
+        let diagnostics = if wiring.diagnostics {
+            opt(recv_cap(spawn_ep).1)
+        } else {
+            None
+        };
         let budget = if mem_pages > 0 {
             opt(recv_cap(spawn_ep).1)
         } else {
@@ -801,6 +858,31 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
                 caps[n] = (b, abi::rights::WRITE);
                 n += 1;
             }
+            // **The declared second stream, at the slot the manifest names** (DECISIONS §67).
+            // Read from the program's own declaration for the same reason the clock is, and placed
+            // at a **named** slot rather than the next free one: how many low slots this child gets
+            // depends on what else the line granted, and a program that probes one number needs
+            // that number not to move. See `system_initializer`, which does this identically.
+            let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
+            // **Where the second stream goes when the line did not say.** The shell delegates an
+            // endpoint only for a `2>`, because that is the case it has to back a file for. With no
+            // operator on the line the destination is the **terminal's own sink**, which is init's
+            // to endow exactly as the clock is: the shell holds nothing it could hand over, and a
+            // person does not designate a screen. See `system_initializer`, which is identical.
+            let default_diag = sink_elf
+                .as_ref()
+                .map(|_| term_sink)
+                .filter(|_| diag_slot.is_some());
+            let placed_buf = match (diagnostics.or(default_diag), diag_slot) {
+                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
+                // Either half missing means no second stream reaches the child, and it then says
+                // what it has to say in-band, which is what every program did before §67.
+                _ => None,
+            };
+            let placed: &[(u64, u64, u64)] = match &placed_buf {
+                Some(pl) => pl,
+                None => &[],
+            };
             let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
             let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
             // **A region of its own, so the job's memory can come home** (milestone 22, the
@@ -812,9 +894,11 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
             let region = untyped_split(jobs_ut, JOB_REGION_PAGES).ok();
             let built = match (elf, region) {
                 // Born supervised: `deaths` goes in the reserved fault slot, where `START` reads it
-                // and clears it, so the job cannot forge messages on its own death channel.
+                // and clears it, so the job cannot forge messages on its own death channel. The
+                // declared second stream rides the same named-slot mechanism, at the low slot the
+                // manifest picked; the two cannot collide because the fault slot is the last one.
                 (Some(e), Some(r)) => {
-                    build_supervised_child(own_ut, r, e, &caps[..n], maps, deaths).ok()
+                    build_supervised_child(own_ut, r, e, &caps[..n], placed, maps, deaths).ok()
                 }
                 _ => None,
             };
@@ -850,13 +934,23 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
             } else if !ok {
                 send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+            // **A child that was never built cannot end its own second stream**, and the shell
+            // drains that stream to `OP_EOF` before it reads anything else, so nothing would ever
+            // come back. init closes it on the child's behalf: the same hole `SPAWN_OK` closed for
+            // the output side, one stream over.
+            if !ok && let Some(ep) = diagnostics {
+                send(ep, sink_proto::eof(), 0, 0);
+            }
         }
 
         // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
         // mapped, the budget and the streams inserted), and the shell holds the originals it kept
         // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
         // filling across a long session.
-        for s in [job_ut, job_fr, sink, source, budget].into_iter().flatten() {
+        for s in [job_ut, job_fr, sink, source, diagnostics, budget]
+            .into_iter()
+            .flatten()
+        {
             cap_delete(s);
         }
     }
@@ -1136,22 +1230,35 @@ fn build_child(
     caps: &[(u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
-    build_child_inner(own, untyped, elf, caps, maps, None)
+    build_child_inner(own, untyped, elf, caps, &[], maps, None)
 }
 
-/// [`build_child`], with `fault` placed in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is
-/// born supervised (DECISIONS §26's spawn-slot convention): `START` records it as the thread's
-/// supervision endpoint and clears the slot, so the child cannot forge messages about its own death.
-/// This is what makes a job's region reclaimable by `job_reaper` once the job ends.
+/// [`build_child`], with two kinds of capability that go in a **named** slot rather than the next
+/// free one, both through `abi::tcb::CAP_INSERT`'s explicit target.
+///
+/// `fault` lands in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is born supervised
+/// (DECISIONS §26's spawn-slot convention): `START` records it as the thread's supervision endpoint
+/// and clears the slot, so the child cannot forge messages about its own death. That is what makes a
+/// job's region reclaimable by `job_reaper` once the job ends.
+///
+/// `placed` is `(child_slot, init_slot, rights)`, inserted after `caps`. One caller: a declared
+/// diagnostic stream (DECISIONS §67), which needs a fixed slot because how many low slots a child
+/// gets depends on what else the command line granted, and a program that probes one number needs
+/// that number not to move. `system_initializer` carries the same pair, because this system has two
+/// inits and they serve the same protocol; see notes/pipes.md on that duplication.
+///
+/// The two cannot collide: `FAULT_EP_SLOT` is the last slot in the cspace and a manifest's
+/// diagnostics slot is one a program reads at startup, far below it.
 fn build_supervised_child(
     own: u64,
     untyped: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
     maps: &[(u64, u64, u64)],
     fault: u64,
 ) -> Result<u64, ()> {
-    build_child_inner(own, untyped, elf, caps, maps, Some(fault))
+    build_child_inner(own, untyped, elf, caps, placed, maps, Some(fault))
 }
 
 fn build_child_inner(
@@ -1159,6 +1266,7 @@ fn build_child_inner(
     untyped: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
     maps: &[(u64, u64, u64)],
     fault: Option<u64>,
 ) -> Result<u64, ()> {
@@ -1221,13 +1329,13 @@ fn build_child_inner(
     // Mapped growing down from CHILD_STACK_TOP; each page is its own retyped frame.
     /// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
     ///
-    /// **Eight rather than four since milestone 50**, and it is a measured number rather than a round
-    /// one: the shell's redirection path carries a parsed line, an array of planned endowments, a
-    /// listing buffer and a file buffer all by value, and four pages overflowed at the first
-    /// `ls > out.txt` (a data abort one word below the lowest stack page). The kernel's own scripted
-    /// wiring had already found the same floor and maps seven. The cost is 16 KiB per child, which is
-    /// nothing next to a page table.
-    const CHILD_STACK_PAGES: u64 = 8;
+    /// **Twelve since DECISIONS §67**, and every step of that number was measured. Four overflowed
+    /// at the first `ls > out.txt`; eight held until `2>` put a second `FileOut` on the shell's
+    /// `run_pipeline` frame, each carrying a 256-byte staging buffer by value. Must stay level with
+    /// `system_initializer`'s constant of the same name and with `pipeline_service`'s
+    /// `SHELL_EXTRA_STACK`: a wiring with less headroom than its siblings finds faults they do not
+    /// have, which is a bug in the wiring rather than a signal (notes/pipes.md).
+    const CHILD_STACK_PAGES: u64 = 12;
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame(untyped)?;
         let va = CHILD_STACK_VA - k * PAGE;
@@ -1261,6 +1369,14 @@ fn build_child_inner(
     for &(init_slot, rights) in caps {
         // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    for &(child_slot, init_slot, rights) in placed {
+        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
+        // behaviour this call exists to avoid.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, child_slot + 1) } < 0 {
             return Err(());
         }
     }

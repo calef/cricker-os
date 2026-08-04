@@ -311,6 +311,7 @@ pub fn write_help(out: &mut dyn FnMut(&[u8])) {
     out(b"  a > name                a's output becomes a file it can append to and nothing else\n");
     out(b"  a >> name               the same, without emptying the file first\n");
     out(b"  a < name                a file's bytes become a's input\n");
+    out(b"  a 2> name               a's DECLARED second stream, if it has one (date does)\n");
     out(b"  echo hello | wc         a builtin can lead a pipeline: this shell writes the bytes\n");
     out(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
 }
@@ -458,6 +459,13 @@ pub fn write_caps(
         },
         None => None,
     };
+    let diag_file = match l.diagnostics {
+        Some(t) => match grant_plan::redirect_target(t, holdings, true) {
+            Ok(g) => Some((g, l.diagnostics_mode())),
+            Err(r) => return write_say(Say::Cannot(r), out),
+        },
+        None => None,
+    };
     for (i, stage) in l.stages().iter().enumerate() {
         // Only a program invocation carries a grant to preview; `caps help` has nothing to say.
         let Command::Run(spec) = grant_plan::parse(stage) else {
@@ -472,6 +480,7 @@ pub fn write_caps(
         let streams = Streams {
             sink: l.sink_for(i, sink_file),
             source: l.source_for(i, source_file),
+            diagnostics: diag_file,
         };
         match grant_plan::plan_stage(&spec, holdings, expanded, streams) {
             Err(refusal) => return write_refusal(&spec, refusal, out),
@@ -563,6 +572,30 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
             // the child: whichever was typed, what the child holds is the same endpoint. Printed
             // because it is the only visible consequence of the operator, and because a person
             // about to overwrite a file should be able to see that from the preview.
+            out(if matches!(mode, line::Mode::Append) {
+                b"             this shell keeps what is already in it and writes after it\n"
+                    .as_slice()
+            } else {
+                b"             this shell empties it first, before the command runs\n".as_slice()
+            });
+        }
+    }
+    // **The second stream, for a program that declares one** (DECISIONS §67). It is printed even
+    // when no `2>` is on the line, and that is the row worth having: a reader who took `date >
+    // when.txt` for "everything date says goes into when.txt" would be wrong, and this is where they
+    // can see it. A program that declares none gets no row, because it has no second stream to hide.
+    match e.diagnostics {
+        line::Diagnostics::None => {}
+        line::Diagnostics::Printed => {
+            out(b"    diags    the terminal's own sink, a component this shell does not hold.\n");
+            out(b"             declared by the program, so a > cannot swallow them, 2> can\n");
+            out(b"             name them, and they reach the screen without passing here\n");
+        }
+        line::Diagnostics::File(g, mode) => {
+            out(b"    diags    ");
+            out(g.name.as_bytes());
+            out(b"  (this shell writes them there; the program holds a\n");
+            out(b"             second endpoint and still cannot seek, truncate or stat)\n");
             out(if matches!(mode, line::Mode::Append) {
                 b"             this shell keeps what is already in it and writes after it\n"
                     .as_slice()
@@ -880,6 +913,10 @@ mod tests {
             flags: 0,
             sink: line::Sink::Report,
             source: line::Source::None,
+            diagnostics: match prog.manifest().output.diagnostics_slot() {
+                Some(_) => line::Diagnostics::Printed,
+                None => line::Diagnostics::None,
+            },
             reports: true,
             interruptible: false,
         }
@@ -1142,8 +1179,61 @@ mod tests {
                 "{verb} is not a builtin any more; the help is stale"
             );
         }
-        for op in ["a | b", "a > name", "a >> name", "a < name"] {
+        for op in ["a | b", "a > name", "a >> name", "a < name", "a 2> name"] {
             assert!(text.contains(op), "help does not mention {op}");
         }
+    }
+
+    // ---- `2>`, the declared second stream (DECISIONS §67) ----
+
+    /// **The preview names the second stream even when the line does not**, which is the row that
+    /// stops `caps date > when.txt` from being a half-truth: the answer goes into the file and the
+    /// complaint does not, and a reader can see both destinations before running anything.
+    #[test]
+    fn a_declarer_shows_where_its_second_stream_goes() {
+        let mut e = endowment(Prog::Date);
+        e.sink = line::Sink::File(
+            grant_plan::FileGrant {
+                dir: Cwd::root(),
+                name: grant_plan::expand::Name::new(b"when.txt").expect("a nameable file"),
+                writable: true,
+            },
+            line::Mode::Truncate,
+        );
+        let s = shown(|o| write_preview(&e, o));
+        assert!(s.contains("    output   when.txt"), "{s}");
+        assert!(
+            // And the row says the destination is **not** this shell, which is what the terminal's
+            // own sink adapter exists for: those bytes reach the screen without passing through
+            // here, so nothing the shell does to the output can reach them.
+            s.contains("    diags    the terminal's own sink"),
+            "{s}"
+        );
+
+        // And a program that declares none has no row at all: there is no second stream to hide,
+        // so inventing a line about one would be the preview claiming more than the manifest does.
+        let s = shown(|o| write_preview(&endowment(Prog::Wc), o));
+        assert!(!s.contains("diags"), "{s}");
+    }
+
+    /// `caps` refuses the `2>` the prompt would refuse, which is what makes previewing worth doing
+    /// before a command rather than after it.
+    #[test]
+    fn caps_refuses_a_second_stream_the_program_never_declared() {
+        let s = shown(|o| {
+            write_caps(
+                b"worker 7 2> err.txt",
+                128,
+                Holdings {
+                    dir: true,
+                    cwd: Cwd::root(),
+                },
+                &mut |_| Ok(NameSet::empty()),
+                o,
+            );
+        });
+        assert!(s.starts_with("  worker: "), "{s}");
+        assert!(s.contains("declares no second output"), "{s}");
+        assert!(!s.contains("would grant"), "{s}");
     }
 }

@@ -63,7 +63,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
    untyped for a bounded job pool, give back the UART and its interrupt, and build every job in a
    region that `job_reaper` returns when the job ends, so a bounded budget is affordable. Proven by a
    control-and-claim pair in `kernel/src/user/job_reaper_tests.rs` and by `script/shell-check`, which
-   reads init's own dropped-authority sentence and runs eleven jobs through a six-job pool. Both
+   reads init's own dropped-authority sentence and runs thirteen jobs through a six-job pool. Both
    design forks recorded here were since closed by DECISIONS §32 (`Endpoint::REAP`). This work also
    found and fixed a real pre-existing race in the exception-return path on both ISAs
    (notes/exceptions.md).

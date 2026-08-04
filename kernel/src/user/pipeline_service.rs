@@ -19,13 +19,18 @@ const SH_BUDGET_PAGES: u64 = 128;
 /// for `spawn_fs_client`'s measured reason, and milestone 50 added an array of planned
 /// endowments to what it carries by value.
 ///
-/// **Seven since milestone 31 phase 3, which brings this wiring level with init's eight total.**
-/// The input operand (`wc out.txt`) reaches `run_pipeline` through `dispatch_one` and `run`, one
-/// frame deeper than a line with an operator on it, and six overflowed: a data abort one word below
-/// the lowest mapped page, in the middle of the redirection script, which is the third time this
-/// exact symptom has been a stack page short. The two wirings giving the shell different stacks was
-/// the underlying oddity, and `system_initializer`'s `CHILD_STACK_PAGES` is the number to match.
-const SHELL_EXTRA_STACK: usize = 7;
+/// **Eleven since DECISIONS §67**, which is the fourth time this symptom has been a stack page
+/// short and the second time it has been `run_pipeline`'s frame. `2>` put a **second** `FileOut`
+/// there, and a `FileOut` carries a 256-byte staging buffer by value because the filesystem's write
+/// unit is a page and the sink contract's is sixteen bytes. Seven pages overflowed by twenty-four
+/// bytes: a data abort one word below the lowest mapped page, mid-script, `far` just under `sp`.
+///
+/// Four extra pages rather than one, deliberately. Every previous instance bought exactly enough and
+/// the next change found the wall again; 16 KiB of address space is not worth a fifth bisect. The
+/// number must stay level with `system_initializer`'s `CHILD_STACK_PAGES`, because a test wiring with
+/// less headroom than the boot wiring finds faults the boot does not have, which is a bug in the
+/// harness rather than a signal (notes/pipes.md).
+const SHELL_EXTRA_STACK: usize = 11;
 
 /// What the kernel holds of a scripted shell.
 pub struct Wiring {
@@ -298,6 +303,25 @@ fn init_service(spawn_ep: EpId, result: EpId) -> ! {
         } else {
             None
         };
+        // **A declared second stream is received and closed on the child's behalf** (DECISIONS
+        // §67). This wiring grants a child its ordinary slots and nothing at a named one (a `Spawn`
+        // fills from zero and has no way to name slot eight), so `date` here finds an empty
+        // diagnostic slot and says what it has to say in-band, exactly as it did before the second
+        // stream existed. **So this is the fallback path under test**, and the real one is
+        // `script/shell-check`, which runs `user/src/system_initializer.rs`.
+        //
+        // Receiving the capability is what keeps the two sides in lockstep, and closing the stream
+        // is what stops the shell waiting for an end-of-stream from a program that was never handed
+        // the endpoint. The close goes on **its own thread**, and that is not tidiness: the shell
+        // drains diagnostics only after every stage of the line is spawned, so a blocking send here
+        // would still be waiting when the shell sent the next stage's request, and both would stop.
+        if wiring.diagnostics
+            && let Some(ep) = take_endpoint(spawn_ep)
+        {
+            crate::sched::spawn(move || {
+                crate::sched::ipc_send(ep, [sink_proto::eof(), 0, 0]);
+            });
+        }
         // A `--mem` grant is received and dropped: no stage of the pipeline script asks for
         // one, and receiving it anyway is what keeps the two sides in lockstep if one ever
         // does. `user/src/system_initializer.rs` is where a budget actually reaches a child.

@@ -19,7 +19,7 @@
 //!    [`arg`] / [`mem_pages`].
 //! 2. **Delegation.** The capabilities the request announced, in a fixed order: the supervised
 //!    job's pair (untyped, frame), then the **sink** (milestone 50), then the **source**, then the
-//!    `--mem` untyped. Order rather than tags, because both sides read the same [`Wiring`] out of
+//!    **diagnostic endpoint** (DECISIONS §67), then the `--mem` untyped. Order rather than tags, because both sides read the same [`Wiring`] out of
 //!    the same word and a promise nobody receives would deadlock both.
 //!
 //!    If `mem_pages > 0`, the shell `SEND_CAP`s exactly one capability there: an
@@ -50,6 +50,15 @@ const SINK_BIT: u64 = 1 << 33;
 /// stage of a `|` but the first.
 const SOURCE_BIT: u64 = 1 << 34;
 
+/// **A capability for the child's declared second output follows** (DECISIONS §67). Set for a
+/// program whose manifest declares one, whether or not the line has a `2>` on it: the stream exists
+/// because the program says so, and the operator only names where it goes.
+///
+/// Unlike [`SINK_BIT`] this does **not** say which slot: init reads that from the manifest, because
+/// the slot is the program's declaration and not the shell's choice. What the wire says is only
+/// "expect one more capability", which is what keeps the two sides in lockstep.
+const DIAG_BIT: u64 = 1 << 35;
+
 /// **Where the shell's operators end up on the wire**, alongside the parts of the endowment that
 /// were always here. `sink` and `source` are booleans rather than capabilities because the
 /// capability travels separately, over `SEND_CAP`: this word only says whether to expect it.
@@ -63,6 +72,8 @@ pub struct Wiring {
     pub sink: bool,
     /// The child's input slot is filled (`<` or the right of a `|`).
     pub source: bool,
+    /// The child declares a second output stream, so one more endpoint follows (DECISIONS §67).
+    pub diagnostics: bool,
 }
 
 /// Build the three request words from a resolved endowment's parts.
@@ -77,6 +88,9 @@ pub fn request(prog_id: u64, arg: u64, mem_pages: u64, w: Wiring) -> (u64, u64, 
     if w.source {
         w2 |= SOURCE_BIT;
     }
+    if w.diagnostics {
+        w2 |= DIAG_BIT;
+    }
     (prog_id, arg, w2)
 }
 
@@ -87,6 +101,7 @@ pub fn wiring(w2: u64) -> Wiring {
         interruptible: interruptible(w2),
         sink: w2 & SINK_BIT != 0,
         source: w2 & SOURCE_BIT != 0,
+        diagnostics: w2 & DIAG_BIT != 0,
     }
 }
 
@@ -166,23 +181,26 @@ mod tests {
         assert_eq!(mem_pages(w2), 0);
     }
 
-    /// **The three flags are independent of each other and of the page count** (milestone 50).
-    /// They share one word, and the delegation order init reads depends on all three, so a bit that
-    /// bled into another would make init receive the wrong capability into the wrong slot and hang
-    /// rather than fail.
+    /// **The four flags are independent of each other and of the page count** (milestone 50, and
+    /// §67's fourth). They share one word, and the delegation order init reads depends on all of
+    /// them, so a bit that bled into another would make init receive the wrong capability into the
+    /// wrong slot and hang rather than fail.
     #[test]
     fn the_wiring_flags_do_not_collide() {
         for &interruptible in &[false, true] {
             for &sink in &[false, true] {
                 for &source in &[false, true] {
-                    let w = Wiring {
-                        interruptible,
-                        sink,
-                        source,
-                    };
-                    let (_, _, w2) = request(3, 0, 64, w);
-                    assert_eq!(wiring(w2), w, "{w:?}");
-                    assert_eq!(mem_pages(w2), 64, "{w:?}");
+                    for &diagnostics in &[false, true] {
+                        let w = Wiring {
+                            interruptible,
+                            sink,
+                            source,
+                            diagnostics,
+                        };
+                        let (_, _, w2) = request(3, 0, 64, w);
+                        assert_eq!(wiring(w2), w, "{w:?}");
+                        assert_eq!(mem_pages(w2), 64, "{w:?}");
+                    }
                 }
             }
         }

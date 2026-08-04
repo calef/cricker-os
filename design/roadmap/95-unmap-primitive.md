@@ -6,7 +6,7 @@ largest residual left standing after the interactive boot gave away its authorit
 **The finding.** `build_child` maps each page it lays down for a child into init's own address
 space to write it, and **never unmaps it**, because nothing in the ABI can: there is no unmap.
 Reaping a job hides the problem for jobs, since §13's revoke takes mappings with the region, but
-the four boot servers are never reclaimed, so init keeps a writable window onto every page of
+the boot servers are never reclaimed, so init keeps a writable window onto every page of
 every server it built, for the life of the machine.
 
 That is a real hole in the story milestone 22 otherwise tells. Init drops its construction budget,

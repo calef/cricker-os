@@ -1090,6 +1090,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "line_editor",
             "--bin",
+            "terminal_sink",
+            "--bin",
             "blk",
             "--bin",
             "allocator_exerciser",
@@ -1205,6 +1207,7 @@ fn initrd_riscv() -> bool {
         ("input", "input"),
         ("swish", "swish"),
         ("line_editor", "line_editor"),
+        ("terminal_sink", "terminal_sink"),
         ("blk", "blk"),
         ("allocator_exerciser", "allocator_exerciser"),
         ("net_stack", "net_stack"),
@@ -1422,6 +1425,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let terminal_sink = match read_stripped(&bin_elf("terminal_sink")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("terminal_sink"));
+            return false;
+        }
+    };
     let allocator_exerciser = match read_stripped(&bin_elf("allocator_exerciser")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1571,6 +1581,7 @@ fn mkinitrd() -> bool {
         ("input", &input),
         ("swish", &swish),
         ("line_editor", &line_editor),
+        ("terminal_sink", &terminal_sink),
         ("coremark", &coremark),
         ("os_primitives_benchmarker", &os_primitives_benchmarker),
         ("allocator_exerciser", &allocator_exerciser),
@@ -2887,7 +2898,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 17] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 21] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2919,12 +2930,32 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 17] = [
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
     ("caps date", Some("cap 1  frame     clock")),
+    // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
+    // whole of the decision, and only this gate runs them through the real init: the guest tests
+    // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a
+    // capability at the slot a manifest names, so `date` there never receives a second stream.
+    //
+    // `date` is the declarer, and at *this* prompt it has a clock and nothing to complain about. So
+    // the assertion is that its second stream exists, is separate, and is **empty**: `2> err.txt`
+    // creates the file, `date` closes the stream with nothing on it, and `wc` counts zero of
+    // everything. A shell that had merged the two streams would put a timestamp in there.
+    ("date 2> err.txt", Some("UTC")),
+    ("wc < err.txt", Some("0 0 0")),
+    // And the visibility surface names the second destination, which is what stops `caps date >
+    // when.txt` being a half-truth: two destinations on one line, and a reader can see that the
+    // complaint is not going into the file.
+    ("caps date 2> err.txt", Some("diags    err.txt")),
+    // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
+    // and its diagnostics ride it, so `2>` names nothing and the line does not run.
+    ("wc gate.txt 2> err.txt", Some("declares no second output")),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_reaper` returns when the job ends.
-    // The five spawns above plus these six are eleven jobs through a six-job pool, so a boot where
+    // **Seven spawns above plus these six are thirteen jobs through a six-job pool**, so a boot where
     // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
-    // rather than the arithmetic. Six distinct arguments rather than one repeated, because the
+    // rather than the arithmetic. (Eleven when milestone 22 wrote this line, and `2>` added two more
+    // spawning lines above; the count is a fact about the whole script, so it is taken at the merge
+    // and not from either half.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
     ("worker 3", Some("3*3 = 9")),
@@ -3151,8 +3182,9 @@ fn shell_check_leg(riscv: bool) -> bool {
     if failed.is_empty() {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
-             file to a reader, read the clock, and ran eleven jobs through init's six-job pool \
-             after init gave its construction budget away"
+             file to a reader, read the clock, kept a declared second stream off the \
+             redirection, and ran thirteen jobs through init's six-job pool after init gave \
+             its construction budget away"
         );
         return true;
     }

@@ -377,3 +377,101 @@ fn a_destroyed_sink_ends_the_writer_and_an_absent_one_does_not() {
          is what every OS does to a process whose stdout is closed",
     );
 }
+
+/// **The same indifferent writer, a third destination: the terminal** (milestone 50's last
+/// remainder, notes/sink-protocol.md).
+///
+/// `one_reader_two_sources_and_the_same_answer` proved a pipe and a file are interchangeable. This
+/// adds the destination that had been left out, and it is the one with a capability argument under
+/// it rather than a plumbing one.
+///
+/// **The terminal could not simply serve the contract itself.** Its endpoint also carries
+/// `OP_READLINE`, and `WRITE` on an endpoint is the right to `CALL`, so a child handed it as its
+/// output slot would hold the keyboard. A sink capability that can read the keyboard is not a sink
+/// capability. So the terminal's sink is a **separate endpoint served by an adapter**, which is
+/// `fs_file_caretaker`'s shape and exactly what `sink`'s own file role already was for a file.
+///
+/// The wiring is the real one with the terminal replaced by this test: `terminal_sink` holds the
+/// sink endpoint `READ` and a terminal endpoint `WRITE`, and the kernel serves the terminal contract
+/// on the far side and collects what arrives. So the assertion is the transcript, byte for byte,
+/// through a real adapter process speaking `line_editor::proto::OP_PRINT`.
+///
+/// It also proves a negative worth having: the writer holds **one** capability, an endpoint to the
+/// adapter. It cannot reach the terminal, so it cannot read a line, and nothing in the program had
+/// to be written to make that true.
+#[test_case]
+fn the_terminal_is_a_sink_like_any_other_and_the_writer_cannot_tell() {
+    let adapter = program("terminal_sink").expect("no terminal_sink program in the initrd");
+    let writer = program("sink").expect("no sink program in the initrd archive");
+
+    let sink_ep = crate::sched::create_endpoint();
+    let term_ep = crate::sched::create_endpoint();
+
+    crate::sched::spawn(move || {
+        run(
+            adapter,
+            Spawn {
+                arg0: 0,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(sink_ep, Rights::READ), // slot 0: the sink it serves
+                    endpoint_cap(term_ep, Rights::WRITE), // slot 1: the terminal it prints to
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("could not spawn the terminal sink adapter");
+
+    let report = spawn_writer(writer, Some(sink_ep), 1);
+
+    // The terminal, played by this test. `OP_PRINT` carries up to eight bytes in its second word,
+    // which is the terminal contract's request shape (a served request arrives with the reply
+    // capability and two data words), so a sixteen-byte sink message arrives as two calls.
+    let mut got = [0u8; fixture::TRANSCRIPT.len()];
+    let mut n = 0usize;
+    while n < fixture::TRANSCRIPT.len() {
+        let m = crate::sched::ipc_recv_cap(term_ep);
+        let (w0, slot, w1) = (m[0], m[1], m[2]);
+        let crate::cap::Object::Reply(caller) = crate::sched::current_cap(slot)
+            .expect("the adapter's print carried no reply capability")
+            .object
+        else {
+            panic!("the adapter sent the terminal something that was not a CALL");
+        };
+        assert_eq!(
+            line_editor::proto::op(w0),
+            line_editor::proto::OP_PRINT,
+            "the adapter sent the terminal something other than a print",
+        );
+        let len = line_editor::proto::len(w0).min(8);
+        let bytes = w1.to_le_bytes();
+        for &b in &bytes[..len] {
+            assert!(
+                n < got.len(),
+                "the adapter printed more than the transcript"
+            );
+            got[n] = b;
+            n += 1;
+        }
+        crate::sched::ipc_reply(caller, [len as u64, 0]);
+        crate::sched::delete_current_cap(slot).expect("consume the one-shot reply");
+    }
+
+    assert_eq!(
+        &got[..],
+        fixture::TRANSCRIPT,
+        "the bytes that reached the terminal are not the ones the writer wrote",
+    );
+
+    let [class, total, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        (class, total as usize),
+        (
+            fixture::code(sink_proto::Sent::Ok),
+            fixture::TRANSCRIPT.len()
+        ),
+        "the writer should have classified a terminal exactly as it classifies a pipe and a file",
+    );
+}

@@ -138,6 +138,21 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
                 pending = Some(slot);
                 deliver(&mut queue, &mut pending);
             }
+            proto::OP_PRINT => {
+                // **A second writer, with no second page** (DECISIONS §67, notes/sink-protocol.md).
+                // The bytes are in the request's own words, so this client needs no frame mapped
+                // here and no frame of its own; `OP_WRITE` above reads the *one* page init maps in,
+                // and a second page-based client would need this contract to grow a page index.
+                //
+                // Through the same `expand_output` as `OP_WRITE`, so a newline from a sink adapter
+                // becomes a carriage return and a newline exactly as one from the shell does. Two
+                // writers, one terminal, one set of manners.
+                let len = proto::len(w0).min(8);
+                let bytes = w1.to_le_bytes();
+                line_editor::expand_output(&bytes[..len], &mut con);
+                con.flush();
+                reply(slot, len as u64, 0);
+            }
             proto::OP_INTRCOUNT => {
                 // The shell's ^C sensor: reply immediately with the running count. Never blocks, so
                 // the shell can busy-poll it while watching a foreground job (milestone 24).

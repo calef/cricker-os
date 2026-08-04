@@ -284,7 +284,16 @@ impl Prog {
                 // on why `OP_BYTES` is zero). So it is the first program that can be piped, and it
                 // needed one change to be one: an end-of-stream message, without which a reader
                 // waits forever on a producer that has already exited.
-                output: OutputSpec::Bytes,
+                //
+                // **And the first program to declare a second stream** (DECISIONS §67), because it
+                // is the program whose loss motivated the decision: "the time is unknown" is a
+                // complaint about the run and it travelled on the same endpoint as the answer, so
+                // `date > when.txt` on a clockless machine wrote it into the file. Declaring the
+                // second output is what lets `2>` name where it goes, and what makes the default
+                // (the shell prints it) a different place from where the answer went.
+                output: OutputSpec::BytesAndDiagnostics {
+                    slot: DIAGNOSTICS_SLOT,
+                },
                 input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
@@ -354,6 +363,44 @@ pub enum OutputSpec {
     /// only output that `>` and `|` can substitute, because it is the only one whose meaning does
     /// not depend on who is reading it.
     Bytes,
+    /// [`Bytes`](OutputSpec::Bytes) **and a second byte stream** for this program's own
+    /// diagnostics, in the cspace slot named here (DECISIONS §67).
+    ///
+    /// This is what `2>` binds to, and the slot number is why it is a declaration rather than
+    /// Unix's fd 2 with a capability underneath. Nothing in this system agrees in advance that any
+    /// number means anything; the program says where its second stream goes, `caps` prints it, and a
+    /// program that says nothing has no second stream to name.
+    ///
+    /// **The slot is high and out of the way on purpose**, which is `abi::fault::FAULT_EP_SLOT`'s
+    /// reasoning applied a second time: a child's ordinary grants fill from zero upward and how many
+    /// there are depends on the wiring (`date` gets a clock from init and none from the guest test
+    /// harness), so a low number would move under the program and it would probe the wrong slot. A
+    /// number nothing else can reach is the same number in every wiring.
+    BytesAndDiagnostics {
+        /// The cspace slot the diagnostic endpoint is inserted into.
+        slot: u64,
+    },
+}
+
+impl OutputSpec {
+    /// **Whether `>` and `|` have anything to substitute**, which is what the operators' check asks.
+    /// A declared second stream does not change the answer: the first stream is still the sink
+    /// contract, and a redirection still names where *it* goes.
+    pub fn is_byte_stream(self) -> bool {
+        matches!(
+            self,
+            OutputSpec::Bytes | OutputSpec::BytesAndDiagnostics { .. }
+        )
+    }
+
+    /// The cspace slot this program's declared second stream lands in, or `None` for a program that
+    /// declares none. `Some` is the whole of what makes `2>` legal on a command line.
+    pub fn diagnostics_slot(self) -> Option<u64> {
+        match self {
+            OutputSpec::BytesAndDiagnostics { slot } => Some(slot),
+            _ => None,
+        }
+    }
 }
 
 /// **Whether a program reads an input stream**, milestone 50's `<` and the right-hand end of `|`.
@@ -377,6 +424,21 @@ pub enum InputSpec {
 /// A program that takes no short options. Spelled once so a manifest reads as a declaration rather
 /// than as an empty literal repeated six times.
 pub const NO_FLAGS: &[u8] = b"";
+
+/// **The cspace slot a declared diagnostic stream lands in** (DECISIONS §67), for the programs that
+/// declare one at all.
+///
+/// It is a constant here rather than a number each manifest picks, and that is not a retreat to an
+/// ambient convention: what the manifest declares is **whether** there is a second stream, and the
+/// slot is a placement detail every declarer may as well share. What matters is that a program that
+/// declares nothing has no slot and no stream, which is where the model differs from fd 2.
+///
+/// **Eight**, which is above every ordinary grant (a child's are inserted from zero and the most
+/// any manifest asks for is four) and below `abi::fault::FAULT_EP_SLOT` at fifteen. Out-of-the-way
+/// is load-bearing: how many low slots a child gets depends on the wiring, so a low number would
+/// move under the program. `abi::tcb::CAP_INSERT`'s explicit target is what puts it there, and it
+/// exists already, for the fault endpoint, for exactly this reason.
+pub const DIAGNOSTICS_SLOT: u64 = 8;
 
 /// A program's expectation about the integer argument (`worker 9`'s `9`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -652,6 +714,10 @@ pub struct Endowment {
     /// **What goes in the child's input slot**: nothing, the pipe from the previous stage, or a
     /// file streamed out over the same contract. [`sink`](Endowment::sink)'s mirror.
     pub source: line::Source,
+    /// **Where this program's declared second stream goes** (milestone 50's `2>`, DECISIONS §67).
+    /// [`line::Diagnostics::None`] for the programs that declare none, which is all of them but
+    /// `date`; the shell mints and delegates a second endpoint only for the rest.
+    pub diagnostics: line::Diagnostics,
     /// Grant the shared result endpoint.
     pub reports: bool,
     /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
@@ -865,6 +931,12 @@ pub enum Refusal {
     /// substitute. See [`OutputSpec`]: `worker 9` answers with a number in a register, and a file
     /// sink handed that word would write nothing legible into the file.
     NotAByteStream,
+    /// **This program declares no second output stream**, and the line put a `2>` on it (DECISIONS
+    /// §67). The truthful refusal the decision names: `2>` binds to something the manifest offers,
+    /// and a program whose diagnostics ride its one output in-band has nothing for it to bind to.
+    /// It is not "you may not do that"; it is "there is no second stream here to name", which is
+    /// [`NoSuchProgram`](Refusal::NoSuchProgram)'s shape applied to a stream.
+    NoDiagnosticStream,
     /// **This program reads no input**, and the line gave it one. Authority that moved for no
     /// reason, refused for the same reason an unplaceable token is.
     InputForbidden,
@@ -963,6 +1035,10 @@ impl Refusal {
             }
             Refusal::NotAByteStream => {
                 "does not write a byte stream, so there is nothing for > or | to redirect"
+            }
+            Refusal::NoDiagnosticStream => {
+                "declares no second output, so there is nothing for 2> to name (its diagnostics \
+                 ride its output)"
             }
             Refusal::InputForbidden => "reads no input; there is no slot for those bytes to go in",
             Refusal::InputRequired => {
@@ -1135,6 +1211,10 @@ pub fn plan(run: &RunSpec<'_>, holds: Holdings, expanded: Expansion) -> Result<E
 pub struct Streams {
     pub sink: Sink,
     pub source: Source,
+    /// **The file a `2>` named, and what it does to what is in it**, or `None` for a line with no
+    /// `2>` on it. It is the *question* the line asked; [`Endowment::diagnostics`] is the answer,
+    /// because whether there is a second stream at all is the manifest's to say.
+    pub diagnostics: Option<(FileGrant, line::Mode)>,
 }
 
 /// [`plan`], with the operators' answer folded in.
@@ -1364,7 +1444,7 @@ pub fn plan_against_with(
         }
     };
 
-    check_streams(m, streams)?;
+    let diagnostics = check_streams(m, streams)?;
 
     Ok(Endowment {
         prog,
@@ -1375,6 +1455,7 @@ pub fn plan_against_with(
         flags,
         sink: streams.sink,
         source: streams.source,
+        diagnostics,
         reports: m.reports,
         interruptible: m.interruptible,
     })
@@ -1418,15 +1499,30 @@ pub fn redirect_target(
 /// **Input**: a program that reads a stream and is handed none blocks forever, and a program that
 /// reads nothing and is handed one has been given authority for no reason. Both are refusals, and
 /// the first one is the one Unix cannot make.
-fn check_streams(m: Manifest, streams: Streams) -> Result<(), Refusal> {
-    if !matches!(streams.sink, Sink::Report) && !matches!(m.output, OutputSpec::Bytes) {
+///
+/// **Output is now two questions**, and the second is `2>`'s (DECISIONS §67): the manifest says
+/// whether this program has a second stream at all, so a `2>` aimed at one that does not is
+/// [`Refusal::NoDiagnosticStream`] at the prompt with nothing spawned. What comes back is where the
+/// second stream goes, which is `None` for a program that declares none, the shell's own printing
+/// for one that does, and a file when the line named one.
+fn check_streams(m: Manifest, streams: Streams) -> Result<line::Diagnostics, Refusal> {
+    if !matches!(streams.sink, Sink::Report) && !m.output.is_byte_stream() {
         return Err(Refusal::NotAByteStream);
     }
+    // A declared second stream exists whether or not the line mentions it; `2>` only decides where
+    // it goes. That is the whole shape of the decision: the separation is the program's declaration
+    // and the operator is a destination for something already separate.
+    let diagnostics = match (m.output.diagnostics_slot(), streams.diagnostics) {
+        (None, None) => line::Diagnostics::None,
+        (None, Some(_)) => return Err(Refusal::NoDiagnosticStream),
+        (Some(_), None) => line::Diagnostics::Printed,
+        (Some(_), Some((g, mode))) => line::Diagnostics::File(g, mode),
+    };
     match (m.input, streams.source) {
         (InputSpec::Required, Source::None) => Err(Refusal::InputRequired),
-        (InputSpec::Forbidden, Source::None) => Ok(()),
+        (InputSpec::Forbidden, Source::None) => Ok(diagnostics),
         (InputSpec::Forbidden, _) => Err(Refusal::InputForbidden),
-        (InputSpec::Required, _) => Ok(()),
+        (InputSpec::Required, _) => Ok(diagnostics),
     }
 }
 
@@ -2237,6 +2333,16 @@ mod tests {
             Some(t) => Some(redirect_target(t, holds, false).map_err(|r| (0, r))?),
             None => None,
         };
+        // A `2>` target is designated exactly as a `>` target is, and it is one destination for the
+        // whole line: the shell mints one diagnostic endpoint and every declaring stage writes to
+        // it, so every stage sees the same answer here.
+        let diag = match l.diagnostics {
+            Some(t) => Some((
+                redirect_target(t, holds, true).map_err(|r| (l.stage_count() - 1, r))?,
+                l.diagnostics_mode(),
+            )),
+            None => None,
+        };
         let mut plans: [Option<Endowment>; line::MAX_STAGES] = [None; line::MAX_STAGES];
         for (i, stage) in l.stages().iter().enumerate() {
             let Command::Run(run) = parse(stage) else {
@@ -2245,6 +2351,7 @@ mod tests {
             let streams = Streams {
                 sink: l.sink_for(i, out),
                 source: l.source_for(i, inp),
+                diagnostics: diag,
             };
             plans[i] = Some(plan_streams(&run, holds, streams).map_err(|r| (i, r))?);
         }
@@ -2418,6 +2525,138 @@ mod tests {
         // A `Bytes` program in the same position is fine, so the refusal is about the declaration
         // and not about the operator.
         assert!(plan_line(b"date > out.txt", WITH_DIR).is_ok());
+    }
+
+    // ---- `2>`: the second stream is a declaration, not a number (DECISIONS §67) ----
+
+    /// **The declaration is what `2>` binds to, and a program that declares none is refused.**
+    ///
+    /// This is the whole of §67 at the level this crate can prove it. `date` declares a second
+    /// output, so the operator has something to name; `wc` writes one stream and its diagnostics
+    /// ride it, so the same operator names nothing and the line does not run. Nothing here consults
+    /// a number: the refusal comes from a manifest that is silent about a second stream.
+    #[test]
+    fn a_diagnostic_redirection_binds_to_a_declaration_and_refuses_without_one() {
+        let e = plan_line(b"date 2> err.txt", WITH_DIR).unwrap().0[0].unwrap();
+        let line::Diagnostics::File(g, mode) = e.diagnostics else {
+            panic!("2> did not plan to a file: {:?}", e.diagnostics)
+        };
+        assert_eq!(g.name.as_bytes(), b"err.txt");
+        assert_eq!(mode, line::Mode::Truncate);
+        assert!(g.writable, "the shell writes that file");
+        // The output is untouched. `2>` says where the *second* stream goes and nothing else.
+        assert_eq!(e.sink, line::Sink::Report);
+
+        // And the refusal, which is the truthful one rather than a permission.
+        assert_eq!(
+            plan_line(b"wc gate.txt 2> err.txt", WITH_DIR),
+            Err((0, Refusal::NoDiagnosticStream)),
+        );
+        let msg = Refusal::NoDiagnosticStream.message();
+        assert!(msg.contains("declares no second output"), "{msg}");
+        // A program with no byte stream at all reaches it too, from the other side.
+        assert_eq!(
+            plan_line(b"worker 9 2> err.txt", WITH_DIR),
+            Err((0, Refusal::NoDiagnosticStream)),
+        );
+    }
+
+    /// **A declared second stream exists whether or not the line mentions it**, which is the half of
+    /// §67 that fixes the motivating loss.
+    ///
+    /// `date > when.txt` with no `2>` on it still plans a second destination, and that destination
+    /// is *not* the file: the shell prints those bytes. A `date` whose complaint went where its
+    /// answer went is exactly what the decision was taken to end, so the assertion is that the two
+    /// destinations differ on a line that names only one of them.
+    #[test]
+    fn a_declarer_gets_a_second_destination_with_no_operator_on_the_line() {
+        let e = plan_line(b"date", WITH_DIR).unwrap().0[0].unwrap();
+        assert_eq!(e.diagnostics, line::Diagnostics::Printed);
+
+        let e = plan_line(b"date > when.txt", WITH_DIR).unwrap().0[0].unwrap();
+        assert!(matches!(e.sink, line::Sink::File(g, _) if g.name.as_bytes() == b"when.txt"));
+        assert_eq!(
+            e.diagnostics,
+            line::Diagnostics::Printed,
+            "a redirected `date` must not write its complaint into the file",
+        );
+
+        // And a program that declares none has none to place, on any line.
+        for text in [&b"wc gate.txt"[..], b"wc gate.txt > out.txt", b"worker 9"] {
+            let e = plan_line(text, WITH_DIR).unwrap().0[0].unwrap();
+            assert_eq!(
+                e.diagnostics,
+                line::Diagnostics::None,
+                "{}",
+                core::str::from_utf8(text).unwrap(),
+            );
+        }
+    }
+
+    /// **`2>` changes one field**, which is the same claim `>` and `>>` already make and is what
+    /// says the second stream is a destination rather than a different program.
+    #[test]
+    fn a_diagnostic_redirection_changes_one_field_and_nothing_else() {
+        let plain = plan_line(b"date > out.txt", WITH_DIR).unwrap().0[0].unwrap();
+        let redirected = plan_line(b"date > out.txt 2>> err.txt", WITH_DIR)
+            .unwrap()
+            .0[0]
+            .unwrap();
+        assert_eq!(redirected.diagnostics, {
+            let (g, _) = match redirected.diagnostics {
+                line::Diagnostics::File(g, m) => (g, m),
+                other => panic!("2>> did not plan to a file: {other:?}"),
+            };
+            line::Diagnostics::File(g, line::Mode::Append)
+        });
+        let mut flat = redirected;
+        flat.diagnostics = plain.diagnostics;
+        assert_eq!(
+            plain, flat,
+            "`2>` changed something other than the second stream"
+        );
+    }
+
+    /// The slot the declaration names is high and out of the way, because how many low slots a child
+    /// gets depends on the wiring. A declaration that landed among the ordinary grants would move
+    /// under the program, and the program probes one number.
+    #[test]
+    fn the_declared_slot_is_out_of_reach_of_the_ordinary_grants() {
+        let slot = Prog::Date
+            .manifest()
+            .output
+            .diagnostics_slot()
+            .expect("date declares a second stream");
+        assert_eq!(slot, DIAGNOSTICS_SLOT);
+        // Four is the most ordinary grants any manifest here asks for (output, clock, input,
+        // budget), and fifteen is `abi::fault::FAULT_EP_SLOT`. This has to sit between them.
+        assert!(slot > 4 && slot < 15, "slot {slot} is not out of the way");
+        // And every other program declares none, so nothing else needs the slot at all.
+        for p in [
+            Prog::Worker,
+            Prog::Budgeter,
+            Prog::Heeder,
+            Prog::Spinner,
+            Prog::Rm,
+            Prog::Wc,
+        ] {
+            assert_eq!(p.manifest().output.diagnostics_slot(), None, "{p:?}");
+        }
+    }
+
+    /// A declared second stream does not change what `>` and `|` may substitute: the first stream is
+    /// still the sink contract. If it did, declaring diagnostics would silently make a program
+    /// unpipeable, which would be a cost §67 does not pay.
+    #[test]
+    fn declaring_a_second_stream_leaves_the_first_one_redirectable() {
+        assert!(Prog::Date.manifest().output.is_byte_stream());
+        assert!(plan_line(b"date | wc", WITH_DIR).is_ok());
+        assert!(plan_line(b"date > out.txt", WITH_DIR).is_ok());
+        // And `2>` rides alongside a pipe, at the tail where it is written.
+        let (p, n) = plan_line(b"date | wc", WITH_DIR).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(p[0].unwrap().diagnostics, line::Diagnostics::Printed);
+        assert_eq!(p[1].unwrap().diagnostics, line::Diagnostics::None);
     }
 
     /// The grant refusal wins over the stream refusal when a line is wrong about both, because what

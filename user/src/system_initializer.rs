@@ -11,6 +11,9 @@
 //! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
 //! 3. the **line discipline** (`line_editor`, milestone 28): editing, echo, history, between them;
 //! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
+//! 5. the **terminal's sink adapter** (`terminal_sink`, milestone 50), when the archive carries one:
+//!    it holds the terminal and serves the sink contract, so a declared second stream can be pointed
+//!    at the screen without handing anyone the endpoint that also reads the keyboard;
 //!
 //! wired together with endpoints and shared pages this program creates. The kernel wires none of it.
 //! Then it stays alive as the spawn service (milestone 31): the shell resolves a `run` into a grant
@@ -22,8 +25,8 @@
 //! # What it gives away once the system is up (milestone 22, the interactive increment)
 //!
 //! It used to hold the kernel's whole construction budget for life, which made every process in the
-//! system one bug in init away from being built wrong. It no longer does. Once the four servers are
-//! built it carves two bounded budgets off that root and **deletes the root**:
+//! system one bug in init away from being built wrong. It no longer does. Once the boot servers
+//! above are built it carves two bounded budgets off that root and **deletes the root**:
 //!
 //! - [`INIT_OWN_PAGES`] for its own scratch page tables, which is all it spends on itself; and
 //! - [`JOBS_BUDGET_PAGES`] for the jobs the prompt asks for, one reclaimable region per job.
@@ -50,9 +53,10 @@
 //!
 //! `build_child`'s scratch window is never unmapped, so this process keeps a **writable mapping of
 //! every page it ever laid down for a child**. Reaping a job undoes that (region reclaim revokes every
-//! mapping of the pages first, §13), but the four boot servers are never reclaimed, so init can still
-//! read and write the console's, the line editor's, the input driver's and the shell's memory. Giving
-//! the construction budget away does not reach that, and nothing in the ABI unmaps a page.
+//! mapping of the pages first, §13), but the boot servers are never reclaimed, so init can still
+//! read and write the console's, the line editor's, the input driver's, the shell's and the sink
+//! adapter's memory. Giving the construction budget away does not reach that, and nothing in the ABI
+//! unmaps a page.
 //!
 //! Printing the negative control costs one more of those: the shell's output frame stays mapped here
 //! for life, because there is no unmap and `Frame::REVOKE` would take it from the shell too.
@@ -94,13 +98,16 @@ const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
 /// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
 ///
-/// **Eight rather than four since milestone 50**, and it is a measured number rather than a round
-/// one: the shell's redirection path carries a parsed line, an array of planned endowments, a
-/// listing buffer and a file buffer all by value, and four pages overflowed at the first
-/// `ls > out.txt` (a data abort one word below the lowest stack page). The kernel's own scripted
-/// wiring had already found the same floor and maps seven. The cost is 16 KiB per child, which is
-/// nothing next to a page table.
-const CHILD_STACK_PAGES: u64 = 8;
+/// **Twelve since DECISIONS §67**, and every step of that number was measured rather than chosen.
+/// Four overflowed at the first `ls > out.txt`; eight held until `2>` put a **second** `FileOut` on
+/// `run_pipeline`'s frame, each carrying a 256-byte staging buffer by value, and the scripted wiring
+/// faulted twenty-four bytes below its lowest page. Four extra rather than one, because every
+/// previous instance bought exactly enough and the next change found the wall again. The cost is
+/// 48 KiB of address space per child, which is nothing next to a page table.
+///
+/// `kernel::user::pipeline_service`'s `SHELL_EXTRA_STACK` must stay level with this: a test wiring
+/// with less headroom than the boot wiring finds faults the boot does not have (notes/pipes.md).
+const CHILD_STACK_PAGES: u64 = 12;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
 /// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
@@ -129,7 +136,7 @@ const JOB_REGION_PAGES: u64 = 40;
 /// **The job pool.** Six live jobs at once, which is far more than a prompt has ever needed and is
 /// deliberately small: the whole claim of this increment is that a *bounded* budget is enough once
 /// the regions come back, so a budget nobody could exhaust would prove nothing. `script/shell-check`
-/// runs eleven jobs through it, so widening this silently retires that gate.
+/// runs thirteen jobs through it, so widening this silently retires that gate.
 const JOBS_BUDGET_PAGES: u64 = JOB_REGION_PAGES * 6;
 
 /// Where init maps the shell's output frame in **its own** address space, to print the one line it
@@ -169,8 +176,17 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     let Some(sh_elf) = fs.read("swish").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
+    // **The terminal's sink adapter** (milestone 50's last remainder). Optional on purpose: an
+    // initrd built without it still boots, and a program that declares a second stream then finds
+    // an empty slot and says what it has to say in-band. A missing component should cost a feature,
+    // not a prompt.
+    let sink_elf = fs
+        .read("terminal_sink")
+        .and_then(|b| elf::Elf::parse(b).ok());
     // The corpse collector (milestone 22, the interactive increment). Read here with the rest,
     // because the archive is only readable while we hold it and every failure below is one `fail`.
+    // Required rather than optional, unlike the adapter above: without it a bounded job pool fills
+    // and the prompt stops spawning, which is a broken system and not a missing feature.
     let Some(reaper_elf) = fs.read("job_reaper").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
@@ -296,6 +312,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
     // build a supervised child (which holds a job untyped and a job frame while build_child retypes
     // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter.
+    //
+    // **Only the input frame, and the two that stay have a reason each.** `term_ep` is still ours to
+    // delegate: the sink adapter below is handed `WRITE` on it, and the drop announcement is a
+    // `CALL` on it. `term_out` is where that announcement stages its bytes. Both go back the moment
+    // their last use is done, and after that this process holds no way to reach the terminal at all.
     cap_delete(term_in);
     // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
     // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
@@ -304,6 +325,44 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     if with_fs {
         cap_delete(FS_EP);
         cap_delete(FS_PAGE);
+    }
+
+    // 5. **The terminal's sink adapter** (milestone 50's last remainder, notes/sink-protocol.md,
+    // DECISIONS §67). It holds the terminal `WRITE` and serves the sink contract on an endpoint of
+    // its own, so a child can be handed "the terminal" as a place to put bytes **without** being
+    // handed the terminal endpoint, which also carries `OP_READLINE` and would be the keyboard.
+    //
+    // **After the shell and before the giveaway, and both halves of that are load-bearing.**
+    //
+    // After the shell, because of this cspace's sixteen slots: building the adapter earlier put init
+    // one slot over while `build_child` was retyping the shell's address space, and the symptom was
+    // the one this file has already seen, a boot that reaches userspace and then prints nothing at
+    // all. That constraint is about the shell's build, not about being the last thing built, and
+    // milestone 22 is what made the difference visible: the adapter is now the fifth of six boot
+    // components rather than the last of five, and the cspace has room either way.
+    //
+    // Before the giveaway, because this is a **system** component and the root untyped is what the
+    // system is built from. Everything below hands that budget away and proves it is gone, so an
+    // adapter built after it would have to come out of [`INIT_OWN_PAGES`], the scratch budget sized
+    // for page tables and nothing else. Spending a whole program out of that pool would be invisible
+    // here and would surface as some later child failing to map a scratch page.
+    let term_sink = must(retype_obj(abi::objtype::ENDPOINT));
+    if let Some(elf) = sink_elf.as_ref() {
+        let adapter = must(build_child(
+            UNTYPED,
+            UNTYPED,
+            elf,
+            &[
+                (term_sink, abi::rights::READ),
+                (term_ep, abi::rights::WRITE),
+            ],
+            &[],
+        ));
+        // Started here even though the shell deliberately is not: the adapter owns no page and
+        // prints only what a client sends it, and it has no clients until the spawn service below
+        // hands one its endpoint. It cannot write into the page the announcement below stages in.
+        must0(tcb_start(adapter, 0, 0, 0));
+        cap_delete(adapter);
     }
 
     // **Give the construction budget away** (milestone 22, the interactive increment). Two bounded
@@ -382,6 +441,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
             deaths,
             own_ut,
             jobs_ut,
+            // The terminal's sink, if this initrd carried an adapter to serve it. This is what a
+            // declared second stream gets by default (DECISIONS §67): the shell names a file with
+            // `2>` and otherwise the bytes go straight to the screen, through a process that can do
+            // nothing else with them.
+            term_sink: sink_elf.is_some().then_some(term_sink),
         },
         [
             worker.as_ref(),
@@ -427,6 +491,11 @@ struct Channels {
     own_ut: u64,
     /// The job pool. One region per job, split off here and returned here when the job is reaped.
     jobs_ut: u64,
+    /// WRITE-delegable: the endpoint the terminal's sink adapter serves, which is where a declared
+    /// second stream goes when the command line named no file for it (DECISIONS §67). `None` when
+    /// this initrd carried no adapter, and then a declaring child simply gets no second stream.
+    /// This is authority to *print*, and nothing else: the adapter holds the terminal, we do not.
+    term_sink: Option<u64>,
 }
 
 /// The spawn service loop: serve the shell's `run` requests forever. Init is the ELF loader the
@@ -454,6 +523,7 @@ fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]
         deaths,
         own_ut,
         jobs_ut,
+        term_sink,
     } = c;
     loop {
         let (w0, w1, w2) = recv(spawn_ep);
@@ -477,6 +547,11 @@ fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]
             None
         };
         let source = if wiring.source {
+            opt_cap(recv_cap(spawn_ep).1)
+        } else {
+            None
+        };
+        let diagnostics = if wiring.diagnostics {
             opt_cap(recv_cap(spawn_ep).1)
         } else {
             None
@@ -538,6 +613,32 @@ fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
             let mut caps = [out; 4];
             let mut n = 1usize;
+            // **The declared second stream, at the slot the manifest names** (DECISIONS §67). Read
+            // from the program's own declaration for the same reason the clock is: the shell knows
+            // there is one (it minted the endpoint) and only the program knows where it goes. The
+            // slot is high and explicit rather than next-in-line, because how many low slots this
+            // child gets depends on what else the line granted, and a stream the program probes for
+            // by number cannot move under it.
+            let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
+            // **Where the second stream goes when the line did not say.** The shell delegates an
+            // endpoint only for a `2>`, because that is the case it has to back a file for. With no
+            // operator on the line the destination is the **terminal's own sink**, which is init's
+            // to endow exactly as the clock is: the shell holds nothing it could hand over, and a
+            // person does not designate a screen.
+            //
+            // That is also what keeps a redirected `date`'s complaint off the redirection. The
+            // shell drains the output into the file and never sees these bytes at all.
+            let default_diag = term_sink.filter(|_| diag_slot.is_some());
+            // Either half missing means no second stream reaches the child, and it then says what it
+            // has to say in-band, which is what every program did before §67.
+            let placed_buf = match (diagnostics.or(default_diag), diag_slot) {
+                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
+                _ => None,
+            };
+            let placed: &[(u64, u64, u64)] = match &placed_buf {
+                Some(p) => p,
+                None => &[],
+            };
             // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
             // It comes from the manifest rather than from the request, because a person does not
             // designate a clock: `date` declares that it reads one, and init is the only process
@@ -574,7 +675,9 @@ fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]
                 (Some(e), Some(r)) => {
                     // Born supervised: `deaths` goes in the reserved fault slot, where `START` reads
                     // it and clears it, so the job cannot forge messages on its own death channel.
-                    build_supervised_child(own_ut, r, e, &caps[..n], maps, deaths).ok()
+                    // The declared second stream rides the same named-slot mechanism at the low slot
+                    // its manifest picked; the two cannot collide, because the fault slot is last.
+                    build_supervised_child(own_ut, r, e, &caps[..n], placed, maps, deaths).ok()
                 }
                 _ => None,
             };
@@ -615,13 +718,23 @@ fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]
             } else if !ok {
                 send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+            // **A child that was never built cannot end its own second stream**, and the shell
+            // drains that stream to `OP_EOF` before it reads anything else, so nothing would ever
+            // come back. init closes it on the child's behalf. It is the same hole `SPAWN_OK`
+            // closed for the output side, one stream over.
+            if !ok && let Some(ep) = diagnostics {
+                send(ep, sink_proto::eof(), 0, 0);
+            }
         }
 
         // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
         // mapped, the budget and the streams inserted), and the shell holds the originals it kept
         // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
         // filling across a long session.
-        for s in [job_ut, job_fr, sink, source, budget].into_iter().flatten() {
+        for s in [job_ut, job_fr, sink, source, diagnostics, budget]
+            .into_iter()
+            .flatten()
+        {
             cap_delete(s);
         }
     }
@@ -643,22 +756,33 @@ fn build_child(
     caps: &[(u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
-    build_supervised_child_inner(own_ut, build_ut, elf, caps, maps, None)
+    build_supervised_child_inner(own_ut, build_ut, elf, caps, &[], maps, None)
 }
 
-/// [`build_child`], with `fault` placed in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is
-/// born supervised (DECISIONS §26's spawn-slot convention): `START` records it as the thread's
-/// supervision endpoint and clears the slot, so the child cannot forge messages about its own death.
-/// This is what makes a job's region reclaimable by `job_reaper` after the job ends.
+/// [`build_child`], with two kinds of capability that go in a **named** slot rather than the next
+/// free one, both through `abi::tcb::CAP_INSERT`'s explicit target.
+///
+/// `fault` lands in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is born supervised
+/// (DECISIONS §26's spawn-slot convention): `START` records it as the thread's supervision endpoint
+/// and clears the slot, so the child cannot forge messages about its own death. That is what makes a
+/// job's region reclaimable by `job_reaper` after the job ends.
+///
+/// `placed` is `(child_slot, our_slot, rights)`, inserted after `caps`. One caller today: a declared
+/// diagnostic stream (DECISIONS §67), which sits above every ordinary grant because how many of
+/// those there are depends on what the command line named, and a program that probes one slot number
+/// needs that number not to move. The kernel already had the mechanism, for the fault endpoint, for
+/// the same reason, which is why the two share one call: the fault slot is the last in the cspace
+/// and a manifest's diagnostics slot is far below it, so they cannot land on each other.
 fn build_supervised_child(
     own_ut: u64,
     build_ut: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
     maps: &[(u64, u64, u64)],
     fault: u64,
 ) -> Result<u64, ()> {
-    build_supervised_child_inner(own_ut, build_ut, elf, caps, maps, Some(fault))
+    build_supervised_child_inner(own_ut, build_ut, elf, caps, placed, maps, Some(fault))
 }
 
 fn build_supervised_child_inner(
@@ -666,6 +790,7 @@ fn build_supervised_child_inner(
     build_ut: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
     maps: &[(u64, u64, u64)],
     fault: Option<u64>,
 ) -> Result<u64, ()> {
@@ -746,6 +871,14 @@ fn build_supervised_child_inner(
     for &(our_slot, rights) in caps {
         // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    for &(child_slot, our_slot, rights) in placed {
+        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
+        // behaviour this call exists to avoid.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, child_slot + 1) } < 0 {
             return Err(());
         }
     }
