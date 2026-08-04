@@ -2903,7 +2903,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 21] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 24] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2953,14 +2953,37 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 21] = [
     // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
     // and its diagnostics ride it, so `2>` names nothing and the line does not run.
     ("wc gate.txt 2> err.txt", Some("declares no second output")),
+    // **`time`, at the one interface a human touches** (milestone 86). Only this gate runs the real
+    // inits, and the clock the shell times with is granted by them: the guest tests wire it from the
+    // kernel, so a boot where init never handed the shell a clock would pass every one of those and
+    // print "this shell holds no clock capability" here.
+    //
+    // The answer is the same three numbers `wc gate.txt` gave four lines up, which is the claim the
+    // milestone rests on: the tail runs exactly as typed and timing it changes nothing about it. A
+    // `time` that re-tokenized its tail, or spawned a differently endowed child, would answer
+    // something else here and the duration would still look fine.
+    ("time wc gate.txt", Some("2 4 24")),
+    // And the duration itself, checked for its shape rather than its value: the number is a real
+    // measurement and cannot be a constant, but `real` and a unit are what a stopwatch prints.
+    ("time date", Some("time: real")),
+    // The visibility surface agrees with the wiring, the same pairing `caps date` makes for the
+    // child's clock. This one is about the shell's own: `caps` is the only thing in this system that
+    // claims to print a process's whole authority, and a clock the boot really grants would make
+    // that claim false if it went unprinted. The rights half is the load-bearing word: READ without
+    // GRANT is why nothing typed here can hand a clock to a child.
+    (
+        "caps",
+        Some("frame     clock      READ only, NOT delegable"),
+    ),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
-    // **Seven spawns above plus these six are thirteen jobs through a six-job pool**, so a boot where
+    // **Nine spawns above plus these six are fifteen jobs through a six-job pool**, so a boot where
     // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
-    // rather than the arithmetic. (Eleven when milestone 22 wrote this line, and `2>` added two more
-    // spawning lines above; the count is a fact about the whole script, so it is taken at the merge
-    // and not from either half.) Six distinct arguments rather than one repeated, because the
+    // rather than the arithmetic. (Eleven when milestone 22 wrote this line, `2>` added two more
+    // spawning lines above and milestone 86's `time` added two more; the count is a fact about the
+    // whole script, so it is taken at the merge and not from any one lane.) Six distinct arguments
+    // rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
     ("worker 3", Some("3*3 = 9")),
@@ -3187,9 +3210,9 @@ fn shell_check_leg(riscv: bool) -> bool {
     if failed.is_empty() {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
-             file to a reader, read the clock, kept a declared second stream off the \
-             redirection, and ran thirteen jobs through init's six-job pool after init gave \
-             its construction budget away"
+             file to a reader, read the clock, timed a command with a clock of its own, kept \
+             a declared second stream off the redirection, and ran fifteen jobs through \
+             init's six-job pool after init gave its construction budget away"
         );
         return true;
     }

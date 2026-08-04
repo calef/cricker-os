@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
-use crate::cap::{Rights, endpoint_cap, untyped_cap};
+use crate::cap::{Rights, endpoint_cap, frame_cap, untyped_cap};
 use crate::sched::EpId;
 
 /// The `swish` binary's pipeline role (`user/src/swish.rs`).
@@ -51,8 +51,34 @@ static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 /// The endowment is deliberately the interactive one, slot for slot, because a witness with a
 /// wider endowment would be proving something about a shell nobody runs.
 pub fn start() -> Option<Wiring> {
-    start_with(ROLE_PIPELINE, 0, None)
+    start_with(ROLE_PIPELINE, 0, None, None)
 }
+
+/// **The same shell, told to time what it runs** (milestone 86): [`start`]'s four slots plus, when
+/// `clock` is `Some`, a `Frame` with **`READ`** at slot 4 and a read-only mapping of it.
+///
+/// The three states this can be started in are the three the shell has to answer for, and they are
+/// three cspaces rather than three code paths:
+///
+/// - `Some(a published page)`: `time` reports a duration.
+/// - `Some(a blank page)`: the frame is there and reads `UNKNOWN`, which is what a reader on a
+///   machine with no believable RTC holds.
+/// - `None`: no capability at all, so no mapping either, and the shell has to answer without
+///   touching the address a clock would have been at.
+///
+/// `READ` and no `GRANT`, matching what both inits hand the shell: a witness with wider rights than
+/// the boot wiring would be proving something about a shell nobody runs.
+pub fn start_timing(clock: Option<u64>) -> Option<Wiring> {
+    start_with(ROLE_TIMING, 0, None, clock)
+}
+
+/// The shell's timing role (`user/src/swish.rs`).
+const ROLE_TIMING: u64 = 5;
+
+/// Where the shell maps its own clock page, read-only. Must match `user/src/swish.rs`'s
+/// `SH_CLOCK_VA` and both inits'. **Not** `date`'s `CLOCK_VA`: that is where a *child* maps one, and
+/// the shell already has the terminal's output frame at that address.
+const SH_CLOCK_VA: u64 = 0x0000_0000_00d0_0000;
 
 /// **The same shell, one capability wider**: a directory at slot 4 and the page it shares with
 /// the FS server (milestone 50's `>` and `<`).
@@ -65,7 +91,7 @@ pub fn start() -> Option<Wiring> {
 /// `dir` is `(the narrowed directory endpoint, the physical frame it shares with the FS server)`,
 /// which is what `fs_service::narrow_dir` hands back.
 pub fn start_redirecting(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
-    start_with(ROLE_REDIRECT, rights, Some(dir))
+    start_with(ROLE_REDIRECT, rights, Some(dir), None)
 }
 
 /// The shell's redirection role (`user/src/swish.rs`).
@@ -75,7 +101,7 @@ const ROLE_REDIRECT: u64 = 4;
 /// `FILE_VA_CLIENT`, and `user/src/swish.rs`'s `FS_VA`).
 const FS_VA: u64 = 0x0000_0000_0060_0000;
 
-fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>) -> Option<Wiring> {
+fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>, clock: Option<u64>) -> Option<Wiring> {
     let image = program("swish")?;
     let term = crate::sched::create_endpoint();
     let spawn_ep = crate::sched::create_endpoint();
@@ -110,7 +136,7 @@ fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>) -> Option<Wiring> {
             va: OUT_VA,
             phys: out_phys,
             flags: Flags::user_data(),
-        }; 3 + SHELL_EXTRA_STACK];
+        }; 4 + SHELL_EXTRA_STACK];
         maps[1] = Mapping {
             va: LINE_VA,
             phys: line_phys,
@@ -123,54 +149,61 @@ fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>) -> Option<Wiring> {
                 .addr();
             m.flags = Flags::user_data();
         }
-        // The FS page last, so a shell wired without a filesystem maps exactly what it did
-        // before and the count is the only difference between the two wirings.
-        let n = match dir {
-            Some((_, file_shared)) => {
-                maps[2 + SHELL_EXTRA_STACK] = Mapping {
-                    va: FS_VA,
-                    phys: file_shared,
-                    flags: Flags::user_data(),
-                };
-                maps.len()
-            }
-            None => maps.len() - 1,
-        };
-        let grants: &[crate::cap::Cap] = &[
-            endpoint_cap(term, Rights::WRITE),     // slot 0: the terminal
-            endpoint_cap(spawn_ep, Rights::WRITE), // slot 1: direct init
-            endpoint_cap(result, Rights::READ),    // slot 2: a child's answer
-            untyped_cap(budget),                   // slot 3: what it mints pipes from
-        ];
-        match dir {
-            Some((dir_ep, _)) => run(
-                image,
-                Spawn {
-                    arg0: role,
-                    arg1: arg,
-                    arg2: 0,
-                    grants: &[
-                        grants[0],
-                        grants[1],
-                        grants[2],
-                        grants[3],
-                        // slot 4: the directory it resolves `>` and `<` against
-                        endpoint_cap(dir_ep, Rights::WRITE),
-                    ],
-                    maps: &maps[..n],
-                },
-            ),
-            None => run(
-                image,
-                Spawn {
-                    arg0: role,
-                    arg1: arg,
-                    arg2: 0,
-                    grants,
-                    maps: &maps[..n],
-                },
-            ),
+        // The optional pages last, so a shell wired without either maps exactly what it did before
+        // and the count is the only difference between the wirings.
+        let mut n = 2 + SHELL_EXTRA_STACK;
+        if let Some((_, file_shared)) = dir {
+            maps[n] = Mapping {
+                va: FS_VA,
+                phys: file_shared,
+                flags: Flags::user_data(),
+            };
+            n += 1;
         }
+        if let Some(phys) = clock {
+            // **`user_rodata`, and that is the read rung of DECISIONS §43 rather than tidiness**: a
+            // shell that could write this page could set the wall clock, and the whole argument for
+            // it holding one at all is that reading is not that.
+            maps[n] = Mapping {
+                va: SH_CLOCK_VA,
+                phys,
+                flags: Flags::user_rodata(),
+            };
+            n += 1;
+        }
+
+        // Filled in the order the shell's own constants name, because a `Spawn` fills a cspace from
+        // zero: slot 0 the terminal, 1 the spawn channel, 2 the result channel, 3 the budget, then
+        // whichever of the directory and the clock this wiring has.
+        let mut grants = [endpoint_cap(term, Rights::WRITE); 6];
+        grants[1] = endpoint_cap(spawn_ep, Rights::WRITE);
+        grants[2] = endpoint_cap(result, Rights::READ);
+        grants[3] = untyped_cap(budget);
+        let mut g = 4;
+        if let Some((dir_ep, _)) = dir {
+            grants[g] = endpoint_cap(dir_ep, Rights::WRITE);
+            g += 1;
+        }
+        // **The slot the clock landed in, handed over in `arg2`**, which is the same thing both
+        // inits do and for the same reason: the number moves with what else this wiring granted, and
+        // a shell that guessed would probe some other object and map a page that is not a clock.
+        // Zero means none, and zero can never be a clock because slot 0 is the terminal everywhere.
+        let mut clock_slot = 0u64;
+        if let Some(phys) = clock {
+            grants[g] = frame_cap(phys, Rights::READ);
+            clock_slot = g as u64;
+            g += 1;
+        }
+        run(
+            image,
+            Spawn {
+                arg0: role,
+                arg1: arg,
+                arg2: clock_slot,
+                grants: &grants[..g],
+                maps: &maps[..n],
+            },
+        )
     })?;
 
     Some(Wiring { term, out_phys })
