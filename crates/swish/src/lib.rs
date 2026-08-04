@@ -328,12 +328,22 @@ impl Sweep {
 ///     "  batch 2 did not run: 8 names were handed over in 1 batch, and nothing after \
 ///      them was attempted\n",
 /// );
+///
+/// // A sweep whose FIRST batch did not run says nothing: the refusal printed above it is the
+/// // whole story, and "0 names were handed over in 0 batches" is a sentence about an event that
+/// // did not happen.
+/// let mut none = Sweep::default();
+/// none.stop();
+/// assert_eq!(render(&none), "");
 /// ```
 pub fn write_sweep(s: &Sweep, out: &mut dyn FnMut(&[u8])) {
     let batches = |n: u64, out: &mut dyn FnMut(&[u8])| {
         write_num(n, out);
         out(if n == 1 { b" batch" } else { b" batches" });
     };
+    if s.batches == 0 {
+        return;
+    }
     match s.stopped {
         Some(at) => {
             out(b"  batch ");
@@ -346,7 +356,7 @@ pub fn write_sweep(s: &Sweep, out: &mut dyn FnMut(&[u8])) {
         }
         // **One batch prints nothing**, deliberately: `xargs` over a match that fits is the line the
         // user would have typed without it, and a footer under it would be noise claiming an event.
-        None if s.batches < 2 => {}
+        None if s.batches == 1 => {}
         None => {
             out(b"  ");
             write_num(s.names, out);
