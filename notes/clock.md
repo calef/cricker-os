@@ -156,6 +156,27 @@ the machine said rather than from `target_arch`. That is not fastidiousness: the
 riscv64 and has neither of these devices, so an ISA-keyed driver would compile clean and read
 garbage on the first real board.
 
+## Where the interactive boot puts it (milestone 51's wiring)
+
+Both ISAs' `--features shell` boots start the clock service before init exists and grant **init** the
+page with `READ` and `GRANT`: slot 3 on RISC-V (`riscv_shell_boot`), slot 5 on aarch64 (`spawn_init`,
+boot role only). init hands a read-only copy plus a read-only mapping at `0x00c0_0000` to any child
+whose `grant_plan` manifest declares `clock`, which today is `date` and nothing else.
+
+Three things about that shape are deliberate:
+
+- **The grant does not depend on what the machine has.** A boot with no `clock` program in its initrd
+  gets a zeroed frame instead, which reads as `UNKNOWN` and is the honest answer. Slot numbers that
+  moved with the hardware would be a wiring nobody could check by reading.
+- **The shell is not on the path.** It holds no clock and cannot delegate one, so the set of processes
+  that can read the time is decided by manifests init reads rather than by anything typed at a prompt.
+  `caps date` prints the row so a person can still see it (notes/date.md).
+- **`READ` all the way down.** Nothing between the kernel and a spawned child ever holds the writable
+  mapping, which is why "there is no `date -s`" is a fact about the wiring rather than a missing flag.
+
+`script/shell-check` types `date` at the real prompt on both ISAs and requires `UTC` in the answer,
+which is the one word neither unknown-clock sentence contains.
+
 ## What a std program sees
 
 `SystemTime::now()` is the clock page plus the counter, and a std program's whole wall-clock

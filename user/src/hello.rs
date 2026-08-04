@@ -365,8 +365,16 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // share with it; `fs_rights` is the `fs_proto::dir` rights that endpoint carries, and **0 means
     // this boot attached no RedoxFS disk**, in which case these two slots hold nothing. Everything
     // below is written so that case takes exactly the path it took before this existed.
-    const FS_EP: u64 = 5;
-    const FS_PAGE: u64 = 6;
+    const FS_EP: u64 = 6;
+    const FS_PAGE: u64 = 7;
+    // **The wall clock** (milestone 51's wiring). A `Frame` capability with `READ` and nothing else,
+    // granted ahead of the filesystem pair so its slot is the same on every boot, whether or not a
+    // disk was attached. init never hands it on except to a child whose manifest declares a clock,
+    // and it hands on `READ`, so nothing spawned from this prompt can set the time (DECISIONS §43).
+    const CLOCK_PAGE: u64 = 5;
+    /// Where a child that declares a clock maps it, read-only. Must match `user/src/date.rs`'s
+    /// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
+    const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
     /// Where the shell maps the page it shares with the FS server (swish.rs `FS_VA`).
     const SH_FS_VA: u64 = 0x0060_0000;
     // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
@@ -627,6 +635,10 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         };
 
         let elf = prog.and_then(|p| progs[p.id() as usize]);
+        // Read from the program's own declaration, not from the request: a clock is not something
+        // the command line can designate, so there is no bit on the wire for it (grant_plan's
+        // `Manifest::clock`).
+        let wants_clock = prog.is_some_and(|p| p.manifest().clock);
 
         if interruptible {
             // Build the whole child from the shell's job untyped, mapping the shared job frame; no
@@ -658,8 +670,21 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
             // `--mem` untyped; see system_initializer for why that ordering is safe today and where it stops
             // being. The child never learns which of the three its slot 0 holds.
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
-            let mut caps = [out; 3];
+            let mut caps = [out; 4];
             let mut n = 1usize;
+            // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
+            // It comes from the manifest rather than from the request, because a person does not
+            // designate a clock: `date` declares that it reads one, and init is the only process in
+            // this system holding a page it could hand over. `READ` and a read-only mapping, so the
+            // child can read the time and has no object through which it could set one.
+            //
+            // Before the source and the budget, so `date`'s clock is slot 1. That is unambiguous
+            // only because no manifest declares a clock *and* an input; see system_initializer's
+            // note on the same ordering, and notes/pipes.md's BUGS on where it stops being true.
+            if wants_clock {
+                caps[n] = (CLOCK_PAGE, abi::rights::READ);
+                n += 1;
+            }
             if let Some(src) = source {
                 // READ only: a pipe's reader must not be able to write back up its own input.
                 caps[n] = (src, abi::rights::READ);
@@ -670,7 +695,9 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
                 caps[n] = (b, abi::rights::WRITE);
                 n += 1;
             }
-            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], &[]).ok());
+            let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
+            let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
+            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], maps).ok());
             let ok = match built {
                 Some(tcb) => {
                     // x0 unused (standalone binary); the argument is in x1.

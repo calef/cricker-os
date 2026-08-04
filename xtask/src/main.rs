@@ -2599,6 +2599,8 @@ fn test() -> bool {
 /// wc < gate                  -> 1 2 12   ... and they are the same bytes
 /// echo hello world >> gate   -> nothing
 /// wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+/// date                       -> ...UTC   a real wall clock, wired through the real init
+/// caps date                  -> cap 1    ... and `caps` names the capability that made it real
 /// ```
 ///
 /// One line would meet the BUGS entry that asked for this. Five is still seconds, and it walks the

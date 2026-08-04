@@ -11,13 +11,18 @@
 //!
 //! What the shell can grant, it grants from what it *holds*. The headline is `prog --mem N`, which
 //! endows a program N pages of untyped **split from the shell's own budget** (slot 3) and delegated
-//! to it. A bare name in a file position is the second, and it is refused here with "you hold no
-//! such capability", which is a statement about this shell's cspace rather than a placeholder: the
-//! boot that starts it wires no FS service, so there is no directory to narrow. The mechanism a
-//! grant would use exists and is proven on both ISAs (`user/src/fs_file_caretaker.rs`); see
-//! [`holdings`] and notes/grant-expression.md for exactly what is left. `caps` prints the shell's
-//! whole endowment, and `caps <command>` previews exactly what that command would grant, making
-//! DECISIONS §14's "reading one literal tells you a process's whole authority" interactively true.
+//! to it. A bare name in a file position is the second, and whether it can be backed is a statement
+//! about this shell's cspace rather than about the calendar: a shell whose init granted it a
+//! directory (slot [`DIR_TERMINAL`]) resolves the name, and one granted none says "you hold no such
+//! capability". Milestone 50 made the first case real at the interactive prompt; see [`holdings`],
+//! notes/pipes.md and notes/grant-expression.md. `caps` prints the shell's whole endowment, and
+//! `caps <command>` previews exactly what that command would grant, making DECISIONS §14's "reading
+//! one literal tells you a process's whole authority" interactively true.
+//!
+//! **The clock is the one authority in a preview that no token designates** (milestone 51's wiring).
+//! `date` declares it in its manifest and *init* endows it, read-only; this shell holds no clock and
+//! could not hand one over. `caps date` prints it anyway, because a preview that showed only what the
+//! line designates would be off by exactly one capability.
 //!
 //! # The grammar lost two words in milestone 47
 //!

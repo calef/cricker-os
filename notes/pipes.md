@@ -595,11 +595,21 @@ echo hello world > gate    -> nothing  the same bytes into a file the shell back
 wc < gate                  -> 1 2 12   ... and they are the same bytes
 echo hello world >> gate   -> nothing
 wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+date                       -> ...UTC   milestone 51's wiring: a clock init endowed
+caps date                  -> cap 1    ... and the visibility surface names it
 ```
 
 One line would have caught all three bugs. Five is still seconds, and it walks the whole endowment:
 a spawn through the real init, the FS service the real init narrowed into the shell, and both
 redirection operators.
+
+The last two arrived with milestone 51's wiring lane and check a different half of the same boot.
+`date`'s answer cannot be a constant, so the assertion is `UTC`: `Format::Human` ends in the offset's
+name and **neither** unknown-clock sentence contains those three letters, so one word fails the gate
+if the clock service did not run, if the kernel granted init no page, if init did not endow `date`,
+or if `date` was handed a page nobody published to. `caps date` then requires that the shell's own
+visibility surface names the capability, because `caps` claims to print a process's whole authority
+and a clock endowed but not printed would make that claim false.
 
 **Two things the machine corrected while it was being written**, and both are the kind of thing a
 harness gets wrong quietly:
