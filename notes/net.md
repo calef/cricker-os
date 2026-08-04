@@ -477,6 +477,22 @@ It requires **two** completed connections, and the second is the load-bearing on
 accepts once and goes deaf would pass a one-connection gate, and is exactly what a file server cannot
 use.
 
+**A host prober must never abandon a connection because it is slow**, which the first green run
+taught by failing in the most instructive way available: the guest passed and the prober reported
+serving *zero*. A `connect` to a `hostfwd` port succeeds the moment QEMU accepts the host side; slirp
+only then starts the guest side, and nothing answers that SYN until the guest is inside an operation
+that polls smoltcp. Dropping the connection on a read timeout does **not** take back the payload
+already written: slirp keeps the guest-side connection, completes the handshake whenever the guest
+next polls, and delivers those bytes to a socket whose host end has gone. One retry every 100 ms for
+a whole boot builds a queue of those, and the guest cheerfully served both of its rounds from
+abandoned connections while the prober timed out on its own live one.
+
+The fix is a rule rather than a longer timeout: a **timeout is not a reason to give up** (keep
+reading the same connection until it answers, dies, or the run ends), while a **hard error is**, and
+a cheap one, because a RST means the guest had no listener and consumed nothing. The general shape is
+worth remembering for any host-side actor: an abandoned request may still be executed, so "I gave up
+waiting" and "it did not happen" are different claims.
+
 Both halves assert. The guest reports `OK` only if both rounds arrived with the right bytes and its
 answers were sent (`a_host_process_connects_to_the_guest_and_is_answered`, both ISAs); the prober
 fails the leg if what came back was not the guest's answer. The guest's half covers "somebody

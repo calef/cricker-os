@@ -1212,11 +1212,27 @@ impl InboundProber {
 }
 
 /// One prober thread: connect, speak, and require the guest's answer, `INBOUND_ROUNDS` times.
+///
+/// **Never abandon a connection because it is slow, and this is the whole subtlety** (found by the
+/// first green run, where the guest passed and the prober reported nothing). A `connect` here
+/// succeeds the moment QEMU accepts the host side; slirp only then starts the guest side, and if the
+/// guest is not *polling* nothing answers the SYN. Dropping such a connection does not take back the
+/// payload already written: slirp keeps the guest-side connection, completes the handshake whenever
+/// the guest next polls, and delivers those bytes to a socket whose host end has gone. The guest then
+/// serves a round nobody is listening for, and its answer is discarded.
+///
+/// One retry every 100 ms for a whole boot makes that a queue of them, which is exactly what
+/// happened: the guest served both its rounds from abandoned connections and passed, while the
+/// prober timed out on its own live one and reported zero.
+///
+/// So a timeout is **not** a reason to give up: keep reading the same connection until it answers,
+/// dies, or the run ends. A hard error (the RST a guest with no listener sends, which is the common
+/// case for most of a boot) *is* a reason, and a cheap one, because nothing was consumed.
 fn probe_inbound(
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::sync::atomic::Ordering;
 
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
@@ -1224,9 +1240,6 @@ fn probe_inbound(
     let mut last = String::from("nothing ever answered on the forwarded port");
 
     while done < INBOUND_ROUNDS && !stop.load(Ordering::Relaxed) {
-        // A connect that succeeds proves only that QEMU is listening: slirp accepts the host side
-        // first and only then tries the guest, so a guest with no listener shows up as an empty or
-        // reset stream below rather than as a refused connect.
         let mut s = match std::net::TcpStream::connect_timeout(
             &addr,
             std::time::Duration::from_millis(500),
@@ -1238,7 +1251,8 @@ fn probe_inbound(
                 continue;
             }
         };
-        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+        // Short, so the loop below can notice `stop`; not a deadline for the exchange.
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
         let _ = s.set_nodelay(true);
 
         if let Err(e) = s.write_all(INBOUND_IN) {
@@ -1254,8 +1268,20 @@ fn probe_inbound(
         let mut buf = [0u8; 64];
         while got.len() < INBOUND_OUT.len() {
             match s.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => break, // the guest had no listener and closed; nothing was consumed
                 Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                    // Still waiting on a guest that has not polled yet. Hold the connection: see
+                    // this function's note on why dropping it would feed the guest a round we
+                    // cannot collect. The run ending is the only thing that ends this wait.
+                    if stop.load(Ordering::Relaxed) {
+                        last = String::from(
+                            "the run ended while a connection was still waiting for the guest to \
+                             accept it",
+                        );
+                        break;
+                    }
+                }
                 Err(e) => {
                     last = format!("reading the guest's answer failed: {e}");
                     break;
