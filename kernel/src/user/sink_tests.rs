@@ -391,7 +391,7 @@ fn a_destroyed_sink_ends_the_writer_and_an_absent_one_does_not() {
 /// capability. So the terminal's sink is a **separate endpoint served by an adapter**, which is
 /// `fs_file_caretaker`'s shape and exactly what `sink`'s own file role already was for a file.
 ///
-/// The wiring is the real one with the terminal replaced by this test: `terminal_sink` holds the
+/// The wiring is the real one with the terminal replaced by this test: `terminal_sink_caretaker` holds the
 /// sink endpoint `READ` and a terminal endpoint `WRITE`, and the kernel serves the terminal contract
 /// on the far side and collects what arrives. So the assertion is the transcript, byte for byte,
 /// through a real adapter process speaking `line_editor::proto::OP_PRINT`.
@@ -401,7 +401,8 @@ fn a_destroyed_sink_ends_the_writer_and_an_absent_one_does_not() {
 /// to be written to make that true.
 #[test_case]
 fn the_terminal_is_a_sink_like_any_other_and_the_writer_cannot_tell() {
-    let adapter = program("terminal_sink").expect("no terminal_sink program in the initrd");
+    let adapter = program("terminal_sink_caretaker")
+        .expect("no terminal_sink_caretaker program in the initrd");
     let writer = program("sink").expect("no sink program in the initrd archive");
 
     let sink_ep = crate::sched::create_endpoint();

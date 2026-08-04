@@ -202,7 +202,7 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   one-directional by construction and a source contract is its own design.
   *(Answered by the operators lane the same day: a source is the sink contract received rather than
   sent. See notes/pipes.md.)*
-- **The terminal is a sink now** (`user/src/terminal_sink.rs`, 2026-08-03), and it took one new
+- **The terminal is a sink now** (`user/src/terminal_sink_caretaker.rs`, 2026-08-03), and it took one new
   opcode and one process. The analysis this bullet used to carry was right about the shape and
   wrong about the cost; see "The terminal's sink adapter" below.
 - **The console server's page-plus-ack channel is untouched**, and after building the adapter that
@@ -216,7 +216,7 @@ The last of milestone 50's remainders. A program's output slot can now hold **th
 still cannot tell that from a pipe or a file.
 
 ```text
-  a declaring child ──sink_proto SEND──► terminal_sink ──OP_PRINT CALL──► line_editor ──► console
+  a declaring child ──sink_proto SEND──► terminal_sink_caretaker ──OP_PRINT CALL──► line_editor ──► console
 ```
 
 ### It is a process for a capability reason, which was known

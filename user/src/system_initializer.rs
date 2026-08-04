@@ -11,7 +11,7 @@
 //! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
 //! 3. the **line discipline** (`line_editor`, milestone 28): editing, echo, history, between them;
 //! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
-//! 5. the **terminal's sink adapter** (`terminal_sink`, milestone 50), when the archive carries one:
+//! 5. the **terminal's sink adapter** (`terminal_sink_caretaker`, milestone 50), when the archive carries one:
 //!    it holds the terminal and serves the sink contract, so a declared second stream can be pointed
 //!    at the screen without handing anyone the endpoint that also reads the keyboard;
 //!
@@ -181,7 +181,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // an empty slot and says what it has to say in-band. A missing component should cost a feature,
     // not a prompt.
     let sink_elf = fs
-        .read("terminal_sink")
+        .read("terminal_sink_caretaker")
         .and_then(|b| elf::Elf::parse(b).ok());
     // The corpse collector (milestone 22, the interactive increment). Read here with the rest,
     // because the archive is only readable while we hold it and every failure below is one `fail`.

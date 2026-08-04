@@ -1,7 +1,7 @@
 # Pipes and redirection: `>`, `<` and `|` are one substitution
 
 *Milestone 50, the operators lane and its closure. `crates/grant_plan/src/line.rs`,
-`user/src/wc.rs`, `user/src/swish.rs`, `user/src/date.rs`, `user/src/terminal_sink.rs`,
+`user/src/wc.rs`, `user/src/swish.rs`, `user/src/date.rs`, `user/src/terminal_sink_caretaker.rs`,
 `user/src/system_initializer.rs`, `user/src/hello.rs`, `crates/grant_plan/src/spawnproto.rs`,
 `script/shell-check`. The protocol half is notes/sink-protocol.md and you should read that first.*
 
@@ -288,7 +288,7 @@ what exists.
   user/src/swish.rs            an endpoint the shell mints ONLY for a `2>`, because that is the
                                case where it has to back a file
 
-  user/src/terminal_sink.rs    where the bytes go with no operator on the line: the terminal,
+  user/src/terminal_sink_caretaker.rs    where the bytes go with no operator on the line: the terminal,
                                served by an adapter, so nothing goes through the shell at all
 
   user/src/hello.rs            receives whichever it is and inserts it at the slot the MANIFEST
@@ -434,7 +434,7 @@ What the gate proves is unchanged and is the reason it caught this: `script/shel
 ### Where the bytes go by default, and why it is not this shell
 
 **With no `2>` on the line, a declared second stream goes to the terminal's own sink**, which is a
-component (`user/src/terminal_sink.rs`, notes/sink-protocol.md) and not the shell. init endows it
+component (`user/src/terminal_sink_caretaker.rs`, notes/sink-protocol.md) and not the shell. init endows it
 from the manifest, exactly as it endows the clock and for the same reason: the shell holds no
 terminal capability it could delegate, and a person does not designate a screen.
 
@@ -671,7 +671,7 @@ For a reader arriving at this file cold, the shape of the system `2>` completed:
               │                              OP_BYTES, OP_INTRCOUNT, OP_PRINT
               ├──► input driver              the UART receive interrupt, into the terminal
               ├──► swish                     the prompt
-              └──► terminal_sink             the sink contract, into OP_PRINT
+              └──► terminal_sink_caretaker             the sink contract, into OP_PRINT
 ```
 
 The fifth is new (DECISIONS §67, notes/sink-protocol.md), and it is the only one a person never
@@ -1014,7 +1014,7 @@ reader would look. The symptom is always a data abort one word below the lowest 
   Wiring it into the CI test job is a one-line change and is deliberately still not taken here.
 - **`user/src/sink.rs`'s file and source roles are no longer on the shell's path.** They are still
   the right shape for an adapter whose client is not the shell, and `sink_tests` still proves them
-  against a real image, but nothing at the prompt builds one. (`user/src/terminal_sink.rs` is that
+  against a real image, but nothing at the prompt builds one. (`user/src/terminal_sink_caretaker.rs` is that
   shape with a client the prompt does build, which is the closest this has come to being used.) The source role also still opens the
   one name in `sink_proto::fixture` and cannot be told another; the shell would have had to hand it
   a name the way `fs_file_caretaker` is handed one, and it turned out not to need to.

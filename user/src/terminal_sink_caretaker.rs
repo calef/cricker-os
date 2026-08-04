@@ -1,12 +1,16 @@
 //! **The terminal, as a sink** (milestone 50's last remainder; notes/sink-protocol.md,
 //! DECISIONS §67).
 //!
-//! A caretaker in `fs_file_caretaker`'s shape: it speaks the **sink contract** to its client and the
-//! **terminal contract** to what is behind it, so a program whose output slot holds an endpoint to
-//! this process is writing to the screen and cannot tell.
+//! The caretaker shape, applied outside the filesystem for the first time: hold a broad authority,
+//! hand out a narrow view of it. This one holds the terminal endpoint and hands out a **sink**, so
+//! it speaks the **sink contract** to its client and the **terminal contract** to what is behind
+//! it, and a program whose output slot holds an endpoint to this process is writing to the screen
+//! and cannot tell. What it keeps back is the reason the name says caretaker: that endpoint also
+//! carries `OP_READLINE`, and a sink capability that can read the keyboard is not a sink
+//! capability.
 //!
 //! ```text
-//!   a declaring child ──sink_proto SEND──► terminal_sink ──OP_PRINT CALL──► line_editor ──► console
+//!   a declaring child ──sink_proto SEND──► terminal_sink_caretaker ──OP_PRINT CALL──► line_editor ──► console
 //! ```
 //!
 //! # Why this is a process and not a line in the line editor
@@ -71,7 +75,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
             sink_proto::Msg::Eof => {}
             // Not a message this contract can read. Saying so is better than silence, because the
             // alternative is a client that thinks it printed.
-            sink_proto::Msg::Malformed => print(b"terminal_sink: unreadable message\n"),
+            sink_proto::Msg::Malformed => print(b"terminal_sink_caretaker: unreadable message\n"),
         }
     }
 }
