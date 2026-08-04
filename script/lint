@@ -149,6 +149,67 @@ if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
     exit 1
 fi
 
+# A TODO marker names the milestone that owns it, or it does not exist (milestone 94).
+#
+# The failure this drains is not untidiness. Work gets identified in media nobody rereads (a lane's
+# report, a pull-request description, a commit message) and evaporates; milestone 90 exists only
+# because Chris happened to catch milestone 84's guard-page finding in a report on the day it was
+# written. A bare `TODO:` in a source file is that same medium with a compiler in front of it: it
+# looks like tracking and it is not, because nothing lists it, nothing reviews it, and nothing tells
+# the reader whether anybody still intends it.
+#
+# A marker that cites a milestone is a different object. It is a cross-reference, the roadmap block
+# is the record, and `script/roadmap` already gates the block. So the rule is not "no TODOs": it is
+# that a marker names its home.
+#
+# **A marker is the word followed immediately by `(` or `:`; a mention is not.** That distinction is
+# the whole check, and getting it wrong would make this unusable: this tree has nine comments that
+# talk ABOUT a TODO ("see the TODO on `paging::unmap`", "Hardcoded on purpose, and it should stay
+# that way. Not a TODO.") and a `git grep -w TODO` fires on every one of them. It also fires on
+# `XXXXXXXX-XXXX-XXXX` in the GUID formatter and on `gl-one.txtXXX` in a glob test, which is why the
+# marker words are matched with the punctuation attached rather than as bare words.
+#
+# **Markdown is out of scope, and that is a self-consistency exemption rather than a gap.** Prose
+# that explains this convention has to spell the forbidden shape (CLAUDE.md does, and so does
+# design/roadmap/94-untracked-work.md); the em-dash gate below dodges the same problem by building
+# its character out of UTF-8 bytes, and a TODO marker cannot be disguised that way without making
+# the sentence unreadable. Prose is also where a *historical* marker legitimately lives: notes/uart.md
+# quotes a milestone-5 TODO that was resolved five milestones ago, as history, not as intent. Code
+# has no such category. This script excludes itself for the same reason.
+#
+# The cited milestone must exist, because `script/decisions --check` learned the other half of this
+# lesson the hard way: a citation that resolves to nothing is a broken footnote, and one that is
+# merely well-formed is worse.
+echo "==> TODO markers cite a milestone"
+todo_bad=$(git grep -nE '(TODO|FIXME|XXX|HACK)[[:blank:]]*[(:]' -- \
+    ':!vendor' ':!patches' ':!*.md' ':!script/lint' 2>/dev/null |
+    grep -vE '(TODO|FIXME|XXX|HACK)[[:blank:]]*\(milestone [0-9]+\)' || true)
+if [ -n "$todo_bad" ]; then
+    echo "lint: TODO/FIXME markers that do not name the milestone that owns them:" >&2
+    echo "$todo_bad" | sed 's/^/  /' >&2
+    echo "" >&2
+    echo "Spell it TODO(milestone N): and add the block under design/roadmap/, or take the note out" >&2
+    echo "of the marker form and record the limitation next to the feature (the BUGS convention)." >&2
+    echo "A marker with no home is work nobody will find; see design/roadmap/94-untracked-work.md." >&2
+    exit 1
+fi
+# Every milestone a compliant marker cites has to have a block. Cheap, and it is the check that
+# survives a renumber.
+todo_dangling=""
+for n in $(git grep -hoE '(TODO|FIXME|XXX|HACK)[[:blank:]]*\(milestone [0-9]+\)' -- \
+           ':!vendor' ':!patches' ':!*.md' ':!script/lint' 2>/dev/null |
+           grep -oE '[0-9]+' | sort -un); do
+    ls "$(dirname "$0")/../design/roadmap/$n-"*.md >/dev/null 2>&1 ||
+        todo_dangling="$todo_dangling $n"
+done
+if [ -n "$todo_dangling" ]; then
+    echo "lint: TODO markers cite milestones with no block under design/roadmap/:$todo_dangling" >&2
+    exit 1
+fi
+todo_count=$(git grep -hoE '(TODO|FIXME|XXX|HACK)[[:blank:]]*\(milestone [0-9]+\)' -- \
+    ':!vendor' ':!patches' ':!*.md' ':!script/lint' 2>/dev/null | wc -l | tr -d ' ')
+echo "TODO markers: $todo_count in code, each naming a milestone that has a block"
+
 # The milestone index's status column, validated (see design/roadmap/README.md's status vocabulary and
 # script/roadmap). Catches a status token nobody defined, a detail block with no table row, and a
 # milestone referenced in prose that the table does not carry, which is exactly how milestone 34 went
