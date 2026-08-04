@@ -1,0 +1,100 @@
+/dts-v1/;
+
+/*
+ * A hand-written device tree, NOT a dump from any board.
+ *
+ * It exists because QEMU `virt` cannot produce any of the shapes milestone 100 has to survive: it
+ * numbers cores 0..N in one cell, always states `psci` as the enable method, always claims
+ * `arm,psci-0.2` and up, and never disables a core. Every one of those is a real machine's shape
+ * somewhere, and every one of them breaks a different assumption the kernel used to compile in.
+ *
+ *   /cpus  #address-cells = <2>, which the ARM CPU binding REQUIRES the moment any core's
+ *          MPIDR_EL1.Aff3 is nonzero. A one-cell decoder reads a 64-bit id as its high half.
+ *   cpu@0        Aff3=0 Aff1=0 Aff0=0, the boot core
+ *   cpu@1        Aff0=1, its cluster sibling
+ *   cpu@100      Aff1=1, a SECOND CLUSTER: hardware id 0x100, logical core 2
+ *   cpu@101      Aff1=1 Aff0=1
+ *   cpu@10000000200  Aff3=1, which is what forces the two cells
+ *   cpu@201      status = "disabled": firmware telling us not to use it
+ *   cpu@202      enable-method = "spin-table": a bring-up mechanism this kernel does not speak
+ *
+ * /psci is PSCI **0.1**: a bare `arm,psci` compatible, no standard function ids, and its own
+ * `cpu_on` published in the node. The id here is deliberately not 0xc4000003, so a decoder that
+ * ignores the property in favour of the constant fails loudly instead of coincidentally working.
+ * The conduit is `smc`, which is the other half of the same point.
+ *
+ * Regenerate with:
+ *
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/clustered-cpus.dtb \
+ *                          crates/isa/tests/fixtures/clustered-cpus.dts
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "cricker,cpu-list-test";
+
+	psci {
+		compatible = "arm,psci";
+		method = "smc";
+		cpu_on = <0x95c1ba5e>;
+		cpu_off = <0x95c1ba5f>;
+	};
+
+	cpus {
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x0 0x0>;
+			enable-method = "psci";
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x0 0x1>;
+			enable-method = "psci";
+		};
+
+		cpu@100 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x0 0x100>;
+			enable-method = "psci";
+			status = "okay";
+		};
+
+		cpu@101 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x0 0x101>;
+			enable-method = "psci";
+		};
+
+		cpu@10000000200 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x100 0x200>;
+			enable-method = "psci";
+		};
+
+		cpu@201 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x201>;
+			enable-method = "psci";
+			status = "disabled";
+		};
+
+		cpu@202 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a53";
+			reg = <0x0 0x202>;
+			enable-method = "spin-table";
+			cpu-release-addr = <0x0 0x40000000>;
+		};
+	};
+};
