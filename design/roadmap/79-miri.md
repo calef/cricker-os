@@ -1,6 +1,6 @@
 # 79. Miri over the host crates
 
-**Status: NOT-STARTED.** Raised 2026-08-03, from a survey of what analysis the tree runs against what
+**Status: BUILT.** Raised 2026-08-03, from a survey of what analysis the tree runs against what
 it could. Milestones 79 to 85 all come from that survey.
 
 This project's method is pure logic in host-testable crates, and Miri interprets exactly those tests
