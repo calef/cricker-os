@@ -45,7 +45,12 @@ A detail block may narrate its state in prose (that is where the evidence and th
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
 
-**The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status.
+**The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status. **Dates in this tree are UTC** (Chris, 2026-08-04), because they arrive from three
+sources that disagree: a git author date is local to whoever committed, a lane deriving a date reads
+whatever `git log` gives it, and a maintainer typing "today" means their own midnight. An evening
+commit in California is already tomorrow in UTC, which is how milestone 22's row came to read a day
+ahead of the commit that flipped it and looked like a defect. One zone, stated here, and the
+disagreement stops being a puzzle.
 It sits last on purpose: `script/roadmap`'s row parser anchors on the first three columns, so a column
 appended at the end cannot break it, where one inserted in the middle would. A milestone that landed in
 phases carries the date of the **last** phase, because that is when it became `BUILT` rather than
@@ -210,6 +215,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 112 | NOT-STARTED | [The SAFETY comments that bind nobody](112-safety-comments-that-bind.md) | Four safe fns discharge an obligation onto "the caller" that their signatures impose on no one, so both unsafe lints are satisfied and any safe code may call them. `riscv64::write_satp` is also an ISA asymmetry: aarch64's `set_ttbr0` is an `unsafe fn` for the same register write. Fixing them adds an unsafe block at every call site including the context switch, so it wants its own review | |
 | 113 | NOT-STARTED | [The proofs' own unsafe code is ungated](113-proofs-under-the-unsafe-lints.md) | `#[cfg(kani)]` is compiled by the model checker and by nothing else, so neither unsafe lint can fire there; 14 blocks live under it and eleven of `ipc`'s twelve are undocumented. Milestone 82's lane deliberately wrote no comments a gate would not check (§61's recorded failure mode). The fix is the gate, and which gate is a number to measure, not an argument | |
 | 114 | BUILT | [Split `DECISIONS.md`, and give a decision a status](114-decisions-split.md) | The same case milestone 76 made, with nearly the same numbers: 5,320 lines, 71 sections, 2,017 `§N` citations, 126 commits in ten days, and three section-number collisions in one day already on the record. Adds two things the roadmap split did not need: a status, so supersession is a checked fact rather than prose nobody notices, and a home for `design/open-decisions.md`, which is the same object one lifecycle step earlier | |
+| 115 | NOT-STARTED | [The names that were ratified, and the ones that were refused](115-ratified-names.md) | Nothing tracks Chris's naming calls, and on 2026-08-04 a lane proposed `system_builder`, the maintainer endorsed it, and milestone 63 turned out to have refused it months earlier for a collision neither had found. The refusals are the valuable half. Provenance lives at the name (the crate header that would carry the refusal is what a proposer actually reads), a lint that every crate, program and script carries one, and the table as a derived query. The first draft proposed a central table and Chris rejected it for scaling like `roadmap.md` and `DECISIONS.md` did | |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
