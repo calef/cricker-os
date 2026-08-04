@@ -294,6 +294,21 @@ before the thread being waited on has been scheduled at all. Five such waits wer
 nothing and a negative assertion ("it must NOT have woken *yet*") only gets safer when the machine
 is slow.
 
+Every matrix run this round produced, in order, because reporting the best one would be the exact
+dishonesty this milestone exists to remove:
+
+| run | conditions (peak 1-minute load average) | result |
+|---|---|---|
+| 1 | shared dev machine, no induced load (LA ~3) | 5/5 pass |
+| 2 | same (LA ~3) | 5/5 pass |
+| 3 | 8 spinners on 8 cores (LA 22.8) | **3 fail**: `rv64`, `sifive-u54`, `rva22s64`, at the two yield-count sites above |
+| 4 | 8 spinners, after converting those waits (LA 15.5) | 5/5 pass |
+| 5 | 8 spinners (LA 36.5, the heaviest of the five) | 5/5 pass |
+
+Runs 1 and 2 are what a green CI run would have said, and they said it before the yield-count sites
+were touched: **two clean matrices in a row proved nothing about them.** That is the argument for
+the recipe in one line.
+
 **The lesson is about method, not about those two tests.** This family is reproducible on demand,
 and it has been diagnosed from CI logs three times instead. A red matrix under load proves nothing
 about a *model* (notes/cpu-models.md is emphatic about that, and it is right), but it is the best
