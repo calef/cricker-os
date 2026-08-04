@@ -1,6 +1,6 @@
 # 107. The socket contract learns to accept
 
-**Status: NOT-STARTED.** Raised 2026-08-04 from `notes/net.md:250`, which states the gap and names
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/107-sockets-that-accept`. Raised 2026-08-04 from `notes/net.md:250`, which states the gap and names
 the test that would close it. Two milestones already on the roadmap need it and neither block says
 so, which is why it is here rather than folded into one of them.
 
