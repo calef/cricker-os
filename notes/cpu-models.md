@@ -203,6 +203,12 @@ through SBI, so it works on both.
   where `test` does one, so it is five times the existing exposure to a noisy runner rather than a
   new kind of risk.
 
+  **The converse of that rule is a tool, and it went unused for a month.** "A green matrix under
+  load is conclusive" also means loading the host on purpose is the cheapest way to *find* a
+  load-sensitive assertion, which is a different question from finding a model-specific bug. The
+  recipe is in notes/load-sensitive-assertions.md; on its first use it turned up two assertions in
+  one run that a month of CI had not.
+
   An earlier version of this paragraph ended "the fix is those tests' timing budgets", and that was
   wrong for most of the family: several of these assertions failed with counts *below* their
   baselines, which no timing budget explains and no widening fixes. Milestone 78 rescoped them; the

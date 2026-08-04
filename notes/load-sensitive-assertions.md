@@ -264,6 +264,42 @@ which is the news the test is waiting for anyway. If ticks stop entirely it does
 harness's 90 s per-test ceiling is the backstop. A timer that is not delivering at all is the arch
 timer tests' failure to report, not this one's.
 
+### The instrument that was missing: run the matrix under deliberate load
+
+Both rounds so far have worked from CI failures, which means waiting for the family to bite someone
+else's pull request and then reasoning backwards. There is a cheaper way, and it should be the first
+thing anyone reaches for here:
+
+```sh
+# one spinner per host core, then the matrix
+n=$(sysctl -n hw.ncpu); i=0
+while [ "$i" -lt "$n" ]; do ( while :; do :; done ) & i=$(( i + 1 )); done
+script/cpu-matrix; kill %1 %2 %3 %4 %5 %6 %7 %8
+```
+
+On an eight-core machine that takes the load average to ~22 and reproduces this family in one run.
+The first time it was tried (2026-08-04, immediately after the three fixes above) it failed **three
+models at two sites that had never been seen before**, and neither was one of the three just fixed:
+
+| site | model | what it said |
+|---|---|---|
+| `sched.rs`, `a_sender_blocks_until_a_receiver_arrives` | `rv64` | "the sender never woke after its message was taken" |
+| `sched.rs`, `other_threads_run_while_one_is_blocked` | `sifive-u54`, `rva22s64` | "a worker made no progress while another thread was blocked on IPC" |
+
+Both are **a yield count used as a duration**, which is the defect `wait_for`'s own doc comment
+describes and which round one had already fixed once, in `threads_round_robin`. Since §28 scattered
+work across cores, fifty yields on a core with an empty run queue are microseconds; they elapse
+before the thread being waited on has been scheduled at all. Five such waits were converted to
+`wait_for`; five other yield loops in the same file were left, because a cleanup drain asserts
+nothing and a negative assertion ("it must NOT have woken *yet*") only gets safer when the machine
+is slow.
+
+**The lesson is about method, not about those two tests.** This family is reproducible on demand,
+and it has been diagnosed from CI logs three times instead. A red matrix under load proves nothing
+about a *model* (notes/cpu-models.md is emphatic about that, and it is right), but it is the best
+available prover of an *assertion*: it is the condition under which a wait that measures the wrong
+thing gives the wrong answer.
+
 ### The handler-latency twins: still not fixable with a wall clock, and now said plainly
 
 `the_handler_keeps_up_when_no_lock_is_held` on both ISAs got the `missed_ticks_on` core-scoping and
