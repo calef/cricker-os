@@ -150,8 +150,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
-  rust-src, why the symlink farm was measured to fail, and the honest caveats (no create or truncate
-  verb, monotonic-only clock, non-crypto random, std-internals coupling).
+  rust-src, why the symlink farm was measured to fail, and the honest caveats (what the PAL still
+  refuses and why, and the std-internals coupling a nightly bump can break). The "no create or
+  truncate verb, monotonic-only clock, non-crypto random" caveats this line used to list are all
+  gone: milestone 31 phase 2 bound `CREATE` and `TRUNCATE`, milestone 51 gave `SystemTime` a real
+  wall clock, and milestone 56 put `std::random` on the entropy service.
+- [Somebody else's crate on cricker](crates-io-on-cricker.md): milestone 64's measurement phase:
+  fifty crates.io crates built against the patched `std` to find out what actually stops them. 35 of
+  50 build unchanged, and of the 15 failures **eight are one crate that is not part of std**
+  (`getrandom` has no `cricker` backend). The four failure classes, the prioritised gap list
+  milestones 99 and 66 consume, why five of the top gaps are **bindings rather than missing verbs**,
+  and the sting: `tempfile` compiles, links, and returns "not supported" from every call, which is
+  gitoxide's whole atomic-write path.
 - [Running a foreign language: the C seam](c-seam.md): milestone 36: memory-unsafe C, compiled by
   bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
   confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`
