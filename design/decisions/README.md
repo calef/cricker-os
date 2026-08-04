@@ -133,6 +133,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
 | 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
+| 77 | PROPOSED | [The branch-prefix list does not describe the tree](77-branch-prefixes.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
