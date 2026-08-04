@@ -280,6 +280,18 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/C
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
 
+# The third citation gate, and the one that reads what a citation points AT (milestone 97). The two
+# above prove a `§N` or a `milestone N` resolves to SOME entry; neither can prove it resolves to the
+# RIGHT one, and both say so in their own headers. Twenty-eight comments credited the two-tier `^C`
+# work to "milestone 24" (a second aarch64 board) rather than to §24, wrong from the day it was
+# written, and both gates reported clean throughout because both numbers exist.
+#
+# This compares a citation's parenthetical gloss against the record's own title or body, and checks
+# that an attributed block quote still exists in the file it names. See notes/citations.md for the
+# tolerance rule and for the honest list of what it still cannot see.
+echo "==> citations"
+"$(dirname "$0")/citations" --check
+
 # The script/ front door is documented in exactly one comprehensive place, and the README's list is a
 # deliberate SUBSET of it. Two checks, because they fail in opposite directions: a script nobody
 # documented is invisible, and a README naming a script that no longer exists sends a new reader into
