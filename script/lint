@@ -233,10 +233,12 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/Cargo.toml --lib
 
-# The decision index's numbering, and that every §N cited in the tree resolves. Two concurrent milestones
-# both claimed §30 on 2026-07-30 and it was caught only because an agent noticed; 418 code comments
-# cite a section by number, so a dangling citation is a broken footnote in the one place this project
-# asks a reader to trust prose. See script/decisions.
+# The decision index (design/decisions/README.md and one file per decision, milestone 114): its
+# numbering, its status vocabulary, that each decision's own Status line agrees with its index row,
+# and that every §N cited in the tree resolves. Two concurrent milestones both claimed §30 on
+# 2026-07-30 and it was caught only because an agent noticed; ~400 code comments cite a section by
+# number, so a dangling citation is a broken footnote in the one place this project asks a reader to
+# trust prose. See script/decisions, including what it still cannot check.
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
 
