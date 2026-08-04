@@ -43,7 +43,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   needs only a decoder (ARM never removed the CPU's self-description; RISC-V did, on purpose), how
   many call sites genuinely vary and which two of the four candidates dropped out, the three shapes
   that would have broken on the VisionFive 2, and the two things the machine corrected after the
-  host tests were green.
+  host tests were green. Its sequel, milestone 100, retires the last subsystem that assumed a board
+  rather than reading it: the PSCI conduit and function id, the core list, and RISC-V's counter rate
+  all come out of the device tree, and a core whose hardware id is not its logical id is now refused
+  by name instead of silently never started.
 - [The UART](uart.md): the serial port, and why every kernel learns to drive one first.
   What "asynchronous" actually means (there is no clock wire), and a line-by-line read of
   our own PL011 driver.
@@ -607,6 +610,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   at format version 8, a reader must match, so the tool or its exact source pin is stored **with**
   the backup. A backup readable only by software you no longer have is not a backup. Also: no
   filesystem-level encryption on this volume, so no key handling anywhere in the recovery path.
+  Milestone 110 gave it a **device and a partition** (`--partition N`, `--partition-type GUID`,
+  `partitions DEVICE`), which deleted the partition-slicing workaround from xtask, and corrected the
+  premise on the way: the engine's header scan meant a partitioned disk read whole never failed, it
+  quietly opened whichever filesystem lay in the first 256 MiB.
 - [The GUID Partition Table](gpt.md): milestone 57 lane one (`crates/gpt`). The map that says where
   a filesystem starts: the protective MBR, the header, the entry array, the backup, and the four
   CRC-32s that make a GPT **a format that can tell you it is broken**. Why the crate does no I/O, the

@@ -73,10 +73,12 @@ That is the honest replacement for the semihosting exit, and a good milestone-11
 
 ## PSCI brings the other cores up under HVF too (SMP step 2)
 
-§11's SMP bring-up starts each secondary core with a **PSCI `CPU_ON`** call, made via `hvc #0`
-(the conduit QEMU's `virt` declares in its `/psci` node). A fair question once semihosting turned
-out to be emulation-only: does an `hvc`-based firmware call survive the move to real hardware
-virtualization?
+§11's SMP bring-up starts each secondary core with a **PSCI `CPU_ON`** call, made via `hvc #0` on
+this board because that is the conduit QEMU's `virt` declares in its `/psci` node. (Since milestone
+100 the kernel *reads* that node rather than compiling the answer in; `virt,virtualization=on`
+declares `smc` instead, which is the same board stating a different conduit. See
+notes/isa-discovery.md.) A fair question once semihosting turned out to be emulation-only: does an
+`hvc`-based firmware call survive the move to real hardware virtualization?
 
 It does. A bounded HVF boot under `-smp 4` prints `smp: 4 core(s) online` and runs the whole stack
 to the shell, on the M-series core. And the reason is the exact mirror of the semihosting story,

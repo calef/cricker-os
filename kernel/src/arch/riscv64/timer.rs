@@ -31,9 +31,58 @@ pub const TIMER_INTID: u32 = 5;
 /// Ticks per second, the preemption rate. Same 100 Hz as aarch64.
 pub const TICK_HZ: u64 = 100;
 
-/// The `time` CSR frequency on QEMU's `virt` machine: 10 MHz. Properly this comes from the device
-/// tree (`/cpus/timebase-frequency`); hardcoded until the DTB parse lands, and flagged so.
-const TIMEBASE_HZ: u64 = 10_000_000;
+/// **The `time` CSR frequency, read from the machine** (`/cpus/timebase-frequency`, milestone 100).
+///
+/// It was a `const` of 10 MHz, QEMU `virt`'s number, carrying the comment "hardcoded until the DTB
+/// parse lands". The DTB parse landed with milestone 60 and the comment outlived it by two months.
+/// It was also a parity gap under rule 5: aarch64's twin has always read `CNTFRQ_EL0` and asserted
+/// the value nonzero (`arch/aarch64/timer.rs`), so the two ISAs disagreed about whether the machine
+/// gets to say how fast its own clock runs. RISC-V has no `CNTFRQ_EL0`; the device tree is the
+/// architected answer, and the binding requires it.
+///
+/// Zero until [`init_frequency`] runs, which is a deliberate poison: every interval computed from it
+/// would divide by zero, so a boot that forgot to read the machine cannot quietly run at QEMU's rate
+/// on a board with a different one. The two readers assert it instead ([`frequency`], [`interval`]).
+static TIMEBASE_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// **Read the counter rate out of the device tree.** Called once, on the boot hart, immediately
+/// before [`init`] arms the first deadline on it.
+///
+/// It is a separate call rather than part of `init` because `init` also runs on every secondary,
+/// which has no device-tree pointer and needs none: the counter is machine-wide, so the boot hart's
+/// read serves them all. That is also the limitation worth naming, since the RISC-V binding permits
+/// a per-hart `timebase-frequency` and a machine whose harts genuinely differ would be misread here.
+/// `crates/isa`'s `cpu_list` reads `/cpus` first and falls back to the first hart's own property.
+///
+/// # Panics
+///
+/// If the tree does not state a frequency. The binding requires it, there is no architected register
+/// to fall back to, and the previous behaviour (assume QEMU's 10 MHz) is what this milestone exists
+/// to delete: a timer running at the wrong rate is a scheduler that preempts at the wrong rate and a
+/// `sleep` that returns at the wrong time, with nothing anywhere reporting a fault.
+pub fn init_frequency(dtb_ptr: usize) {
+    // SAFETY: the pointer OpenSBI handed us in `a1`, named through the boot table's direct map.
+    // `Dtb::from_ptr` re-checks the magic, and this runs on the same map `memory::init` uses.
+    let dt = unsafe { dtb::Dtb::from_ptr(super::mmu::phys_to_virt(dtb_ptr as u64) as *const u8) }
+        .expect("device tree is unreadable");
+    let list = isa::cpu_list::CpuList::from_device_tree(&dt).expect("cannot read /cpus");
+    let hz = list
+        .timebase_hz
+        .expect("the device tree states no /cpus/timebase-frequency, and RISC-V has no CNTFRQ_EL0");
+    assert!(hz > 0, "a counter that never advances cannot drive a tick");
+    TIMEBASE_HZ.store(hz, Ordering::Relaxed);
+}
+
+/// The counter rate the machine stated. Panics if read before [`init_frequency`], which is the same
+/// discipline `arch::isa::get` uses: a plausible zero is worse than a panic naming this file.
+fn timebase_hz() -> u64 {
+    let hz = TIMEBASE_HZ.load(Ordering::Relaxed);
+    assert!(
+        hz > 0,
+        "arch::timer used before arch::timer::init_frequency"
+    );
+    hz
+}
 
 /// `sie.STIE`, bit 5: the Supervisor Timer Interrupt Enable.
 const STIE: u64 = 1 << 5;
@@ -85,14 +134,14 @@ pub fn now() -> u64 {
     t
 }
 
-/// The counter's frequency in Hz.
+/// The counter's frequency in Hz, as the machine stated it.
 pub fn frequency() -> u64 {
-    TIMEBASE_HZ
+    timebase_hz()
 }
 
 /// Counter ticks between two timer interrupts (the reload interval): one tick period.
 pub fn interval() -> u64 {
-    TIMEBASE_HZ / TICK_HZ
+    timebase_hz() / TICK_HZ
 }
 
 /// Start the periodic timer: arm the first deadline through SBI, and enable the S-mode timer
@@ -178,7 +227,7 @@ pub fn ticks() -> u64 {
 /// it, exactly as on aarch64.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn uptime_ms() -> u64 {
-    now() / (TIMEBASE_HZ / 1000)
+    now() / (timebase_hz() / 1000)
 }
 
 /// Busy-wait for `counter_ticks` of the free-running counter.
@@ -221,6 +270,41 @@ mod tests {
     //! free-running counter, because it **keeps counting while interrupts are masked**, which is
     //! exactly the condition three of these tests need to observe. A tick-based delay would simply
     //! hang, which is its own kind of proof and no use as a test.
+
+    /// **The counter rate came out of the device tree, not out of this file** (milestone 100).
+    ///
+    /// The tree is re-read here, independently of the boot path, and the two answers must agree.
+    /// That is what makes this a test of *reading* rather than of a constant: `TIMEBASE_HZ` was
+    /// 10 MHz compiled in and QEMU `virt` is 10 MHz, so an assertion against the number alone would
+    /// pass just as happily on the old code. Asserting against the blob would not.
+    ///
+    /// aarch64 has no twin because it needs none: `CNTFRQ_EL0` is architected, and its timer has
+    /// always read it and asserted it nonzero. That asymmetry was the rule-5 parity gap this closed.
+    #[test_case]
+    fn the_counter_rate_is_the_one_the_tree_states() {
+        use core::sync::atomic::Ordering as O;
+
+        let ptr = crate::DTB.load(O::Relaxed);
+        // SAFETY: the pointer firmware handed us, already parsed twice on this boot.
+        let dt =
+            unsafe { dtb::Dtb::from_ptr(crate::arch::mmu::phys_to_virt(ptr as u64) as *const u8) }
+                .expect("device tree is unreadable");
+        let stated = isa::cpu_list::CpuList::from_device_tree(&dt)
+            .expect("cannot read /cpus")
+            .timebase_hz
+            .expect("QEMU virt states /cpus/timebase-frequency");
+
+        assert_eq!(
+            crate::arch::timer::frequency(),
+            stated,
+            "the timer is running at a rate the machine did not state",
+        );
+        assert_eq!(
+            crate::arch::timer::interval(),
+            stated / super::TICK_HZ,
+            "the tick interval is derived from the stated rate",
+        );
+    }
 
     /// The heartbeat is beating.
     #[test_case]

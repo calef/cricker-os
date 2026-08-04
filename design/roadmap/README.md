@@ -45,6 +45,13 @@ A detail block may narrate its state in prose (that is where the evidence and th
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
 
+**The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status. **Dates in this tree are UTC** (Chris, 2026-08-04), because they arrive from three
+sources that disagree: a git author date is local to whoever committed, a lane deriving a date reads
+whatever `git log` gives it, and a maintainer typing "today" means their own midnight. An evening
+commit in California is already tomorrow in UTC, which is how milestone 22's row came to read a day
+ahead of the commit that flipped it and looked like a defect. One zone, stated here, and the
+disagreement stops being a puzzle.
+
 **Readiness vocabulary: the `Gate:` line, and why it is not a column here.** The status says where we
 stand; it does not say **what stops a lane from starting**, and that second question was answered in
 conversation until 2026-08-04, which made the person who can see the whole tree the bottleneck for

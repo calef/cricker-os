@@ -1,0 +1,42 @@
+/dts-v1/;
+
+/*
+ * A hand-written device tree, NOT a dump from any board.
+ *
+ * Two cores and no `/psci` node at all: the machine on which secondary bring-up is not merely
+ * unimplemented but impossible, and the one case that must not be confused with "the node is there
+ * and I could not parse it". A uniprocessor tree, or a board whose cores are released from a
+ * spin-table, looks like this. `cpu@1` says `spin-table` to make the pairing concrete.
+ *
+ * Regenerate with:
+ *
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/no-psci.dtb \
+ *                          crates/isa/tests/fixtures/no-psci.dts
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "cricker,cpu-list-test";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x0>;
+			enable-method = "spin-table";
+			cpu-release-addr = <0x0 0x40000000>;
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a72";
+			reg = <0x1>;
+			enable-method = "spin-table";
+			cpu-release-addr = <0x0 0x40000008>;
+		};
+	};
+};

@@ -199,11 +199,108 @@ has a comment saying why it is uncovered instead of a test that moves a number.
 because there the thing that can be wrong is the tag rather than the arithmetic, and const
 evaluation and runtime evaluation are two implementations of one function that should agree.
 
+## The sequel: PSCI and the CPU list (milestone 100)
+
+Milestone 60 read what the *part* is. It left the one subsystem that assumes a *board*: SMP
+bring-up. Three facts were compiled in, and all three are stated by the same device tree everything
+else was already reading.
+
+| Fact | Where it was hardcoded | Where the machine states it |
+|---|---|---|
+| The PSCI conduit is `hvc` | `psci_cpu_on`'s `hvc #0` | `/psci`'s `method` |
+| The `CPU_ON` function id is `0xc4000003` | a `const` in the same function | `/psci`'s `cpu_on`, or the 0.2 standard when `compatible` claims it |
+| The cores are `0..MAX_CPUS` | `bring_up_secondaries`'s loop | `/cpus` |
+| RISC-V's counter runs at 10 MHz | `TIMEBASE_HZ`, a `const` | `/cpus/timebase-frequency` |
+
+The fourth row is the one that names the pattern rather than an instance. `arch/riscv64/timer.rs`
+carried the comment *"hardcoded until the DTB parse lands"*, and the DTB parse landed with milestone
+60; the comment outlived it by two months. aarch64's twin has always read `CNTFRQ_EL0` and asserted
+it nonzero, so the two ISAs disagreed about whether the machine gets to say how fast its own clock
+runs. That is a rule-5 parity gap, and it was invisible because both answers were 10 MHz on the only
+machines anyone ran.
+
+### The two failure shapes were not the same, and the plan had to say so
+
+**The core list was a guaranteed silent no-op.** A machine with more than four cores had cores 4 and
+up never started, and there was no error available, because nothing asked about them. That is the
+worst shape a failure can take: success reported, work not done, and the symptom arriving later as a
+scheduler that never balances.
+
+**The conduit was board-specific and untested.** `smp.rs` did have a degradation path, written for
+one case (a core that is absent, `PSCI {ret}; not present?`), and a machine whose firmware answers on
+`smc` is under no obligation to produce a PSCI error code from an `hvc` it never agreed to serve. It
+would more likely be an undefined-instruction trap. Calling both "silent" was close enough for a
+warning and too loose for a plan.
+
+### What is read, and what is still assumed
+
+Read: `/psci`'s `method` and `cpu_on`, and every `cpu@` node's `reg`, `status` and `enable-method`.
+The decoding is in `crates/isa` (`cpu_list` for the roster, `aarch64::Psci` for the conduit), so it
+is host-testable; the kernel halves are the reads and the refusals, exactly the split milestone 60
+set up.
+
+Still assumed, **and now checked rather than assumed silently**: that a core's hardware id equals its
+logical id. Using a hardware id that differs would need three other things to move with it, and none
+of them is in this milestone. `cpu::PERCPU`, the secondary stacks and the RISC-V trap stashes are
+arrays indexed by logical id; the GICv2 targets an SPI by CPU-interface number and `send_sgi` by that
+same number; the PLIC's S-mode context is `2 * hart + 1` and the SBI IPI mask is a bitmap of hart
+ids. So `bring_up_secondaries` reads the real ids, compares each to its index, and **refuses by name**
+the ones that differ:
+
+```
+  smp: cpu 2 has hardware id 0x100, which is not its index.
+       This kernel indexes per-CPU state, interrupt targets and IPI masks by
+       logical id, so it cannot use that core yet. Not started.
+```
+
+A clustered aarch64 board (`MPIDR_EL1.Aff1` in use) is exactly that machine. This turns a guaranteed
+silent no-op into a named refusal and a smaller machine, which is the whole point; making the kernel
+actually *use* such a core is a milestone of its own, and it is a bigger one than this was.
+
+### What the boot says now
+
+```
+  smp: psci over hvc, CPU_ON 0xc4000003 (the node's own id, from the device tree)
+  smp: 4 core(s) in the device tree
+  smp: 4 core(s) online
+```
+
+On RISC-V the first line reads `sbi hsm hart_start (the only mechanism RISC-V defines)`, and the
+asymmetry is real rather than a gap: RISC-V has one bring-up mechanism, no conduit to choose and no
+function id to look up, because a kernel entered in S-mode has firmware under it by construction.
+
+### The fixture that made the `smc` half testable
+
+QEMU `virt` states `method = "hvc"`, so for a while it looked as though the other branch could only
+be exercised by hand-writing a tree. It cannot, quite: `-machine virt,virtualization=on` puts
+something at EL2 and QEMU's own PSCI moves to EL3, so **the same board, one option different, states
+`smc`**. That dump is `crates/dtb/tests/fixtures/qemu-aarch64-virt-smc.dtb`, and the host test that
+compares the two is the whole finding in one assertion: the conduit is not a property of aarch64, of
+QEMU, or of the `virt` board.
+
+It does not make the `smc` **call** tested. That configuration enters the kernel at EL2 and this
+kernel expects EL1, so nothing here boots it. Parsed, not called; the `arch::psci_cpu_on` BUGS block
+says so where a reader meets the function.
+
 ## BUGS
 
 - **Discovery does not make the kernel portable, it makes it honest.** Knowing an extension is
   missing and doing something useful about it are different milestones. Today the kernel does
   exactly one thing with a missing requirement: it says so and stops.
+- **A core whose hardware id is not its logical id is refused, not used** (milestone 100). See
+  above; the reason is four other subsystems that index hardware by logical id.
+- **The `smc` conduit is parsed and never called.** No machine on this laptop boots the
+  configuration that would exercise it.
+- **`cpu_list` reads `/cpus/timebase-frequency` and falls back to the first hart's own.** The RISC-V
+  binding permits it per hart, and a machine whose harts genuinely differ would be misread. The
+  kernel treats the counter as machine-wide regardless, so this is a limitation of the model rather
+  than of the parse.
+- **`user_rt::cntfrq` still returns 10 MHz on RISC-V, and it is now the last copy.** The kernel reads
+  the real rate; **userspace cannot**, because there is no register to read and no channel to hand it
+  down. Closing it is an ABI addition (an aux-vector entry at process start, the way Linux passes
+  `AT_HWCAP`), which is a design fork rather than a fix, and `notes/riscv-parity-scope.md` already
+  names it as workstream E's prerequisite for honest cross-arch benchmark numbers. Worth knowing that
+  the kernel and its userspace now disagree about where that number comes from.
 - **A `status = "disabled"` CPU node is counted in the intersection.** Firmware sometimes describes
   a core the OS will never run on, and including it narrows `common` further than it needs to be.
   That is the safe direction and it is not free: a board describing a disabled core with no FPU
