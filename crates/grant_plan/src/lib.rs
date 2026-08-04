@@ -973,7 +973,13 @@ pub enum Refusal {
     /// See notes/pipes.md: refusing the other order is what keeps a stage's text a slice of the
     /// line in a shell with no allocator.
     WordAfterRedirect,
-    /// **A pipeline stage with no command in it** (`| wc`, `a |`, `a || b`).
+    /// **A pipeline stage with no command in it** (`| wc`, `a |`).
+    ///
+    /// **This listed `a || b` until milestone 67 and no longer can**: `||` is a connector now, and
+    /// the shell splits on it before [`line::split`] ever sees the line, so that spelling is two
+    /// commands rather than a pipeline with a hole in it. A `||` still reaches this function in a
+    /// direct call, which is why the sequence splitter has to run first rather than merely usually
+    /// running first.
     EmptyStage,
     /// **More stages than one line may carry** ([`line::MAX_STAGES`]). A ceiling on processes and
     /// endpoints, not on a buffer.

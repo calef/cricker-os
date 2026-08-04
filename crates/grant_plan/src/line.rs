@@ -700,9 +700,13 @@ mod tests {
         assert!(split(b"wc < f | wc").is_ok());
     }
 
+    /// **`date || wc` was in this list until milestone 67 and is not any more.** `||` is a
+    /// connector, and the shell splits on it before this function is reached, so at a prompt that
+    /// line is two commands. What it means *here* is unchanged, and that is exactly why the split
+    /// has to be outside: this function has no way to tell the two readings apart.
     #[test]
     fn a_pipeline_stage_must_have_a_command_in_it() {
-        for line in [&b"| wc"[..], b"date |", b"date || wc", b"|"] {
+        for line in [&b"| wc"[..], b"date |", b"|"] {
             assert_eq!(
                 split(line),
                 Err(Refusal::EmptyStage),
