@@ -1,0 +1,25 @@
+[package]
+name = "system_initializer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+abi = { version = "0.1.0", path = "../abi" }
+crickerfs = { version = "0.1.0", path = "../crickerfs" }
+elf = { version = "0.1.0", path = "../elf" }
+# The grant expression and its wire form: what the shell resolved a typed line into, and the
+# protocol init decodes on the other side of the spawn channel. This crate is that other side.
+grant_plan = { version = "0.1.0", path = "../grant_plan" }
+# The terminal contract's framing, for the one sentence init prints (`proto::OP_WRITE`).
+line_editor = { version = "0.1.0", path = "../line_editor" }
+# The sink contract, for the end-of-stream init sends on a child's behalf when the child was never
+# built and therefore cannot end its own second stream.
+sink_proto = { version = "0.1.0", path = "../sink_proto" }
+# The userspace ELF loader, and the fault slot that makes a child born supervised. One loader in the
+# tree since milestone 96; this crate is one of its two callers.
+supervision_proto = { version = "0.1.0", path = "../supervision_proto" }
+user_rt = { version = "0.1.0", path = "../user_rt" }

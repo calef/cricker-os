@@ -29,11 +29,19 @@ fi
 # to this gate until 2026-08-01, when rule 7 made them crates; the exclusion is deliberate and
 # narrow, not a way to keep the number green.
 #
+# `system_initializer` joins them on the same test and became visible the same way. Milestone 96
+# lifted the boot sequence out of two duplicated inits into one crate, and every line of it spends
+# a capability through a syscall: retype an object, build a child, delegate, delete. There is no
+# host to execute that on. The narrower question the exclusion raises is worth stating rather than
+# burying: whether that crate should grow a seam that IS host-testable, the way `regions` holds the
+# untyped arithmetic the kernel calls into. Nothing here decides that; the exclusion says only that
+# the crate as written cannot run on the host, which is the same claim made about the other three.
+#
 # `c_seam` is NOT excluded, because it is pure: constants, offsets, and small functions. It now
 # carries the test the seam never had, asserting that `user/c/c_seam.c` states the same values
 # this crate does. That test is the reason rule 7 is worth its churn.
 cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt \
-    --exclude supervision_proto --exclude swap_proto --no-report
+    --exclude supervision_proto --exclude swap_proto --exclude system_initializer --no-report
 cargo llvm-cov report --summary-only
 mkdir -p target/llvm-cov # the lcov --output-path parent must exist; --html creates its own
 cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
@@ -78,6 +86,7 @@ awk -F: -v floor="$floor" '
         # that user/c/c_seam.c states the same constants it does. Keep this list to things that
         # physically cannot run, never to things that are merely untested.
         if (index(file, "/supervision_proto/src/") || index(file, "/swap_proto/src/") ||
+            index(file, "/system_initializer/src/") ||
             index(file, "/virtio/src/")) { next }
         if (found > 0 && $2 * 100 < found * floor) {
             printf "coverage: %s: %.1f%% line coverage is under the %d%% floor\n",
