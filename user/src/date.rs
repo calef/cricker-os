@@ -94,7 +94,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use calendar::{DateTime, Format, UtcOffset};
 use clock_proto::{ClockPage, state};
-use user_rt::{cntfrq, exit, invoke, now, send};
+use user_rt::{exit, invoke, monotonic_nanos, send};
 
 /// Slot 0: where the output goes. An endpoint with `WRITE`, and the same 16-bytes-per-message
 /// framing the std PAL's stdout uses (`w0` = the byte count, `w1`|`w2` = the bytes, little-endian),
@@ -325,18 +325,6 @@ fn clock_page() -> Option<ClockPage> {
     // SAFETY: the wiring maps the clock page read-only at CLOCK_VA alongside the capability the
     // probe just found, and nothing unmaps it. Without the capability we never build the pointer.
     Some(unsafe { ClockPage::new(CLOCK_VA) })
-}
-
-/// Monotonic nanoseconds since boot, from the ambient counter.
-///
-/// Split into whole seconds and a remainder for the reason `user/src/clock.rs` records: at 62.5 MHz
-/// the naive `ticks * 1_000_000_000` overflows a `u64` about five minutes into a boot.
-fn monotonic_nanos() -> u64 {
-    let freq = cntfrq();
-    let ticks = now();
-    let secs = ticks / freq;
-    let rem = ticks % freq;
-    secs * clock_proto::NANOS_PER_SEC + rem * clock_proto::NANOS_PER_SEC / freq
 }
 
 /// Send `bytes` and a newline to the output endpoint, 16 bytes per message.
