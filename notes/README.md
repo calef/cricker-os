@@ -479,7 +479,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Benchmarks with teeth](benchmarks.md): milestone 21: two instruments, because gating and
   truth exclude each other. Deterministic icount counts gate commits against a committed
   baseline (`script/bench --check`); HVF runs the kernel natively on the M-series core for real
-  magnitudes. The first real numbers: IPC round trip ~705 ns, call/reply ~886 ns.
+  magnitudes. The first real numbers (debug): IPC round trip ~705 ns, call/reply ~886 ns. The L4
+  calibration built on them was corrected on 2026-08-04: it compared the kernel-side, debug,
+  round-trip number against seL4's EL0, release, one-way number, three errors that partly cancelled.
 - [The PMU, and the two clocks in a core](pmu.md): the cycle counter (`PMCCNTR`) versus the
   generic timer (`CNTVCT`), and why the coarse, boring timer is the one that survives
   virtualization. The reason our bench runs on a laptop and `sel4bench` does not.
