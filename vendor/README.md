@@ -29,7 +29,7 @@ and priced it is notes/redoxfs-audit.md).
      the two age differently: 1 and 2 drop when upstream fixes them, while this one must be
      re-applied forever and can conflict if upstream changes the method.
 
-     Why it is needed: `Header::new` is `#[cfg(feature = "std")]` purely because it calls
+     Why it was taken: `Header::new` is `#[cfg(feature = "std")]` purely because it calls
      `uuid::Uuid::new_v4()`, so a `no_std` caller cannot use it. Every `Header` field is already
      `pub`, so we can BUILD one and source the uuid from our own entropy service; what we could not
      do is finish it, because an unhashed header is an invalid filesystem. So this exposes an
@@ -39,6 +39,33 @@ and priced it is notes/redoxfs-audit.md).
      viable divergence). A visibility change on an existing method is the smallest thing that
      unblocks `mkfs` on the target, and far less likely to conflict on a pin bump than a new
      constructor whose name and signature upstream might choose differently.
+
+     **It is not sufficient, and nothing outside this directory calls it today** (milestone 57's
+     write half, 2026-08-03). The premise above is that a `no_std` caller can build a header and
+     therefore make a filesystem, and the second half does not follow. Making a filesystem is
+     `FileSystem::create_reserved`, which lays down the tree list, the allocation list and the root
+     node through `Transaction::write_block` and `FileSystem::reset_allocator`; **both are private,
+     `Transaction::new` is `pub(crate)`, `sync_block`'s `AllocCtx` parameter names a trait the crate
+     does not export, and three of `FileSystem`'s fields are `pub(crate)` so the struct cannot even
+     be built from outside.** A caller holding a finished `Header` has nowhere to put it. That is
+     what divergence 4 is for. This one is kept rather than reverted because it was a deliberate
+     call and reverting one is Chris's to make; it is a one-line drop whenever he wants it.
+  4. `src/header.rs`, `src/filesystem.rs`: **the uuid becomes an argument, and the creation path
+     builds for `no_std`.** `Header::new_with_uuid(size, uuid)` and
+     `FileSystem::create_reserved_with_uuid(.., uuid)` hold what used to be `Header::new`'s and
+     `create_reserved`'s bodies; the `std` entry points keep their signatures and pass
+     `Uuid::new_v4()`, so no upstream caller changes. The encryption branch stays behind `std`
+     (`Salt::new` and `Key::new` are `getrandom` too) and a `no_std` create with a password returns
+     `ENOSYS` rather than quietly making an unencrypted filesystem.
+
+     This is the same shape upstream already uses one line away: `create` takes `ctime` as a
+     parameter because a `no_std` engine has no clock, and now takes the disk id as one because it
+     has no randomness. The caller that supplies it is `fs_maker`, which holds an entropy endpoint;
+     **no randomness enters vendored code.**
+
+     Ages like divergence 3 (re-applied forever, can conflict on a pin bump), and is the one most
+     worth upstreaming: `patches/redoxfs-no-std-create-uuid.patch` is the submission, and it applies
+     to the published 0.9.1 with zero fuzz. Approved by Chris 2026-08-03.
 - Everything else is byte-identical to the published package, including files we do not use
   (`Makefile`, `test.sh`, upstream CI configs) and `Cargo.lock`.
 - **Proved rather than asserted, since 2026-07-30:** `script/vendor-verify` fetches the published
@@ -58,9 +85,11 @@ and priced it is notes/redoxfs-audit.md).
   not apply inside this directory.
 - **Feature use here:** the kernel-facing consumer (phase 2's FS server) builds it
   `--no-default-features` (pure no_std core); `tools/redoxfs_host` builds it with `std` only,
-  deliberately not `fuse`, so host mkfs/inspection needs no macFUSE. Creation APIs
-  (`FileSystem::create`, uuid, getrandom) are std-gated and stay host-side; the server only
-  ever opens an existing image (roadmap §32, port plan item 4).
+  deliberately not `fuse`, so host mkfs/inspection needs no macFUSE. The FS server still only ever
+  opens an existing image (roadmap §32, port plan item 4); since divergence 4 the *creation* path
+  builds for `no_std` as well, and `fs_maker` is the one program that uses it. What stays std-gated
+  is the randomness: `FileSystem::create`, `create_reserved`, `Header::new` and the encryption
+  branch, all because they invent a value rather than take one.
 - **Kept honest by:** `cargo xtask test` runs the host round-trip test (`cargo test --manifest-path
   tools/redoxfs_host/Cargo.toml`) and builds the no_std core for both bare-metal targets
   (`cargo build --manifest-path vendor/redoxfs/Cargo.toml --no-default-features --target ...`), so

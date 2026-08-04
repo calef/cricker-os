@@ -7,11 +7,14 @@ use alloc::{
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
+// cricker-os pin divergence: only the encryption branch of `create_reserved` still needs std (it
+// mints a salt and two keys from getrandom). Everything else the creation path uses builds for
+// no_std, so those imports move down. See patches/redoxfs-no-std-create-uuid.patch.
 #[cfg(feature = "std")]
-use crate::{AllocEntry, AllocList, BlockData, BlockTrait, Key, KeySlot, Node, Salt, TreeList};
+use crate::{Key, KeySlot, Salt};
 use crate::{
-    Allocator, BlockAddr, BlockLevel, BlockMeta, Disk, Header, Transaction, BLOCK_SIZE,
-    HEADER_RING, RECORD_SIZE,
+    AllocEntry, AllocList, Allocator, BlockAddr, BlockData, BlockLevel, BlockMeta, BlockTrait, Disk,
+    Header, Node, Transaction, TreeList, BLOCK_SIZE, HEADER_RING, RECORD_SIZE,
 };
 
 fn compress_cache() -> Vec<u8> {
@@ -126,11 +129,39 @@ impl<D: Disk> FileSystem<D> {
     /// We need to pass ctime and ctime_nsec in order to initialize the unix timestamps
     #[cfg(feature = "std")]
     pub fn create_reserved(
+        disk: D,
+        password_opt: Option<&[u8]>,
+        reserved: &[u8],
+        ctime: u64,
+        ctime_nsec: u32,
+    ) -> Result<Self> {
+        let uuid = uuid::Uuid::new_v4();
+        Self::create_reserved_with_uuid(
+            disk,
+            password_opt,
+            reserved,
+            ctime,
+            ctime_nsec,
+            *uuid.as_bytes(),
+        )
+    }
+
+    /// Create a file system on a disk, with reserved data at the beginning, taking the filesystem's
+    /// unique id from the caller.
+    ///
+    /// cricker-os pin divergence: this is `create_reserved`'s body with the two values a `no_std`
+    /// engine cannot invent taken as arguments instead. `ctime`/`ctime_nsec` were already such
+    /// arguments, because the engine has no clock; `uuid` joins them, because it has no source of
+    /// randomness either. A caller that holds one (an entropy service, a hardware RNG) can then
+    /// create a filesystem without std, which is what `redoxfs-mkfs` on a bare-metal target needs.
+    /// See patches/redoxfs-no-std-create-uuid.patch.
+    pub fn create_reserved_with_uuid(
         mut disk: D,
         password_opt: Option<&[u8]>,
         reserved: &[u8],
         ctime: u64,
         ctime_nsec: u32,
+        uuid: [u8; 16],
     ) -> Result<Self> {
         let disk_size = disk.size()?;
         let disk_blocks = disk_size / BLOCK_SIZE;
@@ -155,9 +186,11 @@ impl<D: Disk> FileSystem<D> {
             }
         }
 
-        let mut header = Header::new(fs_blocks * BLOCK_SIZE);
+        #[allow(unused_mut)] // only the encryption branch below writes to it
+        let mut header = Header::new_with_uuid(fs_blocks * BLOCK_SIZE, uuid);
 
         let cipher_opt = match password_opt {
+            #[cfg(feature = "std")]
             Some(password) => {
                 //TODO: handle errors
                 header.key_slots[0] = KeySlot::new(
@@ -168,6 +201,12 @@ impl<D: Disk> FileSystem<D> {
                 .unwrap();
                 Some(header.key_slots[0].cipher(password).unwrap())
             }
+            // cricker-os pin divergence: a no_std build has no getrandom, so it cannot mint the
+            // salt and the two keys an encrypted filesystem needs. Refusing is the only honest
+            // answer: creating an UNENCRYPTED filesystem for a caller who supplied a password
+            // would silently withhold the one property they asked for.
+            #[cfg(not(feature = "std"))]
+            Some(_) => return Err(Error::new(syscall::error::ENOSYS)),
             None => None,
         };
 

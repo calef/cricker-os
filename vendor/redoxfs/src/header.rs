@@ -43,10 +43,18 @@ impl Header {
     #[cfg(feature = "std")]
     pub fn new(size: u64) -> Header {
         let uuid = uuid::Uuid::new_v4();
+        Header::new_with_uuid(size, *uuid.as_bytes())
+    }
+
+    // cricker-os pin divergence: the caller supplies the uuid, exactly as `FileSystem::create`
+    // already takes `ctime` because a no_std engine has no clock. `Header::new` is std-gated only
+    // because `Uuid::new_v4` is getrandom; a no_std caller with its own entropy source can build a
+    // header here instead. See patches/redoxfs-no-std-create-uuid.patch.
+    pub fn new_with_uuid(size: u64, uuid: [u8; 16]) -> Header {
         let mut header = Header {
             signature: *SIGNATURE,
             version: VERSION.into(),
-            uuid: *uuid.as_bytes(),
+            uuid,
             size: size.into(),
             ..Default::default()
         };
