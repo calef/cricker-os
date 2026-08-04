@@ -1142,7 +1142,7 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
     };
     match grant_plan::plan(&spec, holdings(nav), expanded) {
         Err(refusal) => refuse(spec, refusal),
-        // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
+        // A supervised job runs under the two-tier ^C path (DECISIONS §24); a fast job is simply
         // spawned and waited on.
         Ok(endow) if endow.interruptible => spawn_interruptible(endow),
         // **`wc report.txt`**, which is `wc < report.txt` with the operator left out: the planner
@@ -1398,7 +1398,7 @@ fn untyped_split(pages: u64) -> Option<u64> {
     if r < 0 { None } else { Some(r as u64) }
 }
 
-// ---- the two-tier interrupt path (milestone 24, DECISIONS §24) ----
+// ---- the two-tier interrupt path (DECISIONS §24) ----
 
 // ---- the operators: `>`, `<` and `|` (milestone 50, notes/pipes.md) ----
 

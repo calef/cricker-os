@@ -64,7 +64,7 @@ const DIAG_BIT: u64 = 1 << 35;
 /// capability travels separately, over `SEND_CAP`: this word only says whether to expect it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Wiring {
-    /// A foreground job the shell will supervise (milestone 24). Two capabilities lead the
+    /// A foreground job the shell will supervise (DECISIONS §24). Two capabilities lead the
     /// delegation: a job untyped the child is built from so the shell can tear it down, then a
     /// shared job frame.
     pub interruptible: bool,

@@ -24,9 +24,10 @@
 //! ```
 //!
 //! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
-//! entries. It grew from one block to two at milestone 24 (the interactive system plus its demo
-//! programs passed fifteen files), to four on 2026-07-30 (three lanes landing together made 32), and
-//! to six on 2026-08-01 when the entries got wider. `start_block` is an absolute block number, so a
+//! entries. It grew from one block to two under DECISIONS §24 (interrupting the foreground
+//! process), when the interactive system plus its demo programs passed fifteen files; to four on
+//! 2026-07-30 (three lanes landing together made 32); and to six on 2026-08-01 when the entries
+//! got wider. `start_block` is an absolute block number, so a
 //! reader never needs to know `DIR_BLOCKS` to find data; only the writer places it.
 //!
 //! # Names

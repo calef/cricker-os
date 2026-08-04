@@ -168,7 +168,7 @@ pub const CHILD_STACK_PAGES: u64 = 12;
 /// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
 const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
 
-/// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
+/// Where a supervised (interruptible) child maps its shared job frame (DECISIONS §24). Below the ELF
 /// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
 const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
@@ -634,13 +634,13 @@ struct Channels {
 /// it, endow it the result endpoint (and the budget) plus its supervision endpoint, and start it. A
 /// **supervised** (interruptible) job: the shell leads the delegation with a job untyped and a shared
 /// job frame; we build the whole child *from that untyped* (so the shell's region owns it and can
-/// `DESTROY` it to tear it down, milestone 24), map the job frame in, endow nothing else, start it,
+/// `DESTROY` it to tear it down, DECISIONS §24), map the job frame in, endow nothing else, start it,
 /// and send `SPAWN_OK` once as the shell's go-ahead. The `progs` array is indexed by [`Prog::id`], so
 /// it is [`grant_plan::PROG_COUNT`] long: a variant added to `grant_plan` without a slot here would
 /// be an out-of-bounds read in init.
 ///
 /// **Only the normal shape is supervised**, and that is not an oversight. An interruptible job's
-/// region belongs to the shell, which tears it down itself on the second `^C` (milestone 24's
+/// region belongs to the shell, which tears it down itself on the second `^C` (§24's
 /// forcible tier) and after a clean finish; endowing it a supervision endpoint here would put a
 /// second party in the teardown path for memory that is not ours, racing the shell's `DESTROY`.
 fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]) -> ! {

@@ -1,4 +1,4 @@
-//! The heeder: a long-running job that heeds the cooperative interrupt (milestone 24).
+//! The heeder: a long-running job that heeds the cooperative interrupt (DECISIONS §24).
 //!
 //! It works forever, one small unit at a time, and between units it reads a single word in a page
 //! it shares with the shell: the interrupt flag. When the shell sets it (on the first `^C`), the

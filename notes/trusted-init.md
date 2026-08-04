@@ -358,7 +358,7 @@ the program ids `spawnproto` already sends in word 0.
   coming back and the prompt eventually answers "could not spawn".
 - **A hung job is not collected**, on purpose: `REAP` refuses a live thread (§32), and that is the
   watchdog case, which belongs to milestone 23. At the prompt the case a person can see is already
-  covered by milestone 24's forcible tier, and those jobs are built from the shell's own untyped
+  covered by §24's forcible tier, and those jobs are built from the shell's own untyped
   rather than init's, so they never reach the collector at all.
 
 ### One init, and one loader (milestone 96)
