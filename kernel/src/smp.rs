@@ -19,10 +19,12 @@
 //! `spawn_balanced` that round-robined placement, and milestone 41 deleted it, because §28 left it
 //! with no caller and a doc comment claiming a test used it that had already moved to plain `spawn`.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+use isa::cpu_list::{CpuList, EnableMethod};
 
 use crate::cpu::{self, MAX_CPUS};
-use crate::{arch, println};
+use crate::{arch, print, println};
 
 /// 64 KiB per secondary, matching core 0's boot stack (link-aarch64.ld).
 const SECONDARY_STACK_SIZE: usize = 64 * 1024;
@@ -134,16 +136,141 @@ fn stack_top(id: usize) -> u64 {
     secondary_stack_span(id).1
 }
 
+/// The hardware id of each core the machine described, indexed by logical id. `u64::MAX` in a slot
+/// the tree did not fill. Written once by [`read_cpu_list`], before any secondary exists.
+///
+/// An "id" here is whatever the bring-up call names a core by: an `MPIDR_EL1[39:0]` affinity value
+/// on aarch64, a hart id on RISC-V. Nothing portable interprets it; it is read out of `/cpus` and
+/// handed back to `arch::psci_cpu_on`.
+static HWID: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
+
+/// Per slot: did the tree describe a core this kernel could actually start? False for a core
+/// firmware marked `status = "disabled"`, and for one whose `enable-method` is a mechanism this
+/// kernel does not speak (`spin-table`, or a per-SoC method).
+static STARTABLE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+/// How many slots of [`HWID`] are filled: `min(what the tree described, MAX_CPUS)`.
+static ROSTER: AtomicUsize = AtomicUsize::new(0);
+
+/// How many `cpu@` nodes the tree had, which may be more than [`ROSTER`]. Kept so the boot line can
+/// say "this machine has more cores than this kernel was built for" instead of quietly using four.
+static DESCRIBED: AtomicUsize = AtomicUsize::new(0);
+
+/// **Read the machine's core list out of its device tree** (milestone 100).
+///
+/// Called once, on the boot core, before [`bring_up_secondaries`] and while the device tree is still
+/// mapped (both boots call it in the same breath as `arch::isa::init`, ahead of `mmu::init`
+/// replacing the coarse boot map). It records the roster and prints it; it starts nothing.
+///
+/// Until this existed the core list was `0..MAX_CPUS`, a constant, and on QEMU `virt` that is the
+/// right answer for the wrong reason: `virt` numbers its cores densely from zero, so the constant
+/// and the machine agreed. On a board that numbers them any other way the kernel would have called
+/// `CPU_ON` on ids that are not there and never called it on the ids that are, and the second half
+/// of that produces no error at all, because nothing asks about a core it never named.
+///
+/// # Panics
+///
+/// If the blob is unreadable. Both callers run after `memory::init` has already parsed the same
+/// pointer, so a failure here means something un-mapped the tree between the two, which is a kernel
+/// bug rather than a machine we should tolerate.
+pub fn read_cpu_list(dtb_ptr: usize) {
+    // SAFETY: the pointer firmware handed us, whose magic `memory::init` has already checked, named
+    // through the boot map's direct region because we are running virtual. Same call, same window.
+    let dt = unsafe { dtb::Dtb::from_ptr(arch::mmu::phys_to_virt(dtb_ptr as u64) as *const u8) }
+        .expect("device tree is unreadable");
+    let list = CpuList::from_device_tree(&dt).expect("cannot read /cpus");
+
+    let n = list.len.min(MAX_CPUS);
+    let mut startable = 0;
+    for (i, cpu) in list.cpus().iter().take(n).enumerate() {
+        HWID[i].store(cpu.hwid, Ordering::Relaxed);
+        // `Unstated` counts as startable on purpose. The RISC-V CPU binding has no `enable-method`
+        // at all (SBI HSM is the only mechanism), so demanding the property would refuse every
+        // RISC-V machine including the one this kernel already runs on.
+        let ok = cpu.usable
+            && matches!(
+                cpu.enable_method,
+                EnableMethod::Psci | EnableMethod::Unstated
+            );
+        STARTABLE[i].store(ok, Ordering::Relaxed);
+        startable += usize::from(ok);
+    }
+    ROSTER.store(n, Ordering::Release);
+    DESCRIBED.store(list.described, Ordering::Release);
+
+    // The RISC-V timer's counter rate is a `/cpus` property and is read separately, earlier in that
+    // boot, because `timer::init` runs several steps ahead of this. See arch/riscv64/timer.rs.
+    print!("  smp: {} core(s) in the device tree", list.described);
+    if startable != list.described {
+        print!(", {startable} startable");
+    }
+    if list.described > MAX_CPUS {
+        print!(
+            " (this kernel is built for {MAX_CPUS}: cpu::MAX_CPUS sizes the per-CPU statics, so the \
+             rest stay parked)"
+        );
+    }
+    println!();
+
+    // The core we are executing on has to be in the roster at its own index, or the roster describes
+    // a machine other than the one running this code. Nothing downstream can recover from that, but
+    // saying it beats letting the bring-up report a plausible number.
+    let boot = arch::boot_cpu_id();
+    if hwid(boot) != Some(boot as u64) {
+        println!(
+            "  smp: the boot core is logical {boot}, and the device tree does not put a core with \
+             that id there"
+        );
+    }
+}
+
+/// The hardware id of logical core `id`, or `None` for a slot the tree did not describe.
+///
+/// The reverse of the assumption this milestone retired. Nothing outside the bring-up path calls it
+/// yet, and the reason is the limitation in [`bring_up_secondaries`]'s BUGS: the rest of the kernel
+/// indexes hardware by logical id, so it is only correct while the two are equal.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn hwid(id: usize) -> Option<u64> {
+    match HWID.get(id)?.load(Ordering::Acquire) {
+        u64::MAX => None,
+        h => Some(h),
+    }
+}
+
+/// How many cores the device tree described, which is not how many this kernel can use. Greater than
+/// [`MAX_CPUS`] on a bigger machine than this build is sized for.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn described_count() -> usize {
+    DESCRIBED.load(Ordering::Acquire)
+}
+
 unsafe extern "C" {
     /// The physical-mode entry every secondary starts at. Defined in boot.s.
     fn secondary_boot();
 }
 
-/// Start every secondary core, and wait until each has come online.
+/// Start every secondary core the machine described, and wait until each has come online.
 ///
 /// Called once, on core 0, after the heap and scheduler exist (a secondary's stack is static, so
-/// bring-up itself needs no allocator, but step 3 will). Core 0 keeps doing all real scheduling
-/// work; the secondaries only idle until then.
+/// bring-up itself needs no allocator, but step 3 will) and after [`read_cpu_list`] has recorded
+/// which cores there are. Core 0 keeps doing all real scheduling work; the secondaries only idle
+/// until then.
+///
+/// # BUGS
+///
+/// - **A core whose hardware id is not its logical id is refused, loudly, rather than started**
+///   (milestone 100). Reading `/cpus` tells us the real ids; *using* an id that differs from the
+///   core's index would need three other things to change with it, and none of them are in this
+///   milestone. `cpu::PERCPU`, the secondary stacks and the RISC-V trap stashes are arrays indexed
+///   by logical id; the GICv2 targets an SPI by CPU-interface number and `send_sgi` by that same
+///   number; the PLIC's S-mode context is `2 * hart + 1` and the SBI IPI mask is a bitmap of hart
+///   ids. Every one of those reads a logical id today and would need the hardware id instead. So
+///   the honest state is: the list is read, the ids are checked, and a machine that numbers its
+///   cores any other way gets a named refusal and a smaller machine instead of a silent no-op.
+///   A clustered aarch64 board (`MPIDR_EL1.Aff1` in use) is exactly that machine.
+/// - **The conduit half is proved by parsing and not by calling.** `crates/isa`'s host tests read a
+///   real QEMU dump that states `smc`, so the decode is exercised; no machine here boots that
+///   configuration, so the `smc` instruction path has never executed. See `arch::psci_cpu_on`.
 pub fn bring_up_secondaries() {
     // Record the boot core as online before starting anyone, so a TLB shootdown from here on names
     // it. (Secondaries add their own bits as they come up.)
@@ -163,23 +290,52 @@ pub fn bring_up_secondaries() {
     // function item through a pointer (not straight to an integer, which the compiler warns on).
     let entry = arch::mmu::virt_to_phys(secondary_boot as *const () as u64);
 
+    // What starts a core here, and whether this machine can be asked at all. The arch prints the
+    // mechanism it found (the PSCI conduit and function id on aarch64, read out of `/psci`); a
+    // machine that states none is a real machine and this is where we say so, once, rather than
+    // firing calls into an exception level that may not exist.
+    arch::print_bring_up_mechanism();
+    if !arch::can_start_secondaries() {
+        println!("  smp: 1 core(s) online");
+        return;
+    }
+
     let mut started = 0;
-    for id in 0..MAX_CPUS {
-        // Start every core but the one we booted on. On aarch64 that is always core 0; on RISC-V
-        // QEMU's boot hart is not guaranteed to be 0, so skip whichever this is (logical id == hart
-        // id there). The list itself is `0..MAX_CPUS`, a constant, where the machine states it in
-        // the device tree's `/cpus`: reading it is unbuilt, and the limitation is named on
-        // `arch::psci_cpu_on`, beside the other half of the same assumption.
+    for id in 0..ROSTER.load(Ordering::Acquire) {
+        // Start every core the tree described but the one we booted on. On aarch64 that is always
+        // core 0; on RISC-V OpenSBI's boot hart is not guaranteed to be 0, so skip whichever this
+        // is. Both are the roster slot whose hardware id equals `boot_cpu_id()`, checked below.
         if id == cpu::id() {
             continue;
         }
-        let ret = arch::psci_cpu_on(id as u64, entry, stack_top(id));
+        if !STARTABLE[id].load(Ordering::Relaxed) {
+            println!("  smp: cpu {id} is not startable by this kernel (the tree disabled it, or");
+            println!("       named an enable-method we do not speak); leaving it alone.");
+            continue;
+        }
+        // The hardware id the machine gave this core, and the check the rest of the kernel needs it
+        // to pass. See this function's BUGS: per-CPU state, GIC and PLIC targets and IPI masks are
+        // all indexed by logical id, so an id that is not its index is a machine we can read and
+        // cannot yet run on. Refusing it is the point of the milestone: the alternative is starting
+        // nothing and reporting success.
+        let hwid = HWID[id].load(Ordering::Relaxed);
+        if hwid != id as u64 {
+            println!("  smp: cpu {id} has hardware id {hwid:#x}, which is not its index.");
+            println!(
+                "       This kernel indexes per-CPU state, interrupt targets and IPI masks by"
+            );
+            println!("       logical id, so it cannot use that core yet. Not started.");
+            continue;
+        }
+        let ret = arch::psci_cpu_on(hwid, entry, stack_top(id));
         if ret == 0 {
             started += 1;
         } else {
-            // A core that isn't present (QEMU started with fewer than MAX_CPUS) returns an error
-            // rather than hanging. Degrade: note it and carry on with the cores we have.
-            println!("  smp: cpu {id} did not start (PSCI {ret}); not present?");
+            // A core the firmware declines to start returns an error rather than hanging. Degrade:
+            // note it and carry on with the cores we have. Before milestone 100 this line's "not
+            // present?" was the only thing standing between us and a wrong core list, because
+            // `0..MAX_CPUS` on a machine with fewer cores lands here on every absent one.
+            println!("  smp: cpu {id} did not start (firmware returned {ret})");
         }
     }
 
@@ -389,6 +545,63 @@ mod tests {
              ({lo:#x}..{hi:#x})",
         );
         assert_eq!(lo % 4096, 0, "the region is not page-aligned");
+    }
+
+    /// **The cores we started are the cores the machine described** (milestone 100).
+    ///
+    /// The list used to be `0..MAX_CPUS`, a constant that happens to be right on QEMU `virt`, so the
+    /// assertion that matters is not the count but where it came from: the tree is re-read here,
+    /// independently of the boot path, and its `cpu@` nodes must be the roster the bring-up used.
+    ///
+    /// It also pins the invariant the rest of the kernel still rests on. Per-CPU blocks, secondary
+    /// stacks, RISC-V trap stashes, GIC targets, PLIC contexts and SBI IPI masks are all indexed by
+    /// logical id, so a hardware id that is not its index is a machine this kernel reads correctly
+    /// and cannot yet run on. `bring_up_secondaries` refuses such a core by name; this proves the
+    /// machine under the tests is not one, which is what makes that refusal path unreachable here.
+    #[test_case]
+    fn the_roster_is_the_machines_own_core_list() {
+        let ptr = crate::DTB.load(Ordering::Relaxed);
+        // SAFETY: the pointer firmware handed us, already parsed twice on this boot.
+        let dt = unsafe { dtb::Dtb::from_ptr(arch::mmu::phys_to_virt(ptr as u64) as *const u8) }
+            .expect("device tree is unreadable");
+        let list = CpuList::from_device_tree(&dt).expect("cannot read /cpus");
+
+        assert_eq!(
+            super::described_count(),
+            list.described,
+            "the roster and a fresh read of the tree disagree about how many cores exist",
+        );
+        assert_eq!(
+            list.described, MAX_CPUS,
+            "the runner passes -smp {MAX_CPUS}, and the tree should say so",
+        );
+
+        for (id, cpu) in list.cpus().iter().enumerate() {
+            assert_eq!(
+                super::hwid(id),
+                Some(cpu.hwid),
+                "roster slot {id} does not hold the hardware id the tree gave that core",
+            );
+            assert_eq!(
+                cpu.hwid, id as u64,
+                "core {id} has a hardware id that is not its index: this kernel indexes hardware \
+                 by logical id, so bring_up_secondaries would have refused it (see its BUGS)",
+            );
+        }
+    }
+
+    /// **Every core the machine described came online.**
+    ///
+    /// The pair of the test above: that one says the roster is the machine's, this one says we used
+    /// all of it. Before milestone 100 there was no way to state this, because the count the
+    /// bring-up worked from was a constant and could only ever agree with itself.
+    #[test_case]
+    fn every_core_the_tree_described_is_running() {
+        assert_eq!(
+            online_count(),
+            super::described_count(),
+            "the machine describes cores that never came online",
+        );
     }
 
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.
