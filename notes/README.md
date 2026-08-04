@@ -409,6 +409,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the
   measured caveat behind CodeQL's "0 alerts" and the reason `--auto` merging silently did nothing.
+- [Auditing the shared pages](shared-page-audit.md): the **second** security audit, with the lens the
+  first one lacked. Every service contract now moves bulk data through a page shared with its client,
+  so the question is whether a value a server **checks** and a value it **uses** are two reads of
+  memory somebody else can write in between. Seven findings, five fixed; the structural reason there
+  were not more (every length travels in a register, never in the page); and the two patterns that
+  recurred, a guarantee assumed from the wrong side of a boundary and half a discipline written by
+  instinct.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
