@@ -20,10 +20,22 @@
 //!
 //! # The invariant the caller keeps
 //!
-//! Reusing a number is only safe once the TLB holds no entries tagged with it. The kernel
-//! invalidates by ASID (`tlbi aside1is`) in `AddressSpace::drop`, *before* calling
+//! Reusing a number is only safe once the TLB holds no entries tagged with it, **on every core**.
+//! The kernel invalidates by ASID in `AddressSpace::drop`, *before* calling
 //! [`free`](Allocator::free). This crate proves the numbers are managed soundly; the flush is
 //! the kernel's half of the contract, stated at the call site.
+//!
+//! **How much work that half is depends entirely on the ISA**, which milestone 58 made plain.
+//! aarch64's `tlbi aside1is` broadcasts across the inner-shareable domain in hardware, so the
+//! contract is one instruction. RISC-V's `sfence.vma` affects only the hart that runs it, so the
+//! same sentence becomes a distributed protocol: a local fence, an SBI RFENCE IPI to every other
+//! online hart, and an acknowledgement before the number may be handed on. See
+//! notes/riscv-tlb-shootdown.md.
+//!
+//! The other half of the assumption below is also an aarch64 fact and not a universal one: the
+//! architecture *mandates* at least 8 ASID bits there, and RISC-V permits **zero**. So the RISC-V
+//! kernel probes `satp.ASID`'s implemented width at boot and keeps flushing on every switch if it
+//! is narrower than the numbers this crate hands out.
 //!
 //! # Examples
 //!
