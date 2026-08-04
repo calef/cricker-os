@@ -1,6 +1,6 @@
 # 97. Citations that name what they cite
 
-**Status: NOT-STARTED.** Raised 2026-08-04, from a miscitation found while ratifying a program
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/97-citations`. Raised 2026-08-04, from a miscitation found while ratifying a program
 name, and then measured: **23 sites across the tree cite "milestone 24" when they mean DECISIONS
 §24.**
 
