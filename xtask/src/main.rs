@@ -2887,7 +2887,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 11] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 17] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2919,6 +2919,20 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 11] = [
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
     ("caps date", Some("cap 1  frame     clock")),
+    // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
+    // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
+    // budget, and every job runs in a region of its own that `job_reaper` returns when the job ends.
+    // The five spawns above plus these six are eleven jobs through a six-job pool, so a boot where
+    // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
+    // rather than the arithmetic. Six distinct arguments rather than one repeated, because the
+    // transcript is walked with a moving cursor and six identical answers would let a missed line
+    // pass as its neighbour.
+    ("worker 3", Some("3*3 = 9")),
+    ("worker 4", Some("4*4 = 16")),
+    ("worker 5", Some("5*5 = 25")),
+    ("worker 6", Some("6*6 = 36")),
+    ("worker 7", Some("7*7 = 49")),
+    ("worker 8", Some("8*8 = 64")),
     ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
 ];
 
@@ -3061,6 +3075,25 @@ fn shell_check_leg(riscv: bool) -> bool {
              reached a shell"
         ));
     } else {
+        // **Init gave the construction budget away, and says so from the inside** (milestone 22,
+        // the interactive increment). Init prints this one line after deleting the root untyped and
+        // before starting the shell, and it prints it only when `RETYPE` and `RETYPE_OBJ` on that
+        // slot both answered `NoSuchSlot`: the capability is gone, not narrowed. The other branch
+        // says "NOT dropped", so a boot that kept its budget fails here rather than passing quietly.
+        // It is already in the transcript by now, because the banner comes from a shell init starts
+        // afterwards; there is nothing to wait for.
+        if !seen
+            .lock()
+            .expect("transcript lock")
+            .contains("construction budget dropped")
+        {
+            failed.push(
+                "init never reported dropping its construction budget: either it still holds the \
+                 kernel's root untyped, or the delete did not take (the slot answered something \
+                 other than NoSuchSlot)"
+                    .to_string(),
+            );
+        }
         for (line, _) in SHELL_CHECK_SCRIPT {
             if !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
                 failed.push(format!(
@@ -3118,7 +3151,8 @@ fn shell_check_leg(riscv: bool) -> bool {
     if failed.is_empty() {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
-             file to a reader, and read the clock"
+             file to a reader, read the clock, and ran eleven jobs through init's six-job pool \
+             after init gave its construction budget away"
         );
         return true;
     }
