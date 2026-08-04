@@ -7,9 +7,42 @@
 //!
 //! Runs in milliseconds. No emulator, no hardware, no MMU.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
+
+thread_local! {
+    /// Every table the pretend frame allocator hands out, so `TableGuard` can give them back.
+    /// Thread-local because tests run in parallel and each test's tables are its own.
+    static TABLES: RefCell<Vec<*mut PageTable>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Frees the test's tables when it ends. Declared FIRST in each test that builds a mapper, so it
+/// drops last, after the mapper that reads the tables is gone.
+///
+/// The tables used to be leaked, with a comment calling that fine because the process was about to
+/// exit. It was fine until milestone 79: Miri's leak check reports each one, and a suite that
+/// "fails" on purpose teaches everyone to ignore the gate. Owning the cleanup costs one line per
+/// test and keeps the leak check meaning something (notes/miri.md).
+struct TableGuard;
+impl Drop for TableGuard {
+    fn drop(&mut self) {
+        TABLES.with(|t| {
+            for p in t.borrow_mut().drain(..) {
+                // SAFETY: `p` came from `Box::into_raw` in this thread's allocator below,
+                // registered exactly once; the drain removes it so nothing frees it twice.
+                unsafe { drop(Box::from_raw(p)) };
+            }
+        });
+    }
+}
+
+/// `Box::into_raw` with a receipt: the guard above owns the eventual free.
+fn fresh_table() -> u64 {
+    let p = Box::into_raw(Box::new(PageTable::new()));
+    TABLES.with(|t| t.borrow_mut().push(p));
+    p as u64
+}
 
 /// This host test suite drives the aarch64 format specifically (the format-neutral `Mapper`
 /// behaviour is identical for Sv39; the aarch64 encoding is what these older tests pin). The Sv39
@@ -21,18 +54,16 @@ fn index(va: u64, level: usize) -> usize {
     Fmt::index(va, level)
 }
 
-/// A pretend physical frame allocator backed by the host heap.
-///
-/// Leaks. That's fine, and deliberate: the tables must outlive the mapper, and a test
-/// process is about to exit anyway.
+/// A pretend physical frame allocator backed by the host heap. The tables outlive the mapper
+/// (they are freed by the test's `TableGuard`, not here), which is the ownership shape the real
+/// kernel has too: the mapper borrows tables, the frame allocator owns them.
 fn frame_source(budget: &Cell<usize>) -> impl FnMut() -> Option<u64> + '_ {
     move || {
         if budget.get() == 0 {
             return None;
         }
         budget.set(budget.get() - 1);
-        let table = Box::new(PageTable::new());
-        Some(Box::into_raw(table) as u64)
+        Some(fresh_table())
     }
 }
 
@@ -45,7 +76,7 @@ fn mapper_in(
     half: Half,
     budget: &Cell<usize>,
 ) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable, Fmt> {
-    let root = Box::into_raw(Box::new(PageTable::new())) as u64;
+    let root = fresh_table();
     // SAFETY: `root` is a fresh, zeroed, 4 KiB-aligned table, and `phys_to_ptr` is the
     // identity, which is correct because these "physical" addresses ARE host addresses.
     unsafe {
@@ -85,6 +116,7 @@ fn index_wraps_at_512() {
 
 #[test]
 fn map_then_translate_round_trips() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -98,6 +130,7 @@ fn map_then_translate_round_trips() {
 
 #[test]
 fn translate_carries_the_offset_within_the_page() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -110,6 +143,7 @@ fn translate_carries_the_offset_within_the_page() {
 
 #[test]
 fn unmapped_addresses_translate_to_nothing() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
     m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
@@ -121,6 +155,7 @@ fn unmapped_addresses_translate_to_nothing() {
 #[test]
 fn a_virtual_address_can_differ_from_its_physical_one() {
     // The entire point of the exercise, and what milestone 4 step 4 depends on.
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -170,6 +205,7 @@ fn mapping_into_the_wrong_half_is_refused() {
     // builds a mapping the CPU will never consult, because it would pick TTBR1 for that
     // address and never look at this table at all. You would then chase the ghost for
     // hours.
+    let _tables = TableGuard;
     let budget = Cell::new(16);
 
     let mut low = mapper_in(Half::Low, &budget);
@@ -196,6 +232,7 @@ fn non_canonical_addresses_belong_to_neither_half() {
 
 #[test]
 fn the_high_half_maps_normally_once_you_are_in_it() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper_in(Half::High, &budget);
 
@@ -210,6 +247,7 @@ fn nearby_pages_share_their_intermediate_tables() {
     // Two pages in the same 2 MiB region differ only in their L3 index, so the walk should
     // create L1/L2/L3 once and reuse them. If it doesn't, we burn a frame per page and run
     // out of memory mapping a kernel.
+    let _tables = TableGuard;
     let budget = Cell::new(3); // exactly enough for ONE chain of L1+L2+L3
     let mut m = mapper(&budget);
 
@@ -225,6 +263,7 @@ fn nearby_pages_share_their_intermediate_tables() {
 
 #[test]
 fn running_out_of_frames_is_an_error_not_a_panic() {
+    let _tables = TableGuard;
     let budget = Cell::new(0);
     let mut m = mapper(&budget);
 
@@ -236,6 +275,7 @@ fn running_out_of_frames_is_an_error_not_a_panic() {
 
 #[test]
 fn misaligned_addresses_are_rejected() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -253,6 +293,7 @@ fn misaligned_addresses_are_rejected() {
 fn mapping_over_an_existing_mapping_is_an_error() {
     // Silently overwriting is how you lose a page and never find out: the old physical
     // frame is still marked used by the allocator, and nothing references it any more.
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -265,6 +306,7 @@ fn mapping_over_an_existing_mapping_is_an_error() {
 
 #[test]
 fn map_range_maps_every_page() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -339,6 +381,7 @@ fn device_memory_is_typed_as_device_and_is_never_executable() {
 
 #[test]
 fn unmap_removes_the_mapping_and_returns_the_frame() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -361,6 +404,7 @@ fn unmap_removes_the_mapping_and_returns_the_frame() {
 
 #[test]
 fn the_tlb_obligation_names_the_address_it_is_about() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -378,6 +422,7 @@ fn the_tlb_obligation_names_the_address_it_is_about() {
 
 #[test]
 fn unmapping_nothing_is_an_error_not_a_silent_success() {
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -396,6 +441,7 @@ fn changing_a_mapping_is_forced_through_break_before_make() {
     // AlreadyMapped is what forces the legal sequence. You CANNOT overwrite; you must unmap
     // (which hands you a TlbFlush you cannot ignore) and then map. The API cannot be used
     // incorrectly, rather than merely documenting the rule and hoping.
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
@@ -427,6 +473,7 @@ fn unmap_then_map_reuses_the_intermediate_tables() {
     //
     // The flip side is the TODO on `unmap`: tearing down a whole address space must walk back
     // up and return those tables, or every process exit leaks its page tables.
+    let _tables = TableGuard;
     let budget = Cell::new(3); // exactly one chain of L1+L2+L3
     let mut m = mapper(&budget);
 
@@ -449,6 +496,7 @@ fn dropping_the_tlb_obligation_is_fatal() {
     // `let (pa, _) = m.unmap(va)?;`, which is exactly the shape the mistake takes in real
     // code. Rust has no linear types, so the only way to make "you must consume this"
     // enforceable is to make NOT consuming it fail loudly.
+    let _tables = TableGuard;
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
     m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
