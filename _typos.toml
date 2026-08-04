@@ -71,6 +71,9 @@ unparseable = "unparseable"
 # Proper nouns: a chip vendor and a Rust TUI crate.
 Synopsys = "Synopsys"
 ratatui = "ratatui"
+# A crates.io package name (the DEFLATE bindings), cited throughout milestone 64's probe results.
+# The checker splits the trailing digit off and reports `flate` as a misspelling of `flat`.
+flate2 = "flate2"
 # A misspelling ON PURPOSE, and the one entry here that would be a bug to "fix": grant_plan's parser
 # test feeds `parse(b"hlep")` to prove an unknown word becomes a Run command rather than a builtin.
 # Correcting it would delete the test's subject.

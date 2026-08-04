@@ -249,10 +249,63 @@ opens, every other name is an ordinary `NotFound`, and a write through a read-on
 `ErrorKind::ReadOnlyFilesystem`. Nothing in the PAL knows whether slot 4 leads to a directory or to
 one file, and it does not need to.
 
-Unsupported, each because **no verb in the contract backs it**, not because the code is missing:
+**And bound since milestone 64: the namespace verbs.** `read_dir`, `create_dir`, `remove_file`,
+`remove_dir` and `rename`, on `OPENDIR`, `READDIR`, `MKDIR`, `UNLINK`, `RMDIR` and `RENAME`.
 
-- **Directory iteration** (`read_dir`), `mkdir`, `unlink`, `rename`, `rmdir`, `remove_dir_all`,
-  `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
+**None of these was waiting on the contract**, which is the part worth recording rather than the
+feature. The FS server had been dispatching all six since milestones 47 and 48, while this note and
+the PAL's own comments went on saying "no verb in the contract backs it". A refusal outlived its
+reason by two milestones, and nothing caught it, because a refusal that is correct-looking reads the
+same as a refusal that is correct. Milestone 64 found it by asking fifty crates.io crates what they
+actually needed (notes/crates-io-on-cricker.md), which put `create_dir` and `read_dir` near the top
+of real demand.
+
+Four behaviours are worth knowing before you use them:
+
+- **`read_dir(".")` lists the granted directory itself** and costs no `OPENDIR`; the handle is
+  `fs::ROOT`. `read_dir("sub")` descends first (`OPENDIR` mints a capability to `sub`, the
+  enumeration runs through it, and it is closed afterwards), because there is no other way to name
+  what is inside `sub`. There are no `.` and `..` entries: they would be names for things no
+  capability designates.
+- **The listing is drained whole at `read_dir` time**, not streamed. std hands the caller an
+  iterator they may hold across arbitrary work including opening the files they just listed, and
+  the listing arrives through the one page every other operation also locks. So a huge directory
+  costs a `Vec` of its names, and the listing is a snapshot: an entry removed before the caller
+  reaches it opens as `NotFound`. That is the ordinary readdir caveat rather than something this
+  choice introduced.
+- **Neither remove verb removes the kind the other one is for.** `remove_file` on a directory is
+  `IsADirectory` and `remove_dir` on a file is `NotADirectory`, and `remove_dir` takes only an empty
+  one (`DirectoryNotEmpty` otherwise). A single "remove whatever you find" is what makes `rm -r`
+  dangerous and this contract does not offer it at any opcode.
+- **`EROFS` from any of them maps to `ErrorKind::ReadOnlyFilesystem`, and it is a capability
+  answer**, not a mode bit: the directory capability this process holds does not carry the right
+  that verb needs (§47's ladder). It is the one error in the map that is about *you* rather than
+  about the name.
+- **`metadata` answers for a directory now, at no extra message.** `OPEN` refuses one with
+  `EISDIR`, and that refusal *is* the answer to "what kind of thing is this name", so it is read as
+  one rather than propagated. `Path::is_dir()` used to be false for every directory that exists,
+  which meant `std::fs::create_dir_all` was not idempotent: it recovers from `AlreadyExists` by
+  asking whether the name is already a directory and got told no. `metadata(".")` answers without a
+  message at all, because the granted directory is what the endpoint is bound to rather than a name
+  inside it. The size reported is 0 and is a placeholder; `modified`/`accessed`/`created` still
+  refuse, so nothing here invents a fact the contract does not carry.
+
+**Over-asking for rights is a refusal, not an attenuation**, and it is the trap in this half of the
+PAL. `OPENDIR` and `MKDIR` carry the rights the caller wants on the child, and the server answers
+`EPERM` when the intersection with the parent's comes up *short of the request* (§47's monotonicity
+is the intersection; the refusal is the server telling the truth about it). A PAL cannot know what
+its own capability carries, so it asks for the minimum the operation needs: `ENUMERATE` to
+enumerate, and nothing at all for `create_dir`, which closes the handle it gets back. The first
+version of this binding asked for `dir::ALL` and would have worked through every test in the suite,
+because they all grant the root's full rights, and failed through every narrowed one.
+
+Still Unsupported, and now genuinely because **no verb in the contract backs it**:
+
+- **`remove_dir_all`**, which looks like an omission next to `remove_dir` and is not: the recursion
+  has to descend, and a nested path is refused (§27 carries one name resolved in the bound
+  directory). The loop belongs where it can hold a directory capability per level, which is
+  `user/src/rm.rs`.
+- `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
 - **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb
   reports one. The second half of that reason is now stale and is recorded as such: there **is** a
   wall clock to interpret a timestamp against since milestone 51, so what stands between
@@ -357,8 +410,14 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
   tail behind, which is the whole of §27's four-times-corrected bug pinned at the top level rather
   than only in a host test. `create_new` over the name it just made is `AlreadyExists`, and creating
   `/tmp/escape` or `../escape` is refused exactly as opening them is, so `CREATE` did not widen what a
-  client can reach. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability`
-  spawns it this way.
+  client can reach. Since milestone 64 it then walks the **namespace** verbs: makes a directory,
+  lists the granted directory and finds both the fixture (a file) and the directory it just made
+  (marked as one), descends into that directory and finds it empty, gets refused unlinking a
+  directory and rmdir-ing a file, renames the file it created and asserts the *source name is gone*
+  as well as the destination's contents, then removes both. It cleans up before it starts rather
+  than after, because `CRICKER_KEEP_REDOXFS=1` runs the suite against an image a previous boot
+  wrote. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability` spawns it this
+  way.
 - **Granted the network** (slots 2 and 3, alongside a running net_stack): the bind succeeds, and the
   program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
   guestfwd peer, both through `std::net` and both asserted. The kernel test

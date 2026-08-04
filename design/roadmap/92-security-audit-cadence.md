@@ -4,9 +4,9 @@
 milestone 43 asks for a second with a different lens; this milestone is the machine that makes
 them routine, so that auditing stops depending on someone remembering to ask.
 
-**Gate: DECISION.** Two things are Chris's before it starts: the cadence itself (quarterly is the
-block's proposal, not a decision) and the audit index's name and location, which the overdue
-tripwire reads.
+**Gate: DECISION.** One thing is Chris's before it starts: **the cadence**. Quarterly is this
+block's proposal, not a decision. The index name and location were settled on 2026-08-04,
+`design/audit-reports/`, which is what the overdue tripwire reads.
 
 **Why a mechanism rather than a habit.** The same argument as script/gates: a practice that lives
 in memory gets skipped exactly when it matters. And the failure mode of audits specifically is
@@ -38,10 +38,21 @@ that produces a report and no state change is wallpaper with a security label.
    overclaiming fixes the docs in the same lane, because the demonstrator's docs are part of the
    deliverable and an overclaim in SECURITY.md is itself a security finding.
 
-**The audit index** (location and name provisional, Chris settles both): one file listing every
-audit with date, lens, finding count by disposition, and a link to its report note. The overdue
-tripwire reads this file, which keeps the mechanism honest the same way the roadmap gate reads
-the milestone files: the record and the signal cannot drift apart.
+**The audit reports live in `design/audit-reports/`** (Chris, 2026-08-04): one file per audit, with
+`README.md` as the index listing every audit's date, lens, finding count by disposition, and a link
+to its report. The overdue tripwire reads the index, which keeps the mechanism honest the same way
+the roadmap gate reads the milestone files: the record and the signal cannot drift apart.
+
+The shape is `design/roadmap/`'s and `design/decisions/`', and for the same reason: **the index is a
+table and a report is a document.** Audits arrive slowly (quarterly plus triggers, so a handful a
+year), so the count is not what would have outgrown a single file; the reports are, because each
+carries its lens, its findings, their dispositions, and what it deliberately did not examine.
+
+`audit-trail` was considered and refused: `design/decisions/35-scanner-findings.md` already uses that
+phrase in its established sense, a chronological record of who did what, which is also what an
+operating system means by it (Linux's `auditd`, BSD's audit subsystem). A kernel whose thesis is
+confinement is a plausible future home for that feature, and this is not it. `audit-reports` over
+bare `audits` because every file in there is literally a report.
 
 ## Scope note
 
