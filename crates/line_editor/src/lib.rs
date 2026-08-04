@@ -888,7 +888,9 @@ mod tests {
         feed_all(&mut d, &mut s, b"\x0c");
         assert!(s.cleared);
         assert_eq!(s.text(), "$ ab");
-        feed_all(&mut d, &mut s, b"x\r");
+        feed_all(&mut d, &mut s, b"x");
+        assert_eq!(s.text(), "$ axb", "typing after ^L must land mid-line on screen");
+        feed_all(&mut d, &mut s, b"\r");
         assert_eq!(d.line(), b"axb");
     }
 
@@ -937,5 +939,209 @@ mod tests {
         assert_eq!(proto::op(w), proto::OP_READLINE);
         assert_eq!(proto::len(w), 42);
         assert_eq!(w & 0x00ff_ffff_0000_0000, 0);
+        // The reply flags are wire ABI shared with every client: pin the values, because a
+        // drifted FLAG_INTERRUPTED makes an interrupted read look like a normal empty line.
+        assert_eq!(proto::FLAG_EOF, 1);
+        assert_eq!(proto::FLAG_INTERRUPTED, 2);
+    }
+
+    /// The control-character encodings of movement (^B ^A ^E ^F), which the CSI tests do not
+    /// cover, including ^B at column 0 where there is nowhere to go.
+    #[test]
+    fn control_key_movement() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"\x02"); // ^B on an empty line: nothing to do
+        feed_all(&mut d, &mut s, b"ab");
+        feed_all(&mut d, &mut s, b"\x01\x06x"); // ^A, ^F right one, insert mid-line
+        assert_eq!(s.text(), "axb");
+        feed_all(&mut d, &mut s, b"\x05c\r"); // ^E, append
+        assert_eq!(d.line(), b"axbc");
+        assert_eq!(s.text(), "axbc");
+    }
+
+    /// CSI C moves right mid-line and is a no-op at the end of the line; typing after each
+    /// proves where the cursor actually is (the echo alone would not).
+    #[test]
+    fn right_arrow_moves_and_stops_at_end() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"ab\x1b[D\x1b[D"); // cursor to column 0
+        feed_all(&mut d, &mut s, b"\x1b[Cx"); // right one, insert between a and b
+        assert_eq!(s.text(), "axb");
+        feed_all(&mut d, &mut s, b"\x1b[C\x1b[C"); // to the end, then once more (no-op)
+        feed_all(&mut d, &mut s, b"c\r");
+        assert_eq!(d.line(), b"axbc");
+    }
+
+    /// A CSI with a ';' (shift-Delete, `ESC [ 3 ; 2 ~`) still dispatches on the first
+    /// parameter: the ';' advances to the second slot instead of aborting the sequence.
+    #[test]
+    fn csi_second_parameter_is_parsed() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"abc\x01"); // ^A, cursor on 'a'
+        feed_all(&mut d, &mut s, b"\x1b[3;2~"); // delete under cursor, modifier ignored
+        assert_eq!(s.text(), "bc");
+        feed_all(&mut d, &mut s, b"\r");
+        assert_eq!(d.line(), b"bc");
+    }
+
+    /// Type-ahead with the cursor moved off the end: `start_line` repaints and puts the
+    /// cursor back where it was, so the next insertion lands mid-line on screen too.
+    #[test]
+    fn start_line_restores_mid_line_cursor() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"ab\x02"); // type ahead, cursor between a and b
+        let mut s2 = Screen::new();
+        d.start_line(b"$ ", &mut s2);
+        feed_all(&mut d, &mut s2, b"X");
+        assert_eq!(s2.text(), "$ aXb");
+        feed_all(&mut d, &mut s2, b"\r");
+        assert_eq!(d.line(), b"aXb");
+    }
+
+    /// Enter on an empty line completes an empty read but records nothing: up must recall
+    /// the last real command, not a blank.
+    #[test]
+    fn empty_lines_stay_out_of_history() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"one\r\r");
+        s = Screen::new();
+        feed_all(&mut d, &mut s, b"\x1b[A");
+        assert_eq!(s.text(), "one");
+    }
+
+    /// An immediate repeat is stored once: with "a" entered twice, the second up-arrow has
+    /// nowhere older to go and rings the bell. The screen alone cannot tell one stored copy
+    /// from two, which is why the bell count is the assertion here.
+    #[test]
+    fn duplicate_entry_is_stored_once() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"a\ra\r");
+        s = Screen::new();
+        feed_all(&mut d, &mut s, b"\x1b[A\x1b[A");
+        assert_eq!(s.text(), "a");
+        assert_eq!(s.bells, 1, "one stored entry: the second up must bell");
+    }
+
+    /// Walk a wrapped ring end to end in both directions, asserting every entry: ten
+    /// commands in a ring of eight, plus a deduplicated repeat across the wrap. The
+    /// existing browsing tests never cross the wrap point, which is where the ring index
+    /// arithmetic can be wrong without them noticing.
+    #[test]
+    fn wrapped_ring_walks_correctly_both_ways() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        for i in 0..10 {
+            feed_all(&mut d, &mut s, std::format!("cmd{i}\r").as_bytes());
+        }
+        feed_all(&mut d, &mut s, b"cmd9\r"); // repeat of the newest, post-wrap: not stored
+        s = Screen::new();
+        for i in (2..=9).rev() {
+            feed_all(&mut d, &mut s, b"\x1b[A");
+            assert_eq!(s.text(), std::format!("cmd{i}"), "up should reach cmd{i}");
+        }
+        feed_all(&mut d, &mut s, b"\x1b[A"); // past the oldest
+        assert_eq!(s.bells, 1);
+        assert_eq!(s.text(), "cmd2");
+        for i in 3..=9 {
+            feed_all(&mut d, &mut s, b"\x1b[B");
+            assert_eq!(s.text(), std::format!("cmd{i}"), "down should reach cmd{i}");
+        }
+        feed_all(&mut d, &mut s, b"\x1b[B"); // past the newest: the (empty) line in progress
+        assert_eq!(s.text(), "");
+    }
+
+    /// Browsing away and back restores not just the in-progress text but the cursor column:
+    /// typing after the round trip lands where the cursor was left. The buffer restore is
+    /// checked elsewhere; this pins the on-screen column, which only the echo carries.
+    #[test]
+    fn stash_restores_cursor_column() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"old\r");
+        s = Screen::new();
+        feed_all(&mut d, &mut s, b"hello\x02\x02"); // cursor after "hel"
+        feed_all(&mut d, &mut s, b"\x1b[A\x1b[B"); // up to "old", back down
+        feed_all(&mut d, &mut s, b"X");
+        assert_eq!(s.text(), "helXlo");
+        feed_all(&mut d, &mut s, b"\r");
+        assert_eq!(d.line(), b"helXlo");
+    }
+
+    /// A yank that does not fit is truncated to the room left: the line ends exactly full,
+    /// silently (the bell is reserved for a yank with no room at all).
+    #[test]
+    fn yank_truncates_to_the_room_left() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        for _ in 0..250 {
+            d.feed(b'a', &mut s);
+        }
+        feed_all(&mut d, &mut s, b"\x15"); // ^U: kill all 250
+        for _ in 0..10 {
+            d.feed(b'b', &mut s);
+        }
+        feed_all(&mut d, &mut s, b"\x19\r"); // ^Y: only 246 of the 250 fit
+        assert_eq!(s.bells, 0);
+        assert_eq!(d.line().len(), LINE_MAX);
+        assert_eq!(&d.line()[..10], b"bbbbbbbbbb");
+        assert!(d.line()[10..].iter().all(|&b| b == b'a'));
+    }
+
+    /// ^Y with nothing ever killed is silent; ^Y with a kill buffer but a full line rings
+    /// the bell (there was something to yank and nowhere to put it). Both sides matter: the
+    /// distinction is the condition, not just the bell.
+    #[test]
+    fn yank_bell_needs_a_kill_and_a_full_line() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"\x19"); // empty kill buffer: nothing, no bell
+        assert_eq!(s.bells, 0);
+        feed_all(&mut d, &mut s, b"x\x15"); // kill buffer now holds "x"
+        for _ in 0..LINE_MAX {
+            d.feed(b'a', &mut s);
+        }
+        feed_all(&mut d, &mut s, b"\x19"); // no room at all
+        assert_eq!(s.bells, 1);
+    }
+
+    /// Yank into the middle of a line, then keep typing: the tail stays put on screen
+    /// through both the yank repaint and the next insertion.
+    #[test]
+    fn yank_mid_line_keeps_the_tail_in_place() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"abcdef\x02\x02\x0b"); // ^K kills "ef"
+        feed_all(&mut d, &mut s, b"\x02\x02\x19"); // yank it between "ab" and "cd"
+        assert_eq!(s.text(), "abefcd");
+        feed_all(&mut d, &mut s, b"X");
+        assert_eq!(s.text(), "abefXcd");
+        feed_all(&mut d, &mut s, b"\r");
+        assert_eq!(d.line(), b"abefXcd");
+    }
+
+    /// ^W with only blanks before the cursor stops cleanly at column 0 (the blank-skipping
+    /// loop must not walk past the front of the buffer).
+    #[test]
+    fn word_kill_over_leading_blanks() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"  \x17\r");
+        assert_eq!(d.line(), b"");
+        assert_eq!(s.text(), "");
+    }
+
+    /// ^W then ^Y round-trips exactly the killed word: the kill length is the word's, not
+    /// the cursor position's.
+    #[test]
+    fn word_kill_yank_round_trip() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"ab cd\x17\x19\r");
+        assert_eq!(d.line(), b"ab cd");
+    }
+
+    /// Home from column 12 needs a two-digit CSI count; typing at the front proves the
+    /// cursor really travelled all twelve columns. Every other test moves fewer than ten,
+    /// so the multi-digit encoding path was unexercised.
+    #[test]
+    fn multi_digit_cursor_move() {
+        let (mut d, mut s) = (LineDisc::new(), Screen::new());
+        feed_all(&mut d, &mut s, b"abcdefghijkl\x01X");
+        assert_eq!(s.text(), "Xabcdefghijkl");
+        feed_all(&mut d, &mut s, b"\r");
+        assert_eq!(d.line(), b"Xabcdefghijkl");
     }
 }
