@@ -62,7 +62,7 @@ but only reasons up to the bound" is the whole trade.
 
 ## What a green check does and does not mean
 
-A proof is only as good as three things, and each is worth being blunt about:
+A proof is only as good as four things, and each is worth being blunt about:
 
 1. **It proves what you *asserted*, not what you *meant*.** A wrong assertion verifies happily and
    means nothing. The harness is the specification, so it must be read as carefully as the code it
@@ -75,7 +75,14 @@ A proof is only as good as three things, and each is worth being blunt about:
    sharpest edge of this limit**: every queue and endpoint proof here is single-threaded, and the
    wake-before-switch-out race (notes/intrusive-queues.md) lived precisely in the SMP interleaving
    those proofs cannot see. Green harnesses and a real race coexisted; the flaky test found it.
-3. **The tool is trusted.** Kani, its CBMC backend, and the SAT solver could have bugs. They are
+3. **The harness itself is code, and until milestone 113 it was code no gate read.** `cfg(kani)` is
+   set by the model checker and by nothing else, so `script/lint` never compiled a single
+   `#[cfg(kani)] mod verification` and `clippy::undocumented_unsafe_blocks` could not fire in one.
+   The harnesses that set up the queue and endpoint proofs are `unsafe`, and thirteen of those sites
+   had no SAFETY comment: an unexamined assumption inside the thing that exists to examine
+   assumptions. `script/lint` now compiles them all against a shim (`scripts/kani-lint-shim/`), which
+   is a lint pass and not a second proof. See notes/unsafe-obligations.md.
+4. **The tool is trusted.** Kani, its CBMC backend, and the SAT solver could have bugs. They are
    small and widely used, and the solver emits a checkable certificate, but it is a trust assumption.
    seL4 minimizes even its proof checker; we do not, and that is a stated limit.
 

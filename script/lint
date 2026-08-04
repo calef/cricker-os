@@ -42,6 +42,44 @@ cargo clippy --manifest-path fs_server/Cargo.toml --all-targets -- -D warnings
 echo "==> clippy: fuzz targets (its own workspace)"
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
 
+# The proofs' own code, which nothing else in this file compiles (milestone 113).
+#
+# `cfg(kani)` is set by the model checker and by nothing else. So every `#[cfg(kani)] mod
+# verification` in the tree was invisible to every pass above, and `undocumented_unsafe_blocks` and
+# `unsafe_op_in_unsafe_fn` could not fire inside one. That is the wrong place in this tree to have a
+# blind spot: the unsafe code that sets up a proof is the code deciding what the proof is *about*.
+#
+# **What it found, first run: 26 warnings in 9 crates**, of which 13 were undocumented `unsafe` (11
+# blocks and 2 `unsafe impl`s, all in `ipc` and `intrusive`) and 13 were ordinary clippy hits nobody
+# had ever seen (`doc_markdown`, `manual_range_contains`, `manual_let_else`, `len_zero`,
+# `needless_range_loop`, `assertions_on_constants`).
+#
+# **The alternative was `-D warnings` on the `script/verify` build**, which is `cfg(kani)` by
+# definition and needs no shim. It finds **none of the 26**, measured: `cargo kani` drives a rustc,
+# not a clippy-driver, so no `clippy::` lint exists there to fire. (`RUSTFLAGS=-D warnings` does
+# reach it and does gate *rustc* lints, which was checked with a deliberate unused variable.) It also
+# runs only when someone runs the proofs, which is ~20 minutes and therefore rarely; this runs on
+# every pull request for about a second.
+#
+# The price is the shim in scripts/kani-lint-shim/, because the harnesses are written against Kani's
+# intrinsics and a plain `--cfg kani` cannot compile them. Two crates, since an attribute macro can
+# only come from a proc-macro crate; read that directory for what the shim does and does not promise.
+# A clean pass here is not a proof, and `script/verify` remains the thing that proves.
+echo "==> clippy: the Kani proof harnesses (--cfg kani)"
+shim=target/kani-lint-shim
+mkdir -p "$shim"
+attrs=$(rustc --print file-names --crate-type proc-macro --crate-name kani_attributes \
+    scripts/kani-lint-shim/kani_attributes.rs)
+rustc --edition 2024 --crate-type proc-macro --crate-name kani_attributes \
+    scripts/kani-lint-shim/kani_attributes.rs --out-dir "$shim"
+rustc --edition 2024 --crate-type lib --crate-name kani \
+    scripts/kani-lint-shim/kani.rs --extern kani_attributes="$shim/$attrs" --out-dir "$shim"
+# Same package selection as the host pass above: every `#[cfg(kani)]` module in the tree is in
+# `crates/`, and kernel/user/user_rt hold none. `--all-targets` because a harness crate's `cfg(test)`
+# build compiles the harnesses too, and the two configurations are not the same compilation.
+cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- \
+    --cfg kani --extern "kani=$shim/libkani.rlib" -L "$shim" -D warnings
+
 echo "==> clippy: kernel + user + user_rt (aarch64)"
 cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
 

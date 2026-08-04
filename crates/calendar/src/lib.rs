@@ -1493,8 +1493,8 @@ mod verification {
         let days: i64 = kani::any();
         kani::assume((FIRST_DAY..=LAST_DAY).contains(&days));
         let (y, m, d) = civil_from_days(days);
-        assert!(MIN_YEAR <= y && y <= MAX_YEAR);
-        assert!(1 <= m && m <= 12);
+        assert!((MIN_YEAR..=MAX_YEAR).contains(&y));
+        assert!((1..=12).contains(&m));
         assert!(1 <= d && d <= days_in_month(y, m).unwrap());
         assert!(Civil::new(y, m, d, 0, 0, 0).is_ok());
     }

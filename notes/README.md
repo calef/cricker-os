@@ -440,8 +440,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `unsafe fn`s contain **no unsafe operation at all**, so their rustdoc `# Safety` section is the
   only enforcement there is; four safe fns carry a SAFETY comment that discharges an obligation onto
   "the caller" that the signature imposes on nobody (one of them an aarch64/riscv64 asymmetry over
-  the same register write); and `#[cfg(kani)]` code is invisible to both lints, which is where
-  eleven undocumented unsafe blocks are sitting today.
+  the same register write). The `#[cfg(kani)]` blind spot is **closed** by milestone 113: a
+  fourteenth clippy configuration compiles the proof harnesses against a five-item shim, because the
+  other candidate (`-D warnings` on `script/verify`) finds **none** of what is there, `cargo kani`
+  driving a rustc where no `clippy::` lint exists. It found 26 warnings in 9 crates, 13 of them
+  undocumented `unsafe` (the hand count of 11 had missed two `unsafe impl`s) and 13 with nothing to
+  do with unsafe at all.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
