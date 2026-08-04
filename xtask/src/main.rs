@@ -2599,6 +2599,9 @@ fn test() -> bool {
 /// wc < gate                  -> 1 2 12   ... and they are the same bytes
 /// echo hello world >> gate   -> nothing
 /// wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+/// wc gate                    -> 2 4 24   milestone 31: the name IS the grant, same bytes
+/// wc                         -> refused  ... and with no name there is nothing to read
+/// caps wc gate               -> input     ... and the preview says which file, and how
 /// date                       -> ...UTC   a real wall clock, wired through the real init
 /// caps date                  -> cap 1    ... and `caps` names the capability that made it real
 /// ```
@@ -2638,12 +2641,38 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 6] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 11] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
     ("echo hello world >> gate.txt", None),
     ("wc < gate.txt", Some("2 4 24")),
+    // **Milestone 31's headline, at the one interface a human touches**: naming a resource in a
+    // command IS granting it. The answer has to be the same as the `<` above it, because it is the
+    // same designation with the operator left out, and the pair is what makes that a claim rather
+    // than an assertion: one line reaches the file through an operator and one through a name, so
+    // if they disagree, one of them opened something else.
+    ("wc gate.txt", Some("2 4 24")),
+    // The negative control the pair would be weaker without. `wc` alone is refused **at the
+    // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
+    // on Unix the same command is a shell that appears to hang. So the line above granted
+    // something, rather than falling back on a default.
+    ("wc", Some("name a file")),
+    // And `caps` says which file and how, which is the honest half: the shell reads it and streams
+    // it in, so what the child holds is an endpoint and not a capability naming the disk.
+    ("caps wc gate.txt", Some("input    gate.txt")),
+    // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
+    // the check is the one word that separates a real time from both ways of not having one:
+    // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
+    // has no clock it believes" / "this process holds no clock capability") contain no `UTC` at
+    // all. So this fails if the clock service did not run, if the kernel granted init no page, if
+    // init did not endow `date`, or if `date` was handed a page nobody published to.
+    ("date", Some("UTC")),
+    // And the visibility surface agrees with the wiring. `caps` is the only thing in this system
+    // that claims to print a process's whole authority, so a clock endowed and not printed would
+    // make that claim false. Its wording is host-tested; this proves the wording is about a
+    // capability the boot really moves.
+    ("caps date", Some("cap 1  frame     clock")),
     ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
 ];
 
@@ -2841,7 +2870,10 @@ fn shell_check_leg(riscv: bool) -> bool {
     let _ = reader.join();
 
     if failed.is_empty() {
-        eprintln!("shell-check ({arch}): the prompt booted, piped, redirected and appended");
+        eprintln!(
+            "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
+             file to a reader, and read the clock"
+        );
         return true;
     }
     eprintln!();

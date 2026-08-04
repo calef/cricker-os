@@ -1505,7 +1505,6 @@ pub mod clock_service;
 ///
 /// It is also the DECISIONS §43 split, delivered: init gets `READ` on a frame. Nothing on this path
 /// can hand a child the writable mapping that would let it set the time, because init never had one.
-#[cfg(not(test))]
 fn boot_clock_page() -> u64 {
     match program("clock") {
         Some(image) => {

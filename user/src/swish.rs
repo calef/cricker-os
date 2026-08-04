@@ -778,7 +778,7 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
         // interception to find every arm.
         Command::Caps(tail) => caps(nav, tail),
         Command::Pwd => print_pwd(nav),
-        Command::Run(spec) => run(nav, spec),
+        Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
         Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) => {}
     }
@@ -806,7 +806,7 @@ fn help() {
 
 /// Resolve an invocation, then either refuse it at the prompt (a mismatch the manifest caught) or
 /// spawn it, granting exactly what the command named and nothing else.
-fn run(nav: &mut Nav, spec: RunSpec) {
+fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
     // **Expand first.** A pattern designates the names it matched, so the planner has to see the
     // set; and a pattern that matched nothing, or too much, is refused here with nothing spawned.
     let expanded = match expansion(nav, &spec) {
@@ -821,7 +821,22 @@ fn run(nav: &mut Nav, spec: RunSpec) {
         // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
         // spawned and waited on.
         Ok(endow) if endow.interruptible => spawn_interruptible(endow),
-        Ok(endow) => spawn(endow),
+        // **`wc report.txt`**, which is `wc < report.txt` with the operator left out: the planner
+        // put the designated name in the *source* (`grant_plan`'s input operand), so this line is a
+        // one-stage pipeline the shell feeds, and it runs down exactly the path a `<` runs down.
+        // There is no second mechanism here, which is the reason to do it this way: the bytes reach
+        // the child the same way, and the child still cannot tell a file from a pipe.
+        Ok(endow) => match endow.source {
+            Source::File(g) => {
+                // The line reparses into the one stage it is. It cannot fail (this command came out
+                // of it), and a `Line` is what `run_pipeline` reads its stage count off.
+                let Ok(l) = line::split(cmd) else { return };
+                let mut plans: [Option<Endowment>; line::MAX_STAGES] = [None; line::MAX_STAGES];
+                plans[0] = Some(endow);
+                run_pipeline(nav, l, &plans, false, None, Some(g));
+            }
+            _ => spawn(endow),
+        },
     }
 }
 
@@ -846,11 +861,12 @@ fn spawn(e: Endowment) {
         return;
     }
     // The same rule one rung up, and `rm` is the first shipped program it applies to. A directory
-    // grant is delivered by a `fs_subtree_caretaker` built from a directory this shell holds, and
-    // the boot that starts this shell wires no FS service, so `plan` has already refused with "you
-    // hold no such capability" and this line is what stops a future wiring from spawning `rm` with
-    // no capability at all. A silently ungranted `rm` would be the worst possible failure of this
-    // model: a program told to destroy something, holding nothing, saying nothing.
+    // grant is delivered by a `fs_subtree_caretaker`, and **init is the only process that can build
+    // one**: this shell's file-service endpoint carries no GRANT, so it holds nothing it could hand
+    // a caretaker. Since milestone 50 this shell does hold a directory, so `plan` no longer refuses
+    // the line, and this is what stops `rm` being spawned with no capability at all. A silently
+    // ungranted `rm` would be the worst possible failure of this model: a program told to destroy
+    // something, holding nothing, saying nothing.
     if e.dir.is_some() {
         print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
         return;

@@ -579,9 +579,10 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         heeder.as_ref(),
         spinner.as_ref(),
         date.as_ref(),
-        // `rm` has a slot and no ELF, deliberately: it is endowed a directory capability and this
-        // boot wires no FS service to narrow one from, so the shell refuses the command before it
-        // gets here. See the same slot in system_initializer.
+        // `rm` has a slot and no ELF, deliberately: it is endowed a directory capability, which
+        // means a `fs_subtree_caretaker` this init would have to build per invocation out of the FS
+        // endpoint it deletes above. Until it does, the shell refuses the command before it gets
+        // here rather than spawning `rm` with nothing. See the same slot in system_initializer.
         None,
         // `wc` (milestone 50): the right-hand side of a pipe. It needs no filesystem, so unlike
         // `rm` it is reachable from this prompt.

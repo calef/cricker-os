@@ -182,7 +182,8 @@ should be able to answer for every capability rather than a flag on one verb.
 - **No revocation**, and the reason is the per-server handle table. Argued above.
 - **The interactive prompt still holds no directory**, so at a real keyboard every one of these five
   answers "this shell holds no directory capability; there is nothing here to name". That sentence is
-  **true rather than a placeholder** (the interactive boot wires no FS service, §27's amendment), and
+  **true rather than a placeholder** (it is a fact about that shell's cspace, §27's amendment; the
+  interactive boot has held a directory since milestone 50), and
   it is the same state the per-file grant has been in since milestone 31. The builtins are gated in
   the navigating role on both ISAs; what is missing is a boot that wires an FS service into the
   interactive system, which is a wiring change and not a change here.

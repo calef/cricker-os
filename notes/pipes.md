@@ -595,6 +595,9 @@ echo hello world > gate    -> nothing  the same bytes into a file the shell back
 wc < gate                  -> 1 2 12   ... and they are the same bytes
 echo hello world >> gate   -> nothing
 wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+wc gate                    -> 2 4 24   milestone 31: the name IS the grant, same bytes
+wc                         -> refused  ... and with no name there is nothing to read
+caps wc gate               -> input    ... and the preview says which file, and how
 date                       -> ...UTC   milestone 51's wiring: a clock init endowed
 caps date                  -> cap 1    ... and the visibility surface names it
 ```
@@ -602,6 +605,13 @@ caps date                  -> cap 1    ... and the visibility surface names it
 One line would have caught all three bugs. Five is still seconds, and it walks the whole endowment:
 a spawn through the real init, the FS service the real init narrowed into the shell, and both
 redirection operators.
+
+The `wc gate` trio is milestone 31's headline checked at the one interface a human touches. Its
+answer has to equal the `<` line's, because it is the same designation with the operator left out, and
+the pair is what makes that a claim about the machine rather than an assertion: one line reaches the
+file through an operator and one through a name, so if they disagree, one of them opened something
+else. `wc` alone is the negative control the pair would be weaker without, refused at the prompt
+before anything is spawned.
 
 The last two arrived with milestone 51's wiring lane and check a different half of the same boot.
 `date`'s answer cannot be a constant, so the assertion is `UTC`: `Format::Human` ends in the offset's
@@ -640,14 +650,18 @@ of `script/test`, because it builds a second kernel and boots it twice.
   and the FS server would cost one process and would make the prompt's own authority as legible as
   the authority it hands out. It is the machine's own shell, so this is a defensible default rather
   than an oversight, but it is a default and not a decision anybody made on the record.
-- **`rm` is still not reachable from the prompt.** The shell now holds a directory, so the refusal
-  is no longer "you hold no such capability"; what is missing is the `fs_subtree_caretaker` init
-  would have to build per invocation, and `spawn` says so rather than spawning `rm` with nothing.
-  init deletes its copy of the FS endpoint after building the shell, so that is the line that
-  changes first.
-- **Slot 1 is the input source or the `--mem` untyped, whichever the request carries.** That is
-  unambiguous only because no manifest declares both, and `grant_plan` is where that stops being true. A
-  program endowed a budget *and* an input needs a numbered slot convention rather than an ordered
+- **`rm` is still not reachable from the prompt, and neither is a per-file capability.** The shell
+  holds a directory, so the refusal is no longer "you hold no such capability"; what is missing is
+  the caretaker init would have to build per invocation, and `spawn` says so rather than spawning
+  `rm` with nothing. init deletes its copy of the FS endpoint after building the shell, so that is
+  the line that changes first. The same gap is why `FileSpec::Required` has no consumer: `wc
+  gate.txt` grants a *stream* of one file (the shell opens it), which is narrower than the per-file
+  capability `fs_file_caretaker` serves and is not the same claim. See notes/grant-expression.md.
+- **Slot 1 is the clock, the input source, or the `--mem` untyped, whichever applies.** Three things
+  in one ordered position now (milestone 51's wiring added the clock, which init endows from the
+  program's manifest rather than from the request). It is unambiguous only because no manifest
+  declares two of them, and `grant_plan` is where that stops being true. A program endowed a budget
+  *and* an input, or a clock *and* an input, needs a numbered slot convention rather than an ordered
   one.
 - **A pipeline is full lockstep.** There is no buffer: every sixteen bytes is a rendezvous. Unix's
   64 KB pipe buffer lets a producer run ahead; this does not, and nothing here has been benchmarked

@@ -8,11 +8,16 @@
 //! # It cannot tell what is feeding it, and that is the demonstration
 //!
 //! Slot 1 holds an endpoint with `READ`. Sink messages arrive on it until [`sink_proto::OP_EOF`].
-//! Behind that endpoint there is either another program (`date | wc`), a file streamed out by an
-//! adapter (`wc < report.txt`), or the shell itself typing bytes into it (`echo hello | wc`). There
-//! is no message this program can send to ask which, no field in a message that says, and no
-//! capability in its cspace that names anything but the two endpoints. **The same binary, three
-//! sources, one behaviour.**
+//! Behind that endpoint there is either another program (`date | wc`), a file the shell opened and
+//! streamed (`wc < report.txt`, and `wc report.txt`, which is the same thing with the operator left
+//! out), or the shell itself typing bytes into it (`echo hello | wc`). There is no message this
+//! program can send to ask which, no field in a message that says, and no capability in its cspace
+//! that names anything but the two endpoints. **The same binary, three sources, one behaviour.**
+//!
+//! `wc report.txt` is worth a second look for exactly that reason. It reads like Unix's `wc`, where
+//! naming a file means the program `open()`s it with your whole authority; here the name is a
+//! designation the *shell* resolves, and what arrives is bytes. A `wc` that opened the file it
+//! counts would be a `wc` that could open any file.
 //!
 //! The output side is the same claim, already made by `std_exerciser` in the protocol lane: slot 0 holds
 //! an endpoint with `WRITE`, and whether the shell prints the answer or a file records it is not
@@ -37,6 +42,10 @@
 //!   1 5 29
 //! $ wc < report.txt
 //!   12 84 511
+//! $ wc report.txt
+//!   12 84 511
+//! $ wc
+//!   wc: reads an input stream: name a file, redirect with '<', or pipe into it
 //! ```
 //!
 //! # BUGS
@@ -49,6 +58,10 @@
 //! - **It counts what it is given.** A line with no trailing newline still counts as a line, which
 //!   differs from Unix's `wc -l` (that counts newlines). The number this prints is the number of
 //!   lines a person would count.
+//! - **One name, and it cannot count two files or print a total.** `wc a.txt b.txt` is refused at
+//!   the prompt as an operand with nowhere to go, because a manifest here declares one input and a
+//!   second would need positional arity the shell does not have yet. Unix prints a per-file table
+//!   and a total; that is formatting over a set, and this program counts one stream.
 
 #![no_std]
 #![no_main]

@@ -394,7 +394,8 @@ Known limitations, next to the feature rather than only in a tracker.
   one has no wiring behind it today.
 - **The rights are not printed by `caps` yet.** §42 says the rights *are* the discovery mechanism for
   what a mount offers, and they are introspectable in principle; nothing renders them at the shell
-  today because the interactive boot wires no FS service (§27's amendment records that refusal).
+  today because init builds no caretaker per grant, which is milestone 31 phase 3's remainder
+  (§27's amendment records the older refusal, from before the boot had a filesystem at all).
 - **A wrong row in `fs_proto::verb` is wrong in three programs at once** (milestone 61). The
   mitigation is that it is pure data in a host-testable crate, so the tests and Kani can reach it,
   which a hand-written match in a `no_std` binary could not. The row that decides a security

@@ -247,11 +247,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
             spinner.as_ref(),
             date.as_ref(),
             // `rm` (milestone 47) has a slot and **deliberately no ELF**: it is endowed a directory
-            // capability, and this boot wires no FS service, so there is nothing to narrow one from.
-            // The shell refuses the command before it reaches here ("you hold no such capability"),
-            // which is why an empty slot is honest rather than a hole: spawning `rm` with nothing to
-            // remove from would be the worst failure this model has, a program told to destroy
-            // something, holding nothing, saying nothing.
+            // capability, which means a `fs_subtree_caretaker` this init would have to build per
+            // invocation out of the FS endpoint it deletes above. Until it does, the shell refuses
+            // the command before it reaches here, which is why an empty slot is honest rather than a
+            // hole: spawning `rm` with nothing to remove from would be the worst failure this model
+            // has, a program told to destroy something, holding nothing, saying nothing.
             None,
             // `wc` (milestone 50). It needs no filesystem: everything it does is decided by what is
             // in its input slot, and the shell can fill that from a pipe out of its own budget.
