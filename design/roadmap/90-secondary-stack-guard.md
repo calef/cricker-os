@@ -1,6 +1,6 @@
 # 90. A guard page under the per-CPU secondary stacks
 
-**Status: NOT-STARTED.** Raised 2026-08-03, from milestone 84's stack inventory, which found the
+**Status: BUILT.** Raised 2026-08-03, from milestone 84's stack inventory, which found the
 asymmetry rather than assumed the symmetry: the boot stack has a guard page below it, every
 dynamic thread stack has a guard page below it, and the per-CPU secondary stacks are a plain
 array in `.bss` with kernel data directly beneath. A secondary that runs deep does not fault; it

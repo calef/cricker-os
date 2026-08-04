@@ -1,6 +1,6 @@
 # 57. Partitioning and formatting a real drive, and extended attributes
 
-**Status: PARTIAL.**
+**Status: BUILT.**
 
 **In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. Plus
 the xattr gap milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with

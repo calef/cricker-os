@@ -1,6 +1,6 @@
 # 84. Stack high-water: measure kernel stack depth
 
-**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+**Status: BUILT.** Raised 2026-08-03, same survey as 79.
 
 A kernel stack overflow does not fault helpfully; it scribbles. This tree has had one (the FS-server
 stack bug, notes/crickerfs.md), it was found the expensive way, and nothing since measures depth on

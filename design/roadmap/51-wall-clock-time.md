@@ -1,6 +1,6 @@
 # 51. Wall-clock time, the `date` command, and an NTP service
 
-**Status: PARTIAL.**
+**Status: BUILT.**
 
 **Lane A built 2026-07-30** (the two RTC drivers and the clock service; DECISIONS §43,
 notes/clock.md). The machine knows what time it is, on both ISAs, and `SystemTime` is real. What the
