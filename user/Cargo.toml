@@ -235,8 +235,8 @@ bench = false
 # endpoint capability with READ and nothing else; init endows every job it builds with the same
 # endpoint, and the pages come back to init's budget when this collects the corpse.
 [[bin]]
-name = "job_reaper"
-path = "src/job_reaper.rs"
+name = "job_undertaker"
+path = "src/job_undertaker.rs"
 test = false
 bench = false
 

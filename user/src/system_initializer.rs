@@ -38,7 +38,7 @@
 //! `NoSuchSlot` (there is nothing there) rather than `NotPermitted` (there is, and you may not).
 //!
 //! The job budget is **renewable**, which is what makes bounding it cheap. Every job is built in its
-//! own region split off [`JOBS_BUDGET_PAGES`] and is born supervised: `job_reaper`, a process holding
+//! own region split off [`JOBS_BUDGET_PAGES`] and is born supervised: `job_undertaker`, a process holding
 //! one endpoint capability and nothing else, collects each corpse through `Endpoint::REAP` (DECISIONS
 //! §32) and the region's pages come back here (§13: a reclaimed region returns to its owner, which is
 //! whoever split it). Before that, a spawned job's memory was spent for the life of the boot.
@@ -183,11 +183,14 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     let sink_elf = fs
         .read("terminal_sink_caretaker")
         .and_then(|b| elf::Elf::parse(b).ok());
-    // The corpse collector (milestone 22, the interactive increment). Read here with the rest,
+    // The undertaker (milestone 22, the interactive increment). Read here with the rest,
     // because the archive is only readable while we hold it and every failure below is one `fail`.
     // Required rather than optional, unlike the adapter above: without it a bounded job pool fills
     // and the prompt stops spawning, which is a broken system and not a missing feature.
-    let Some(reaper_elf) = fs.read("job_reaper").and_then(|b| elf::Elf::parse(b).ok()) else {
+    let Some(reaper_elf) = fs
+        .read("job_undertaker")
+        .and_then(|b| elf::Elf::parse(b).ok())
+    else {
         fail()
     };
 
@@ -271,7 +274,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // **The supervision endpoint every job is born holding** (milestone 22, the interactive
     // increment; DECISIONS §26's spawn-slot convention). We keep it for its `GRANT`, which is all we
     // need it for: to place a `READ` view of it in each job's reserved fault slot. We never receive
-    // on it. `job_reaper` does, and collecting is the only thing that endpoint authorizes.
+    // on it. `job_undertaker` does, and collecting is the only thing that endpoint authorizes.
     let deaths = must(retype_obj(abi::objtype::ENDPOINT));
 
     // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
@@ -405,7 +408,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     cap_delete(term_ep);
     cap_delete(term_out);
 
-    // The corpse collector, out of what is left of our own budget. One capability, `READ` on the
+    // The undertaker, out of what is left of our own budget. One capability, `READ` on the
     // supervision endpoint, and nothing else: it can free a job's memory and can never spend it.
     let reaper = must(build_child(
         own_ut,
@@ -485,7 +488,7 @@ struct Channels {
     spawn_ep: u64,
     /// WRITE: a child's answer channel, and our own spawn-failed sentinel.
     result_ep: u64,
-    /// GRANT: placed `READ` in every job's reserved fault slot, so `job_reaper` collects it.
+    /// GRANT: placed `READ` in every job's reserved fault slot, so `job_undertaker` collects it.
     deaths: u64,
     /// Our own scratch budget: page tables for the loader's scratch window, and nothing else.
     own_ut: u64,
@@ -765,7 +768,7 @@ fn build_child(
 /// `fault` lands in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is born supervised
 /// (DECISIONS §26's spawn-slot convention): `START` records it as the thread's supervision endpoint
 /// and clears the slot, so the child cannot forge messages about its own death. That is what makes a
-/// job's region reclaimable by `job_reaper` after the job ends.
+/// job's region reclaimable by `job_undertaker` after the job ends.
 ///
 /// `placed` is `(child_slot, our_slot, rights)`, inserted after `caps`. One caller today: a declared
 /// diagnostic stream (DECISIONS §67), which sits above every ordinary grant because how many of

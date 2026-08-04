@@ -279,7 +279,7 @@ fn creating_the_same_table_from_scratch_matches_sgdisk_byte_for_byte() {
 /// silicon does, so the sweep that takes four seconds native would take most of a day. Miri checks
 /// memory rules, not CRC completeness, and every code path this sweep walks is walked by the
 /// clean-fixture tests above, which Miri does run. "Miri-clean" for this crate means those paths.
-/// See notes/miri.md.
+/// See notes/undefined-behavior.md.
 #[test]
 #[cfg_attr(
     miri,

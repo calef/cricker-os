@@ -2382,7 +2382,7 @@ pub mod fixture {
     ///                           table has more than one entry and more than one unique GUID)
     ///   LBA     10240..30719    a Linux filesystem partition, likewise
     ///   LBA     30720..129023   the cricker-os data partition: 48 MiB, 4096-aligned at both ends,
-    ///                           and the one `fs_maker` formats
+    ///                           and the one `mkfs` formats
     /// ```
     pub mod blank {
         /// The disk's size in 512-byte logical blocks. 64 MiB, matching the `sgdisk` fixture disk so
@@ -2398,7 +2398,7 @@ pub mod fixture {
         /// The Linux filesystem partition.
         pub const LINUX: (u64, u64) = (10240, 30719);
         /// **The cricker-os data partition**, the one that gets a filesystem. Its start and its
-        /// length are both whole multiples of RedoxFS's 4096-byte block, which `fs_maker` requires
+        /// length are both whole multiples of RedoxFS's 4096-byte block, which `mkfs` requires
         /// and refuses without: a filesystem whose blocks straddle the partition's first byte would
         /// read fine through the offset disk that made it and be unreadable by anything else.
         pub const DATA: (u64, u64) = (30720, 129_023);
@@ -2409,7 +2409,7 @@ pub mod fixture {
         /// The name written into every entry's 36 UTF-16 units, in order.
         pub const NAMES: [&str; PARTITIONS] = ["cricker boot", "cricker root", "cricker data"];
 
-        /// The file `fs_maker` creates on the filesystem it just made, so the host tool has
+        /// The file `mkfs` creates on the filesystem it just made, so the host tool has
         /// something to read back. An empty filesystem that opens proves the header; a file the
         /// guest wrote proves the tree, the allocator and the root node too.
         pub const MADE_NAME: &str = "made-on-target";

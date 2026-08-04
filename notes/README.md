@@ -185,7 +185,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   budget, proven by authority (a dropped untyped answers `NoSuchSlot`) rather than by timing. The
   interactive boot is migrated too: init keeps the ELF loader (moving it would relocate the authority
   rather than reduce it) but drops the root untyped for a bounded job pool, gives back the UART and its
-  interrupt, and builds every job in a region `job_reaper` returns when the job ends, so a bounded
+  interrupt, and builds every job in a region `job_undertaker` returns when the job ends, so a bounded
   budget is affordable. Honest limits included: recovery is LIFO, and init still maps every page it
   ever laid down for a child.
 - [Delegating a capability](delegation.md): a capability system where processes can't pass
@@ -406,11 +406,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   then failed to rediscover it in ten minutes. The CI budget and why fuzzing cannot be a gate anyone
   waits on, the corpus discipline (seeds committed, working corpus not, crashes become host tests),
   and a BUGS section that says what a green run does not mean.
-- [Miri over the host crates](miri.md): milestone 79, the third leg of the analysis surface. What
+- [Dynamic undefined-behavior checking (Miri)](undefined-behavior.md): milestone 79, the third leg
+  of the analysis surface. What
   Miri checks that Kani, the fuzzers, and clippy cannot (aliasing, provenance, uninitialized reads,
   leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
   clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
-  sampled paths, never the exhaustive claims. Run by `script/miri`, weekly in CI plus on demand.
+  sampled paths, never the exhaustive claims. Run by `script/undefined-behavior-check`, weekly in CI plus on demand.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function
@@ -519,7 +520,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   `fs_proto::verb`, saying what a request's words mean and which rights the server demands, so the
   three caretakers that proxy this contract dispatch off the contract instead of off three
   hand-written matches, and a verb with no row is a compile error rather than a capability that is
-  quietly missing. Milestone 57's write half added `fs_maker`, the server's opposite (it creates a
+  quietly missing. Milestone 57's write half added `mkfs`, the server's opposite (it creates a
   filesystem and never serves one), the vendor divergence that let it (the uuid becomes an argument,
   the way `ctime` already was) and the correction underneath: the *first* divergence taken for this
   could not have worked, because a `Header` a caller can build has nowhere to go when the write path

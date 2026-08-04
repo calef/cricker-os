@@ -1,4 +1,4 @@
-//! **`fs_maker`**: `mkfs` on the target (milestone 57's write half, notes/crickerfs.md).
+//! **`mkfs`**: `mkfs` on the target (milestone 57's write half, notes/crickerfs.md).
 //!
 //! The program that creates a filesystem, and the whole of its authority is two capabilities:
 //!

@@ -122,7 +122,7 @@ fn main() -> ExitCode {
         "std-exerciser" => std_exerciser(),
         "shell-check" => shell_check(),
         "test" => test(),
-        "miri" => miri(),
+        "undefined-behavior-check" => undefined_behavior_check(),
         "bench" => bench(),
         "gdb" => gdb(),
         "objdump" => objdump(),
@@ -132,10 +132,12 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|miri|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
-            eprintln!("       cargo xtask miri [extra cargo-miri-test args, e.g. -p <crate>]");
+            eprintln!(
+                "       cargo xtask undefined-behavior-check [extra cargo-miri-test args, e.g. -p <crate>]"
+            );
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
@@ -1120,7 +1122,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "flaky",
             "--bin",
-            "job_reaper",
+            "job_undertaker",
             "--bin",
             "display",
             "--bin",
@@ -1225,10 +1227,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("sub_server_supervisor", "sub_server_supervisor"),
         ("flaky", "flaky"),
-        // The interactive boot's corpse collector (milestone 22, the interactive increment): init
+        // The interactive boot's undertaker (milestone 22, the interactive increment): init
         // endows every job it builds with one supervision endpoint and this collects the corpses, so
         // a job's region comes back to init's budget. Portable, so both archives carry it.
-        ("job_reaper", "job_reaper"),
+        ("job_undertaker", "job_undertaker"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
@@ -1325,9 +1327,9 @@ fn initrd_riscv() -> bool {
     if let Ok(bytes) = read_stripped(&fs_server_elf(RISCV_TARGET)) {
         blobs.push(("fs_server", bytes));
     }
-    // And `fs_maker` (milestone 57's write half), on the same terms.
-    if let Ok(bytes) = read_stripped(&fs_maker_elf(RISCV_TARGET)) {
-        blobs.push(("fs_maker", bytes));
+    // And `mkfs` (milestone 57's write half), on the same terms.
+    if let Ok(bytes) = read_stripped(&mkfs_elf(RISCV_TARGET)) {
+        blobs.push(("mkfs", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -1519,9 +1521,9 @@ fn mkinitrd() -> bool {
         "spawner",
         "sub_server_supervisor",
         "flaky",
-        // The interactive boot's corpse collector (milestone 22, the interactive increment): one
+        // The interactive boot's undertaker (milestone 22, the interactive increment): one
         // endpoint capability and nothing else, so a job's region comes back to init's budget.
-        "job_reaper",
+        "job_undertaker",
         "display",
         "painter",
         "c_confiner",
@@ -1617,11 +1619,11 @@ fn mkinitrd() -> bool {
     if let Some(bytes) = &fs_server {
         files.push(("fs_server", bytes.as_slice()));
     }
-    // `fs_maker` (milestone 57's write half) rides along on the same terms: the same package, the
+    // `mkfs` (milestone 57's write half) rides along on the same terms: the same package, the
     // same build, and absent from an interactive boot that never built it.
-    let fs_maker = read_stripped(&fs_maker_elf(TARGET)).ok();
-    if let Some(bytes) = &fs_maker {
-        files.push(("fs_maker", bytes.as_slice()));
+    let mkfs = read_stripped(&mkfs_elf(TARGET)).ok();
+    if let Some(bytes) = &mkfs {
+        files.push(("mkfs", bytes.as_slice()));
     }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -1737,11 +1739,11 @@ fn fs_server_build(triple: &str) -> bool {
             "--manifest-path",
             "fs_server/Cargo.toml",
             // Both binaries out of the one package: the server that opens an image and never
-            // creates, and `fs_maker` (milestone 57), which creates one and never serves.
+            // creates, and `mkfs` (milestone 57), which creates one and never serves.
             "--bin",
             "fs_server",
             "--bin",
-            "fs_maker",
+            "mkfs",
             "--no-default-features",
             "--features",
             "el0",
@@ -1760,10 +1762,10 @@ fn fs_server_elf(triple: &str) -> String {
         .to_string()
 }
 
-/// The `fs_maker` ELF path for a target triple. Same package, same profile, same build.
-fn fs_maker_elf(triple: &str) -> String {
+/// The `mkfs` ELF path for a target triple. Same package, same profile, same build.
+fn mkfs_elf(triple: &str) -> String {
     workspace_root()
-        .join(format!("fs_server/target/{triple}/release/fs_maker"))
+        .join(format!("fs_server/target/{triple}/release/mkfs"))
         .display()
         .to_string()
 }
@@ -2112,7 +2114,7 @@ fn blank_check_after_run() -> bool {
         other => {
             eprintln!(
                 "BLANK IMAGE CHECK FAILED: the host tool did not read the guest's file back (got \
-                 {:?}). The table is fine, so this is the filesystem `fs_maker` made.",
+                 {:?}). The table is fine, so this is the filesystem `mkfs` made.",
                 other.unwrap_or("<host tool error: the partition did not even open>"),
             );
             false
@@ -2785,7 +2787,7 @@ fn test() -> bool {
     redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
 }
 
-/// **The host tests again, under Miri's interpreter** (milestone 79, notes/miri.md).
+/// **The host tests again, under Miri's interpreter** (milestone 79, notes/undefined-behavior.md).
 ///
 /// Miri checks the rules nothing else in the tree checks: aliasing (tree borrows), pointer
 /// provenance, uninitialized reads, leaks. Kani proves the properties it is asked about and the
@@ -2811,8 +2813,8 @@ fn test() -> bool {
 /// The two out-of-workspace test surfaces stay out deliberately: `tools/redoxfs_host` and
 /// `fs_server` spend their runtime inside the vendored RedoxFS engine, and a finding in vendored
 /// code lands in the vendor pin, not in a crate this tree can fix (vendor/README.md). Extra args
-/// are forwarded to `cargo miri test`, so `cargo xtask miri -p gpt` narrows the run.
-fn miri() -> bool {
+/// are forwarded to `cargo miri test`, so `cargo xtask undefined-behavior-check -p gpt` narrows the run.
+fn undefined_behavior_check() -> bool {
     eprintln!("--- host tests under Miri (aliasing, provenance, uninitialized reads) ---");
     let mut args = vec![
         "miri",
@@ -2953,7 +2955,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 21] = [
     ("wc gate.txt 2> err.txt", Some("declares no second output")),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
-    // budget, and every job runs in a region of its own that `job_reaper` returns when the job ends.
+    // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
     // **Seven spawns above plus these six are thirteen jobs through a six-job pool**, so a boot where
     // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
     // rather than the arithmetic. (Eleven when milestone 22 wrote this line, and `2>` added two more

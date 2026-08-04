@@ -87,13 +87,13 @@ sub-server a construction server builds, and init has deleted the authority it w
 That is what this mechanism exists for, and it is proven on both ISAs in `authority_tests`.
 
 **And at the interactive prompt** (the milestone 22 increment that migrated the boot path): every job
-the shell spawns is born supervised, and `job_reaper` collects the corpse. It is the smallest
+the shell spawns is born supervised, and `job_undertaker` collects the corpse. It is the smallest
 supervisor in the tree and the one that says most plainly what supervision costs a system: one
 endpoint capability, no memory, no policy, and the job's pages come home to init's pool rather than to
 the collector. The restart half is deliberately absent, because a command a person typed has no
-business being restarted when it ends. `kernel/src/user/job_reaper_tests.rs` proves it with a control
+business being restarted when it ends. `kernel/src/user/job_undertaker_tests.rs` proves it with a control
 (three jobs exhaust a three-job pool when nothing collects) and a claim (twelve go through the same
-pool when `job_reaper` runs); `script/shell-check` runs eleven through the real boot's six-job pool.
+pool when `job_undertaker` runs); `script/shell-check` runs eleven through the real boot's six-job pool.
 See notes/trusted-init.md for what init gave up and what it still holds.
 
 Cross-ISA kernel tests (`kernel/src/user/supervision_tests.rs`): a child built holding a fault

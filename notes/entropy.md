@@ -164,7 +164,7 @@ same assertions over both buses (`kernel/src/user/entropy_tests.rs`):
 Milestone 57's write half made this service the thing that decides whether a disk can be partitioned
 or formatted at all: a GPT partition and a RedoxFS volume each carry an identifier that must be
 globally unique, and neither `crates/gpt` nor a `no_std` RedoxFS has any randomness of its own. So
-`disk_partitioner` and `fs_maker` hold this endpoint beside their disk, and **withholding it is what
+`disk_partitioner` and `mkfs` hold this endpoint beside their disk, and **withholding it is what
 the test does to prove the pair is necessary**: the same binary, the same disk, one capability fewer,
 and a disk that afterwards still reads as unpartitioned. That is a stronger statement of "an
 endpoint is the authority to obtain randomness" than a client that merely draws bytes and compares

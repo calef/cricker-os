@@ -222,7 +222,7 @@ pub fn start_probe(surveyor_image: &'static [u8]) -> EpId {
 /// scratch on top of that.
 const PARTITION_EXTRA_STACK: usize = 4;
 
-/// Stack pages for `fs_maker`. **The engine's number, not this program's**: RedoxFS recurses
+/// Stack pages for `mkfs`. **The engine's number, not this program's**: RedoxFS recurses
 /// through its tree and htree and commits transactions on the stack, and one page overflows on the
 /// first `open`.
 ///
@@ -238,7 +238,7 @@ const PARTITION_EXTRA_STACK: usize = 4;
 /// with 96 (2026-08-03) and is why the number is here rather than borrowed.
 const MAKER_STACK_PAGES: u64 = 48;
 
-/// The untyped budget every `fs_maker` process draws its heap from, **including the two that are
+/// The untyped budget every `mkfs` process draws its heap from, **including the two that are
 /// meant to be refused**. Identical on purpose: the only thing that differs between the three runs
 /// is the capability under test, so a refusal cannot be explained by a smaller budget.
 ///
@@ -250,13 +250,13 @@ const MAKER_STACK_PAGES: u64 = 48;
 const MAKER_BUDGET_PAGES: u64 = 384;
 
 /// The blank disk's block server, wired once per boot. A second server on the same device would
-/// reset its queue out from under the first, so the partitioner, the verifier and `fs_maker` are
+/// reset its queue out from under the first, so the partitioner, the verifier and `mkfs` are
 /// four processes sharing one; they run in sequence, which is what makes one shared page safe.
 static BLANK_WIRED: AtomicBool = AtomicBool::new(false);
 static BLANK_BLK_EP: AtomicU64 = AtomicU64::new(0);
 static BLANK_SHARED: AtomicU64 = AtomicU64::new(0);
 
-/// The untyped region the last `fs_maker` process was given, so the next one can hand it back
+/// The untyped region the last `mkfs` process was given, so the next one can hand it back
 /// first. Zero means none yet. See [`start_maker`].
 static LAST_BUDGET: AtomicU64 = AtomicU64::new(0);
 
@@ -352,7 +352,7 @@ pub fn start_partitioner(
     report
 }
 
-/// Spawn `fs_maker` over the blank disk, with or without either half of the pair it needs.
+/// Spawn `mkfs` over the blank disk, with or without either half of the pair it needs.
 ///
 /// Three wirings, one binary: both capabilities, no entropy, no disk. The budget, the stack and the
 /// shared page are identical in all three, so the only thing that can explain a refusal is the
@@ -375,7 +375,7 @@ pub fn start_maker(
     if previous != 0 {
         crate::untyped::destroy(previous);
     }
-    let budget = crate::untyped::create(MAKER_BUDGET_PAGES).expect("no heap budget for fs_maker");
+    let budget = crate::untyped::create(MAKER_BUDGET_PAGES).expect("no heap budget for mkfs");
     LAST_BUDGET.store(budget, Ordering::Relaxed);
     let blk_ep = disk.blk_ep;
     let blk_shared = disk.blk_shared;
@@ -384,7 +384,7 @@ pub fn start_maker(
     let mut stack = [0u64; MAKER_STACK_PAGES as usize];
     for f in stack.iter_mut() {
         *f = crate::memory::alloc()
-            .expect("no frame for the fs_maker stack")
+            .expect("no frame for the mkfs stack")
             .addr();
     }
 
@@ -408,17 +408,17 @@ pub fn start_maker(
         // it looked for a disk. `grant_at` leaves the slot genuinely empty, which is what the
         // program's first `CALL` there meets, and it is the same move `std_service` makes for a
         // std program that holds a directory and no network (notes/abi.md §4).
-        crate::sched::grant_at(0, untyped_cap(budget)).expect("fs_maker slot 0 was occupied");
+        crate::sched::grant_at(0, untyped_cap(budget)).expect("mkfs slot 0 was occupied");
         if with_disk {
             crate::sched::grant_at(1, endpoint_cap(blk_ep, Rights::WRITE))
-                .expect("fs_maker slot 1 was occupied");
+                .expect("mkfs slot 1 was occupied");
         }
         if has_entropy {
             crate::sched::grant_at(2, endpoint_cap(ep, Rights::WRITE))
-                .expect("fs_maker slot 2 was occupied");
+                .expect("mkfs slot 2 was occupied");
         }
         crate::sched::grant_at(3, endpoint_cap(report, Rights::WRITE))
-            .expect("fs_maker slot 3 was occupied");
+            .expect("mkfs slot 3 was occupied");
         run(
             image,
             Spawn {
@@ -430,7 +430,7 @@ pub fn start_maker(
             },
         )
     })
-    .expect("could not spawn fs_maker");
+    .expect("could not spawn mkfs");
 
     report
 }

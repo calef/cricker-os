@@ -540,7 +540,7 @@ mod tests {
     /// deliberately expensive per derivation, an interpreter multiplies that by about a thousand,
     /// and the store tests derive dozens of times. The paths are identical at any cost, only the
     /// block count shrinks. The known-answer vector tests do NOT use this helper; their costs are
-    /// pinned by the published answers and stay as published (notes/miri.md).
+    /// pinned by the published answers and stay as published (notes/undefined-behavior.md).
     fn cheap() -> Cost {
         if cfg!(miri) {
             Cost::new(8, 1, 1).unwrap()

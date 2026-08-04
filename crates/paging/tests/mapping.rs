@@ -23,7 +23,7 @@ thread_local! {
 /// The tables used to be leaked, with a comment calling that fine because the process was about to
 /// exit. It was fine until milestone 79: Miri's leak check reports each one, and a suite that
 /// "fails" on purpose teaches everyone to ignore the gate. Owning the cleanup costs one line per
-/// test and keeps the leak check meaning something (notes/miri.md).
+/// test and keeps the leak check meaning something (notes/undefined-behavior.md).
 struct TableGuard;
 impl Drop for TableGuard {
     fn drop(&mut self) {

@@ -1,5 +1,5 @@
 # cargo-mutants configuration (milestone 85). Read automatically by `cargo mutants`; driven here by
-# script/mutants. The tool version is pinned in .cargo-mutants-version, the same discipline as
+# script/mutation. The tool version is pinned in .cargo-mutants-version, the same discipline as
 # .cargo-deny-version and .cargo-fuzz-version. Config, not a code dependency (DECISIONS §46): nothing
 # in the tree links against cargo-mutants, it only reads our source and runs our tests.
 #

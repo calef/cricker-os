@@ -125,8 +125,14 @@ pub fn paint(bottom: u64, top: u64) {
     }
 }
 
-/// The deepest use of a painted stack `[bottom, top)`, in bytes from the top: scan upward from the
-/// bottom for the first word that is no longer [`PAINT`]. Iterative, no locals of size, so the scan
+/// **The most bytes this stack ever used**, for a painted stack `[bottom, top)`: scan upward from
+/// the bottom for the first word that is no longer [`PAINT`], and return the distance from there to
+/// the top. Not the depth now and not the space free; the maximum ever reached, which is what
+/// painting buys (the deepest frame destroys the paint and the damage outlives it).
+///
+/// The reading inverts twice, so: the **painted** bytes are the ones nothing ever used, and the
+/// number counts *up* from a deepest point that is at a *low* address. Paint left is room to
+/// spare. See notes/stack-high-water.md. Iterative, no locals of size, so the scan
 /// itself needs no meaningful depth on whatever stack it runs on.
 ///
 /// A frame whose deepest word happened to store the paint value exactly reads one word shallow.

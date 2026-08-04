@@ -1,7 +1,7 @@
-# Miri over the host crates
+# Dynamic undefined-behavior checking (Miri)
 
-Milestone 79. `script/miri` runs `cargo miri test` over the host-testable workspace members, the
-same crate selection as `script/test`'s host leg. Weekly in CI (`.github/workflows/miri.yml`) plus
+Milestone 79. `script/undefined-behavior-check` runs `cargo miri test` over the host-testable workspace members, the
+same crate selection as `script/test`'s host leg. Weekly in CI (`.github/workflows/undefined-behavior-check.yml`) plus
 on demand; not part of `script/test` or `script/gates`.
 
 ## What Miri checks that nothing else here does
@@ -28,7 +28,7 @@ approximation of "the paths".
 ## The first full run (2026-08-03, nightly-2026-08-03)
 
 Every host-testable workspace member (`--workspace` minus the three bare-metal crates), 41 packages.
-After triage, the front door (`script/miri`, one `--workspace` invocation, 95 test binaries) runs
+After triage, the front door (`script/undefined-behavior-check`, one `--workspace` invocation, 95 test binaries) runs
 green in 27 minutes of wall time on the dev machine with a warm compile cache.
 The sequential per-crate triage sweep took about 31 minutes, of which
 five packages are 79% (`xtask` 473 s, `cred` 452 s, `measured_boot` 334 s, `coremark` 190 s, `gpt`
@@ -93,7 +93,7 @@ written next to the test:
 | `cred` store tests via `cheap()` | Argon2id at m=256 KiB, t=2 | Argon2's floor (m=8 KiB, t=1); same paths, fewer blocks. The known-answer vector tests keep their published costs |
 | `cred` `an_unknown_identity_costs_what_a_known_one_costs` | 50 timed KDF runs | skipped: a wall-clock ratio under an interpreter measures Miri, not the KDF |
 
-So a green `script/miri` certifies the memory rules on every path the sampled suite executes, and
+So a green `script/undefined-behavior-check` certifies the memory rules on every path the sampled suite executes, and
 does not restate the exhaustive claims; those stay native-only, in `script/test`. The skipped `gpt`
 sweeps lose nothing Miri-specific: what they add natively is completeness of the CRC argument,
 which is not a memory property.
@@ -106,12 +106,12 @@ native gates in `script/test`.
 ## Running it
 
 ```
-script/miri              # everything, what the weekly workflow runs
-script/miri -p gpt       # one crate
-script/miri -p glob -- greedy   # any cargo-miri-test args pass through
+script/undefined-behavior-check              # everything, what the weekly workflow runs
+script/undefined-behavior-check -p gpt       # one crate
+script/undefined-behavior-check -p glob -- greedy   # any cargo-miri-test args pass through
 ```
 
-The miri component rides the pinned toolchain: `script/bootstrap` installs it, and `script/miri`
+The miri component rides the pinned toolchain: `script/bootstrap` installs it, and `script/undefined-behavior-check`
 adds it itself on a machine bootstrapped before milestone 79.
 
 ## BUGS
@@ -122,7 +122,7 @@ adds it itself on a machine bootstrapped before milestone 79.
   cross-donation coalescing is inherently expose-and-reclaim (finding 2 above). The roadmap block
   named strict provenance as a later ratchet; if it is ever tried, it needs a per-crate carve-out.
 - The weekly cadence means a regression can live on `main` for up to a week before CI sees it.
-  `script/miri -p <crate>` before pushing `unsafe` changes is a habit, not a gate; nothing
+  `script/undefined-behavior-check -p <crate>` before pushing `unsafe` changes is a habit, not a gate; nothing
   enforces it.
 - Miri interprets the host target (aarch64-apple-darwin locally, aarch64 Linux in CI). Endianness
   and pointer width match the kernel targets today, so nothing is lost, but a finding that depends
