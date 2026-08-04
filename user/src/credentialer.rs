@@ -1,16 +1,38 @@
-//! **The credential service** (milestone 56, the credential half; notes/credentials.md).
+//! **The secrets service** (milestone 56's credential half, generalised by milestone 65;
+//! notes/credentials.md and notes/ntlm.md).
 //!
-//! The one process that holds the credential store, and the only thing in the system that can read
-//! it. Everything else holds an endpoint that means *"you may ask whether a secret is right"*,
-//! which is a strictly smaller authority than *"you may read the secret"*: a client cannot
-//! enumerate the identities, cannot obtain a salt or a tag, and cannot write a record.
+//! **Hold the key, expose the operation, never the key.** The one process in the system that holds
+//! secrets, and the only thing that can read them. Everything else holds an endpoint that means
+//! *"you may ask this store to compute with a secret"*, which is a strictly smaller authority than
+//! *"you may read the secret"*: a client cannot enumerate the identities, cannot obtain a salt, a
+//! tag or an NTLM key, and cannot write a record.
+//!
+//! **This program's name lags its job**, and knowingly. Milestone 65 says the credentialer becomes
+//! one operation in a secrets service rather than a service beside it, because a second process
+//! holding secrets is exactly what the design exists to avoid. So the generalisation happened here
+//! rather than in a new program. A rename is a naming decision and belongs to Chris (CLAUDE.md);
+//! this header is the note that it is owed.
+//!
+//! # Two kinds of secret, two operations, one store
+//!
+//! | secret | operation | never exposed |
+//! |---|---|---|
+//! | an Argon2id tag | `VERIFY`: is this the secret? | the tag, the salt |
+//! | an `NTOWFv2` | `NTLM_PROOF`: is this the proof, and here is the session key | the key |
+//!
+//! The second is the reason this is a milestone rather than another opcode. **NTLMv2 does not
+//! verify a presented secret**: the client never sends the password, the server holds a key and
+//! computes a MAC, so "secret in, boolean out" does not fit it. What the SMB server gets is an
+//! endpoint that answers challenges. Compromise it and an attacker can authenticate sessions
+//! *while they hold the endpoint*, and cannot extract the key, crack it offline, or carry it
+//! anywhere else. Storing the key in the SMB server offers none of that, which is what Samba does.
 //!
 //! ```text
 //!   the provisioner ──the provision endpoint──►┌────────────┐
-//!   (once, at boot)      (PUT, then SEAL)      │ credential │──►the entropy service
-//!                                              │  service   │   (salts; §44's endpoint)
-//!   a client ────────the verify endpoint──────►└────────────┘
-//!                    (VERIFY, forever)            the store lives here and nowhere else
+//!   (once, at boot)   (PUT/PUT_NTLM, then SEAL) │  secrets   │──►the entropy service
+//!                                               │  service   │   (salts; §44's endpoint)
+//!   a client ────────the verify endpoint───────►└────────────┘
+//!              (VERIFY / NTLM_PROOF, forever)      the store lives here and nowhere else
 //! ```
 //!
 //! # Two phases, because this kernel has one wait point
@@ -21,11 +43,13 @@
 //! service's answer is different and, for a credential store, better: writing the store is not an
 //! *operation* at all, it is a **phase**, and the phase ends.
 //!
-//! 1. **Provision.** RECV on the provision endpoint. Each [`cred_proto::provision::PUT`] derives a
-//!    record with a salt drawn from the entropy service. [`cred_proto::provision::SEAL`] ends it.
+//! 1. **Provision.** RECV on the provision endpoint. Each [`cred_proto::provision::PUT`] and
+//!    [`cred_proto::provision::PUT_NTLM`] derives a record with a salt drawn from the entropy
+//!    service. [`cred_proto::provision::SEAL`] ends it.
 //! 2. **Delete.** The service `cap_delete`s its receive end of the provision endpoint, and the
 //!    provisioner deletes its send end. Nothing in the system can name it any more.
-//! 3. **Verify.** RECV on the verify endpoint, forever. One opcode. Yes or no.
+//! 3. **Serve.** RECV on the verify endpoint, forever. Two opcodes, one per kind of secret. Yes
+//!    or no, and on an NTLM yes, a session key in the shared page.
 //!
 //! **That is the asymmetry, and it is structural rather than a check.** A client is not refused
 //! permission to write the store; there is no object through which the request could travel by the
@@ -55,9 +79,10 @@
 //! - mapped: the provision page, and the verify page. **Two frames, never one**: the provisioner
 //!   writes plaintext secrets into its page, and a client that shared that frame would read them.
 //!
-//! No initrd, no filesystem, no network, no device. A compromised credential service is a machine
-//! whose logins an attacker can answer, which is exactly as much damage as owning the credential
-//! store should be worth.
+//! No initrd, no filesystem, no network, no device. A compromised secrets service is a machine
+//! whose logins an attacker can answer and whose shares they can authenticate to, for as long as
+//! they hold it, which is exactly as much damage as owning the store should be worth. It is not
+//! a machine whose passwords they can carry away.
 //!
 //! # BUGS
 //!
@@ -73,6 +98,19 @@
 //! guess as fast as it can `CALL`, and each guess costs it one Argon2id derivation of the service's
 //! time. That cost is the only thing slowing an online attack down, and it is also a way to make
 //! the service unresponsive to everyone else.
+//!
+//! **`NTLM_PROOF` does not even have that.** An NTLM answer is three MD5-shaped operations, four
+//! orders of magnitude cheaper than a password verify, so the KDF's incidental rate limiting does
+//! not apply to it at all. Online guessing against it is still useless (a guess is a 128-bit MAC,
+//! not a password), but it is a free way to spin this service, and a service that answers logins
+//! is a service worth spinning. Nothing here counts requests.
+//!
+//! **Revocation is per holder, not per secret.** Destroying a client's endpoint ends its access,
+//! which is the thing this design buys and a stored hash could never offer. Revoking one *secret*
+//! is a different question and this service cannot answer it: the store is sealed, so there is no
+//! object through which a record could be removed, which is the same property that makes the seal
+//! worth having. Rotating a secret means restarting the service and reprovisioning, so a
+//! deployment that needs finer granularity runs more than one. See notes/credentials.md.
 
 #![no_std]
 #![no_main]
@@ -102,11 +140,18 @@ const PROV_VA: u64 = 0x0000_0000_00e0_0000;
 /// A client's page. Must match `user/src/credentialer_test_client.rs`.
 const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
 
-/// How many identities the store holds. Three, because Chris's existing setup serves three family
-/// members with separate passwords (design/roadmap/56-secrets-and-entropy.md), and a store sized to the
-/// requirement makes "the fourth is refused" a thing the tests can show rather than a branch
-/// nothing reaches.
-const CAPACITY: usize = 3;
+/// How many secrets the store holds. **Six: three logins and three shares.**
+///
+/// Three, because Chris's existing setup serves three family members with separate passwords
+/// (design/roadmap/56-secrets-and-entropy.md). Doubled by milestone 65, because each of those
+/// family members also has a Time Machine share with its own account and password, and a secret
+/// here is scoped to a *resource* rather than to a person. Three family members therefore means
+/// at least three shares, which is why multi-share is the deliverable rather than a later
+/// generalisation: a single-secret store would have been discovered as wrong at the worst moment.
+///
+/// A store sized to the requirement also makes "the seventh is refused" a thing the tests can
+/// show rather than a branch nothing reaches.
+const CAPACITY: usize = 6;
 
 /// The heap's virtual cap. It holds one allocation, the Argon2 scratch, plus the slack an
 /// allocator needs to place it; the untyped behind it is the real ceiling either way.
@@ -120,6 +165,18 @@ pub const RPT_READY: u64 = 0x_c2ed_0000_0000_0001;
 /// the step so a failure is diagnosable from one word.
 const E_ENTROPY: u64 = 0x01;
 const E_SCRATCH: u64 = 0x02;
+
+/// **The wire contract and the store must agree about six numbers**, and this is the only place
+/// both are in scope to be compared. `cseam` is the cautionary tale rule 7 was written from: a
+/// layout deliberately written twice with nothing checking that the two copies agree, whose drift
+/// shows up as a component scribbling on the wrong bytes arbitrarily far from the edit. A page
+/// offset that disagreed here would put a client's blob where the service reads a proof.
+const _: () = assert!(proto::MAX_IDENTITY == cred::MAX_IDENTITY);
+const _: () = assert!(proto::MAX_SECRET == cred::MAX_SECRET);
+const _: () = assert!(proto::MAX_NAME == cred::MAX_NAME);
+const _: () = assert!(proto::MAX_BLOB == cred::MAX_BLOB);
+const _: () = assert!(proto::CHALLENGE_LEN == cred::NTLM_CHALLENGE_LEN);
+const _: () = assert!(proto::KEY_LEN == cred::NTLM_KEY_LEN);
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
@@ -160,15 +217,15 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
 /// **Phase one.** Write the store, then destroy the ability to write the store.
 fn provision(store: &mut Store<CAPACITY>, scratch: &mut [Block]) {
     loop {
-        let (w0, cap, _) = recv_cap(PROV);
+        let (w0, cap, w1) = recv_cap(PROV);
         if cap == abi::endpoint::NO_CAP {
             // A plain SEND on a CALL-only contract: nobody is waiting for an answer, so there is
             // nothing to reply into. Drop it rather than replying into a slot we do not hold.
             continue;
         }
         match proto::op(w0) {
-            proto::provision::PUT => {
-                let verdict = put(store, scratch, w0);
+            proto::provision::PUT | proto::provision::PUT_NTLM => {
+                let verdict = put(store, scratch, w0, w1);
                 // Unconditionally, on every path including the malformed one: the page holds a
                 // plaintext secret and the provisioner is still mapping it.
                 wipe(PROV_VA);
@@ -191,11 +248,24 @@ fn provision(store: &mut Store<CAPACITY>, scratch: &mut [Block]) {
     }
 }
 
-/// One `PUT`, with its salt drawn fresh. Split out so the wipe above covers every exit.
-fn put(store: &mut Store<CAPACITY>, scratch: &mut [Block], w0: u64) -> u64 {
+/// One `PUT` or `PUT_NTLM`, with its salt drawn fresh. Split out so the wipe above covers every
+/// exit.
+///
+/// The two opcodes share this function rather than getting one each, because everything that can
+/// go wrong is the same for both and the difference is one parse and one store call. `PUT_NTLM`
+/// still draws a salt: it derives an Argon2id tag from the same password, so a resource that
+/// speaks NTLM can also answer an ordinary verify, which is what lets milestone 49's login and
+/// milestone 55's SMB server share one account instead of needing two.
+fn put(store: &mut Store<CAPACITY>, scratch: &mut [Block], w0: u64, w1: u64) -> u64 {
     // SAFETY: the wiring mapped one page read/write at PROV_VA before this program ran.
     let page = unsafe { core::slice::from_raw_parts(PROV_VA as *const u8, proto::PAGE) };
-    let Some((identity, secret)) = proto::read(page, w0) else {
+    let ntlm = proto::op(w0) == proto::provision::PUT_NTLM;
+    let parsed = if ntlm {
+        proto::read_ntlm_put(page, w0, w1)
+    } else {
+        proto::read(page, w0).map(|(i, s)| (i, s, &[][..], &[][..]))
+    };
+    let Some((identity, secret, user, domain)) = parsed else {
         return proto::MALFORMED;
     };
     let mut salt = [0u8; cred::SALT_LEN];
@@ -205,7 +275,12 @@ fn put(store: &mut Store<CAPACITY>, scratch: &mut [Block], w0: u64) -> u64 {
         // work, and the store would be one rainbow table wide.
         return proto::NO_ENTROPY;
     }
-    match store.put(identity, secret, salt, scratch) {
+    let stored = if ntlm {
+        store.put_ntlm(identity, secret, user, domain, salt, scratch)
+    } else {
+        store.put(identity, secret, salt, scratch)
+    };
+    match stored {
         Ok(()) => proto::OK,
         Err(cred::Error::Full) => proto::FULL,
         Err(_) => proto::MALFORMED,
@@ -219,16 +294,23 @@ fn serve(store: &Store<CAPACITY>, scratch: &mut [Block]) -> ! {
         if cap == abi::endpoint::NO_CAP {
             continue;
         }
-        let verdict = match proto::op(w0) {
-            proto::verify::VERIFY => answer(store, scratch, w0),
+        let (verdict, key) = match proto::op(w0) {
+            proto::verify::VERIFY => (answer(store, scratch, w0), None),
+            proto::verify::NTLM_PROOF => ntlm_answer(store, w0),
             // Every other opcode, including the provisioning ones. A client that tries `PUT` here
             // is not refused by a permission check; it is talking to a loop in which that opcode
             // has no meaning, because the object that gave it meaning no longer exists.
-            _ => proto::MALFORMED,
+            _ => (proto::MALFORMED, None),
         };
         // On every path: the client wrote a secret into this page, and leaving it there would make
         // the frame a place the secret persists after the answer.
         wipe(VERIFY_VA);
+        // **After the wipe, never before.** The wipe is what removes the client's request from the
+        // shared frame, and it covers the reply area too, so a session key published first would
+        // be erased by the very call that makes publishing it safe.
+        if let Some(key) = key {
+            publish(VERIFY_VA, &key);
+        }
         reply(cap, verdict, proto::NO_DATA);
     }
 }
@@ -249,6 +331,39 @@ fn answer(store: &Store<CAPACITY>, scratch: &mut [Block], w0: u64) -> u64 {
         // diagnosis that costs somebody an afternoon.
         Err(_) => proto::MALFORMED,
     }
+}
+
+/// **One `NTLM_PROOF`.** Returns the verdict and the `SessionBaseKey` to publish, which
+/// `cred::Store::ntlm_proof` has already zeroed unless the proof verified.
+///
+/// The key is returned for every well-formed request, matching or not, rather than only for a
+/// match. That is not carelessness about a secret: it is zeros on a mismatch, and publishing
+/// unconditionally means an acceptance and a refusal do the same work after the MAC. A branch here
+/// would be a branch an attacker with a clock could read.
+///
+/// No scratch and no Argon2id: an NTLM answer is three MD5-shaped operations, so it is roughly
+/// four orders of magnitude cheaper than a password verify. That asymmetry is the protocol's, not
+/// a choice made here, and it is the reason this endpoint has no rate limit worth the name. See
+/// this program's BUGS.
+fn ntlm_answer(store: &Store<CAPACITY>, w0: u64) -> (u64, Option<[u8; cred::NTLM_KEY_LEN]>) {
+    // SAFETY: the wiring mapped one page read/write at VERIFY_VA before this program ran.
+    let page = unsafe { core::slice::from_raw_parts(VERIFY_VA as *const u8, proto::PAGE) };
+    let Some((identity, challenge, blob, presented)) = proto::read_ntlm_proof(page, w0) else {
+        return (proto::MALFORMED, None);
+    };
+    match store.ntlm_proof(identity, challenge, blob, presented) {
+        Ok((Verdict::Match, key)) => (proto::MATCH, Some(key)),
+        Ok((Verdict::Mismatch, key)) => (proto::MISMATCH, Some(key)),
+        Err(_) => (proto::MALFORMED, None),
+    }
+}
+
+/// Write the `SessionBaseKey` into the shared page.
+fn publish(va: u64, key: &[u8; cred::NTLM_KEY_LEN]) {
+    // SAFETY: as in `wipe`; the wiring mapped one page read/write here and this process is the
+    // only writer between a request arriving and its reply going out.
+    let page = unsafe { core::slice::from_raw_parts_mut(va as *mut u8, proto::PAGE) };
+    proto::put_session_key(page, key);
 }
 
 /// Zero the request area of a shared page.

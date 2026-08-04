@@ -55,6 +55,12 @@
 /// dependency. One [`Block`] is 1 KiB, which is also Argon2's `m_cost` unit.
 pub use argon2::Block;
 use argon2::{Algorithm, Argon2, Params, Version};
+/// The server challenge's width and the width of every NTLM key and output, re-exported so the
+/// service can assert `cred_proto`'s copies of them against these at compile time without
+/// depending on `ntlm` itself. Rule 7's problem in miniature: the wire contract and the store must
+/// agree about a number, and "deliberately written twice with nothing checking" is how a component
+/// ends up scribbling on the wrong bytes.
+pub use ntlm::{CHALLENGE_LEN as NTLM_CHALLENGE_LEN, KEY_LEN as NTLM_KEY_LEN};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 /// Salt length, in bytes. RFC 9106 §4 recommends 16, and Argon2's own minimum is 8.
