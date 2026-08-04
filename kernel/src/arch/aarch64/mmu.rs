@@ -835,13 +835,33 @@ pub fn reserved_root() -> u64 {
 /// register, which carries the ASID too, so "same process" is one comparison; and since
 /// milestone 15 even the switch that does happen flushes nothing (see `set_ttbr0`), the early
 /// return is now about skipping two barriers rather than dodging a catastrophe.
-pub fn switch_user_root(ttbr: u64) {
+///
+/// # Safety
+/// `ttbr` must be a value [`ttbr0_value`] composed over a **live** `AddressSpace`'s L0 root and the
+/// ASID that owns its mappings, or [`reserved_root`]. The table must outlive every instruction
+/// executed at EL0 until some later write to `TTBR0_EL1` replaces it: this is the register that
+/// decides whose memory the low half means, so a freed root hands the next user instruction a
+/// stranger's pages.
+///
+/// # Why this is a contract and not a type (milestone 112)
+///
+/// It was a safe fn until milestone 112, carrying a `// SAFETY:` comment that discharged its
+/// obligation onto "the caller" while the signature (`u64`) imposed it on nobody. The obvious repair
+/// is a newtype only `AddressSpace::ttbr0` and [`reserved_root`] can mint, which would make the
+/// function honestly safe. **It does not work, and the reason is worth keeping**: the dangerous half
+/// of the obligation is *liveness*, and a `Copy` newtype over a `u64` launders exactly that. An
+/// `AddressSpace` can be dropped and its frames recycled while a copy of its composed value lives
+/// on. A borrow would express it, and the scheduler cannot hold one: `sched::switch` reads the root
+/// out from under the `SCHED` lock *on purpose*, so that the lock is released before the context
+/// switch, and a lifetime tied to the `AddressSpace` cannot survive that drop. So the obligation
+/// stays a sentence, and `unsafe fn` is what puts it in front of a caller.
+pub unsafe fn switch_user_root(ttbr: u64) {
     if TTBR0_EL1.get() == ttbr {
         return;
     }
 
-    // SAFETY: the caller passes either a live `AddressSpace`'s composed value or
-    // `reserved_root()`.
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it
+    // forwards, it does not weaken.
     unsafe { set_ttbr0(ttbr) };
 }
 
