@@ -150,6 +150,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &with_device,
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [1, 0, 0], // a device, and log entries from 0
         11,
@@ -178,6 +179,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &without_device,
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
     ) else {
         bail(21)
@@ -203,6 +205,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [swap_proto::ROLE_CLIENT, 0, 0],
         14,
@@ -298,6 +301,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [swap_proto::ROLE_USURPER, 0, 0],
         30,
@@ -366,6 +370,7 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &logmap,
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [0, base, 0],
         42,
@@ -377,6 +382,7 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [0, 0, 0],
         43,
@@ -388,6 +394,7 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [swap_proto::ROLE_PRODUCER, 0, 0],
         44,
@@ -425,6 +432,7 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             maps: &logmap,
             blobs: &[],
             fault: Some(w.faultep),
+            ..Endow::new()
         },
         [0, base, 0],
         48,
