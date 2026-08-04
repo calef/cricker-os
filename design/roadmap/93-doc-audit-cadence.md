@@ -5,8 +5,9 @@ security story from rotting; this keeps every other documented claim from rottin
 demonstrator's docs are part of the deliverable (CLAUDE.md), so a doc describing a system that no
 longer exists is a defect in the deliverable, not a cosmetic lag.
 
-**Gate: DECISION.** The index name and location are Chris's, jointly with 92's, and the block
-prefers sharing 92's index and tripwire to growing a twin.
+**Gate: DECISION.** The cadence itself is still Chris's. The index name and location are settled
+(`design/audit-reports/`, 2026-08-04), and this milestone shares 92's index and tripwire rather than
+growing a twin: one directory, with a type column distinguishing a security lens from a doc sweep.
 
 **The evidence that rot is real here, all found in one day (2026-08-03):** notes/verification.md
 said the proof suite ran in "a few minutes" a month after that stopped being true; two roadmap
@@ -50,5 +51,5 @@ milestone 91 owns the glossary; 91's every-use links add surface this mechanism 
 The staleness triggers worth building beyond cadence, recorded for the design rather than
 promised: a note whose cited code has changed substantially since the note's last edit is the
 highest-value candidate for the next sweep, and git can compute that; whether it becomes a signal
-or stays a sweep heuristic is a decision for whoever builds this. The index name and location are
-provisional and Chris's, jointly with 92's.
+or stays a sweep heuristic is a decision for whoever builds this. The index and the reports share
+92's home, `design/audit-reports/`, decided 2026-08-04.
