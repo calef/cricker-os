@@ -70,11 +70,7 @@ fn a_name_with_a_space_in_it_can_be_written_and_read_back() {
     // `echo hello world` writes twelve bytes and a newline: one line, two words, thirteen bytes.
     // Stated as a derivation rather than a literal, so it holds if the script's text changes.
     let text = b"hello world\n";
-    let expected = (
-        1u64,
-        2u64,
-        text.len() as u64,
-    );
+    let expected = (1u64, 2u64, text.len() as u64);
     assert_eq!(
         counts(&answer(t, b"wc < \"my notes.txt\"")[2..]),
         expected,
@@ -101,7 +97,10 @@ fn a_quoted_name_is_the_grant_with_the_operator_left_out() {
         counts(&answer(t, b"wc < \"my notes.txt\"")[2..]),
         "the same file, named two ways, came out as two different files",
     );
-    assert!(operand.2 > 0, "both arms read an empty file, which proves nothing");
+    assert!(
+        operand.2 > 0,
+        "both arms read an empty file, which proves nothing"
+    );
 }
 
 /// **Quoting is the difference between naming a name and naming a set**, printed side by side.

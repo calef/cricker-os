@@ -1137,9 +1137,7 @@ impl Refusal {
                  cannot join pieces of one"
             }
             Refusal::EmptySegment => "a connector with no command on one side of it",
-            Refusal::TooManySegments => {
-                "that is more commands than one line sequences (at most 8)"
-            }
+            Refusal::TooManySegments => "that is more commands than one line sequences (at most 8)",
         }
     }
 }
@@ -2017,7 +2015,10 @@ mod tests {
         let r = parse_run(b"nosuchprog 'x");
         assert_eq!(plan(&r, WITH_DIR), Err(Refusal::UnclosedQuote));
         // And the joining case.
-        assert_eq!(parse_run(b"wc a\"b\"").misquoted, Some(Refusal::PartlyQuoted));
+        assert_eq!(
+            parse_run(b"wc a\"b\"").misquoted,
+            Some(Refusal::PartlyQuoted)
+        );
     }
 
     /// `--mem` at the very end of the line reads no value, and reads no memory past the token

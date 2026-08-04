@@ -68,8 +68,7 @@ use grant_plan::{
     Action, Command, Endowment, Escalation, Refusal, RunSpec, Streams, jobframe, spawnproto,
 };
 use line_editor::proto;
-use swish::sequence;
-use swish::{Route, Say, Status, Untimed};
+use swish::{Route, Say, Status, Untimed, sequence};
 use user_rt::{call, cap_delete, exit, invoke, monotonic_nanos, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
@@ -1376,7 +1375,7 @@ fn spawn(e: Endowment) {
             Some(slot) => Some(slot),
             None => {
                 failed();
-        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+                print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
                 return;
             }
         }
@@ -2191,7 +2190,7 @@ fn drain_into(f: &mut FileOut) {
         let (w0, w1, w2) = recv(RESULT);
         if w0 == spawnproto::SPAWN_FAILED {
             failed();
-        print(b"  could not spawn (init is out of memory)\n");
+            print(b"  could not spawn (init is out of memory)\n");
             return;
         }
         let mut buf = [0u8; sink_proto::INLINE_MAX];
@@ -2236,7 +2235,7 @@ fn spawn_stage(
             Some(slot) => Some(slot),
             None => {
                 failed();
-        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+                print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
                 return false;
             }
         }

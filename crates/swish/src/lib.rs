@@ -1211,7 +1211,12 @@ mod tests {
     #[test]
     fn echo_copies_ordinary_words_byte_for_byte() {
         let out = shown(|o| {
-            echo(b"  two  spaces ", Status::Ran, &mut |_| Ok(NameSet::empty()), o);
+            echo(
+                b"  two  spaces ",
+                Status::Ran,
+                &mut |_| Ok(NameSet::empty()),
+                o,
+            );
         });
         assert_eq!(out, "  two  spaces ");
     }
@@ -1235,9 +1240,14 @@ mod tests {
         // endpoint. A word with nothing before it must not cost a round trip that carries no
         // bytes, which is what emitting the zero-length whitespace run ahead of it would be.
         let mut writes: Vec<Vec<u8>> = Vec::new();
-        let said = echo(b"one  two", Status::Ran, &mut |_| Ok(NameSet::empty()), &mut |b| {
-            writes.push(b.to_vec());
-        });
+        let said = echo(
+            b"one  two",
+            Status::Ran,
+            &mut |_| Ok(NameSet::empty()),
+            &mut |b| {
+                writes.push(b.to_vec());
+            },
+        );
         assert_eq!(said, Say::Nothing);
         assert!(writes.iter().all(|w| !w.is_empty()), "{writes:?}");
         assert_eq!(writes.concat(), b"one  two");
@@ -1385,12 +1395,7 @@ mod tests {
     #[test]
     fn a_quoted_status_word_is_two_characters() {
         let out = shown(|o| {
-            echo(
-                b"'$?' $?",
-                Status::Failed,
-                &mut |_| Ok(NameSet::empty()),
-                o,
-            );
+            echo(b"'$?' $?", Status::Failed, &mut |_| Ok(NameSet::empty()), o);
         });
         assert_eq!(out, "$? 1");
     }

@@ -755,7 +755,12 @@ mod tests {
             b"echo 'a >> b'",
         ] {
             let l = split(line).unwrap();
-            assert_eq!(l.stage_count(), 1, "{}", core::str::from_utf8(line).unwrap());
+            assert_eq!(
+                l.stage_count(),
+                1,
+                "{}",
+                core::str::from_utf8(line).unwrap()
+            );
             assert_eq!((l.input, l.output, l.diagnostics), (None, None, None));
         }
     }
@@ -775,7 +780,11 @@ mod tests {
         let l = split(b"wc < 'my in.txt' >> \"my out.txt\"").unwrap();
         assert_eq!(
             (l.input, l.output, l.mode()),
-            (Some(&b"my in.txt"[..]), Some(&b"my out.txt"[..]), Mode::Append),
+            (
+                Some(&b"my in.txt"[..]),
+                Some(&b"my out.txt"[..]),
+                Mode::Append
+            ),
         );
         // And the word-after-a-redirection rule still holds: the quoted name ends where its quote
         // ends, so `extra` is a word after it rather than part of it.
@@ -790,7 +799,10 @@ mod tests {
     /// a quoted token is one.
     #[test]
     fn quoting_a_redirection_name_is_how_a_file_called_star_is_written_to() {
-        assert_eq!(split(b"date > \"*.txt\"").unwrap().output, Some(&b"*.txt"[..]));
+        assert_eq!(
+            split(b"date > \"*.txt\"").unwrap().output,
+            Some(&b"*.txt"[..])
+        );
         assert_eq!(split(b"wc < '?.log'").unwrap().input, Some(&b"?.log"[..]));
         // Bare, it is still refused, so the exemption is quoting and not a hole in the check.
         assert_eq!(split(b"date > *.txt"), Err(Refusal::PatternInRedirect));

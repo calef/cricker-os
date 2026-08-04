@@ -38,7 +38,7 @@
 //!   for the whole chain, and a writer parked on the first would never be told. So teardown happens
 //!   at the end of a **segment**, not at the end of a line, which falls out of the split being here
 //!   rather than inside [`crate::route`].
-//! - Nothing a segment was granted is named by [`Status`](crate::Status), which is one small
+//! - Nothing a segment was granted is named by [`Status`], which is one small
 //!   integer about the shell's own reading of what happened. It designates nothing, so nothing
 //!   downstream can be widened by it.
 //!
@@ -81,7 +81,8 @@
 //!   at the `false`'s status). A reader who expected "skipped" to be its own status will not find
 //!   one, because nothing ran.
 
-use grant_plan::{Refusal, trim, word::Cursor};
+use grant_plan::word::Cursor;
+use grant_plan::{Refusal, trim};
 
 use crate::Status;
 
@@ -218,10 +219,7 @@ pub fn split(line: &[u8]) -> Result<Sequence<'_>, Refusal> {
         return Err(Refusal::TooManySegments);
     }
     segments[n] = (joint, tail);
-    Ok(Sequence {
-        segments,
-        n: n + 1,
-    })
+    Ok(Sequence { segments, n: n + 1 })
 }
 
 #[cfg(test)]
