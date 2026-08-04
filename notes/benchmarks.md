@@ -41,37 +41,141 @@ known this since HVF support landed). So the bench kernel **never exits**: it pr
 output, kills it on the marker. One mechanism, both accelerators, and a forgotten bench QEMU
 burns nothing while it waits (the `wfi` rule from CLAUDE.md).
 
-## The first real numbers, for the record (2026-07-23, M-series host, HVF)
+## The first real numbers, for the record (2026-07-23, M-series host, HVF, **debug build**)
 
 IPC round trip ~705 ns; call/reply ~886 ns; yield round trip ~437 ns; spawn-to-reap ~2.8 µs;
-fresh-page map ~634 ns. Statistical, single run, shared machine: shapes, not gospel. The 24 MHz
+fresh-page map ~634 ns. **These are debug-build numbers**, which is easy to miss and cost this note
+a wrong comparison for twelve days (see the calibration section below). Statistical, single run,
+shared machine: shapes, not gospel. The 24 MHz
 counter grain (~42 ns) means per-iteration ticks are coarse; totals over 1000+ iterations are
 what to read. Cycle-exact PMU numbers arrive with milestone 16's real silicon, which inherits
 this harness and swaps the clock.
 
-## Calibration: what these numbers mean next to L4's
+## Calibration: what these numbers mean next to L4's (corrected 2026-08-04)
 
 IPC cost is *the* microkernel number because IPC multiplies through the whole architecture:
 Mach's ~100 us IPC discredited microkernels in the 1980s, and Liedtke's L4 rehabilitated them
 with ~250-cycle IPC on a 486, the "sub-microsecond" banner seL4's few-hundred-cycle fastpath
-still carries. Our ~705 ns round trip sounds like that club; two corrections before believing it:
+still carries. So this is the paragraph a reader quotes, and from 2026-07-23 to 2026-08-04 it was
+wrong.
 
-1. **Count cycles, not nanoseconds.** At ~3.2 GHz, 705 ns is ~2,200 cycles round trip, where an
-   L4-lineage fastpath does 300 to 600. Per cycle we are 4 to 7 times heavier, and honestly so:
-   we take the fully general path every time (scheduler lock, proved rendezvous, generational
-   Tid checks) and have deliberately built no fastpath. The nanoseconds look good because the
-   silicon is a monster.
-2. **Our bench excludes what theirs includes.** L4's numbers are user-to-user, traps included.
-   Ours ping-pongs kernel threads calling `sched::ipc_*` directly: no `svc`, no exception
-   entry, no trap frame. A true EL0-to-EL0 benchmark (the right follow-up; it needs one
-   `CNTKCTL_EL1` bit so EL0 can read the counter) will measure meaningfully higher.
+### The three errors in the old paragraph, and why they hid each other
 
-The hypervisor's tax on this particular path is small (no devices touched, so essentially no VM
-exits; the cost is indirect, via stage-2 TLB pressure and host cache pollution), which is
-precisely why the bench loops keep devices out. What the comparison legitimately supports: the
-Mach failure mode is nowhere in sight, the architecture is viable at this price on the general
-path, and whether a fastpath is ever worth its complexity is now a question for these
-measurements rather than for L4 envy.
+The first version of this section converted `ipc_rtt`'s ~705 ns at an assumed 3.2 GHz to ~2,200
+cycles and reported us "4 to 7 times heavier" than an L4-lineage fastpath's 300 to 600. Three
+independent defects, and the reason nobody caught them is that they do not point the same way:
+
+1. **Wrong plane.** `ipc_rtt` is kernel-side. Two kernel threads call `sched::ipc_send/recv`
+   directly, in one address space, taking no trap. L4's published numbers are user-to-user across
+   address spaces with the trap included. The benchmark that pays what theirs pays is
+   `ipc_rtt_el0`, and it has existed since the EL0 primitive suite landed; this note reports it
+   further down the page, and the calibration never followed. **Fixing this alone makes us look
+   worse.**
+2. **Wrong build.** ~705 ns is a **debug** figure. L4's are optimized builds, and the debug-to-
+   release tax on the IPC path is ~6.7x (measured, in the cross-OS section below). **Fixing
+   this alone makes us look better**, by more than the plane correction costs.
+3. **Wrong convention, which is the one nobody had noticed at all.** seL4 publishes **one-way**
+   costs, the call and the reply timed as separate operations. Ours is a **round trip**. Comparing
+   our round trip against their one-way figure doubles the ratio for free.
+
+Errors 1 and 3 inflate the ratio and error 2 deflates it, so "4 to 7 times heavier" landed in a
+plausible-looking place by cancellation rather than by being right. That is the failure mode worth
+remembering: an arithmetic chain over figures taken from different runs can be wrong in three ways
+and still read as sober.
+
+### One clean run, both planes (2026-08-04)
+
+`cargo xtask bench --release --real`, Apple M3 (Mac15,3, 4 P-cores + 4 E-cores), HVF, `-smp 1`,
+five boots back to back off one build. Host load average was ~3.2 of 8 cores throughout (other
+agent lanes were active on this machine), which is not a silent machine; the run-to-run spread
+below is the evidence that it did not matter much here. Both figures come from **the same boot** on
+every boot, which is the property the old comparison lacked.
+
+| bench | plane | ns/iter, median of 5 | the five | what one iteration includes |
+|---|---|---|---|---|
+| `ipc_rtt` | kernel-side | **46** | 46, 46, 46, 46, 49 | two rendezvous, one address space, no trap |
+| `ipc_rtt_el0` | EL0 to EL0 | **350** | 347, 348, 350, 357, 369 | two rendezvous, two address spaces, four `svc`s |
+| `null_syscall` | EL0 | 27 | 27, 27, 27, 27, 28 | one trap and return, for scale |
+
+These agree with the 2026-07-29 refresh (~50 and ~361) to within run-to-run noise, so nothing has
+moved; what was missing was never a measurement, it was the paragraph.
+
+### The comparison, done on the right number
+
+**Cycles here are arithmetic, not a reading.** HVF passes through no PMU (notes/pmu.md), so a cycle
+count is nanoseconds times an *assumed* clock. The old paragraph assumed 3.2 GHz, which is not this
+machine: the host is an Apple M3, 4.05 GHz on a P-core and 2.75 GHz on an E-core, and nothing pins
+the QEMU vCPU thread to either. So the range, not a point:
+
+| | ns | cycles at 2.75 GHz | cycles at 4.05 GHz |
+|---|---|---|---|
+| `ipc_rtt_el0` round trip | 350 | ~960 | ~1,420 |
+
+seL4 publishes, for the same-core different-address-space path on a Cortex-A57 in its default
+configuration, **413 cycles for the IPC call and 426 for the IPC reply**, one-way each
+(sel4.systems/performance.html). A round trip in our sense is their call plus their reply,
+**~839 cycles**.
+
+**So the corrected figure is roughly 1.1x to 1.7x an L4-lineage round trip, not 4 to 7 times.** And
+converting the *debug* EL0 number instead (~2272 ns) gives ~6,200 to ~9,200 cycles and a ratio of
+~7x to ~11x, which is the same class of mistake in the other direction: a debug number in a release
+comparison.
+
+### Why that is not a win, and what is still not apples-to-apples
+
+Recording a better ratio than the page used to claim is worth less than recording what it does not
+mean, so the caveats are the substantive half of this section.
+
+- **Cortex-A57 is 2015 silicon and the M3 is 2023.** A cycle is not a neutral unit across a decade
+  of microarchitecture: the M3 is far wider and deeper, and an IPC path is mostly serially
+  dependent loads, stores and unpredictable branches, exactly the workload a bigger out-of-order
+  window helps. **A large part of the gap closing is the machine, not the kernel.** The only fix is
+  the same kernel measured on comparable silicon, which is what milestone 24's board and milestone
+  74's PMU are for.
+- **Their fastpath is on and we have none.** seL4's published figures are its best case, with the
+  `Call`/`ReplyRecv` fastpath enabled. Ours is the fully general path every time: scheduler lock,
+  proved rendezvous, generational Tid checks. Read the ratio as "the general path is within a small
+  factor of a tuned fastpath on this silicon", which is a statement about headroom, not about
+  having matched them.
+- **Their round trip is two syscalls and ours is four.** seL4 fuses send-and-wait into `Call` and
+  reply-and-wait into `ReplyRecv`; our EL0 path issues `SEND`, `RECV`, `SEND`, `RECV`. At ~27 ns
+  (~110 cycles) per trap, the two extra crossings are ~220 cycles, a sixth to a quarter of our
+  round trip, and they are self-inflicted rather than structural. The kernel-side `call_reply` bench
+  measures the fused shape, but **there is no EL0 twin of it**, so the structurally matched
+  comparison to seL4's published pair is not currently measured at all. That gap is named here
+  rather than papered over.
+- **Different measurement methods.** seL4 times a single operation through the PMU with the caches
+  hot and a measured overhead subtracted; we average a 5,000-iteration loop against a 41.67 ns
+  counter tick. Both are legitimate (notes/pmu.md, the two-clocks section) and they do not fail the
+  same way.
+- **We run under a hypervisor and they do not.** The tax on this particular path is small (no
+  devices touched, so essentially no VM exits; the cost is indirect, via stage-2 TLB pressure and
+  host cache pollution), which is precisely why the bench loops keep devices out. Small is not zero.
+- **The clock is assumed.** Every cycle figure above inherits a ~1.5x uncertainty from not knowing
+  which core type the vCPU thread ran on. Milestone 74 (cycle counters) exists to retire this, and
+  until it lands no cycle ratio from this note should be quoted tighter than "same order".
+
+**The kernel-side number stays, and it is a real thing to know.** `ipc_rtt` at 46 ns (~130 to ~190
+cycles) is the honest cost of the kernel's own rendezvous, and it is the right instrument for the
+job it has: the icount tripwire gates on it, and a change to the kernel's IPC code moves it next to
+its commit. It is not a comparison number. Putting it beside an 839-cycle round trip would compare a
+path with no trap and no address-space switch against one that has both, which is the original error
+of this section; deleting it would be a second error, because the gate needs it and the ~300 ns gap
+between the two planes *is* the trap cost, which is itself a number worth having.
+
+What the comparison legitimately supports, in one sentence: the Mach failure mode is nowhere in
+sight, the general path is viable at this price, and whether a fastpath is ever worth its complexity
+is a question for these measurements rather than for L4 envy.
+
+### Where the two nanosecond figures for `ipc_rtt` came from
+
+This note has carried **~705 ns** (2026-07-23) and **~951 ns** (2026-07-25) for the same kernel-side
+benchmark, which reads as a contradiction and is not one. Both are debug, both are single runs, and
+they are different binaries on different days: the 19f object-capability refactor landed between
+them and genuinely grew the scheduler and thread hot paths, on top of the whole-crate codegen drift
+this note documents below. Neither was wrong when it was written. **The defect was leaving both on
+the page with no dates and no build profile attached**, which is what let a comparison quote the
+older one for eleven days. Every figure in this note now carries its build; that is the fix.
 
 ## What the icount instrument cannot see
 
@@ -186,12 +290,14 @@ Two sanity checks pass. A context switch is ~16x a null syscall (two traps, the 
 register save/restores, and a TTBR0/ASID change, versus one bare trap). And the round trip lines up
 against its parts: ~two context switches (2 × 692) plus four traps (4 × 42) plus dispatch ≈ 2272.
 
-The EL0 round trip also has a kernel-side twin, the milestone-21 `ipc_rtt` (~951 ns), which measures
-the same rendezvous *without* the EL0↔EL1 crossings. The ~1.3 µs gap between them is exactly the trap
-cost of the four `svc`s a real round trip pays, which is the reason the EL0 numbers, not the
-kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS comparison wants release
-builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
-`sel4bench`.
+The EL0 round trip also has a kernel-side twin, the milestone-21 `ipc_rtt` (~951 ns in this same
+2026-07-25 debug run; the ~705 ns from 2026-07-23 is a different debug binary, see the calibration
+section), which measures the same rendezvous *without* the EL0↔EL1 crossings. The ~1.3 µs gap between
+them is exactly the trap cost of the four `svc`s a real round trip pays, which is the reason the EL0
+numbers, not the kernel-side ones, are what compare to lmbench. **All debug builds, and every figure
+in this subsection is one**; the cross-OS comparison and the L4 calibration both want release builds
+on all sides, and quoting a debug figure into either is the mistake the calibration section above
+records. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and `sel4bench`.
 
 **Map (lmbench's `lat_mmap`) behaves differently from the other three, and it is the primitive where
 the honest answer is a tie, not a win.** It taught three things.
