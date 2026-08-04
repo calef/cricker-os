@@ -68,7 +68,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # A prebuilt binary rather than `cargo install`, the same trade the supply-chain and coverage
-      # jobs make. The version comes from .cargo-mutants-version so this and script/mutants cannot
+      # jobs make. The version comes from .cargo-mutants-version so this and script/mutation cannot
       # disagree; cargo-mutants changes which mutants it GENERATES between versions, so an unpinned
       # tool would move the weekly numbers with nothing in the tree having changed.
       - name: Read the pinned cargo-mutants version
@@ -80,11 +80,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # script/mutants runs -j 2, and that bound is load-bearing here too: each job holds a full
+      # script/mutation runs -j 2, and that bound is load-bearing here too: each job holds a full
       # tree copy with its own target/, and the run that established the baseline OOM-killed a
       # 16 GiB machine at -j 4. These runners have no more headroom than that.
       - name: Run this shard of the mutants
-        run: script/mutants --shard ${{ matrix.shard }}/4
+        run: script/mutation --shard ${{ matrix.shard }}/4
 
       # Uploaded even when the step above hiccups: a partial report beats none, and the report job
       # below states which shards it actually saw.
@@ -122,7 +122,7 @@ jobs:
             echo "aggregated from: $* (of 4 shards)"
             echo
             echo '```'
-            script/mutants --report "$@"
+            script/mutation --report "$@"
             echo '```'
             echo
             echo 'Baseline: `.cargo/mutants-baseline.txt`; triage rule and survivor prose:'

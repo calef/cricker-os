@@ -849,7 +849,7 @@ mod tests {
     /// walk (every 999,983rd value, a prime, so the samples do not line up with any power-of-two
     /// structure in the arithmetic) plus the edges keeps the function on Miri's paths without
     /// pretending to be the exhaustive claim; the native run above it stays that claim. "Miri-clean"
-    /// here means the sampled values. See notes/miri.md.
+    /// here means the sampled values. See notes/undefined-behavior.md.
     #[test]
     fn every_nanosecond_survives_the_round_trip() {
         #[cfg(miri)]

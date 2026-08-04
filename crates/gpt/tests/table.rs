@@ -256,7 +256,7 @@ fn the_entry_array_buffer_sets_the_entry_count() {
 /// about silicon, and under an interpreter the 261,120 parses dominate the whole workspace run
 /// while proving a CRC-completeness claim that is not a memory property. The clean create, write,
 /// and parse at the top of this test are what Miri needs, and every other test in this file walks
-/// them (notes/miri.md).
+/// them (notes/undefined-behavior.md).
 #[test]
 #[cfg_attr(
     miri,

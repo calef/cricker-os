@@ -406,11 +406,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   then failed to rediscover it in ten minutes. The CI budget and why fuzzing cannot be a gate anyone
   waits on, the corpus discipline (seeds committed, working corpus not, crashes become host tests),
   and a BUGS section that says what a green run does not mean.
-- [Miri over the host crates](miri.md): milestone 79, the third leg of the analysis surface. What
+- [Dynamic undefined-behavior checking (Miri)](undefined-behavior.md): milestone 79, the third leg
+  of the analysis surface. What
   Miri checks that Kani, the fuzzers, and clippy cannot (aliasing, provenance, uninitialized reads,
   leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
   clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
-  sampled paths, never the exhaustive claims. Run by `script/miri`, weekly in CI plus on demand.
+  sampled paths, never the exhaustive claims. Run by `script/undefined-behavior-check`, weekly in CI plus on demand.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function

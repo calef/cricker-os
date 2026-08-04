@@ -122,7 +122,7 @@ fn main() -> ExitCode {
         "std-exerciser" => std_exerciser(),
         "shell-check" => shell_check(),
         "test" => test(),
-        "miri" => miri(),
+        "undefined-behavior-check" => undefined_behavior_check(),
         "bench" => bench(),
         "gdb" => gdb(),
         "objdump" => objdump(),
@@ -132,10 +132,12 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|miri|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
-            eprintln!("       cargo xtask miri [extra cargo-miri-test args, e.g. -p <crate>]");
+            eprintln!(
+                "       cargo xtask undefined-behavior-check [extra cargo-miri-test args, e.g. -p <crate>]"
+            );
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
@@ -2782,7 +2784,7 @@ fn test() -> bool {
     redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
 }
 
-/// **The host tests again, under Miri's interpreter** (milestone 79, notes/miri.md).
+/// **The host tests again, under Miri's interpreter** (milestone 79, notes/undefined-behavior.md).
 ///
 /// Miri checks the rules nothing else in the tree checks: aliasing (tree borrows), pointer
 /// provenance, uninitialized reads, leaks. Kani proves the properties it is asked about and the
@@ -2808,8 +2810,8 @@ fn test() -> bool {
 /// The two out-of-workspace test surfaces stay out deliberately: `tools/redoxfs_host` and
 /// `fs_server` spend their runtime inside the vendored RedoxFS engine, and a finding in vendored
 /// code lands in the vendor pin, not in a crate this tree can fix (vendor/README.md). Extra args
-/// are forwarded to `cargo miri test`, so `cargo xtask miri -p gpt` narrows the run.
-fn miri() -> bool {
+/// are forwarded to `cargo miri test`, so `cargo xtask undefined-behavior-check -p gpt` narrows the run.
+fn undefined_behavior_check() -> bool {
     eprintln!("--- host tests under Miri (aliasing, provenance, uninitialized reads) ---");
     let mut args = vec![
         "miri",

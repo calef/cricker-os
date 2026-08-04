@@ -1,5 +1,5 @@
 #!/bin/sh
-# script/mutants: mutation testing over the host crates (milestone 85). See notes/mutation-testing.md.
+# script/mutation: mutation testing over the host crates (milestone 85). See notes/mutation-testing.md.
 #
 # Coverage answers "did this line run under a test"; this answers the question coverage cannot,
 # "would any test NOTICE if this line were wrong". cargo-mutants rewrites one function at a time
@@ -8,12 +8,12 @@
 # test would stay green. The survivors are the product; each one is either a test worth writing or
 # an exclusion worth recording in .cargo/mutants.toml with its reason.
 #
-#   script/mutants                        full run over the host crates (hours; see the note)
-#   script/mutants --shard 1/4            one quarter of the mutants, for splitting across jobs
-#   script/mutants -p gpt -p ntp_proto    just those packages
-#   script/mutants --list                 enumerate the mutants without running anything
-#   script/mutants --report [DIR...]      per-crate table from finished run output, vs the baseline
-#   script/mutants --save-baseline [DIR...]  rewrite .cargo/mutants-baseline.txt from run output
+#   script/mutation                        full run over the host crates (hours; see the note)
+#   script/mutation --shard 1/4            one quarter of the mutants, for splitting across jobs
+#   script/mutation -p gpt -p ntp_proto    just those packages
+#   script/mutation --list                 enumerate the mutants without running anything
+#   script/mutation --report [DIR...]      per-crate table from finished run output, vs the baseline
+#   script/mutation --save-baseline [DIR...]  rewrite .cargo/mutants-baseline.txt from run output
 #
 # **A report, not a gate**, deliberately (roadmap 85): the full run costs hours, and a survivor is a
 # worklist entry rather than a defect in the commit that happened to trigger the run. So survivors
@@ -34,7 +34,7 @@ baseline_file=".cargo/mutants-baseline.txt"
 
 usage() {
     cat <<'EOF'
-usage: script/mutants [--report [DIR...]] [--save-baseline [DIR...]] [cargo-mutants args...]
+usage: script/mutation [--report [DIR...]] [--save-baseline [DIR...]] [cargo-mutants args...]
 
   --report         summarize finished run output (default mutants.out) against the baseline
   --save-baseline  rewrite .cargo/mutants-baseline.txt from finished run output
@@ -73,7 +73,7 @@ report() {
     [ $# -gt 0 ] || set -- mutants.out
     for dir in "$@"; do
         if [ ! -d "$dir" ]; then
-            echo "script/mutants: no run output at $dir (run script/mutants first)" >&2
+            echo "script/mutation: no run output at $dir (run script/mutation first)" >&2
             exit 2
         fi
     done
@@ -104,7 +104,7 @@ case "$1" in
     --save-baseline)
         shift
         [ $# -gt 0 ] || set -- mutants.out
-        { echo "# Written by script/mutants --save-baseline: crate caught missed timeout unviable."
+        { echo "# Written by script/mutation --save-baseline: crate caught missed timeout unviable."
           echo "# The prose baseline, and what each survivor means, is notes/mutation-testing.md."
           counts "$@"
         } > "$baseline_file"

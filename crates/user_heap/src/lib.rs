@@ -226,7 +226,7 @@ impl Heap {
         // carved a coalesced block was UB, caught by Miri as a write with no exposed tag. At
         // runtime the two are the same instruction; the difference is whether the optimizer is
         // told the escape exists. Strict provenance (`-Zmiri-strict-provenance`) is therefore
-        // off the table for this crate, and honestly so: see notes/miri.md.
+        // off the table for this crate, and honestly so: see notes/undefined-behavior.md.
         let addr = start.expose_provenance();
         self.free += size;
 
@@ -237,7 +237,7 @@ impl Heap {
         // was a write through a dead borrow. Every compiler we ran emitted the store anyway,
         // which is why it survived 60 native tests; it was still UB, licensed to break on any
         // toolchain bump. Miri's aliasing check is the only gate in the tree that sees this
-        // class, and this was the first thing it found (milestone 79, notes/miri.md).
+        // class, and this was the first thing it found (milestone 79, notes/undefined-behavior.md).
         let head_link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
         let mut link = head_link;
         // Find the first block above `addr`; `link` ends up at the insertion point.

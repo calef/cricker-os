@@ -1,4 +1,4 @@
-# Miri over the host crates, weekly (milestone 79, notes/miri.md).
+# Miri over the host crates, weekly (milestone 79, notes/undefined-behavior.md).
 #
 # **Why weekly rather than per-PR.** Miri interprets the host tests instead of executing them, at
 # roughly a thousandth of native speed, so the sampled run is tens of minutes where the host tests
@@ -10,10 +10,10 @@
 # A schedule only fires on the default branch, so this is always a run against `main`; a red here
 # is information about `main`, not about any PR, which is why nothing requires this check.
 #
-# The real work is script/miri (the "Scripts to Rule Them All" pattern, notes/scripts.md), so CI
-# runs exactly what a developer runs locally, and script/miri self-provisions the miri component
+# The real work is script/undefined-behavior-check (the "Scripts to Rule Them All" pattern, notes/scripts.md), so CI
+# runs exactly what a developer runs locally, and script/undefined-behavior-check self-provisions the miri component
 # on the pinned toolchain.
-name: miri
+name: undefined-behavior check
 
 on:
   schedule:
@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   miri:
-    name: miri (host crates, sampled paths)
+    name: undefined-behavior check (host crates, sampled paths)
     runs-on: ubuntu-24.04-arm
     # The full sampled run measured 27 minutes wall on the dev machine (2026-08-03, 95 test
     # binaries, warm compile cache); the budget leaves room for a slower runner, a cold cache,
@@ -44,5 +44,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - name: script/miri
-        run: script/miri
+      - name: script/undefined-behavior-check
+        run: script/undefined-behavior-check

@@ -1,4 +1,4 @@
-# Written by script/mutants --save-baseline: crate caught missed timeout unviable.
+# Written by script/mutation --save-baseline: crate caught missed timeout unviable.
 # The prose baseline, and what each survivor means, is notes/mutation-testing.md.
 # Run of 2026-08-03, 5551 mutants, before this branch's triage tests landed; caught is
 # derived as total-minus-the-rest because the run was resumed twice (see the note).
