@@ -1,14 +1,15 @@
 # Pipes and redirection: `>`, `<` and `|` are one substitution
 
-*Milestone 50, the operators lane. `crates/grant_plan/src/line.rs`, `user/src/wc.rs`, `user/src/swish.rs`,
+*Milestone 50, the operators lane and its closure. `crates/grant_plan/src/line.rs`,
+`user/src/wc.rs`, `user/src/swish.rs`, `user/src/date.rs`, `user/src/terminal_sink.rs`,
 `user/src/system_initializer.rs`, `user/src/hello.rs`, `crates/grant_plan/src/spawnproto.rs`,
 `script/shell-check`. The protocol half is notes/sink-protocol.md and you should read that first.*
 
-**All four operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
+**All five operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
 boot in which one shell holds both a filesystem and a spawn channel, and building that turned up a
 reason the file end of a redirection cannot be a separate process. That finding is the section
 ["The file behind a `>` is this shell"](#the-file-behind-a--is-this-shell-and-that-was-not-the-plan),
-and it is the most reusable thing in this note. `>>` came last and is the cheapest of the four,
+and it is the most reusable thing in this note. `>>` is the cheapest of the four,
 which is that finding paying out: the shell already holds the file, so append is one bit about how
 it opens one.
 
@@ -51,7 +52,7 @@ runs in milliseconds; that is where nearly all of this lane's tests are.
 
 ```text
 line  := stage ('|' stage)*
-stage := <command words> ('<' name | '>' name | '>>' name)*
+stage := <command words> ('<' name | '>' name | '>>' name | '2>' name | '2>>' name)*
 ```
 
 Three refusals that bash does not make, each because a line should mean what it looks like:
@@ -78,6 +79,9 @@ redirected:
 | `worker`, `budgeter` | a `u64` answer in a register | no |
 | `heeder`, `spinner` | nothing; they report through a shared frame | no |
 | `date`, `wc`, `rm` | the sink contract's byte messages | yes |
+
+`date` went one further on 2026-08-03 and declares a **second** byte stream as well (DECISIONS §67),
+which is what `2>` binds to. `OutputSpec` is where that is written down too.
 
 `worker 9 > out.txt` would otherwise put a raw word into a file sink, producing a file with nothing
 legible in it and no error anywhere. Declaring the convention makes it `Refusal::NotAByteStream` at
@@ -126,14 +130,21 @@ itself.
 `grant_plan::spawnproto` grew two bits in the request word and two positions in the delegation order:
 
 ```text
-  w2 = mem_pages | INTERRUPTIBLE_BIT | SINK_BIT | SOURCE_BIT
+  w2 = mem_pages | INTERRUPTIBLE_BIT | SINK_BIT | SOURCE_BIT | DIAG_BIT
 
   then, over SEND_CAP, in this order:
     job untyped, job frame   (if INTERRUPTIBLE)
     the sink                 (if SINK)          -> the child's slot 0
     the source               (if SOURCE)        -> the child's slot 1
+    the diagnostic endpoint  (if DIAG)          -> the slot the MANIFEST names (§67)
     the --mem untyped        (if mem_pages > 0)
 ```
+
+`DIAG_BIT` is the odd one and the difference is the decision: the other three say *which slot*, and
+this one does not, because the slot is the program's declaration rather than the shell's choice. What
+the wire says is only "expect one more capability". It is also the only one the shell sets from an
+**operator** rather than from the wiring: with no `2>` on the line a declaring child still gets a
+second stream, endowed by init from the manifest the way the clock is.
 
 Order rather than tags, because both sides read the same word: a `SEND_CAP` nobody expects and a
 `RECV_CAP` nobody answers each deadlock both parties.
@@ -265,7 +276,7 @@ The analysis of the fork as it stood open is kept below, because the reasoning i
 and because reading it explains why the built thing has the shape it does. What follows first is
 what exists.
 
-### The four moving parts, and none of them is a number everybody agrees on
+### The five moving parts, and none of them is a number everybody agrees on
 
 ```text
   crates/grant_plan            OutputSpec::BytesAndDiagnostics { slot }   the declaration
@@ -274,14 +285,17 @@ what exists.
 
   crates/grant_plan/line.rs    `2>` and `2>>`, at the tail, like `>` and `>>`
 
-  user/src/swish.rs            one diagnostic endpoint per session, retyped out of the shell's
-                               own budget, delegated to every declaring stage
+  user/src/swish.rs            an endpoint the shell mints ONLY for a `2>`, because that is the
+                               case where it has to back a file
 
-  user/src/system_initializer  receives it and CAP_INSERTs it at the slot the MANIFEST names,
-                               not at the next free one
+  user/src/terminal_sink.rs    where the bytes go with no operator on the line: the terminal,
+                               served by an adapter, so nothing goes through the shell at all
+
+  user/src/hello.rs            receives whichever it is and inserts it at the slot the MANIFEST
+  user/src/system_initializer  names, not at the next free one. Yes, both: see below
 ```
 
-The last line is the one to read twice. **The slot is high (eight) and placed explicitly**, and that
+The two init lines are the ones to read twice. **The slot is high (eight) and placed explicitly**, and that
 is not a style choice: how many low slots a child gets depends on what the command line granted it
 (`date` gets a clock from init and none from the guest-test harness), so a diagnostic stream that
 landed "next" would sit at slot 2 in one wiring and slot 1 in another, and a program that probes one
@@ -338,6 +352,22 @@ $ caps date 2> err.txt
   reading the command is reading its whole authority.
 ```
 
+And with no operator, where the `diags` row names a capability **this shell does not hold**:
+
+```text
+$ caps date
+  date would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    cap 1  frame     clock    read-only. it can read the time and not set it,
+                              and no token on the line could have asked for more
+    output   this shell's result endpoint (it reads the bytes and prints them)
+    diags    the terminal's own sink, a component this shell does not hold.
+             declared by the program, so a > cannot swallow them, 2> can
+             name them, and they reach the screen without passing here
+    arg    (none)
+  reading the command is reading its whole authority.
+```
+
 The refusal, which is the other half of "a declaration, not a number":
 
 ```text
@@ -348,6 +378,24 @@ $ wc gate.txt 2> err.txt
 Nothing was denied. `wc` writes one stream, its diagnostics ride it, and the operator has nothing to
 bind to. That is `Refusal::NoSuchProgram`'s shape applied to a stream, and it is the sentence §67
 asked for.
+
+### A third bug of the same shape, and the pattern is now three deep
+
+Building the terminal's sink adapter made the boot print **nothing at all** on aarch64, and it was
+init's sixteen-slot cspace for the third time. The adapter was built between the input driver and the
+shell, which looked like the natural place; at that moment init still holds the terminal endpoint,
+two shared frames, the file service and its page, so one more endpoint put `build_child` one slot
+short while it was retyping the *shell's* address space. The shell was never built, so nothing ever
+printed.
+
+The fix is where rather than what: build it **last**, after the shell and after every boot capability
+but `term_ep` has gone back, which is the narrowest the cspace ever is. `term_ep` goes back
+immediately after.
+
+The pattern worth keeping is that all three instances of this presented identically, as a boot that
+reaches userspace and then says nothing, and all three were a capability slot rather than memory.
+**A cspace that is sized in a constant and consumed in an order is a resource with no error message.**
+`build_child` returns `Err(())` and init halts, which is correct and silent.
 
 ### A correction: there are two inits, and this note said there was one
 
@@ -370,26 +418,41 @@ inits is its own lane, but it is now written down where the next person will mee
 What the gate proves is unchanged and is the reason it caught this: `script/shell-check` boots
 **both** ISAs, so it runs both inits, which is exactly what a single-ISA gate would have missed.
 
-### The one rule a declaring program has to keep, and why it is not free
+### Where the bytes go by default, and why it is not this shell
 
-**Everything a declaring program has to complain about is said, and its second stream closed, before
-it writes a byte of output.**
+**With no `2>` on the line, a declared second stream goes to the terminal's own sink**, which is a
+component (`user/src/terminal_sink.rs`, notes/sink-protocol.md) and not the shell. init endows it
+from the manifest, exactly as it endows the clock and for the same reason: the shell holds no
+terminal capability it could delegate, and a person does not designate a screen.
 
-That is forced by the kernel, not chosen. There is no receive-on-a-set here (the same gap
-`fs_file_caretaker` and `notes/sink-protocol.md` both record), so the shell reads one endpoint at a
-time, and it must read the **diagnostics** first. Consider `date | wc`: the shell is not the reader
-of `date`'s output, `wc` is. A shell that drained the output first would be waiting on `wc`, which is
+That is stronger than the shell printing those bytes, and the difference is worth stating. **They
+reach the screen without passing through the shell at all**, so nothing the shell does to a program's
+output can reach them: `date > when.txt` drains the output into the file and never sees the
+complaint. `caps` prints it as a row that names a capability this shell does not hold.
+
+It is also what keeps the shell single-threaded and honest. The shell reads one endpoint at a time
+(there is no receive-on-a-set in this kernel, the gap `fs_file_caretaker` records too), so a default
+that came back here would put it in the business of multiplexing two streams, and the ordering
+constraint below would apply to every declaring program rather than to the ones a `2>` names.
+
+### The one rule a `2>` costs, and why only a `2>` costs it
+
+**A program whose second stream this shell is backing must say everything it has to say, and close
+that stream, before it writes a byte of output.**
+
+`2> err.txt` is the case where the shell holds both ends: it mints an endpoint, hands it to every
+declaring stage, and drains it into the file. Two streams, one single-threaded reader, and it must
+read the **diagnostics** first. Consider `date | wc 2> err.txt`: the shell is not the reader of
+`date`'s output, `wc` is. A shell that drained the output first would be waiting on `wc`, which is
 waiting on `date`, which is blocked in a rendezvous `SEND` on a diagnostic endpoint nobody is
-listening to. Diagnostics first is the only order in which nobody waits on somebody who is waiting
-on them.
+listening to. Diagnostics first is the only order in which nobody waits on somebody who is waiting on
+them.
 
-`date` keeps the rule for free, because every complaint it has is a reason it has no answer. A
-program with running commentary (a `rm -rv` that hit one unremovable name halfway through a
-thousand) could not, and would have to buffer or be redesigned. **That is the honest cost of the
-decision and it is in this note's BUGS.**
-
-The rule disappears the day a component sits on the other end of the diagnostic endpoint rather than
-the shell, which is what the terminal's sink adapter is for; see the section on it below.
+`date` keeps the rule for free, because every complaint it has is a reason it has no answer, and it
+keeps it unconditionally: it closes its second stream before its first either way. A program with
+running commentary (a `rm -rv` that hit one unremovable name halfway through a thousand) could not,
+and would be fine at the default destination and wrong under a `2>`. **That asymmetry is the honest
+cost and it is in this note's BUGS.**
 
 ### What it deliberately does not do
 
@@ -405,10 +468,14 @@ the shell, which is what the terminal's sink adapter is for; see the section on 
   declaration is that the two are different capabilities. A program that wants one stream declares
   one.
 
-### There is no second stream today, and that is a fact rather than an omission
+### The fork as it stood open, kept for the reasoning
 
-*(The record of the fork as it stood open, kept for the reasoning. "Today" below means before
-2026-08-03.)*
+*Everything from here to the end of this section is the analysis that was written while `2>` was
+still undecided, kept because the reasoning is the reusable part and because it explains what the
+built thing is not. "Today" means before 2026-08-03; the section that closes it is "Why this is
+Chris's call", and he called it: option (c), the manifest declaration.*
+
+#### There is no second stream today, and that is a fact rather than an omission
 
 A cricker-os program holds **one** output endpoint, in slot 0, placed there by its spawner. Its
 diagnostics travel on it, in-band with everything else:
@@ -425,7 +492,7 @@ and no way to tell them apart at the far end.
 So `date > when.txt` on a machine with no clock writes the complaint **into the file**, which is
 exactly the loss `2>` exists to prevent on Unix.
 
-### But the half that hurts most on Unix is already separated here
+#### But the half that hurts most on Unix is already separated here
 
 The thing a person usually reaches for `2>` to save is **the shell's own refusals**, and those never
 enter a redirection here. `wc < nosuch.txt` is `Say::Failed` printed by the prompt; `worker 9 >
@@ -440,7 +507,7 @@ there is no `2>&1` that could merge them back by accident.
 
 What remains is a program's own diagnostics, which today are indistinguishable from its output.
 
-### Why fd 2 exists on Unix, and why that reason does not transfer
+#### Why fd 2 exists on Unix, and why that reason does not transfer
 
 Unix needs a *numbered convention* because a process cannot ask its parent for a channel. Every
 process gets three descriptors by inheritance, so what fd 2 is has to be agreed in advance by
@@ -449,7 +516,7 @@ a slot, and init put it there because the shell's plan said to, and the plan cam
 that already declares what kind of output the program has (`OutputSpec`). The mechanism for "this
 program has a second thing to say" is therefore a **declaration**, not a number.
 
-### The two shapes it could take, and what each costs
+#### The two shapes it could take, and what each costs
 
 **A second endpoint in a second slot.** The direct translation. It costs a `spawnproto` bit (there
 are 29 free in that word), a delegation position, an init branch, a slot in every child, a manifest
@@ -478,7 +545,7 @@ read? every reader forwards diags upstream?). Unix's answer is that fd 2 bypasse
 and that is exactly the property one endpoint cannot express. Attaching a rule to it is a protocol
 design task, not a wiring one.
 
-### Why this is Chris's call
+#### Why this is Chris's call
 
 Both shapes are defensible and they commit to different things. The first says a program can have
 several output capabilities and the model should name them; the second says a program has one
@@ -495,6 +562,81 @@ Inventing the convention before a program has two things to say would be inventi
 discovering it, which is the same argument milestone 50 made about `InputSpec` and got right by
 waiting.
 
+## Buffering: measured, and the answer is to build nothing
+
+The roadmap block said it plainly: **measure `a | b` throughput against a Unix pipe before deciding
+anything**, and if buffering earns its place it arrives as a component speaking the sink contract on
+both sides. It was measured on 2026-08-03. It has not earned its place, and the number says
+something more useful than "no".
+
+### The measurement
+
+`bench: sink_throughput` (`kernel/src/bench.rs`) is a pipeline with the shell taken out: two EL0
+processes, one endpoint, the left one packing sixteen bytes into a sink message and `SEND`ing, the
+right one `RECV`ing and self-timing. `bench/host/pipe_throughput.rs` is the same shape over a real
+`pipe(2)`, twice, because only one of the two arms is apples to apples.
+
+Apple Silicon, one machine, one sitting. cricker-os under HVF (`cargo xtask bench --real`), so the
+nanoseconds are real; the host arms are medians of three.
+
+| | per 16 bytes | throughput |
+|---|---|---|
+| cricker-os `a \| b` (one endpoint, no buffer) | **1146 ns** | **13.3 MiB/s** |
+| macOS pipe, 16-byte writes | 348 ns | 44 MiB/s |
+| macOS pipe, 64 KiB writes | (5.4 µs per 64 KiB) | 11,600 MiB/s |
+
+Two reference points from the same run make the first row legible. `ipc_rtt_el0` is 2785 ns for a
+round trip, so a one-way rendezvous is about 1.4 µs and **our pipe is one rendezvous per message and
+nothing else**: there is no overhead to find. And `relay_rtt` (1187 ns) against `ipc_rtt` (2313 ns)
+prices what a hop through a userspace process costs, which is roughly double.
+
+### What the numbers actually say, which is not what the block expected
+
+**The lockstep is not the bottleneck. The sixteen-byte message is.**
+
+Read the two host rows together. At the same granularity Unix is 3.3x faster than us, which is a
+real gap and is the cost of a capability rendezvous against a tuned kernel pipe. The 870x is
+somewhere else entirely: Unix's win is that a program writes 64 KiB per syscall, and ours is capped
+at sixteen bytes per message because the sink contract is register-only.
+
+That cap is not an oversight and it is not a thing buffering fixes. `notes/sink-protocol.md` records
+why register-only was **forced**: the moment a sink also needs a page mapped at an agreed address,
+redirection stops being "put a different capability in one slot" and becomes a three-way spawn-time
+negotiation, and milestone 50's whole finding evaporates.
+
+### So a buffering component would make it worse, and that is the decision
+
+Insert a process between the two ends and every message pays a second rendezvous. `relay_rtt` prices
+that at roughly double, so an 80 KB pipeline would go from 5.7 ms to something near 11 ms. **A
+buffer cannot batch its way out of that**, because what it forwards is still sixteen bytes per
+message: the contract it speaks on both sides is the one that sets the cap.
+
+Buffering buys decoupling, not bandwidth. It wins when a producer has *work to do between writes* and
+a consumer has work to do between reads, so the two can overlap instead of alternating. It does not
+win when both are only moving bytes, which is what this benchmark and every pipeline in this system
+today are.
+
+**So nothing is built, and that is the successful outcome the block described.** What would move the
+number is a larger message, and that is a different decision with §51's indifference on the other
+side of it. It is not taken here and it is not needed: `date | wc` and `ls | wc` are hundreds of
+bytes, and at 1.15 µs per sixteen that is tens of microseconds for a whole line.
+
+### The honest caveats
+
+- **The benchmark does not measure the case buffering is for.** Both ends do nothing but move bytes,
+  so there is no producer-side work for a buffer to overlap with the consumer's. A pipeline of two
+  programs that each compute would show a different shape, and if one is ever built, this is the
+  benchmark to extend rather than the conclusion to keep.
+- **The host arm is macOS, not Linux.** `bench/host/run_linux.sh` exists for the cross-OS suite and
+  this program belongs in it; the Linux number is not taken here, and Linux's pipe is a different
+  implementation with a different fast path.
+- **The 64 KiB row is nearly memcpy-bound** and the producer runs ahead through the whole transfer,
+  which is the buffer effect at its most flattering. It is in the table because it is what a Unix
+  program actually gets, not because it is a fair comparison.
+- **`sink_throughput` is not in `bench/baseline-*.txt`.** It is a new row, and a baseline row is a
+  claim about a number somebody has looked at; the integrator adds it from the merged tree, on both
+  ISAs, in the same breath.
+
 ## SIGPIPE, and why the pipeline gets its own region
 
 Deleting every capability that names an endpoint does **not** destroy the endpoint: the object lives
@@ -505,6 +647,25 @@ Each pipeline therefore takes its own region, split off the shell's budget, and 
 it when the line is over. That is what turns a producer's next `SEND` into `abi::Error::Gone`, which
 is `SIGPIPE` as a return value. The classification itself is asserted by value in
 `kernel::user::sink_tests`.
+
+## The five processes an interactive boot now runs
+
+For a reader arriving at this file cold, the shape of the system `2>` completed:
+
+```text
+  init ──builds──► console server            reads a page, writes the UART
+              ├──► line_editor               the terminal contract: OP_WRITE, OP_READLINE,
+              │                              OP_BYTES, OP_INTRCOUNT, OP_PRINT
+              ├──► input driver              the UART receive interrupt, into the terminal
+              ├──► swish                     the prompt
+              └──► terminal_sink             the sink contract, into OP_PRINT
+```
+
+The fifth is new (DECISIONS §67, notes/sink-protocol.md), and it is the only one a person never
+interacts with directly. It exists so "the terminal" can be a **destination a capability designates**
+rather than a thing only the shell can reach, and its whole job is turning sink messages into terminal
+prints. init keeps the endpoint it serves and hands it to any child whose manifest declares a second
+stream, the way it hands out the clock.
 
 ## The boot that has a filesystem, which is what `>` was actually waiting for
 
@@ -787,7 +948,7 @@ It drives `scripts/qemu-runner-aarch64.sh` directly rather than `cargo run`, so 
 QEMU (the runner `exec`s it) and the kill lands on the emulator instead of on cargo. It is not part
 of `script/test`, because it builds a second kernel and boots it twice.
 
-## The shell's stack, a third time, and what the pattern is now
+## The shell's stack, a fourth time, and what the pattern is now
 
 Milestone 50 hit "a boot that printed nothing" three times and one of them was four stack pages
 being one deep call short of the redirection path. Milestone 31's input operand hit the **same
@@ -812,14 +973,36 @@ Two things came out of it, and the second is the one to keep:
   both eight now. A test wiring with less headroom than the boot wiring will keep finding faults the
   boot does not have, which is a bug in the harness rather than a signal.
 
+**And a fourth time, for `2>`.** A second `FileOut` on `run_pipeline`'s frame (each carries a
+256-byte staging buffer by value, because the filesystem's write unit is a page and the sink
+contract's is sixteen bytes) overflowed eight pages by twenty-four bytes, in the same place, with the
+same signature. All three wirings are **twelve** now, and the number went up by four rather than one
+on purpose: every previous instance bought exactly enough headroom and the next change found the
+wall again. 48 KiB of address space per child is not worth a fifth bisect.
+
+The pattern the four instances share is worth more than any of them: **this shell's frames carry
+whole values that grew as the milestone grew** (a parsed `Line`, an array of `Endowment`s each
+holding a `NameSet`, a listing buffer, now two file buffers), and none of that shows up anywhere a
+reader would look. The symptom is always a data abort one word below the lowest mapped page.
+
 ## BUGS, named where the reader meets them
 
-- **`script/shell-check` is not in `script/test` or in CI.** It is the only gate on the real init and
-  nothing runs it automatically, which is a weaker version of the gap it closed. Wiring it into the
-  CI test job is a one-line change and is deliberately not taken here.
+- **The terminal's sink adapter has one consumer, and it is `2>`'s default destination.** Nothing
+  else puts it in a child's output slot yet, though nothing stops it: a shell that wanted a program
+  to print straight to the screen rather than through its own result endpoint could hand it over,
+  and would lose the ability to redirect that program at all. That trade is the interesting question
+  it raises and it is not answered here.
+- **`OP_PRINT` carries eight bytes, so a sixteen-byte sink message is two calls to the terminal.**
+  That is the terminal contract's request shape rather than a choice (see notes/sink-protocol.md),
+  and it doubles the round trips on a path that is a person reading text.
+- **`script/shell-check` is not in `script/test` or in CI.** It is the only gate on the real init
+  (both of them) and nothing runs it automatically, which is a weaker version of the gap it closed.
+  It has now caught two boots that printed nothing, which is two more than any automatic gate did.
+  Wiring it into the CI test job is a one-line change and is deliberately still not taken here.
 - **`user/src/sink.rs`'s file and source roles are no longer on the shell's path.** They are still
   the right shape for an adapter whose client is not the shell, and `sink_tests` still proves them
-  against a real image, but nothing at the prompt builds one. The source role also still opens the
+  against a real image, but nothing at the prompt builds one. (`user/src/terminal_sink.rs` is that
+  shape with a client the prompt does build, which is the closest this has come to being used.) The source role also still opens the
   one name in `sink_proto::fixture` and cannot be told another; the shell would have had to hand it
   a name the way `fs_file_caretaker` is handed one, and it turned out not to need to.
 - **The interactive prompt holds the image root, unnarrowed.** A `fs_subtree_caretaker` between it
@@ -846,14 +1029,13 @@ Two things came out of it, and the second is the one to keep:
 - **`2>` works only on a program that declares a second stream, and one does** (`date`). That is
   DECISIONS §67's cost, stated where a person meets it: `wc gate.txt 2> err.txt` is refused, and the
   fix is `wc` declaring a second output rather than anything about the operator.
-- **A declaring program must say everything before it produces anything.** The shell drains the
-  diagnostic stream to end-of-stream *before* the output, because there is no receive-on-a-set and
-  any other order deadlocks a pipeline (the section above has the chain). So a program with running
-  commentary, a `rm -rv` that hits one unremovable name halfway through a thousand, cannot declare a
-  second stream as things stand: it would have to buffer its complaints or block. `date` keeps the
-  rule for free because every complaint it has is a reason it has no answer. **The rule is the
-  shell's, not the contract's**, and it goes away the day something other than the shell reads that
-  endpoint, which is what the terminal's sink adapter would be.
+- **Under a `2>`, a declaring program must say everything before it produces anything.** The shell
+  drains the diagnostic stream to end-of-stream *before* the output, because there is no
+  receive-on-a-set and any other order deadlocks a pipeline (the section above has the chain). At
+  the default destination the shell is not in the path at all and the rule does not apply, so the
+  same program is correct without the operator and would deadlock with it. That asymmetry is real
+  and is the price of the shell backing files itself (DECISIONS §55). `date` is unaffected: it
+  closes its second stream before its first, always.
 - **A `2>` on a builtin is refused as "declares no second output".** True (a builtin has no manifest
   and no second stream) and a slightly odd sentence about `ls`, which is not a program at all. The
   wording gap is the same shape as `<<`'s below.

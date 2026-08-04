@@ -202,17 +202,76 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   one-directional by construction and a source contract is its own design.
   *(Answered by the operators lane the same day: a source is the sink contract received rather than
   sent. See notes/pipes.md.)*
-- **The terminal is not converted, and the reason is a capability argument, not a scheduling one.**
-  The obvious cheap move is to have the `line_editor` component serve the sink contract on the endpoint
-  it already has: a `SEND` arrives there with no reply capability, so it is trivially
-  distinguishable from the `CALL`s it serves today. **That would be wrong.** That endpoint also
-  carries `OP_READLINE`, so putting it in a child's output slot would hand the child the terminal's
-  *input* as well, and a sink capability that can read the keyboard is not a sink capability. This
-  kernel offers no receive-on-a-set (`fs_file_caretaker`'s note records the same gap and takes the
-  same way out), so the terminal's sink has to be a **separate endpoint served by an adapter
-  process**, which is exactly the shape `ROLE_FILE` is and proves against a real backend. Building
-  the terminal adapter means rewiring the shell and `system_initializer`, whose files a sibling lane owns.
-- **The console server's page-plus-ack channel is likewise untouched**, for the same client reason.
+- **The terminal is a sink now** (`user/src/terminal_sink.rs`, 2026-08-03), and it took one new
+  opcode and one process. The analysis this bullet used to carry was right about the shape and
+  wrong about the cost; see "The terminal's sink adapter" below.
+- **The console server's page-plus-ack channel is untouched**, and after building the adapter that
+  looks like the right answer rather than a gap. `line_editor` is its only client and now speaks for
+  two writers; a second client of the *console* would hit the same one-page wall one layer down,
+  with nothing gained.
+
+## The terminal's sink adapter, and the wall it hit
+
+The last of milestone 50's remainders. A program's output slot can now hold **the terminal**, and it
+still cannot tell that from a pipe or a file.
+
+```text
+  a declaring child ──sink_proto SEND──► terminal_sink ──OP_PRINT CALL──► line_editor ──► console
+```
+
+### It is a process for a capability reason, which was known
+
+The cheap move is to have `line_editor` serve the sink contract on the endpoint it already has: a
+`SEND` arrives there with no reply capability, so it is trivially distinguishable from the `CALL`s it
+serves. **That is wrong.** That endpoint also carries `OP_READLINE`, and `WRITE` on an endpoint is
+the right to `CALL`, so a child handed it as its output slot would hold the terminal's **keyboard**.
+A sink capability that can read the keyboard is not a sink capability. This kernel offers no
+receive-on-a-set, so the terminal cannot serve two endpoints itself, and the answer is a separate
+process holding both contracts and handing out only one.
+
+### And it needed a new opcode, which was not known
+
+The plan said the adapter would be `ROLE_FILE`'s shape and that the work was rewiring init. Building
+it found something else: **`OP_WRITE` reads from the client's output page, and there is exactly one
+of those.** init maps a single frame into `line_editor` read-only and into the shell read/write. A
+second page-based client needs a second frame and a page index in every request, which is `fs_proto`'s
+one-page-two-clients problem (DECISIONS §55, the reason the file behind a `>` is the shell itself)
+arriving in a second contract.
+
+So the terminal contract grew **`OP_PRINT`**: up to eight bytes carried in the request's own words,
+replied when they are on the wire. The adapter then needs **no page at all**, and `expand_output` is
+shared with `OP_WRITE`, so a newline from an adapter gets the same manners as a newline from the
+shell. Two writers, one terminal, one set of manners, no second frame.
+
+Eight rather than sixteen is the contract's request shape and not a choice: a served request arrives
+through `recv_cap`, which hands the server a reply capability and **two** data words. `OP_BYTES`
+carries eight for the same reason, from the input direction, which is why the shape was already
+there to copy.
+
+### What it is for
+
+DECISIONS §67's declared second stream. A program that declares diagnostics gets this endpoint in
+its declared slot by default, endowed by init from the manifest exactly as the clock is, and `2>`
+replaces it with a file the shell backs. So a `date` complaining about a missing clock reaches the
+screen **without passing through the shell at all**, which is stronger than the shell printing it:
+nothing the shell does to the output can touch those bytes, and `caps` says so in its `diags` row.
+
+`kernel::user::sink_tests::the_terminal_is_a_sink_like_any_other_and_the_writer_cannot_tell` is the
+proof, and it is the indifference claim made a third time: the same `sink` writer ELF, the same
+transcript, a pipe and a file and now a terminal, and the program holds one capability in each case.
+
+### BUGS
+
+- **It is one process per system, not one per client.** Every declaring child writes to the same
+  endpoint, so two of them talking at once interleave at message granularity. That is what a shared
+  fd 2 does on Unix too, and there is nothing here that could do better without a second adapter and
+  a way to decide which one a child gets.
+- **The bytes bypass the shell entirely, which is the feature and also the limitation.** A shell
+  cannot capture, indent, count or truncate them. `2>` is the only way to put them anywhere else, and
+  it works by handing the child a *different* endpoint rather than by intercepting this one.
+- **Building it found init's sixteen-slot cspace for the third time.** One more endpoint held across
+  the shell's `build_child` made the boot print nothing at all. It is built last now, at the
+  narrowest point; see notes/pipes.md.
 - **`date` was already speaking the contract before it existed**, which is the `OP_BYTES == 0`
   decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It
   announces no end of stream, because nothing yet reads its output as a stream; when `|` lands, it

@@ -344,7 +344,7 @@ fn line(bytes: &[u8]) {
     line_on(REPORT, bytes);
 }
 
-/// [`line`], to a named endpoint. The two streams speak the same contract, which is the point: a
+/// [`line()`], to a named endpoint. The two streams speak the same contract, which is the point: a
 /// diagnostic is bytes, and the only thing that makes one a diagnostic is which endpoint it is on.
 fn line_on(slot: u64, bytes: &[u8]) {
     let mut out = [0u8; 96];

@@ -17,5 +17,9 @@ coremark 3654521 256
 null_syscall 65626 20000
 ctx_switch 471732 5000
 ipc_rtt_el0 1749227 5000
+# sink_throughput's second column is BYTES, not iterations: it is a throughput number
+# (`a | b` over one endpoint, sixteen bytes a rendezvous) and bytes is what a Unix pipe
+# can be compared against. See notes/pipes.md.
+sink_throughput 715446 80000
 map_el0 66011 500
 spawn_el0 302419 100

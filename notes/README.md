@@ -223,7 +223,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   underneath: the kernel could not tell **"gone"** from **"never had one"**, both arrived as
   `NoSuchSlot`, so the only available behaviour was the wrong one for a pipeline. `abi::Error::Gone`
   is the fix, `SIGPIPE` arrives through std's own `is_ebadf` seam, and the indifference test runs one
-  ELF against two destinations that share nothing but sixteen bytes of message.
+  ELF against two destinations that share nothing but sixteen bytes of message. Since 2026-08-03 it
+  runs against a **third**: `user/src/terminal_sink.rs` makes the terminal a sink, which is a
+  separate process for a capability reason (its endpoint also carries `OP_READLINE`) and which
+  needed a register-only `OP_PRINT`, because `OP_WRITE` reads from the one client page init maps.
 - [Pipes and redirection](pipes.md): milestone 50's operators lane: `>`, `<` and `|` at the prompt,
   which turn out to be one substitution rather than three features. The grammar and its three
   non-Unix refusals; the input slot's shape, decided as *the sink contract received rather than
