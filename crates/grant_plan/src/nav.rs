@@ -361,6 +361,86 @@ mod tests {
         cwd.apply(p.steps())
     }
 
+    /// Capture `{:?}` without an allocator, for the same reason [`assert_pwd`] takes a buffer:
+    /// this crate has no `String`, in tests or out.
+    fn assert_debug(v: &dyn core::fmt::Debug, want: &str) {
+        use core::fmt::Write;
+        struct Buf {
+            bytes: [u8; 64],
+            n: usize,
+        }
+        impl Write for Buf {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let b = s.as_bytes();
+                self.bytes[self.n..self.n + b.len()].copy_from_slice(b);
+                self.n += b.len();
+                Ok(())
+            }
+        }
+        let mut buf = Buf {
+            bytes: [0; 64],
+            n: 0,
+        };
+        write!(buf, "{v:?}").unwrap();
+        assert_eq!(core::str::from_utf8(&buf.bytes[..buf.n]), Ok(want));
+    }
+
+    /// The wording, exactly. Each message is the fixed half of a line the prompt prints, so a
+    /// drift here is user-visible; a containment check would also pass an empty string.
+    #[test]
+    fn each_refusal_is_its_own_exact_sentence() {
+        assert_eq!(
+            Refused::Absolute.message(),
+            "no absolute path: there is no namespace here to root one in, so that name cannot \
+             be expressed",
+        );
+        assert_eq!(
+            Refused::NotAName.message(),
+            "that is not a name: one component, at most 16 bytes",
+        );
+        assert_eq!(
+            Refused::TooDeep.message(),
+            "too deep: this shell tracks at most 8 levels below its root",
+        );
+        assert_eq!(
+            Refused::AtYourRoot.message(),
+            "you are at your root; there is nothing above it to name",
+        );
+    }
+
+    /// `{:?}` on a position prints the path it means, which is the reason the impl is written by
+    /// hand; pinned exactly, like a message, because every failing assertion that carries an
+    /// endowment renders one. `last` and `is_root` ride along: they are the same two facts (the
+    /// root, and the deepest component) read without a formatter.
+    #[test]
+    fn a_position_debugs_as_the_path_it_means() {
+        let mut cwd = Cwd::root();
+        assert_debug(&cwd, "/");
+        assert_eq!(cwd.last(), None, "the root has no last component");
+        cd(&mut cwd, "a/b").unwrap();
+        assert_debug(&cwd, "/a/b");
+        assert!(!cwd.is_root());
+        assert_eq!(cwd.last(), Some(&b"b"[..]));
+    }
+
+    /// `RENDER_MAX` is the worst case exactly: the deepest position with the widest names fills
+    /// all but one of its bytes, and the spare byte is the lone slash a root renders as, which
+    /// never coexists with a level. Slack would hide a truncation bug behind a buffer that always
+    /// happened to fit; a byte short would truncate a real prompt.
+    #[test]
+    fn render_max_is_the_worst_case_plus_the_roots_lone_slash() {
+        let mut cwd = Cwd::root();
+        for _ in 0..MAX_DEPTH {
+            assert!(cwd.descend(b"sixteen-bytes!!!"));
+        }
+        let mut buf = [0u8; RENDER_MAX];
+        let n = cwd.render(&mut buf);
+        assert_eq!(n, RENDER_MAX - 1);
+        // And nothing was truncated to make that true: a wider buffer renders the same count.
+        let mut wide = [0u8; 2 * RENDER_MAX];
+        assert_eq!(cwd.render(&mut wide), n);
+    }
+
     /// **`pwd` is relative to your root**, and the root renders as `/` because it is the root of the
     /// only namespace you have.
     #[test]

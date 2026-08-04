@@ -135,8 +135,10 @@ mod tests {
 
     #[test]
     fn request_round_trips() {
-        let (w0, w1, w2) = request(1, 9, 16, Wiring::default());
-        assert_eq!(prog_id(w0), 1);
+        // 6, not 1: word zero must come back verbatim, and an id of 1 cannot tell verbatim from a
+        // hardcoded answer.
+        let (w0, w1, w2) = request(6, 9, 16, Wiring::default());
+        assert_eq!(prog_id(w0), 6);
         assert_eq!(arg(w1), 9);
         assert_eq!(mem_pages(w2), 16);
         assert_eq!(wiring(w2), Wiring::default());

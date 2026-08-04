@@ -458,6 +458,41 @@ mod tests {
         assert_eq!(Expansion::none().for_positional(0), None);
     }
 
+    /// The hand-written `Debug` impls exist so a failing assertion prints names instead of zero
+    /// padding, so they are pinned exactly, like a message: a `Name` prints as the name, a
+    /// `NameSet` as the list. Captured into a buffer because this crate has no allocator, in
+    /// tests or out.
+    #[test]
+    fn names_and_sets_debug_as_what_they_hold() {
+        use core::fmt::Write;
+        struct Buf {
+            bytes: [u8; 64],
+            n: usize,
+        }
+        impl Write for Buf {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let b = s.as_bytes();
+                self.bytes[self.n..self.n + b.len()].copy_from_slice(b);
+                self.n += b.len();
+                Ok(())
+            }
+        }
+        let mut assert_debug = |v: &dyn core::fmt::Debug, want: &str| {
+            let mut buf = Buf {
+                bytes: [0; 64],
+                n: 0,
+            };
+            write!(buf, "{v:?}").unwrap();
+            assert_eq!(core::str::from_utf8(&buf.bytes[..buf.n]), Ok(want));
+        };
+        assert_debug(&Name::new(b"a.txt").unwrap(), "\"a.txt\"");
+        // The set renders its names as byte lists, not through `Name`'s impl: `iter` yields
+        // `&[u8]`, and a slice debugs as numbers. Pinned as it is; if the set is ever taught to
+        // print `["a.txt", "logs"]`, this is the test that says so on purpose.
+        let set = expand(b"*", &[(b"a.txt", false), (b"logs", true)]).unwrap();
+        assert_debug(&set, "[[97, 46, 116, 120, 116], [108, 111, 103, 115]]");
+    }
+
     /// A listing that offers the same name twice (`READDIR` re-reads the directory per round, so a
     /// name added or removed mid-listing can be seen twice) must not put it in the grant twice.
     #[test]

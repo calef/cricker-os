@@ -1617,6 +1617,53 @@ mod tests {
         assert_eq!(parse(b"\t \n"), Command::Empty);
     }
 
+    /// The tokenizer's edges, exactly. Trailing whitespace must scan to `len` and stop (one byte
+    /// past is a fault) and must yield no token, empty or otherwise; a line with more tokens than
+    /// the buffer drops the rest rather than writing past it.
+    #[test]
+    fn tokenize_stops_at_its_buffer_and_at_trailing_whitespace() {
+        let mut out = [&b""[..]; 8];
+        assert_eq!(tokenize(b"  a  bb  ", &mut out), [&b"a"[..], &b"bb"[..]]);
+
+        let mut two = [&b""[..]; 2];
+        assert_eq!(tokenize(b"a b c", &mut two), [&b"a"[..], &b"b"[..]]);
+    }
+
+    /// `--mem` at the very end of the line reads no value, and reads no memory past the token
+    /// array either; the missing value stays `None` for the plan to refuse.
+    #[test]
+    fn a_trailing_mem_flag_is_a_missing_value_not_a_read_past_the_line() {
+        let r = parse_run(b"budgeter --mem");
+        assert_eq!(r.prog, b"budgeter");
+        assert_eq!(r.mem, None);
+    }
+
+    /// `--mem N` is exactly two tokens: the value is consumed with the flag and must not reappear
+    /// as an operand. The cursor step is the code under test, so the flag sits at index 1, where
+    /// stepping by the wrong arithmetic visibly lands somewhere else.
+    #[test]
+    fn a_mem_flag_consumes_its_value_and_nothing_after_it() {
+        let r = parse_run(b"budgeter --mem 4");
+        assert_eq!(r.mem, Some(4));
+        assert!(r.positionals().is_empty(), "the value became an operand");
+        assert_eq!(r.unexpected, None);
+    }
+
+    /// One past either ceiling lands in `unexpected`; the arrays are exactly their declared sizes,
+    /// so an off-by-one here is a write past the end, not a smaller refusal.
+    #[test]
+    fn the_flag_and_positional_ceilings_refuse_rather_than_overflow() {
+        // Nine letters in one cluster, and MAX_FLAGS is eight.
+        let r = parse_run(b"rm -abcdefghi x");
+        assert_eq!(r.options(), b"");
+        assert_eq!(r.unexpected, Some(&b"-abcdefghi"[..]));
+
+        // Five operands, and MAX_POSITIONALS is four.
+        let r = parse_run(b"prog a b c d e");
+        assert_eq!(r.positionals().len(), MAX_POSITIONALS);
+        assert_eq!(r.unexpected, Some(&b"e"[..]));
+    }
+
     #[test]
     fn help_is_a_builtin_and_everything_else_is_a_program() {
         // The whole of milestone 47's `run` removal, in three lines: three reserved words, and any
@@ -1753,6 +1800,23 @@ mod tests {
             plan(&r0, Holdings::default()),
             Err(Refusal::MemOutOfRange { min: 1, max: 64 })
         );
+    }
+
+    /// The declared range is inclusive at both ends: a grant of exactly `min` or exactly `max`
+    /// pages plans, and only one past either edge refuses.
+    #[test]
+    fn a_memory_grant_at_either_end_of_the_declared_range_plans() {
+        for (line, pages) in [(&b"budgeter --mem 1"[..], 1), (b"budgeter --mem 64", 64)] {
+            let Command::Run(r) = parse(line) else {
+                panic!()
+            };
+            assert_eq!(
+                plan(&r, Holdings::default()).unwrap().mem_pages,
+                pages,
+                "{}",
+                core::str::from_utf8(line).unwrap(),
+            );
+        }
     }
 
     #[test]
@@ -2459,6 +2523,34 @@ mod tests {
         assert_eq!(wide.flags, rmopt::RECURSIVE);
     }
 
+    /// A manifest whose recursion letter is not its first option, which no shipped program has:
+    /// `rm` declares `r` first, so its bit is zero, where `1 << bit` and every wrong spelling of it
+    /// agree. Through [`plan_against`], the door an external manifest (milestone 23) comes through.
+    const SWEEPS_A_TREE: Manifest = Manifest {
+        file: FileSpec::Forbidden,
+        dir: DirSpec::Required {
+            subtree_flag: Some(b'r'),
+        },
+        // `r` deliberately second, so the widening reads bit 1.
+        flags: b"vr",
+        ..READS_A_FILE
+    };
+
+    /// The subtree check reads the recursion letter's **own** bit out of the flags word, wherever
+    /// the manifest declares it, and widening must follow that bit rather than position zero.
+    #[test]
+    fn the_recursion_letter_widens_by_its_own_bit_wherever_it_is_declared() {
+        let Command::Run(r) = parse(b"sweep -r logs") else {
+            panic!()
+        };
+        let e = plan_against(&r, Prog::Rm, SWEEPS_A_TREE, WITH_DIR).unwrap();
+        assert_eq!(e.flags, 1 << 1);
+        assert!(
+            e.dir.unwrap().subtree,
+            "-r declared at bit 1 must still widen the grant",
+        );
+    }
+
     /// The option letters and the bits `rmopt` names are one thing spelled twice (the manifest has
     /// the letters, the program has the bits), so a change to either without the other has to fail
     /// here in milliseconds. A cluster is one token, as every Unix `rm -rf` is typed.
@@ -2836,6 +2928,9 @@ mod tests {
             Prog::Spinner,
             Prog::Date,
             Prog::Rm,
+            // Every variant, or the round trip proves nothing about the newest one: this list was
+            // short of `Wc` once, and `from_id(6)` could have lost its arm without a test noticing.
+            Prog::Wc,
         ] {
             assert_eq!(Prog::from_id(p.id()), Some(p));
             assert_eq!(Prog::from_name(p.name().as_bytes()), Some(p));
