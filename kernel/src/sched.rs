@@ -2359,6 +2359,47 @@ mod tests {
         cond()
     }
 
+    /// Wait for `cond` **without yielding**, budgeted in timer ticks delivered to this core rather
+    /// than in wall-clock time.
+    ///
+    /// For `a_thread_that_never_yields_is_preempted_anyway`, which must not yield (that is the
+    /// whole point of it) and is waiting for a *preemption*. A tick is when a preemption can
+    /// happen, so the number of preemption opportunities that went by is what the claim is about,
+    /// and it is the one budget a contended host cannot inflate: descheduling the emulator delivers
+    /// **fewer** ticks over a stretch of wall clock, where a `timer::now()` deadline keeps running
+    /// whether the guest executes an instruction or not. That difference is why the old one-second
+    /// deadline failed on loaded CI runners (notes/load-sensitive-assertions.md).
+    ///
+    /// The tick counter is per core and this thread can be migrated by a steal (§28.3), so a change
+    /// of core re-anchors the budget rather than comparing two counters. A migration means we were
+    /// preempted, which is the news this test is waiting for anyway. If ticks stop arriving
+    /// altogether this does not return, and the harness's 90 s per-test ceiling is the backstop: a
+    /// timer that is not delivering is the arch timer tests' failure to report, not this one's.
+    fn within_ticks(budget: u64, mut cond: impl FnMut() -> bool) -> bool {
+        // Read the core id and its tick count as a pair, re-reading if we moved between them.
+        let sample = || loop {
+            let core = crate::cpu::id();
+            let ticks = crate::arch::timer::ticks();
+            if crate::cpu::id() == core {
+                break (core, ticks);
+            }
+        };
+        let (mut core, mut start) = sample();
+        loop {
+            if cond() {
+                return true;
+            }
+            let (now_core, now_ticks) = sample();
+            if now_core != core {
+                core = now_core;
+                start = now_ticks;
+            } else if now_ticks - start >= budget {
+                return cond();
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Spin the scheduler until `cond`, bounded by wall-clock, returning whether it happened. Since
     /// DECISIONS §28, work a test spawns runs on *other* cores, so this core is often idle and a
     /// yield returns at once: a fixed count of yields elapses in almost no real time and times out
@@ -2761,8 +2802,6 @@ mod tests {
         static STOP: AtomicBool = AtomicBool::new(false);
         static OTHER_RAN: AtomicBool = AtomicBool::new(false);
 
-        let preemptions_before = crate::sched::preemptions();
-
         // Pin both threads to THIS core, the one the test thread busy-waits on, so this stays a
         // *same-core* preemption test after DECISIONS §28 made the default `spawn` scatter work
         // across cores. The claim under test is that a never-yielding thread cannot monopolize the
@@ -2780,32 +2819,48 @@ mod tests {
         })
         .expect("spawn failed");
 
+        // **Wait for the hostile thread to reach a CPU before the polite one exists.**
+        //
+        // The order used to be: spawn both, wait for the polite thread, set STOP, and only then
+        // sample `SPINNING > 0`. That sample is a race the test creates for itself: if the polite
+        // thread gets its turn first, STOP is set before the spinner has ever been scheduled, the
+        // spinner exits its loop without incrementing anything, and the run goes red with "the
+        // spinner never ran at all" while the kernel did nothing wrong. It failed CI exactly that
+        // way on 2026-08-04 (`sifive-u54`), on a pull request that changed no kernel code.
+        //
+        // The spinner running is a **precondition** of the claim, not the claim, so it is waited
+        // on rather than sampled. Waiting for it here also strengthens what follows: the polite
+        // thread's turn can now only have come from preempting a thread that was genuinely running.
+        assert!(
+            within_ticks(200, || SPINNING.load(Ordering::Relaxed) > 0),
+            "the spinner never reached a CPU in 200 tick periods: it was placed on a run queue \
+             and never scheduled, which is a placement or wake failure rather than a preemption one"
+        );
+
+        // Counted from here, so the preemptions this test claims are the ones that gave the polite
+        // thread its turn, not the ones that started the spinner.
+        let preemptions_before = crate::sched::preemptions();
+
         // A well-behaved thread that just wants a turn.
         crate::sched::spawn_on(here, || {
             OTHER_RAN.store(true, Ordering::SeqCst);
         })
         .expect("spawn failed");
 
-        // And now we wait, WITHOUT yielding either. If preemption does not work, nobody moves
-        // and this hangs forever, which is its own kind of answer.
-        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency(); // 1 second
-        while !OTHER_RAN.load(Ordering::SeqCst) {
-            assert!(
-                crate::arch::timer::now() < deadline,
-                "ONE SECOND AND THE POLITE THREAD NEVER RAN. The spinner still owns the CPU, \
-                 which means preemption is not working and a single bad program can hang this \
-                 machine. This is precisely the failure DECISIONS.md §5 predicted for \
-                 cooperative scheduling."
-            );
-            core::hint::spin_loop();
-        }
+        // And now we wait, WITHOUT yielding either. If preemption does not work, nobody moves and
+        // the budget runs out. The budget is 200 *delivered ticks* rather than one second of wall
+        // clock: preemption opportunities are what this claim is counted in, and a host that
+        // deschedules the emulator produces fewer of them, never more. See `within_ticks`.
+        assert!(
+            within_ticks(200, || OTHER_RAN.load(Ordering::SeqCst)),
+            "TWO HUNDRED TICKS AND THE POLITE THREAD NEVER RAN. The spinner still owns the CPU, \
+             which means preemption is not working and a single bad program can hang this \
+             machine. This is precisely the failure DECISIONS.md §5 predicted for \
+             cooperative scheduling."
+        );
 
         STOP.store(true, Ordering::Relaxed);
 
-        assert!(
-            SPINNING.load(Ordering::Relaxed) > 0,
-            "the spinner never ran at all"
-        );
         assert!(
             crate::sched::preemptions() > preemptions_before,
             "the CPU was never taken away from anyone: no preemption happened"
