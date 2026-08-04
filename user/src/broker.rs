@@ -34,8 +34,9 @@
 //! storage, so it does not survive its own crash. That is the durable rung, and it is not built.
 //!
 //! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `brokerd`.
-//! Refused `brokerd`: the `-d` suffix tells every reader "Unix daemon" before they see a line of
-//! code, and a daemon is defined by the ambient authority this OS deliberately lacks.
+//! Refused `brokerd` (the `-d` suffix claims the Unix process model DECISIONS §39 rejects, before a
+//! reader has seen a line of code; that model is defined by the ambient authority this OS
+//! deliberately lacks).
 
 #![no_std]
 #![no_main]
