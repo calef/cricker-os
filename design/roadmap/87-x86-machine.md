@@ -3,6 +3,11 @@
 **Status: NOT-STARTED.** Raised 2026-08-03. The selection is made and recorded here; the milestone
 completes when the machine is on the desk and has printed a byte over serial.
 
+**Gate: HARDWARE.** The selection is made and recorded (a used OptiPlex 7050 Micro plus the Dell
+C4PDJ serial module, ~$194 all-in) and the machine is not bought; this milestone completes when it
+is on the desk and has printed a byte over serial. The x86_64 port itself is milestone 19's scope
+and is not gated on the purchase, because it starts under QEMU TCG the way riscv64 did.
+
 Milestone 19 names x86_64 as the third ISA, and the second ISA's lesson (milestone 16, the
 VisionFive 2) is that the board should be chosen and ordered before the port needs it, from
 requirements the port derives rather than from specs. Bare-metal bring-up is a loop of hang,

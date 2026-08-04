@@ -5,6 +5,11 @@ hardware-gated and a cloud instance is hardware without a purchase. Oracle-first
 (2026-08-03): the always-free A1 shape (4 Ampere cores, 24 GB) makes the recurring cost zero, so
 the rented-silicon story starts with no bill to watch.
 
+**Gate: HARDWARE.** Stage 2 onward needs an Oracle account, and stage 4 rents Graviton `.metal` by
+the hour; both are Chris's to provide. Stage 1 is not gated and is a lane on its own: boot under
+UEFI locally with AAVMF firmware and get a byte out, which is also the boot stub milestone 24's EFI
+path shares.
+
 **What this buys that no machine on the desk can.** Every benchmark in this tree so far runs on
 hardware the reader has to take our word about. A cloud instance is the same silicon for everyone:
 "cricker-os against Linux on the same free shape, here is the image, rerun it on your own free

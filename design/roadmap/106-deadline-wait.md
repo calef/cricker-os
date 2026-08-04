@@ -4,6 +4,10 @@
 lane recorded the cost of not having one. It is a kernel-surface addition, so it is **a design fork
 for Chris before it is a task**, and it is the same fork DECISIONS §51 already records.
 
+**Gate: DECISION.** A timed wait is a kernel-surface addition and DECISIONS §51 already records the
+fork with three candidate shapes. The block adds the fourth consumer and asks for the decision to
+be made against all of them at once, and warns against settling it by accident.
+
 **The finding, and it was found the expensive way.** `std_net` hung on riscv64 under the four-hart
 boot, watchdog-killed with every core idle and every thread blocked, while the identical test passed
 on aarch64. The cause was not a dropped interrupt: instrumenting the PLIC at the hang showed no

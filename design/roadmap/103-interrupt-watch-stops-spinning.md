@@ -5,6 +5,10 @@ built it", which is what `notes/session-handoff.md:52` says. **The note is stale
 What is genuinely unbuilt is one line of §24's own implementation record, and this block is that
 line.
 
+**Gate: MILESTONE 106.** Strictly downstream: the shell busy-polls because there is nothing to
+block on, and this milestone converts the watch to whatever 106 settles. If 106 puts the deadline
+on `Endpoint::RECV`/`CALL`, this is a small change in one file.
+
 **The correction first, because the stale claim is the more useful finding.**
 `notes/session-handoff.md`'s "Wave-3: what's next" list has five items. Items 2 and 3 were struck
 through and marked DONE when they landed. Item 1, `^C`, was never struck, and it still reads

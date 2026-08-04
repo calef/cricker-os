@@ -2,6 +2,10 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
 
+**Gate: NONE.** The pilot is one protocol on the host and the candidates are named: the per-CPU
+run-queue handoff, the reaper handoff, and the IPC sender queue. The board arriving ~2026-08-21 is
+the reason to do this before then, not something it waits on.
+
 CLAUDE.md's fourth rule says assume weak memory ordering, and no gate in this tree can currently
 falsify a violation of it. QEMU's TCG executes guest atomics conservatively and explores almost none
 of the orderings the architecture permits, so an acquire that should be an acquire-release passes

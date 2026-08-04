@@ -2,6 +2,9 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-01, from evidence rather than from taste.
 
+**Gate: NONE.** The evidence is in the block, ~19 bounded spins and the day they cost, and the
+acceptance evidence it asks for is a repeat count rather than one green run.
+
 ## The problem
 
 A population of tests assert on **elapsed time or on a fixed number of yields**. `sched.rs` alone

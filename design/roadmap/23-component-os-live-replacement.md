@@ -2,6 +2,11 @@
 
 **Status: PARTIAL.**
 
+**Gate: NONE.** The mechanism is built and the block names nothing that blocks a start on the four
+residuals: state handoff, a component manifest, dependency-aware orchestration, and the
+hung-component case. Each is a lane or more, and the manifest is the piece milestone 39's packaging
+analysis already leans on.
+
 **In brief.** Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency)
 
 **Why it matters.** **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing

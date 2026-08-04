@@ -5,6 +5,10 @@
 `notes/unsafe-obligations.md`'s BUGS. It is a change to the kernel's soundness surface, which is why
 82 deliberately did not take it on a lint milestone.
 
+**Gate: NONE.** Four sites, decided per site with an argument, the way milestone 78 decides per
+assertion. The block is explicit that the answer may not be four conversions and that no new gate
+is proposed here.
+
 **The finding.** Four **safe** functions carry a `// SAFETY:` comment that discharges an obligation
 onto "the caller", and their signatures impose that obligation on nobody. Any safe code may call
 them without meeting it, and both `unsafe` lints are satisfied, because there is no `unsafe fn` and

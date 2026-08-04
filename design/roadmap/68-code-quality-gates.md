@@ -3,6 +3,10 @@
 **Status: PARTIAL.** Started and largely landed 2026-08-02, from an audit of what the tree checked
 and what it did not. Two halves are deliberately unfinished and scoped below rather than rushed.
 
+**Gate: NONE.** Both remaining halves are plain work with counts attached: 28 host crates with no
+doc example at all, and item coverage running from 36.4% to 100% before `missing_docs` is
+adoptable. The block asks for them in one pass.
+
 ## What landed
 
 The tree had no `rustfmt.toml`, so import order was whatever each author typed, and lint selection

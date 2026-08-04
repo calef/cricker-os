@@ -5,6 +5,9 @@ security story from rotting; this keeps every other documented claim from rottin
 demonstrator's docs are part of the deliverable (CLAUDE.md), so a doc describing a system that no
 longer exists is a defect in the deliverable, not a cosmetic lag.
 
+**Gate: DECISION.** The index name and location are Chris's, jointly with 92's, and the block
+prefers sharing 92's index and tripwire to growing a twin.
+
 **The evidence that rot is real here, all found in one day (2026-08-03):** notes/verification.md
 said the proof suite ran in "a few minutes" a month after that stopped being true; two roadmap
 status rows claimed more remained than their own blocks said; milestone 47's in-brief listed work

@@ -2,6 +2,11 @@
 
 **Status: PARTIAL.**
 
+**Gate: NONE.** All four operators run at a real prompt on both ISAs, and two of the three
+residuals need no decision: buffering, which wants a pipeline measured against a Unix pipe first,
+and the terminal's own sink adapter. The third, `2>`, is a design fork rather than a task, and
+notes/pipes.md weighs both shapes.
+
 **The protocol lane built 2026-07-31** (`crates/sink_proto`, `user/src/sink.rs`, the std PAL's
 `sys/stdio`, and `abi::Error::Gone`; concept note: notes/sink-protocol.md). One framing for "write
 these bytes there", proven on both ISAs by running one `std_exerciser` ELF against two destinations that

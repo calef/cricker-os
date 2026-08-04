@@ -2,6 +2,11 @@
 
 **Status: NOT-STARTED.**
 
+**Gate: HARDWARE, MILESTONE 16.** Two drivers for the board's own silicon, which exist only where
+the board does: 16a boots it and this is what makes it able to do anything. Which storage path
+comes first, SD/eMMC or NVMe over the §18 PCIe transport, is a fork the block wants decided on what
+the backup workload measures.
+
 **In brief.** Milestone 16a boots a VisionFive 2 (firmware contract, NS16550, PLIC, Sv39). It does not
 give the board a network or a disk. Everything above needs both, and **this is where virtio stops
 carrying us**: every driver we have talks to QEMU's paravirtual devices, and real silicon has none.

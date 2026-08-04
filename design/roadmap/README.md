@@ -45,6 +45,44 @@ A detail block may narrate its state in prose (that is where the evidence and th
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
 
+**Readiness vocabulary: the `Gate:` line, and why it is not a column here.** The status says where we
+stand; it does not say **what stops a lane from starting**, and that second question was answered in
+conversation until 2026-08-04, which made the person who can see the whole tree the bottleneck for
+every launch. Every milestone that is not `BUILT` now carries a `Gate:` line in its own file, in the
+paragraph directly under its status, and `script/roadmap` fails on a file that does not.
+
+| Token | Means |
+|---|---|
+| `NONE` | A lane could start today. No decision is owed and no dependency is missing. |
+| `DECISION` | Waits on Chris. The prose says which decision, and cites `design/open-decisions.md` where an entry exists. |
+| `HARDWARE` | Waits on a machine: the VisionFive 2 (~2026-08-21), the milestone 87 x86 box, a rented instance, a real PMU. |
+| `MILESTONE <n>` | Waits on work this roadmap already tracks, named by number. |
+
+Four rules make it mechanical rather than decorative. A gate may name **more than one** token
+(`**Gate: MILESTONE 75, HARDWARE.**`), because milestone 74 genuinely waits on both. `NONE` stands
+alone, since it is a claim that nothing stands in the way. Every gate owes **prose after the token**
+saying what and why, which is what stops `DECISION` from becoming a shrug. And a `MILESTONE <n>` gate
+must resolve to a row that is **not `BUILT`**, so the day a milestone lands, every gate still pointing
+at it fails the build rather than quietly going stale; that is the same drift the status check exists
+to catch, one level out.
+
+**It lives in the file, not in this table, on purpose.** A gate is an argument (which fork, whose
+machine, which milestone and why), so it wants the paragraph the block gives it, and the roadmap split
+already argued that a fact kept beside the work does not drift away from it. The index stays the place
+for what is true in one word.
+
+**Reading it.** `script/roadmap --ready` prints only what a lane could pick up now: gate `NONE`, and a
+status of `NOT-STARTED` or `PARTIAL`, because `IN-PROGRESS` has somebody on it and `OPTIONAL` and
+`RECORDED` are deliberately off the work list. The full report (`script/roadmap`, no arguments) groups
+every non-built milestone under its gate, which also answers the other direction: what a milestone
+unblocks when it lands.
+
+**One honest limit, and it is the same shape as the citation checks' blind spot.** The gate says what
+stops the milestone's **headline** deliverable, and several milestones have a startable piece behind a
+gated headline: milestone 88's stage 1 boots UEFI locally with no cloud account, and milestone 102's
+overflow-bit fix needs no decision. Where that is true the prose says so, and no gate can check that
+the prose is right.
+
 **The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status.
 It sits last on purpose: `script/roadmap`'s row parser anchors on the first three columns, so a column
 appended at the end cannot break it, where one inserted in the middle would. A milestone that landed in

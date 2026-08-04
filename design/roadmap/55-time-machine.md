@@ -2,6 +2,12 @@
 
 **Status: NOT-STARTED.**
 
+**Gate: DECISION, MILESTONE 65, MILESTONE 107.** The scoping decision comes before any code: the
+subset of SMB3 that Time Machine needs, or a general SMB3 server. Milestone 65 holds the key
+`ntlm_response` computes with, and 107 is what lets a Mac connect at all. One dependency this block
+names has no owner anywhere on the roadmap: `fs_proto` has no `RENAME` verb and the std PAL answers
+`Unsupported`.
+
 **In brief.** The actual goal, and **probably the largest single piece of work in the project**. It is
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
 "a file server".

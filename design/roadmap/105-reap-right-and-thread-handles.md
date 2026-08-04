@@ -5,6 +5,11 @@ and, in `notes/trusted-init.md`, recorded two questions it deliberately did not 
 "Chris's call, not a thing to slip in". **This block's job is to state them precisely enough to be
 decided, not to pick.** Both are kernel-surface changes; one is also a rights-model change.
 
+**Gate: DECISION.** Both halves are Chris's and are recorded that way in notes/trusted-init.md,
+"Chris's call, not a thing to slip in": whether reclamation and construction are separable rights,
+and whether a tid becomes a handle through `Tcb::NAME`. The block states them precisely and picks
+neither on purpose.
+
 ## Fork one: a reap-only right, split out of `WRITE`
 
 **The fact.** `Untyped::DESTROY` needs `WRITE` on the region, and so does `RETYPE`. One right

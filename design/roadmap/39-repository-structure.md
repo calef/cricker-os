@@ -2,6 +2,10 @@
 
 **Status: RECORDED.**
 
+**Gate: DECISION, MILESTONE 23.** Recorded with no decision taken, deliberately. The recommendation
+on the page is monorepo now with the distribution as a separate manifest repo, executed as multiple
+workspaces, and explicitly not before milestone 23 forces it.
+
 **Prior art to read before designing packaging:** `design/haiku-bfs-and-packages.md`. Haiku's `packagefs`
 **activates** packages rather than installing them, composing the filesystem view from a set of read-only
 package files instead of letting installers mutate shared directories. It reached a shape close to milestone

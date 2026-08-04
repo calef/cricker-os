@@ -4,6 +4,10 @@
 deliverable includes "the benches on real cycles via the SBI PMU extension", and **nothing in the tree
 implements it.** `PMU` appears only in device-tree test fixtures and in this file.
 
+**Gate: MILESTONE 75, HARDWARE.** The aarch64 half must not land until 75 answers whether EL0 may
+read the counter at all. The riscv64 half is buildable now and not verifiable until silicon,
+because QEMU-TCG models an instruction counter that has nothing to do with cycles.
+
 ## What we read today, and why it is not cycles
 
 Both ISAs read a **fixed-rate reference counter**, not a cycle counter:
