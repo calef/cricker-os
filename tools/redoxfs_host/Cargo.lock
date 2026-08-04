@@ -520,6 +520,7 @@ version = "0.1.0"
 dependencies = [
  "fs_proto",
  "fs_server",
+ "gpt",
  "libc",
  "redox_syscall",
  "redoxfs",
