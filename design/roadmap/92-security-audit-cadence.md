@@ -4,10 +4,9 @@
 milestone 43 asks for a second with a different lens; this milestone is the machine that makes
 them routine, so that auditing stops depending on someone remembering to ask.
 
-**Gate: DECISION.** Two things are Chris's before it starts: the cadence itself (quarterly is the
-block's proposal, not a decision). The index name and location are settled:
-`design/audit-reports/`, which the overdue
-tripwire reads.
+**Gate: DECISION.** One thing is Chris's before it starts: **the cadence**. Quarterly is this
+block's proposal, not a decision. The index name and location were settled on 2026-08-04,
+`design/audit-reports/`, which is what the overdue tripwire reads.
 
 **Why a mechanism rather than a habit.** The same argument as script/gates: a practice that lives
 in memory gets skipped exactly when it matters. And the failure mode of audits specifically is
