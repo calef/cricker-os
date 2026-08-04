@@ -1,6 +1,6 @@
 # 115. The names that were ratified, and the ones that were refused
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by Chris, asking whether anything tracks the names he
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/115-ratified-names`. Raised 2026-08-04 by Chris, asking whether anything tracks the names he
 has ratified. Nothing does, and the same day produced the evidence for why it should.
 
 **Gate: NONE.** Nothing blocks a start: the backfill is mechanical, the worklist it produces is the
