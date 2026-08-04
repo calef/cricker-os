@@ -219,7 +219,16 @@ impl Heap {
         let addr = start.addr();
         self.free += size;
 
-        let mut link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        // Taken ONCE, and the predecessor check below compares against this same pointer rather
+        // than taking `&mut self.head` again. The original wrote `&mut self.head` a second time
+        // at that comparison, and a fresh `&mut` is a fresh unique borrow: it invalidated the
+        // tag `link` still carried, so the head-insertion store through `link` at the bottom
+        // was a write through a dead borrow. Every compiler we ran emitted the store anyway,
+        // which is why it survived 60 native tests; it was still UB, licensed to break on any
+        // toolchain bump. Miri's aliasing check is the only gate in the tree that sees this
+        // class, and this was the first thing it found (milestone 79, notes/miri.md).
+        let head_link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        let mut link = head_link;
         // Find the first block above `addr`; `link` ends up at the insertion point.
         // SAFETY: `link` always points at `self.head` or a live node's `next` field.
         while let Some(block) = unsafe { *link } {
@@ -246,8 +255,8 @@ impl Heap {
         }
 
         // Is the *predecessor* adjacent? `link` points into it if there is one: recover the node
-        // address from the link address, except when `link` is `&self.head` itself.
-        let head_link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        // address from the link address, except when `link` is the head link itself (compared
+        // against the pointer taken at the top; see the comment there for why not `&mut` again).
         if link != head_link {
             // `link` is `&(*prev).next`, so `prev` starts `offset_of!(next)` bytes before it.
             let prev = (link as usize - core::mem::offset_of!(FreeBlock, next)) as *mut FreeBlock;
