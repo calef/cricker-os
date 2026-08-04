@@ -24,17 +24,34 @@ role (spent on capability-narrowing programs), and `Watcher`/`Project Manager` f
 (both understate a delegated merge authority). None of that is written down anywhere a future
 proposer would look.
 
-**The deliverable, three parts, and the third is what makes it hold:**
+**The deliverable, and its first draft was wrong in an instructive way.** That draft proposed one
+ratified-names table in notes/naming.md. Chris rejected it on 2026-08-04 for scaling like the
+original `design/roadmap.md` and `DECISIONS.md`, which is exactly right and is the third instance of
+that pattern in three days. Size is the smaller half; the **conflict shape** is the real one, since
+every lane that adds a name would edit the one file, which is what produced three §-number
+collisions in a day. The fix is the one this tree reached twice the same afternoon: **do not
+maintain a record, derive one.**
 
-1. **A ratified-names table** in notes/naming.md: the name, what it is, the date, and the
-   alternatives refused with their reasons. Backfill it from git history and from milestone 63's
-   table, which is the largest existing batch.
-2. **The maintainer appends at ratification**, in the same commit that applies the rename, when the
-   reasoning is freshest and the alternatives are still in mind. That is a convention, so it belongs
-   in CLAUDE.md and is Chris's to land.
-3. **A lint that every crate, program and `script/` entry point appears in the table.** 42 crates, 54
-   programs and 27 scripts today. This is the part that turns a virtuous habit into a gate: an
-   unratified name cannot merge, and a proposer meets the refusal at proposal time rather than after.
+1. **Provenance lives at the name.** A crate's `lib.rs` header, a program's module doc and a
+   script's comment block already say what the thing is; each gains a line saying when its name was
+   ratified and what was refused. `job_undertaker` carries why `job_killer` was refused;
+   `crates/system_initializer` carries why `system_builder` was. That is this project's own
+   posture, the reason beside the thing, and it fixes the failure that prompted the milestone:
+   a refusal is most useful to whoever is about to propose the same name, and that person is reading
+   the file where the name would go, not a registry.
+2. **A lint checks presence, never content.** Every crate, program and `script/` entry point carries
+   a provenance line or the build fails: 42, 54 and 27 today. Adding a name touches exactly one
+   file, so two lanes naming two things cannot collide.
+3. **The table is a query.** `script/names` (provisional) collects the lines into the view a reader
+   wants, computed rather than maintained, so it cannot drift from the tree. Same family as
+   `script/roadmap`, `script/decisions` and `script/catch-up`.
+4. **The maintainer writes the provenance at ratification**, in the same commit that applies the
+   name, when the alternatives are still in mind. A convention, so it is Chris's to land in
+   CLAUDE.md.
+
+Refusals of names that were never adopted anywhere (`caretaker` for the steward role, `Project
+Manager` for the maintainer) belong where that thing is defined, which for the roles is CLAUDE.md
+and already says so.
 
 ## Scope note
 
