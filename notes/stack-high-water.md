@@ -5,6 +5,42 @@ overflow found the expensive way, and until this instrument existed nothing meas
 kernel stack: "the stacks are big enough" was an argument. This note records the instrument, the
 inventory it covers, and the numbers it measured.
 
+## What "high water" means, because it inverts twice
+
+In plain words, **`high_water` is the most bytes the stack ever used**. Not its depth now, not the
+space still free: the maximum it ever reached, at some instant nobody was watching.
+
+That is the whole reason painting works. A stack rises and falls thousands of times a second and no
+sampling scheme would catch the peak. But the deepest frame *destroys the paint* at its low point,
+and that damage outlives the frame by the whole run, so one scan afterwards recovers a maximum
+nobody had to observe.
+
+```text
+  top     (high address)   <- sp starts here
+    |
+    |   overwritten: the paint is gone
+    |   <- high_water measures THIS span
+    |
+    p     <- deepest any frame ever reached
+    |
+    |   still painted: nothing ever came this far
+    |   <- this is the headroom
+    |
+  bottom  (low address)
+```
+
+Two things flip in the reading, which is why this section exists:
+
+- **The painted bytes are the ones that were never used.** Paint is evidence of *absence*.
+  `high_water` counts the bytes where the paint is **gone**.
+- **Stacks grow down, and the number counts up.** The deepest point is the *lowest* address, and
+  `high_water` returns `top - p`, a magnitude, so bigger means deeper means closer to the guard
+  page.
+
+The shortcut worth remembering: **paint left is room to spare.** The boot stack's 53,808 of 65,504
+means 53,808 bytes were used at the deepest moment and 11,696 bytes still hold
+`0x5AFE_57AC_5AFE_57AC` and never saw a frame.
+
 ## The instrument
 
 The classic watermark, because the classic one is right: paint every kernel-owned stack with a
