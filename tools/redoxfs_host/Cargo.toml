@@ -32,6 +32,15 @@ redoxfs = { path = "../../vendor/redoxfs", default-features = false, features = 
 # path dependency across the same workspace boundary, which is what shows cargo permits it.
 fs_proto = { version = "0.1.0", path = "../../crates/fs_proto" }
 
+# The partition table, from the crate that already parses it (milestone 110). A real disk has a GPT
+# where an image file has a filesystem, so finding the filesystem means reading the table first, and
+# `gpt` is the same parser the guest's `mkfs` and `disk_surveyor` use. That identity is the point:
+# the host reads the partition by the same rules the board wrote it by, rather than by a second
+# implementation that could disagree about which bytes are the partition. `no_std` with no
+# dependencies of its own, so it costs this build nothing, and it crosses the workspace boundary the
+# same way `fs_proto` already does.
+gpt = { version = "0.1.0", path = "../../crates/gpt" }
+
 # The same redox_syscall (lib name `syscall`) the engine uses, so an error out of `find_node` can be
 # read by its errno. Recovery needs exactly one of those. **`ENOENT` is the only error that may be
 # read as "this image has no attribute store"**; treating any other one that way is the false

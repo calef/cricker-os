@@ -607,6 +607,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   at format version 8, a reader must match, so the tool or its exact source pin is stored **with**
   the backup. A backup readable only by software you no longer have is not a backup. Also: no
   filesystem-level encryption on this volume, so no key handling anywhere in the recovery path.
+  Milestone 110 gave it a **device and a partition** (`--partition N`, `--partition-type GUID`,
+  `partitions DEVICE`), which deleted the partition-slicing workaround from xtask, and corrected the
+  premise on the way: the engine's header scan meant a partitioned disk read whole never failed, it
+  quietly opened whichever filesystem lay in the first 256 MiB.
 - [The GUID Partition Table](gpt.md): milestone 57 lane one (`crates/gpt`). The map that says where
   a filesystem starts: the protective MBR, the header, the entry array, the backup, and the four
   CRC-32s that make a GPT **a format that can tell you it is broken**. Why the crate does no I/O, the
