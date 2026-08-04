@@ -499,10 +499,36 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
     SATP_MODE_SV39 | ((asid as u64) << SATP_ASID_SHIFT) | (root >> 12)
 }
 
-/// Discharge every TLB entry tagged with `asid`: `sfence.vma x0, asid` (all addresses, one ASID).
+/// Discard every TLB entry tagged with `asid`, **on every online hart**. The teardown half of the
+/// ASID contract (crates/asid): after this, and only after this, the number may tag someone else.
+/// The aarch64 twin of this function is one instruction, and the gap between them is milestone 58.
+///
+/// # What each half guarantees
+///
+/// `sfence.vma x0, asid` invalidates every address for one ASID **on the hart that executes it**,
+/// and orders this hart's own earlier page-table writes ahead of it. It deliberately does *not*
+/// touch global mappings, which is right: the kernel's high half is `G`, shared by every address
+/// space, and must survive a process dying. Only user mappings wear a tag.
+///
+/// The remote half is an SBI RFENCE ([`sbi_remote_sfence_vma_asid`](super::sbi_remote_sfence_vma_asid)),
+/// which returns only once every other online hart has run the same instruction. Without it, a hart
+/// that ran a thread of the dying space keeps its translations, and the next space to be handed this
+/// number reads them: **one process reading another's memory, with no fault to announce it.** Today
+/// that is masked by the unconditional `sfence.vma` in [`write_satp`], which discards every hart's
+/// TLB often enough to hide it; removing that flush is what makes this call load-bearing. See
+/// notes/riscv-tlb-shootdown.md.
+///
+/// Skipped when this is the only hart online, exactly as [`flush_tlb`] skips it: there is nobody to
+/// shoot down, and single-hart boot tears down address spaces before the secondaries exist.
 pub fn flush_asid(asid: u16) {
+    // Local first, so this hart's own page-table writes are ordered before anyone is told to look.
     // SAFETY: TLB maintenance is always sound.
     unsafe { asm!("sfence.vma zero, {}", in(reg) asid as u64, options(nostack)) };
+
+    let others = crate::smp::online_harts_mask() & !(1usize << crate::cpu::id());
+    if others != 0 {
+        super::sbi_remote_sfence_vma_asid(others, asid);
+    }
 }
 
 /// Install a user address space by writing its composed `satp`.
