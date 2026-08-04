@@ -41,6 +41,12 @@ known this since HVF support landed). So the bench kernel **never exits**: it pr
 output, kills it on the marker. One mechanism, both accelerators, and a forgotten bench QEMU
 burns nothing while it waits (the `wfi` rule from CLAUDE.md).
 
+Milestone 81 measured what that sentence had only asserted, and reused the trick: the trap raises a
+real synchronous exception into the guest's own vector table (`EC 0x00`, Unknown reason), so a
+kernel that *does* call `semihosting::exit` under HVF panics, and its panic handler takes the same
+trap again, forever. The HVF test leg takes its verdict from the transcript for exactly this
+reason. See notes/hvf-leg.md.
+
 ## The first real numbers, for the record (2026-07-23, M-series host, HVF)
 
 IPC round trip ~705 ns; call/reply ~886 ns; yield round trip ~437 ns; spawn-to-reap ~2.8 µs;
