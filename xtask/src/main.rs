@@ -1169,9 +1169,11 @@ fn initrd_riscv() -> bool {
             "credentialer",
             "--bin",
             "credentialer_test_client",
-            // The disk surveyor (milestone 57), portable like the rest.
+            // The disk surveyor (milestone 57), portable like the rest, and its write-half twin.
             "--bin",
             "disk_surveyor",
+            "--bin",
+            "disk_partitioner",
             "--target",
             RISCV_TARGET,
         ],
@@ -1254,6 +1256,9 @@ fn initrd_riscv() -> bool {
         // partition table of the one disk it holds. Portable, so both archives carry it and both
         // ISAs read literally the same table off literally the same image.
         ("disk_surveyor", "disk_surveyor"),
+        // The disk partitioner (milestone 57's write half): writes the table the surveyor reads,
+        // and refuses to without an entropy endpoint. Portable, so both archives carry it.
+        ("disk_partitioner", "disk_partitioner"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
@@ -1308,6 +1313,10 @@ fn initrd_riscv() -> bool {
     // present, exactly as std_exerciser does; `test` builds it first.
     if let Ok(bytes) = read_stripped(&fs_server_elf(RISCV_TARGET)) {
         blobs.push(("fs_server", bytes));
+    }
+    // And `fs_maker` (milestone 57's write half), on the same terms.
+    if let Ok(bytes) = read_stripped(&fs_maker_elf(RISCV_TARGET)) {
+        blobs.push(("fs_maker", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -1511,6 +1520,10 @@ fn mkinitrd() -> bool {
         // one disk it holds. Portable, so both archives carry it and both ISAs read literally the
         // same table off literally the same image.
         "disk_surveyor",
+        // The disk partitioner (milestone 57's write half): the same disk authority pointed the
+        // other way, plus the entropy endpoint a unique GUID needs. Portable, so both archives
+        // carry it, and both ISAs write a table the other could read.
+        "disk_partitioner",
         // The nameset caretaker (milestone 47's globbing lane): a directory capability attenuated
         // to the names a pattern matched. Portable, so both archives carry it.
         "fs_nameset_caretaker",
@@ -1578,6 +1591,12 @@ fn mkinitrd() -> bool {
     let fs_server = read_stripped(&fs_server_elf(TARGET)).ok();
     if let Some(bytes) = &fs_server {
         files.push(("fs_server", bytes.as_slice()));
+    }
+    // `fs_maker` (milestone 57's write half) rides along on the same terms: the same package, the
+    // same build, and absent from an interactive boot that never built it.
+    let fs_maker = read_stripped(&fs_maker_elf(TARGET)).ok();
+    if let Some(bytes) = &fs_maker {
+        files.push(("fs_maker", bytes.as_slice()));
     }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -1692,8 +1711,12 @@ fn fs_server_build(triple: &str) -> bool {
             "build",
             "--manifest-path",
             "fs_server/Cargo.toml",
+            // Both binaries out of the one package: the server that opens an image and never
+            // creates, and `fs_maker` (milestone 57), which creates one and never serves.
             "--bin",
             "fs_server",
+            "--bin",
+            "fs_maker",
             "--no-default-features",
             "--features",
             "el0",
@@ -1708,6 +1731,14 @@ fn fs_server_build(triple: &str) -> bool {
 fn fs_server_elf(triple: &str) -> String {
     workspace_root()
         .join(format!("fs_server/target/{triple}/release/fs_server"))
+        .display()
+        .to_string()
+}
+
+/// The `fs_maker` ELF path for a target triple. Same package, same profile, same build.
+fn fs_maker_elf(triple: &str) -> String {
+    workspace_root()
+        .join(format!("fs_server/target/{triple}/release/fs_maker"))
         .display()
         .to_string()
 }
@@ -1913,6 +1944,155 @@ fn mkgptdisk() -> bool {
         return false;
     }
     true
+}
+
+/// Where the blank test disk is written. The runners derive exactly this name from `CRICKER_DISK`
+/// (`${CRICKER_DISK%.img}-blank.img`), so the two stay in lockstep.
+fn blank_disk_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-blank.img")
+        .display()
+        .to_string()
+}
+
+/// Build milestone 57's write-half disk: 64 MiB of **zeros**, and that is the whole point.
+///
+/// It carries no table, no filesystem and no fixture, because what the guest is going to do to it is
+/// write both. Regenerated every run and never shared, for milestone 37's reason (DECISIONS §27): a
+/// test that partitions a disk cannot be pointed at an image another test reads, and a test whose
+/// starting state is last run's damage is not reproducible on its own. `CRICKER_KEEP_REDOXFS` does
+/// not apply here for the same reason it does not apply to the crash image.
+fn mkblankdisk() -> bool {
+    let path = blank_disk_path();
+    let bytes = std::vec![0u8; (fs_proto::fixture::blank::DISK_BLOCKS * fs_proto::fixture::blank::LBA) as usize];
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        eprintln!("mkblankdisk: could not write {path}: {e}");
+        return false;
+    }
+    true
+}
+
+/// After a test run, read the blank disk back **from the host** and check what the guest put on it:
+/// the partition table with `crates/gpt`, and the filesystem inside the data partition with the
+/// pinned engine through `tools/redoxfs_host`.
+///
+/// This is the half a guest-side assertion cannot make. The in-guest check reads the filesystem
+/// through the same block server that wrote it, on the same machine, minutes later; this is a
+/// different program, on a different operating system, with a different engine build, opening the
+/// file the run left behind. If the two ever disagreed, the guest would be the one to doubt.
+///
+/// The partition is **sliced out** into its own file first, because `redoxfs_host` takes an image
+/// rather than a device plus an offset (a limitation notes/host-recovery.md records). Slicing is
+/// what a partition-aware tool would do internally, and doing it here keeps the claim about the
+/// guest's bytes rather than about a feature of the tool.
+fn blank_check_after_run() -> bool {
+    use fs_proto::fixture::blank;
+
+    let path = blank_disk_path();
+    let Ok(img) = std::fs::read(&path) else {
+        eprintln!("BLANK IMAGE CHECK FAILED: cannot read {path}");
+        return false;
+    };
+    let lba = blank::LBA as usize;
+    if img.len() < 34 * lba {
+        eprintln!("BLANK IMAGE CHECK FAILED: {path} is {} bytes", img.len());
+        return false;
+    }
+
+    // The table the guest wrote, judged by the parser the guest did not run: this process's own
+    // copy, on the host, against the bytes on disk.
+    if let Err(e) = gpt::mbr::validate(&img[..lba], blank::DISK_BLOCKS) {
+        eprintln!("BLANK IMAGE CHECK FAILED: the protective MBR the guest wrote is bad: {e:?}");
+        return false;
+    }
+    let table = match gpt::Gpt::parse(&img[lba..2 * lba], &img[2 * lba..34 * lba]) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: the guest's partition table does not parse: {e:?}"
+            );
+            return false;
+        }
+    };
+    let parts: Vec<_> = table.partitions().collect();
+    if parts.len() != blank::PARTITIONS {
+        eprintln!(
+            "BLANK IMAGE CHECK FAILED: the guest wrote {} partitions, expected {}",
+            parts.len(),
+            blank::PARTITIONS,
+        );
+        return false;
+    }
+    // Every unique GUID distinct and version 4. Two partitions with one id is the failure the
+    // entropy capability exists to prevent, and it is invisible to everything else here.
+    for (i, (_, part)) in parts.iter().enumerate() {
+        let text = part.unique_guid.to_ascii();
+        if text[14] != b'4' {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: partition {i}'s unique GUID is not version 4: {}",
+                String::from_utf8_lossy(&text),
+            );
+            return false;
+        }
+        for (j, (_, other)) in parts.iter().enumerate() {
+            if i != j && part.unique_guid == other.unique_guid {
+                eprintln!("BLANK IMAGE CHECK FAILED: partitions {i} and {j} share a unique GUID");
+                return false;
+            }
+        }
+    }
+    let Some((_, data)) = parts
+        .iter()
+        .find(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
+    else {
+        eprintln!("BLANK IMAGE CHECK FAILED: no cricker-os data partition on the guest's disk");
+        return false;
+    };
+
+    // The filesystem inside it, opened by the pinned engine on the host.
+    let at = data.first_lba as usize * lba;
+    let end = (data.last_lba as usize + 1) * lba;
+    if end > img.len() {
+        eprintln!("BLANK IMAGE CHECK FAILED: the data partition runs past the end of the image");
+        return false;
+    }
+    let sliced = workspace_root().join("target/crickerfs-blank-data.img");
+    if let Err(e) = std::fs::write(&sliced, &img[at..end]) {
+        eprintln!("BLANK IMAGE CHECK FAILED: could not slice the partition out: {e}");
+        return false;
+    }
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs_host/Cargo.toml",
+            "--",
+            "cat",
+            &sliced.display().to_string(),
+            blank::MADE_NAME,
+        ],
+    );
+    match out.as_deref() {
+        Some(s) if s.as_bytes() == blank::MADE_BODY => {
+            eprintln!(
+                "blank image: the guest partitioned it ({} partitions, distinct v4 GUIDs) and the \
+                 host engine reads `{}` out of the filesystem the guest created",
+                parts.len(),
+                blank::MADE_NAME,
+            );
+            true
+        }
+        other => {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: the host tool did not read the guest's file back (got \
+                 {:?}). The table is fine, so this is the filesystem `fs_maker` made.",
+                other.unwrap_or("<host tool error: the partition did not even open>"),
+            );
+            false
+        }
+    }
 }
 
 /// After a test run, reopen the **crash** image with the host tool and confirm the property holds
@@ -2492,7 +2672,12 @@ fn test() -> bool {
         eprintln!("--- kernel tests, aarch64 (QEMU) ---");
         // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so
         // mkinitrd packs it; then the RedoxFS test images the runner attaches as extra mmio disks.
-        if !fs_server_build(TARGET) || !user() || !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk()
+        if !fs_server_build(TARGET)
+            || !user()
+            || !mkredoxfs()
+            || !mkredoxfs_crash()
+            || !mkgptdisk()
+            || !mkblankdisk()
         {
             return false;
         }
@@ -2535,7 +2720,7 @@ fn test() -> bool {
         // cross-boot write failure it separates out is real, and notes/fs-server.md carries it as a
         // tracked open item with the exact recipe to reproduce it (run one leg, then the other,
         // without regenerating in between).
-        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() {
+        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() || !mkblankdisk() {
             return false;
         }
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
@@ -2569,7 +2754,10 @@ fn test() -> bool {
     eprintln!("--- redoxfs image consistency after the run (host tool) ---");
     // Both images: the shared fixture (the write persisted, the filesystem still parses) and the
     // crash test's own disk (milestone 37: after a kill mid-transaction, `cut` is one payload whole).
-    redoxfs_check_after_run() && redoxfs_crash_check_after_run()
+    // Three images: the shared fixture (the write persisted and the filesystem still parses), the
+    // crash test's own disk (milestone 37), and milestone 57's blank disk, where the guest wrote
+    // both the partition table and the filesystem inside it.
+    redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
 }
 
 /// **Boot the `--features shell` system and type at it** (milestone 50, notes/pipes.md).

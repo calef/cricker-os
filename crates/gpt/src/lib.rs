@@ -940,6 +940,31 @@ mod verification {
         assert_eq!(Guid::try_from_ascii(&g.to_ascii()), Some(g));
     }
 
+    /// **The version-4 stamp lands where a reader looks, and touches nothing else**, for all 2^128
+    /// inputs.
+    ///
+    /// Two claims in one, and the second is the one a test cannot make convincingly: the printed
+    /// form says version 4 and a `10` variant, *and* the other 122 bits are exactly the bytes the
+    /// caller supplied. A stamp that quietly normalised more than the format reserves would be
+    /// discarding entropy the caller paid a round trip to a service for, and it would look correct
+    /// in every sample anyone thought to write down.
+    #[kani::proof]
+    #[kani::unwind(37)]
+    fn stamping_reserves_six_bits_and_keeps_the_other_hundred_and_twenty_two() {
+        let raw: [u8; 16] = kani::any();
+        let stamped = Guid::v4_from_random(raw).to_bytes();
+        let text = Guid::v4_from_random(raw).to_ascii();
+        assert_eq!(text[14], b'4');
+        assert!(matches!(text[19], b'8' | b'9' | b'A' | b'B'));
+        for i in 0..16 {
+            if i != 7 && i != 8 {
+                assert_eq!(stamped[i], raw[i]);
+            }
+        }
+        assert_eq!(stamped[7] & 0x0f, raw[7] & 0x0f);
+        assert_eq!(stamped[8] & 0x3f, raw[8] & 0x3f);
+    }
+
     /// **A header's fields survive the round trip**, for every value of every one of the nine.
     ///
     /// This is the header's *layout* proved: nine fields at nine offsets in two integer widths, and

@@ -218,6 +218,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8f59926911ef34d1efb9ea1ee8ca78385df62ce700ccf2bcb149011bd226888"
 
 [[package]]
+name = "entropy_proto"
+version = "0.1.0"
+
+[[package]]
 name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -249,7 +253,9 @@ name = "fs_server"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "entropy_proto",
  "fs_proto",
+ "gpt",
  "redox_syscall",
  "redoxfs",
  "user_heap",
@@ -287,6 +293,10 @@ dependencies = [
  "libc",
  "r-efi",
 ]
+
+[[package]]
+name = "gpt"
+version = "0.1.0"
 
 [[package]]
 name = "humansize"

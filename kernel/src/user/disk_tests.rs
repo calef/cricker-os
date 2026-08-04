@@ -22,6 +22,10 @@ fn surveyor_image() -> &'static [u8] {
     program("disk_surveyor").expect("no disk_surveyor program in the initrd archive")
 }
 
+fn partitioner_image() -> &'static [u8] {
+    program("disk_partitioner").expect("no disk_partitioner program in the initrd archive")
+}
+
 // The report's flag words. Must match user/src/disk_surveyor.rs.
 const F_ROSTER: u64 = 1 << 0;
 const F_SIZE: u64 = 1 << 1;
@@ -75,8 +79,9 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
     );
     assert!(
         mmio >= 4,
-        "four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash image, \
-         and the GPT image); the roster names {mmio}",
+        "at least four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash \
+         image, the GPT image, and since milestone 57's write half the blank one); the roster names \
+         {mmio}",
     );
     assert_eq!(
         pci, 1,
@@ -146,4 +151,199 @@ fn the_roster_is_a_listing_and_not_a_lever() {
         crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
         Some(disk_service::ROSTER_VA),
     );
+}
+
+// =============================================================================================
+// Milestone 57's write half: partitioning and formatting on the target
+// =============================================================================================
+
+// The partitioner's roles and verdicts. Must match user/src/disk_partitioner.rs.
+const ROLE_PARTITION: u64 = 0;
+const ROLE_VERIFY: u64 = 1;
+const R_PARTITIONED: u64 = 0x_50_41_52_54_44;
+const P_NO_ENTROPY: u64 = 0x_4E_4F_52_4E_47;
+const PF_MBR: u64 = 1 << 0;
+const PF_PRIMARY: u64 = 1 << 1;
+const PF_BACKUP: u64 = 1 << 2;
+const PF_CRICKER: u64 = 1 << 3;
+const PF_NAMES: u64 = 1 << 4;
+const PF_UNIQUE: u64 = 1 << 5;
+
+// `fs_maker`'s roles and verdicts. Must match fs_server/src/bin/fs_maker.rs.
+const ROLE_MAKE: u64 = 0;
+const ROLE_CHECK: u64 = 1;
+const R_MADE: u64 = 0x_4D_4B_46_53_44;
+const M_NO_ENTROPY: u64 = 0x_4E_4F_52_4E_47;
+const M_NO_DISK: u64 = 0x_4E_4F_44_53_4B;
+const R_FOUND: u64 = 0x_46_4F_55_4E_44;
+const R_NO_FS: u64 = 0x_4E_4F_46_53_00;
+
+/// The entropy service's request endpoint, wiring the service if this is the first test to ask.
+///
+/// The mmio transport, because both `virt` machines offer it with nothing in the way and this test
+/// is not about the bus; `entropy_tests` runs the same service over both.
+fn entropy_endpoint() -> crate::sched::EpId {
+    let image = program("entropy").expect("no entropy program in the initrd archive");
+    let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)
+        .expect("no virtio-rng on the mmio bus: is CRICKER_RNG missing from this test leg?");
+    if let Some(report) = w.wait_for_ready() {
+        assert_eq!(
+            report[0],
+            entropy_proto::READY,
+            "the entropy service did not come up (it reported {:#x})",
+            report[0],
+        );
+    }
+    w.request
+}
+
+/// **The machine partitions a disk and puts a filesystem on it, and can do neither without the
+/// capability that makes an identifier unique.**
+///
+/// Milestone 57's write half in one narrative, on one disk, in order, because the claims are about
+/// *sequence*: "the refused run left the disk as it found it" is a statement about what is on the
+/// platter afterwards, and only a later read can make it.
+///
+/// ```text
+///   1  partition, no entropy   -> refused          5  mkfs, no disk       -> refused
+///   2  read the table          -> nothing there    6  read the partition  -> still no filesystem
+///   3  partition, with entropy -> three partitions 7  mkfs, both          -> a filesystem
+///   4  mkfs, no entropy        -> refused          8  read the partition  -> the file is in it
+/// ```
+///
+/// **The pair is the claim, not the success.** A working `mkfs` proves nothing about authority;
+/// every Unix has one and it reaches every disk in the machine. What is claimed here is that two
+/// capabilities are jointly sufficient and separately necessary, and the way to claim it is to
+/// withhold each one from the same binary, on the same disk, with the same budget and the same
+/// stack, and then read the disk.
+///
+/// The entropy half is the one worth reading twice. A GPT partition and a RedoxFS volume each carry
+/// an identifier that must be globally unique, and neither `crates/gpt` nor a `no_std` RedoxFS has
+/// any randomness: the crate refuses to invent a GUID (notes/gpt.md) and the engine's `Header::new`
+/// is std-gated because it calls `getrandom` (vendor/README.md divergence 4). So "no entropy
+/// endpoint" is not a policy this code enforces. It is something the programs genuinely cannot do,
+/// and what is under test is that they say so rather than making a value up.
+#[test_case]
+fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() {
+    let Some(disk) = disk_service::blank_disk(fs_service::blk_server_image()) else {
+        // No fifth mmio block device: this boot did not build the blank image. A fact about the
+        // machine, not a failure.
+        return;
+    };
+    if let Some(ready) = disk.blk_ready {
+        // Past device bring-up, so a hang below is a hang in a write rather than in the driver.
+        let [word, ..] = crate::sched::ipc_recv(ready);
+        assert_eq!(word, fs_proto::fixture::READY);
+    }
+    let entropy = entropy_endpoint();
+    let maker = program("fs_maker").expect("no fs_maker program in the initrd archive");
+    use fs_proto::fixture::blank;
+
+    // 1. The partitioner, with the disk and NO entropy endpoint. It must refuse, and it must refuse
+    //    before writing anything, which is why the program draws all four ids first and lays out
+    //    the table second.
+    let report = disk_service::start_partitioner(partitioner_image(), &disk, ROLE_PARTITION, None);
+    let [verdict, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, P_NO_ENTROPY,
+        "a partitioner with no entropy endpoint reported {verdict:#x}; it must refuse rather than \
+         invent a GUID, because an identifier that is not random is not unique",
+    );
+
+    // 2. And the disk still has no table on it, which is what makes step 1 mean something: "it
+    //    reported a refusal" and "it wrote nothing" are different claims.
+    let report = disk_service::start_partitioner(partitioner_image(), &disk, ROLE_VERIFY, None);
+    let [flags, partitions, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        (flags, partitions),
+        (0, 0),
+        "the refused partitioner left something on the disk (flags {flags:#x})",
+    );
+
+    // 3. The same binary, the same role, the same disk, one capability more.
+    let report =
+        disk_service::start_partitioner(partitioner_image(), &disk, ROLE_PARTITION, Some(entropy));
+    let [verdict, written, step, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, R_PARTITIONED,
+        "the partitioner failed at step {written} ({step})",
+    );
+    assert_eq!(written, blank::PARTITIONS as u64);
+
+    // And the table is really there, read back by a process that cannot write: both copies, their
+    // CRCs, the protective MBR, the names, and three distinct version-4 GUIDs.
+    let report = disk_service::start_partitioner(partitioner_image(), &disk, ROLE_VERIFY, None);
+    let [flags, partitions, data_lba, ..] = crate::sched::ipc_recv(report);
+    for (bit, what) in [
+        (PF_MBR, "LBA 0 holds a protective MBR covering the disk"),
+        (PF_PRIMARY, "the primary header and entry array parsed"),
+        (PF_BACKUP, "the backup table agrees with the primary"),
+        (PF_CRICKER, "a cricker-os data partition is on the disk"),
+        (PF_NAMES, "every partition name decoded and matched"),
+        (
+            PF_UNIQUE,
+            "every unique GUID is distinct, non-zero and version 4",
+        ),
+    ] {
+        assert!(flags & bit != 0, "{what} (flags {flags:#x})");
+    }
+    assert_eq!(partitions, blank::PARTITIONS as u64);
+    assert_eq!(
+        data_lba,
+        blank::DATA.0,
+        "the data partition starts where it was placed",
+    );
+
+    // 4. `mkfs` with the disk and no entropy. The same refusal one layer up: a filesystem's uuid has
+    //    the GPT's problem, and the engine now takes it as an argument for exactly this reason.
+    let report = disk_service::start_maker(maker, &disk, ROLE_MAKE, None, true);
+    let [verdict, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, M_NO_ENTROPY,
+        "fs_maker with no entropy endpoint reported {verdict:#x}; it must refuse",
+    );
+
+    // 5. And with entropy and no disk: nothing to read a table off, nothing to write to.
+    let report = disk_service::start_maker(maker, &disk, ROLE_MAKE, Some(entropy), false);
+    let [verdict, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, M_NO_DISK,
+        "fs_maker with no block endpoint reported {verdict:#x}; there is nothing it can write to",
+    );
+
+    // 6. Neither refusal created anything. A partition that has been *described* is not a partition
+    //    that has been *formatted*, and this is where that difference is read off the platter.
+    let report = disk_service::start_maker(maker, &disk, ROLE_CHECK, None, true);
+    let [verdict, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, R_NO_FS,
+        "something put a filesystem in the partition before any run that was allowed to",
+    );
+
+    // 7. Both capabilities, and they are the whole authority needed to create a filesystem.
+    let report = disk_service::start_maker(maker, &disk, ROLE_MAKE, Some(entropy), true);
+    let [verdict, blocks, first, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, R_MADE,
+        "fs_maker failed at step {blocks} with errno {first}",
+    );
+    let want_blocks =
+        (blank::DATA.1 - blank::DATA.0 + 1) * blank::LBA / fs_proto::blk::BLOCK_SIZE as u64;
+    assert_eq!(blocks, want_blocks, "the filesystem covers the partition");
+    assert_eq!(
+        first,
+        blank::DATA.0 * blank::LBA / fs_proto::blk::BLOCK_SIZE as u64,
+        "and starts at the partition's first block",
+    );
+
+    // 8. And it is a filesystem a *different* process can open, holding the file that run wrote.
+    //    The host tool reads the same image from outside the guest after the run, which is the half
+    //    a cache cannot fake (`cargo xtask test`'s blank-image check).
+    let report = disk_service::start_maker(maker, &disk, ROLE_CHECK, None, true);
+    let [verdict, n, ..] = crate::sched::ipc_recv(report);
+    assert_eq!(
+        verdict, R_FOUND,
+        "the filesystem fs_maker created does not hold the file it wrote",
+    );
+    assert_eq!(n, blank::MADE_BODY.len() as u64);
 }

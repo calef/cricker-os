@@ -373,6 +373,17 @@ path = "src/disk_surveyor.rs"
 test = false
 bench = false
 
+# `disk_partitioner` (milestone 57's write half): writes the map the surveyor reads. The pair of
+# authorities it needs is the demonstration: ONE disk, and an entropy endpoint for the unique ids a
+# GPT requires. Without the second it writes nothing at all rather than inventing an id, and the
+# same binary's verify role reads the disk back to show which happened. `mkinitrd` packs it for both
+# ISAs. Provisional name (milestone 57's lane): Chris settles program names.
+[[bin]]
+name = "disk_partitioner"
+path = "src/disk_partitioner.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.

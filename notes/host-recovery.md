@@ -262,6 +262,14 @@ is the Mac's own addition to a freshly written file, not something out of the im
   is the join: open the device, parse the table, and offset the engine by the partition's first LBA.
   That is a thin addition and it is **not built**, so a disk pulled out of the board still has to be
   handed to the tool as a whole-device image rather than as a partition.
+
+  **The gap has a witness now, which is the argument for closing it.** Milestone 57's post-run check
+  (`blank_check_after_run` in xtask) needs to read a filesystem the guest created *inside a
+  partition*, so it parses the table with `crates/gpt` and **slices the partition out into its own
+  file** before handing it to this tool. Twenty lines, on the host, in a build script: that is the
+  join, written in the wrong place. The version that belongs here takes a device and a partition
+  index and does the offset inside `DiskFile`, and the day somebody plugs the board's drive into a
+  Mac at 2am is the day the difference matters.
 - **It does not write to an image it is recovering**, by design. `put` and `import` exist for
   building fixtures and open read-write; the recovery verbs never do.
 - **No repair.** If no header in the ring is valid, the tool says so and stops. A format-aware

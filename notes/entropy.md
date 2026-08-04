@@ -160,6 +160,20 @@ same assertions over both buses (`kernel/src/user/entropy_tests.rs`):
 - **A std program gets there**: `std_exerciser` draws two 32-byte values through `std::random` and asserts
   they differ (`entropy ok` in the pinned transcript), on both ISAs.
 
+**And since 2026-08-03 the endpoint is load-bearing for something a machine cannot do without it.**
+Milestone 57's write half made this service the thing that decides whether a disk can be partitioned
+or formatted at all: a GPT partition and a RedoxFS volume each carry an identifier that must be
+globally unique, and neither `crates/gpt` nor a `no_std` RedoxFS has any randomness of its own. So
+`disk_partitioner` and `fs_maker` hold this endpoint beside their disk, and **withholding it is what
+the test does to prove the pair is necessary**: the same binary, the same disk, one capability fewer,
+and a disk that afterwards still reads as unpartitioned. That is a stronger statement of "an
+endpoint is the authority to obtain randomness" than a client that merely draws bytes and compares
+them, because here the refusal is visible on the platter.
+
+It is also the first client whose *correct* behaviour on `NO_ENTROPY` is to do nothing at all.
+`std::random` has no way to fail, which notes/std.md records as a wart; these two do, and they take
+it.
+
 ## Honest limits
 
 - **Under QEMU the device is backed by the host's `/dev/urandom`.** That is what makes these bytes

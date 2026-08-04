@@ -46,6 +46,19 @@ required-features = ["el0"]
 test = false
 bench = false
 
+# `mkfs` on the target (milestone 57's write half). Its own binary rather than a role of the FS
+# server, because the two are opposites in the one way that matters: the server opens an image and
+# never creates, and this creates one and never serves. Sharing the package is what gets it the
+# vendored engine, the untyped heap and the `Server` core it reopens the new filesystem through.
+# Same `el0` gate and the same test/bench reasoning as above. Provisional name (milestone 57's
+# lane): Chris settles program names.
+[[bin]]
+name = "fs_maker"
+path = "src/bin/fs_maker.rs"
+required-features = ["el0"]
+test = false
+bench = false
+
 [features]
 # Host default: the sans-IO core plus the std RedoxFS a `cargo test` fixture needs.
 default = ["hosttest"]
@@ -78,6 +91,15 @@ redox_syscall = { version = "0.9.0", default-features = false }
 # bolts on at the boundary, which is what makes the attenuation impossible to forget. Pure no_std
 # logic with no dependencies of its own, so it costs the host build nothing.
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+
+# The partition table (milestone 57): `fs_maker` finds the partition it is to format by reading the
+# GPT off the disk it holds, with the same parser `disk_surveyor` uses. Pure no_std logic with no
+# dependencies of its own and no I/O at all, so it costs the host build nothing and the sans-IO core
+# never sees it.
+gpt = { version = "0.1.0", path = "../crates/gpt" }
+# The entropy contract (milestone 56): `fs_maker`'s uuid comes over this wire, from a service, and
+# never from inside the engine.
+entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 
 # EL0-only, optional (behind `el0`): the syscall runtime and the ABI numbers. Neither compiles for
 # the host, so they are absent from the host test build.
