@@ -28,6 +28,11 @@
 //! `Frame::REVOKE` on the device capability (DECISIONS §41) between quiescing the old instance and
 //! endowing the new one. The old instance is asked to touch them one more time afterwards, and the
 //! kernel's fault message is the receipt.
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere.
 
 use user_rt::invoke;
 

@@ -12,6 +12,14 @@
 //! gives its true magnitude. Five primitives: null syscall, context switch, IPC round trip, page
 //! map, and spawn. Spawn is the whole reason object revocation was built: the loop reclaims each
 //! child's region (`Untyped::DESTROY`) so it can repeat.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `elbench`, and it is the name that
+//! forced `crickerfs`'s `NAME_LEN` from 24 to 32. The raise was taken first and on its own merits,
+//! deliberately, because choosing a worse name to fit a limit and raising a limit because a name
+//! demanded it are both the wrong way round. Refused `elbench` (`el` is aarch64-only vocabulary for
+//! a program that runs on both ISAs, since RISC-V has U, S and M modes and no exception levels) and
+//! `os_primitives_benchmark` (this tree already uses "benchmark" for the output:
+//! `bench/baseline.txt` holds the numbers, so the agent noun names the producer).
 
 #![no_std]
 #![no_main]

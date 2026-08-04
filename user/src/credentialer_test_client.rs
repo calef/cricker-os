@@ -28,6 +28,13 @@
 //! - slot 1: the report endpoint (WRITE)
 //! - mapped: one shared page, at [`PAGE_VA`] for a client and [`PROV_VA`] for the provisioner
 //! - `a0`: the role
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `credcli`. Refused `credcli` (a
+//! squished abbreviation) and `credentialer_client` (that name belongs to the real client milestone
+//! 55 needs for SMB authentication, and giving it to a test program squats it). `witness` was
+//! considered for the family and set aside: it is standard in proof theory, model checking and
+//! cryptography, but `client` carries information about what the program is that `witness` does
+//! not.
 
 #![no_std]
 #![no_main]

@@ -15,6 +15,11 @@
 //! The confinement story is unchanged from milestone 36: the C holds no capability and makes no
 //! syscall, because this Rust shell holds every capability and does every syscall. The C's entire
 //! interface to the system is `(uint64_t) -> uint64_t`.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `cconx`. Refused `conx` and `cconx`:
+//! no expansion for `conx` is recorded anywhere, not in DECISIONS §41, not in
+//! notes/live-replacement.md, not in the commit that introduced it, and that absence is one of the
+//! two cases that made naming a ratified act.
 
 #![no_std]
 #![no_main]

@@ -2,6 +2,10 @@
 # script/server: "start the application", boot the OS in QEMU (the milestone tour, then the
 # shell). An OS is what you start, so this is script/server. Extra flags are forwarded, e.g.
 # `script/server --hvf` to run on the real Apple Silicon core. Ctrl-C quits. See notes/scripts.md.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md).
 
 set -e
 cd "$(dirname "$0")/.."

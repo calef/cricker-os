@@ -75,6 +75,10 @@
 //! - **The unique GUIDs are not checked for collision against the disk's existing table**, because
 //!   the table is being replaced wholesale. A future `mkpart` that adds an entry to a table it did
 //!   not write must check.
+//!
+//! Name: unrecorded. Introduced 2026-08-03 with milestone 57, alongside `disk_surveyor`, which
+//! Chris approved by name the same day. Nothing records a ratification of this one, and the pairing
+//! of the two names (survey, partition) is visible in the tree without being written down anywhere.
 
 #![no_std]
 #![no_main]

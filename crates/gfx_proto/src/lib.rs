@@ -38,6 +38,12 @@
 //! No fonts, no glyph cache, no VT state, no input. Rung one puts pixels in a scanout and proves
 //! they got there; the terminal on top is a later increment and slots in as another client of this
 //! same contract (see notes/framebuffer-contract.md, "The seams left open").
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere. `gfx` is an abbreviation the tenet
+//! would ordinarily question, and no record weighs it.
 
 #![no_std]
 

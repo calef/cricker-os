@@ -12,6 +12,9 @@
 //! refused and the prompt returns having said so.
 //!
 //! It holds nothing: no capabilities, and it does not even map the shared job frame it was granted.
+//!
+//! Name: unrecorded. Introduced 2026-07-28 as a fixture for the cooperative interrupt tier: a
+//! program that spins so something has to interrupt it.
 
 #![no_std]
 #![no_main]

@@ -53,6 +53,9 @@
 # `PARTIAL`), which is the query the maintainer actually makes. `--check` validates and exits
 # non-zero on a problem, which is what a gate wants. See design/roadmap/README.md for both
 # vocabularies.
+#
+# Name: unrecorded. Introduced 2026-07-30 with the status vocabulary and its gate. Named for the
+# record it reads, like `script/decisions`.
 
 set -e
 

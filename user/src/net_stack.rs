@@ -19,6 +19,13 @@
 //! - slot 3: an untyped budget, for the heap and for mapping clients' shared frames
 //! - slot 4: the `Stack` endpoint (READ), where clients' requests arrive
 //! - arg1: the DMA page's physical address
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `netd`, and
+//! respelled from `netstack` on 2026-08-01 (milestone 63) because `net` is already this tree's word
+//! and the two halves are separate concepts. Refused `netd`, the name §39 was written about: it
+//! holds five explicit capabilities, cannot name its own callers, is supervised, and can be reaped
+//! by something that lacks the authority to build it, which is about as far from a daemon as a
+//! long-running process gets.
 
 #![no_std]
 #![no_main]

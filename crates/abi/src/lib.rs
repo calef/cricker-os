@@ -36,6 +36,11 @@
 //! ```
 //!
 //! `x8` for the number is Linux's aarch64 convention, and there is no reason to be different.
+//!
+//! Name: unrecorded. Introduced 2026-07-14 with milestone 7d's first three syscalls. It is the
+//! syscall boundary itself rather than one contract over it, which is why notes/naming.md lists it
+//! beside the `*_proto` crates while noting that it predates the suffix; nothing records the
+//! choice.
 
 #![no_std]
 

@@ -25,6 +25,10 @@
 //! the first argument register (`x0` / `a0`). The kernel reconciles the two in `TrapFrame`
 //! (DECISIONS §17); here we simply select the right asm at compile time. Every function's signature,
 //! semantics, and the `abi` constants are identical across both.
+//!
+//! Name: unrecorded. Introduced 2026-07-25 when the shared EL0 runtime was lifted out. It
+//! established the `user_` prefix that `user_heap` later took, so half of a convention rests on it;
+//! nothing records who chose `rt` or whether the abbreviation was weighed.
 
 #![no_std]
 

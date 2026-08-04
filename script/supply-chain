@@ -28,6 +28,10 @@
 #     crates/fs_proto, which the main workspace already covers. There is no third-party graph to check.
 #
 # See notes/scripts.md.
+#
+# Name: unrecorded. Introduced 2026-07-30 to run cargo-deny over every workspace. Hyphenated, and
+# the naming tenet cites `supply-chain` as a form a reader already knows from outside this
+# repository and which should not be respelled.
 
 set -e
 cd "$(dirname "$0")/.."

@@ -141,7 +141,34 @@ def block(path, prefix):
     return None, None
 
 
-REFUSED = re.compile(r"`([^`]+)`")
+TICKED = re.compile(r"`([^`]+)`")
+PAREN = re.compile(r"\([^()]*\)")
+# A refused name is a bare identifier: a crate, program or script/ entry that could have existed.
+# Anything with a dot, a `::` or a bracket in it is a citation, not a candidate.
+NAMEISH = re.compile(r"[A-Za-z][A-Za-z0-9_/-]*$")
+
+
+def refused_in(text):
+    """Every name recorded as refused, in order, without duplicates.
+
+    Two rules make this parseable without a syntax nobody would remember. **A reason goes in
+    parentheses**, so parenthesized spans are removed before the names are read (otherwise
+    `capsh(1)`, cited as the Linux tool that refused `capsh`, reads as a refusal of its own). And
+    **the refusal clause ends at its sentence**, so the prose that follows it can name other things
+    freely: `grant_plan` explains after its list that it is deliberately not named for `swish`, and
+    neither `swish` nor the `dwarden` it compares itself to is a refusal.
+    """
+    out = []
+    for chunk in re.split(r"\bRefused\b", text)[1:]:
+        flat, prev = chunk, None
+        while flat != prev:
+            prev = flat
+            flat = PAREN.sub(" ", flat)
+        clause = re.split(r"\.\s", flat)[0]
+        for token in TICKED.findall(clause):
+            if NAMEISH.fullmatch(token) and token not in out:
+                out.append(token)
+    return out
 
 
 def parse(text):
@@ -152,10 +179,7 @@ def parse(text):
     if status == "ratified":
         d = re.match(r"ratified (\d{4}-\d{2}-\d{2})\b", text)
         date = d.group(1) if d else None
-    refused = []
-    for chunk in re.split(r"\bRefused\b", text)[1:]:
-        refused.extend(REFUSED.findall(chunk))
-    return status, date, refused
+    return status, date, refused_in(text)
 
 
 records = []

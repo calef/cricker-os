@@ -59,6 +59,11 @@
 //! in the store gets too. Distinguishing them would turn the verify endpoint into an identity
 //! oracle: ask about a thousand names and learn which three exist. `cred::Store` also spends the
 //! same work on both, so the timing does not distinguish them either; see notes/credentials.md.
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere.
 
 #![cfg_attr(not(test), no_std)]
 

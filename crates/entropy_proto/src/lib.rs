@@ -31,6 +31,11 @@
 //! reversible permutation that changes the bytes without adding an unpredictability an attacker
 //! could not undo. The security property is therefore statable in one sentence: **these are the
 //! device's bytes**, and the device is named in the notes.
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere.
 
 #![cfg_attr(not(test), no_std)]
 

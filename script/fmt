@@ -12,6 +12,11 @@
 # Unknown arguments are a hard error rather than ignored, which is the other half of the same
 # incident: the old script accepted `--check` and silently disregarded it, so what it did could not
 # be inferred from how it was invoked.
+#
+# Name: unrecorded. Introduced 2026-07-22 with the Scripts to Rule Them All adoption, but it is
+# **not** one of the canonical names (the set is `bootstrap`, `setup`, `update`, `server`, `test`,
+# `cibuild`, `console`). It takes `cargo fmt`'s spelling, which is the same guard rail one layer
+# out: a reader already knows it.
 
 set -e
 cd "$(dirname "$0")/.."

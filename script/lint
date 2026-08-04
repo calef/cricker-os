@@ -9,6 +9,10 @@
 # keeps the CI job a one-liner. It also lints each kernel boot-mode feature (shell/bench/initboot)
 # separately, because each compiles different code and a warning can hide in a configuration the
 # default build never compiles. See notes/scripts.md.
+#
+# Name: unrecorded. Introduced 2026-07-22 with the Scripts to Rule Them All adoption, though it is
+# not one of the canonical names; "lint" is the field's word, which is the guard rail the tenet
+# keeps.
 
 set -e
 cd "$(dirname "$0")/.."

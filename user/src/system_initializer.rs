@@ -19,6 +19,14 @@
 //! landed in one and not the other presented as a boot that reached userspace and printed nothing at
 //! all, with no fault and no message. `script/shell-check` runs both, which is what makes it the
 //! gate for this file.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `sysinit`. Refused `sysinit`
+//! (squished), `system_builder` (`user/src/builder.rs` already calls itself "the system builder",
+//! so two programs would claim one phrase), `session_initializer` (squats milestone 49's
+//! vocabulary, since sessions arrive with users and login and this program manages neither) and
+//! `shell_init` (refused on evidence: it looks the shell up **by name in the initrd**, so it brings
+//! up whatever is packed as `shell` rather than `swish` specifically, and it stays alive as the
+//! spawn service, which is not a shell concern at all).
 
 #![no_std]
 #![no_main]

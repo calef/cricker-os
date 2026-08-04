@@ -86,6 +86,10 @@
 //!   year and wrong for the rest. notes/calendar.md records why tzdata is out of scope.
 //! - **No `strftime`.** Five named formats, because a format-string interpreter is a second parser
 //!   with runtime errors in a program that has no allocator (notes/calendar.md).
+//!
+//! Name: unrecorded. Introduced 2026-07-31. A short name for a command a person types, which the
+//! tenet makes a choice its author makes rather than a convention to apply; nothing records the
+//! choice being made.
 
 #![no_std]
 #![no_main]

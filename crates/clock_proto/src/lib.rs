@@ -48,6 +48,11 @@
 //! nanoseconds runs out in the year 2554, which is recorded rather than defended: it is past every
 //! horizon this project has, and picking `u64` keeps the wire words, the page words and the
 //! arithmetic identical.
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere.
 
 #![cfg_attr(not(test), no_std)]
 

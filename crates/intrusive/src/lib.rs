@@ -56,6 +56,10 @@
 //! operation sequence against nodes it holds valid by construction; it answers "is the ordering
 //! right", never "did a caller free a queued node". Neither tool covers that, and a reader should
 //! know it rather than infer safety from two green checkmarks.
+//!
+//! Name: unrecorded. Introduced 2026-07-23 when the run queues and inboxes went intrusive.
+//! "Intrusive" is the standard data-structure term, so it would land in the tenet's protected group
+//! if anyone had put it there; nobody did.
 
 #![cfg_attr(not(test), no_std)]
 

@@ -35,6 +35,11 @@
 //! `syscall::error::Error { errno: i32 }` (the Linux numbers), so the FS server maps it to the wire
 //! with `-(err.errno as i64)` at the serve loop and nowhere else, which is the "map the error type
 //! once, at the server boundary" rule the roadmap sets. The client reads it back with [`reply_errno`].
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere.
 
 #![no_std]
 

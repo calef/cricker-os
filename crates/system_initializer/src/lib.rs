@@ -89,6 +89,15 @@
 //! have, and `build_child` answering `Err(())` is a silent halt. Two of the three evenings this file
 //! has cost were that, once when the kernel grew two grants and once when a boot component was built
 //! one step too early. The order below is load-bearing and the comments say where.
+//!
+//! Name: ratified 2026-08-04 (Chris, milestone 96), and it is the ratification that raised
+//! milestone 115. Refused `system_builder` (milestone 63 had already refused it, for a reason still
+//! true: `builder.rs` calls itself "a minimal init: the system builder", so two programs would
+//! claim one phrase) and `system_bootloader` (it claims a position in the boot sequence it does not
+//! occupy, and milestone 88 will need the real one). A lane proposed `system_builder` anyway and
+//! the maintainer endorsed it, because that refusal lived in one table cell inside one milestone
+//! block and neither of them found it. The type this crate exports as `BootEndowment` was ratified
+//! the same day, replacing `Grants`.
 
 use grant_plan::{Prog, spawnproto};
 use line_editor::proto;

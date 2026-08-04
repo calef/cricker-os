@@ -52,6 +52,10 @@
 #
 #   script/decisions           print the index, grouped by status
 #   script/decisions --check   validate; non-zero on a problem (wired into script/lint)
+#
+# Name: unrecorded. Introduced 2026-07-30 with the decision index. It is named for the record it
+# reads, as `script/roadmap` is; nothing records the choice, and neither of the two carries a verb,
+# which is the tenet's rule arrived at without being cited.
 
 set -e
 

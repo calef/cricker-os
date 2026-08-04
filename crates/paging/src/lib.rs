@@ -16,6 +16,11 @@
 //! It is pure logic: addresses in, descriptors out. The host tests build real page tables in real
 //! memory (using host allocations as pretend physical frames, which works because the pointer
 //! arithmetic is identical) and walk them back. Milliseconds, no emulator. DECISIONS.md §7.
+//!
+//! Name: ratified 2026-08-01 (Chris, the naming tenet in CLAUDE.md). Named in the group of standard
+//! terms that are already right and must not be touched, because a name a reader knows from outside
+//! this project costs nothing to learn and renaming it would destroy the recognition the tenet
+//! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
 

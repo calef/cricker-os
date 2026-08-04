@@ -31,6 +31,13 @@
 //! slot so the child is born supervised, capabilities for **named** slots the caller picks, and
 //! **blobs** to copy into the child. That last one is what lets a construction sub-server hold
 //! exactly the one program image it is allowed to build, instead of the whole initrd.
+//!
+//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
+//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
+//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
+//! chose the stem, and against what, is not recorded anywhere. The type it exports as `Endow` is an
+//! open naming question of its own (DECISIONS §69): a verb where the tenet says noun, naming the
+//! same idea as `grant_plan::Endowment` one construction step apart.
 
 use user_rt::{cap_delete, invoke};
 
