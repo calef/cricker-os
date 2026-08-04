@@ -214,7 +214,14 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
         // refusals that prove CREATE did not widen what a client can reach.
         b"write create ok\ncreate_new refused\n".as_slice(),
         b"create refused absolute\ncreate refused dotdot\n".as_slice(),
-        b"write readback ok\nfs ok\n".as_slice(),
+        b"write readback ok\n".as_slice(),
+        // Milestone 64: the namespace verbs. Every one of these was `Unsupported` in the PAL
+        // while the FS server had been dispatching the verb behind it since milestones 47 and 48,
+        // so these nine lines are a binding proven rather than a contract widened.
+        b"mkdir ok\nread_dir ok\nread_dir descend ok\n".as_slice(),
+        b"unlink refused a directory\nrmdir refused a file\n".as_slice(),
+        b"rename ok\nunlink ok\nrmdir ok\n".as_slice(),
+        b"fs ok\n".as_slice(),
     ] {
         buf[n..n + part.len()].copy_from_slice(part);
         n += part.len();

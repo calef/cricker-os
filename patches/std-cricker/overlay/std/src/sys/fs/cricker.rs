@@ -41,9 +41,16 @@
 //! contents behind, so a write that half-worked would have read as a write that failed, which is
 //! precisely the confusion DECISIONS §27 records being corrected four times in one day.
 //!
-//! Still Unsupported, each because no verb in the contract backs it: directory iteration,
-//! `mkdir`/`unlink`/`rename`/`rmdir`, symlinks and hard links, `canonicalize`, permissions, file
-//! times, locks, and `duplicate` (a handle is a token the server minted; there is no dup verb).
+//! **Also bound since milestone 64:** `read_dir`, `create_dir`, `remove_file`, `remove_dir` and
+//! `rename`, on the verbs milestones 47 and 48 added (`OPENDIR`, `READDIR`, `MKDIR`, `UNLINK`,
+//! `RMDIR`, `RENAME`). Every one of them was refused here for a reason that had stopped being true:
+//! this module said "no verb in the contract backs it" long after the server started dispatching
+//! all six. Milestone 64's measurement found them by asking fifty crates.io crates what they
+//! needed; see notes/crates-io-on-cricker.md.
+//!
+//! Still Unsupported, each because no verb in the contract backs it: symlinks and hard links,
+//! `canonicalize`, `copy`, `remove_dir_all`, permissions, file times, locks, and `duplicate` (a
+//! handle is a token the server minted; there is no dup verb).
 //!
 //! See notes/std.md for the full list with reasons.
 
@@ -59,15 +66,19 @@ use crate::sys::time::SystemTime;
 use crate::sys::{unsupported, unsupported_err};
 
 // The pieces of the phase-one backend that stay exactly as honest as they were: nothing in the
-// contract creates a directory, renames, links, or canonicalizes, so those keep the `unsupported`
-// implementations rather than gaining a cricker-shaped copy of the same refusal. `FileTimes` comes
-// from there too (the server keeps an mtime but the contract does not carry one).
+// contract links, canonicalizes or copies, so those keep the `unsupported` implementations rather
+// than gaining a cricker-shaped copy of the same refusal. `FileTimes` comes from there too (the
+// server keeps an mtime but the contract does not carry one).
+//
+// `remove_dir_all` stays here for a reason worth stating, because it now looks like an omission
+// next to `rmdir`: the recursion needs to *descend*, and a nested path is refused by `one_name`
+// (§27 carries one name resolved in the bound directory). The loop belongs where it can hold a
+// directory capability per level, which is `user/src/rm.rs`, not in a PAL that has one.
 #[expect(dead_code)]
 #[path = "unsupported.rs"]
 mod unsupported_fs;
 pub use unsupported_fs::{
-    Dir, DirBuilder, FileTimes, canonicalize, copy, link, readlink, remove_dir_all, rename, rmdir,
-    symlink, unlink,
+    Dir, FileTimes, canonicalize, copy, link, readlink, remove_dir_all, symlink,
 };
 
 /// The FS-service endpoint: this process's entire authority over files. Naming a file over it is a
@@ -163,6 +174,17 @@ impl Page {
         }
     }
 
+    /// Put `bytes` at `off` in the page. Only `RENAME` needs this: it is the one verb that carries
+    /// two names, back to back with the source first, because one request word cannot hold two
+    /// lengths and the page is where the contract puts what does not fit in a word.
+    fn put_at(&mut self, off: usize, bytes: &[u8]) {
+        for (i, &b) in bytes.iter().enumerate() {
+            // SAFETY: PAGE_VA is a mapped, writable page of `PAGE` bytes; the caller checks that
+            // `off + bytes.len()` is within it before calling.
+            unsafe { core::ptr::write_volatile((PAGE_VA + (off + i) as u64) as *mut u8, b) };
+        }
+    }
+
     /// Take `out.len()` bytes out of the page (a completed read landed there).
     fn get(&mut self, out: &mut [u8]) {
         for (i, b) in out.iter_mut().enumerate() {
@@ -198,9 +220,23 @@ fn from_errno(errno: i32) -> io::Error {
             io::ErrorKind::InvalidInput,
             "the FS server does not honor that handle"
         ),
+        // The four below arrived with milestone 64's bindings, and each one exists because the
+        // verbs it belongs to distinguish cases the read/write half never had to. Mapping them all
+        // to `Other` would have made `remove_dir` on a full directory indistinguishable from a disk
+        // error, which is exactly what a caller loops on.
+        17 => io::const_error!(io::ErrorKind::AlreadyExists, "that name is already taken"),
+        20 => io::const_error!(io::ErrorKind::NotADirectory, "that name is not a directory"),
         21 => io::const_error!(io::ErrorKind::IsADirectory, "that name is a directory"),
         22 => io::const_error!(io::ErrorKind::InvalidInput, "the FS server refused the request"),
         28 => io::const_error!(io::ErrorKind::StorageFull, "the filesystem is full"),
+        // `EROFS` here is a **capability** answer, not a mode bit: the directory capability this
+        // process holds does not carry the right this verb needs (§47's ladder). It is the one
+        // errno in this map that means "you", rather than "that name".
+        30 => io::const_error!(
+            io::ErrorKind::ReadOnlyFilesystem,
+            "this directory capability does not carry the right that verb needs"
+        ),
+        39 => io::const_error!(io::ErrorKind::DirectoryNotEmpty, "that directory is not empty"),
         _ => io::const_error!(io::ErrorKind::Other, "the FS server reported a failure"),
     }
 }
@@ -266,6 +302,24 @@ fn one_name(path: &Path) -> io::Result<&str> {
     }
 }
 
+/// Like [`one_name`], but **the granted directory itself is a legal answer**.
+///
+/// `File::open("")` names nothing, so `one_name` refuses an empty component list. `read_dir(".")`
+/// does name something: the directory this process was granted. The two callers want opposite
+/// answers to the same input, which is why this is a second function rather than a flag.
+fn dir_name(path: &Path) -> io::Result<Option<&str>> {
+    match one_name(path) {
+        Ok(name) => Ok(Some(name)),
+        // The one refusal that is not a refusal here: `""` and `"."` both reduce to no components,
+        // which `one_name` reports as "the granted directory itself is not a file" and which is
+        // precisely what a caller of `read_dir` meant. Every other message `one_name` produces
+        // (absolute, `..`, nested, non-UTF-8, too long) means the same thing for a directory as for
+        // a file, so it passes straight through.
+        Err(_) if path.components().all(|c| matches!(c, Component::CurDir)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// `OPEN` a name under the granted directory, returning the server's handle.
 fn open_handle(path: &Path) -> io::Result<u64> {
     if !reachable() {
@@ -312,18 +366,43 @@ pub struct File {
     append: bool,
 }
 
-/// A file's metadata, as much of it as the contract carries: the size. Everything else std asks
-/// for either does not exist on this service or is not on the wire.
+/// A file's metadata, as much of it as the contract carries: the size, and whether the name was a
+/// directory. Everything else std asks for either does not exist on this service or is not on the
+/// wire.
+///
+/// **A directory's `size` is 0 and that is a placeholder, not a measurement.** `FSTAT` reports one
+/// number and the only handles that reach it are files; the directory case is reached from a
+/// listing, where `READDIR` said "this one is a directory" and nothing said how big it is.
 #[derive(Clone)]
 pub struct FileAttr {
     size: u64,
+    dir: bool,
 }
 
-/// Directory iteration needs a verb the contract does not have, so this is uninhabited: the type
-/// exists for `sys::fs`'s exports, and `readdir` refuses.
-pub struct ReadDir(!);
+/// A directory listing, **read whole at `read_dir` time** rather than streamed.
+///
+/// std hands the caller an iterator it may hold across arbitrary other work, including opening the
+/// files it just listed. The listing arrives through the one page shared with the FS server, and
+/// that page is behind a lock every other operation also wants, so an iterator that fetched a page
+/// per `next()` would either hold the lock across user code or have to reacquire it and cope with
+/// the directory having moved under its cursor. Draining it up front costs the names' bytes and
+/// makes both problems go away.
+///
+/// The cost is stated rather than hidden: a huge directory is a `Vec` of every name in it, and the
+/// snapshot is from `read_dir` time, so an entry removed before the caller reaches it opens as
+/// `NotFound`. That is the ordinary readdir caveat (`fs_proto::fs::READDIR` records the same one
+/// for its cursor) rather than something this choice introduced.
+pub struct ReadDir {
+    /// The path the caller passed, so `DirEntry::path()` can rebuild what they would expect.
+    root: PathBuf,
+    entries: crate::vec::IntoIter<(OsString, bool)>,
+}
 
-pub struct DirEntry(!);
+pub struct DirEntry {
+    root: PathBuf,
+    name: OsString,
+    dir: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct OpenOptions {
@@ -340,10 +419,17 @@ pub struct OpenOptions {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FilePermissions {}
 
-/// Every name the service resolves is a regular file: the contract cannot open a directory and
-/// RedoxFS symlinks are not exposed over it.
+/// A name is a file or a directory. Symlinks are not exposed over this contract at all, so
+/// `is_symlink` is not "we did not look", it is "there is no such thing here".
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct FileType {}
+pub struct FileType {
+    dir: bool,
+}
+
+/// Directories are created with `MKDIR`, which needs no options: the contract has no mode bits to
+/// set, and `recursive` is std's own loop over this.
+#[derive(Copy, Clone, Debug)]
+pub struct DirBuilder {}
 
 impl FileAttr {
     pub fn size(&self) -> u64 {
@@ -355,7 +441,7 @@ impl FileAttr {
     }
 
     pub fn file_type(&self) -> FileType {
-        FileType {}
+        FileType { dir: self.dir }
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
@@ -387,11 +473,11 @@ impl FilePermissions {
 
 impl FileType {
     pub fn is_dir(&self) -> bool {
-        false
+        self.dir
     }
 
     pub fn is_file(&self) -> bool {
-        true
+        !self.dir
     }
 
     pub fn is_symlink(&self) -> bool {
@@ -399,9 +485,38 @@ impl FileType {
     }
 }
 
+impl DirBuilder {
+    pub fn new() -> DirBuilder {
+        DirBuilder {}
+    }
+
+    /// `MKDIR` under the granted directory. The verb hands back a **capability to the new
+    /// directory** (it is descend-with-creation, §47), and std's `create_dir` returns `()`, so the
+    /// handle is closed immediately. Nothing is lost by that: a later `read_dir` of the same name
+    /// mints another one, and holding this one would be a handle-table slot leaked per `mkdir`.
+    pub fn mkdir(&self, p: &Path) -> io::Result<()> {
+        if !reachable() {
+            return Err(unsupported_err());
+        }
+        let name = one_name(p)?;
+        let mut page = page();
+        page.put(name.as_bytes());
+        // **The second word asks for rights on the child, and asking for too much is a refusal
+        // rather than an attenuation.** The server intersects the request with the parent's rights
+        // and answers `EPERM` if the result is smaller than what was asked (§47's monotonicity is
+        // the intersection; the refusal is it telling the truth about it). A PAL cannot know what
+        // its own directory capability carries, so it must ask for the *minimum the operation
+        // needs* or it breaks under every narrowed grant. `create_dir` needs nothing from the
+        // handle it gets back, because it closes it.
+        let handle = request(proto::req(proto::MKDIR, proto::ROOT, name.len() as u64), 0)?;
+        let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
+        Ok(())
+    }
+}
+
 impl fmt::Debug for ReadDir {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReadDir").field("root", &self.root).finish()
     }
 }
 
@@ -409,25 +524,41 @@ impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        self.0
+        // The whole listing was fetched by `readdir`, so nothing here can fail. The `io::Result`
+        // is std's shape for platforms that read one entry at a time, not a claim that this one
+        // does.
+        let (name, dir) = self.entries.next()?;
+        Some(Ok(DirEntry { root: self.root.clone(), name, dir }))
     }
 }
 
 impl DirEntry {
+    /// The path a caller would use to reach this entry, which is the path they passed to
+    /// `read_dir` with the name appended. **`read_dir(".")` therefore yields `./name`**, and that
+    /// is what `one_name` accepts, so feeding an entry's `path()` straight back to `File::open`
+    /// works. It would not if this returned a bare name, because `PathBuf` joining is std's job
+    /// and std joins against what it was given.
     pub fn path(&self) -> PathBuf {
-        self.0
+        self.root.join(&self.name)
     }
 
     pub fn file_name(&self) -> OsString {
-        self.0
+        self.name.clone()
     }
 
+    /// **From the listing when it can be, from the file when it must be.** `READDIR` said whether
+    /// the entry is a directory, so `file_type` is free; a size is not on the listing, so a file's
+    /// metadata costs an open, an `FSTAT` and a close. A directory's does not, because there is no
+    /// verb that would answer it (see [`FileAttr`]).
     pub fn metadata(&self) -> io::Result<FileAttr> {
-        self.0
+        if self.dir {
+            return Ok(FileAttr { size: 0, dir: true });
+        }
+        stat(&self.path())
     }
 
     pub fn file_type(&self) -> io::Result<FileType> {
-        self.0
+        Ok(FileType { dir: self.dir })
     }
 }
 
@@ -521,7 +652,9 @@ impl File {
 
     pub fn file_attr(&self) -> io::Result<FileAttr> {
         let size = request(proto::req(proto::FSTAT, self.handle, 0), 0)?;
-        Ok(FileAttr { size })
+        // Anything that got as far as a handle came through `OPEN`, which refuses a directory
+        // (`EISDIR`), so this is a file by construction.
+        Ok(FileAttr { size, dir: false })
     }
 
     pub fn fsync(&self) -> io::Result<()> {
@@ -701,10 +834,145 @@ pub fn exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-pub fn readdir(_p: &Path) -> io::Result<ReadDir> {
-    // Listing a directory needs a verb the contract does not have. Adding one is a change to
-    // `fs_proto` and DECISIONS §27, not something to fake here by guessing names.
-    unsupported()
+/// **List a directory** (`OPENDIR` + `READDIR`, milestone 64).
+///
+/// Two shapes, and the difference is which directory capability answers:
+///
+/// - `read_dir(".")` (or `read_dir("")`) lists **the granted directory itself**, which is handle
+///   `fs::ROOT` and costs no `OPENDIR`.
+/// - `read_dir("sub")` asks the server for a capability to `sub` first, lists through it, and
+///   closes it. That is descend-then-enumerate, and it is the only way to reach `sub`: this
+///   process holds no name for it other than through its parent.
+///
+/// The listing is drained here rather than streamed; [`ReadDir`] says why.
+pub fn readdir(p: &Path) -> io::Result<ReadDir> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    let target = dir_name(p)?;
+
+    // One guard for the whole exchange, because `page()` is not reentrant: OPENDIR's name, every
+    // READDIR page, and the CLOSE all run under it. That also makes the listing a snapshot with no
+    // other operation of ours interleaved.
+    let mut page = page();
+
+    let handle = match target {
+        None => proto::ROOT,
+        Some(name) => {
+            page.put(name.as_bytes());
+            // `ENUMERATE` and nothing more, for the reason `DirBuilder::mkdir` spells out: over-
+            // asking is `EPERM`, not attenuation, so a PAL that asked for `dir::ALL` here would
+            // work through the test's full-rights grant and fail through every narrowed one.
+            request(
+                proto::req(proto::OPENDIR, proto::ROOT, name.len() as u64),
+                fsproto::dir::ENUMERATE,
+            )?
+        }
+    };
+
+    let mut entries: Vec<(OsString, bool)> = Vec::new();
+    let mut buf = [0u8; PAGE];
+    let mut cursor: u64 = 0;
+    let result = loop {
+        // `req_len` is ignored by READDIR; the cursor rides in the second word.
+        let filled = match request(proto::req(proto::READDIR, handle, 0), cursor) {
+            Ok(n) => n as usize,
+            Err(e) => break Err(e),
+        };
+        // Zero bytes means the cursor is past the end, which is how the contract tells "the
+        // directory ended" apart from "the page was full" without the client guessing.
+        if filled == 0 {
+            break Ok(());
+        }
+        let filled = filled.min(PAGE);
+        page.get(&mut buf[..filled]);
+        let mut this_page = 0u64;
+        for (name, dir) in fsproto::dirent::iter(&buf[..filled]) {
+            // A name is bytes on the wire and an `OsString` in std, and on this target an
+            // `OsString` is UTF-8. A name the FS server holds that is not UTF-8 cannot be
+            // represented, so it is skipped rather than lossily renamed: handing back a name that
+            // does not open is worse than not listing it.
+            if let Ok(s) = core::str::from_utf8(name) {
+                entries.push((OsString::from(s), dir));
+            }
+            this_page += 1;
+        }
+        if this_page == 0 {
+            // A non-empty reply that decoded to no records is a malformed page, and looping on it
+            // would spin forever against a server that keeps sending it.
+            break Err(io::const_error!(
+                io::ErrorKind::InvalidData,
+                "the FS server returned a directory page with no readable entries"
+            ));
+        }
+        cursor += this_page;
+    };
+
+    if handle != proto::ROOT {
+        let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
+    }
+    result?;
+
+    Ok(ReadDir { root: p.to_path_buf(), entries: entries.into_iter() })
+}
+
+/// **Remove a name** (`UNLINK`, milestone 64). Not revocation: a handle already open on the file
+/// keeps reading, exactly as POSIX promises, and `fs_proto::fs::UNLINK` records why the contract
+/// draws that line. A directory is refused (`IsADirectory`); [`rmdir`] is its verb.
+pub fn unlink(p: &Path) -> io::Result<()> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    let name = one_name(p)?;
+    let mut page = page();
+    page.put(name.as_bytes());
+    request(proto::req(proto::UNLINK, proto::ROOT, name.len() as u64), 0)?;
+    Ok(())
+}
+
+/// **Remove an empty directory** (`RMDIR`, milestone 64). Empty-only is the safety property, not a
+/// missing feature: `DirectoryNotEmpty` is the answer for anything else, and the recursion that
+/// Unix's `rm -r` does belongs in userspace where each step can be checked against the capability
+/// for that level. A file is refused (`NotADirectory`), the mirror of [`unlink`]'s refusal.
+pub fn rmdir(p: &Path) -> io::Result<()> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    let name = one_name(p)?;
+    let mut page = page();
+    page.put(name.as_bytes());
+    request(proto::req(proto::RMDIR, proto::ROOT, name.len() as u64), 0)?;
+    Ok(())
+}
+
+/// **Move a name** (`RENAME`, milestone 64), and the reason this one matters out of proportion to
+/// how often crates name it: write-a-temp-then-rename is how every careful program replaces a file,
+/// and `fs_proto::fs::RENAME` is both concurrency-atomic and crash-atomic, which is what that idiom
+/// actually needs.
+///
+/// Both names are under the granted directory (there is no second directory capability to name),
+/// and they travel in the shared page back to back, source first, because one request word cannot
+/// carry two lengths.
+pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    let src = one_name(old)?;
+    let dst = one_name(new)?;
+    if src.len() + dst.len() > PAGE {
+        return Err(io::const_error!(
+            io::ErrorKind::InvalidFilename,
+            "the two names together are longer than the page shared with the FS server"
+        ));
+    }
+    let mut page = page();
+    page.put(src.as_bytes());
+    page.put_at(src.len(), dst.as_bytes());
+    request(
+        proto::req(proto::RENAME, proto::ROOT, src.len() as u64),
+        proto::rename_dst(proto::ROOT, dst.len() as u64),
+    )?;
+    Ok(())
 }
 
 pub fn set_perm(_p: &Path, _perm: FilePermissions) -> io::Result<()> {

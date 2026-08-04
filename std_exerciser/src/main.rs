@@ -254,7 +254,123 @@ fn fs_demo(mut motd: File) {
     );
     println!("write readback ok");
 
+    namespace_transcript();
+
     println!("fs ok");
+}
+
+/// **The namespace verbs** (milestone 64): `create_dir`, `read_dir`, `rename`, `remove_file`,
+/// `remove_dir`.
+///
+/// All five were `Unsupported` in this PAL until now, and none of them was waiting on the FS
+/// contract: `MKDIR`, `OPENDIR`, `READDIR`, `RENAME`, `UNLINK` and `RMDIR` have been dispatched by
+/// the server since milestones 47 and 48. What this function proves is the binding, end to end, on
+/// a real RedoxFS image.
+///
+/// **It cleans up before it starts, not after**, and that is deliberate rather than tidy.
+/// `CRICKER_KEEP_REDOXFS=1` runs the suite against an image a previous boot wrote, which is a
+/// supported mode (it is how the cross-boot write case is reached), so this has to be idempotent
+/// over an image that already carries what a previous run made. Cleaning up first also means the
+/// directory's contents are known by the time `read_dir` looks at them.
+fn namespace_transcript() {
+    const DIR: &str = "made-dir-by-std";
+    const RENAMED: &str = "renamed-by-std";
+
+    // Cleanup. `NotFound` is the expected answer on a fresh image and is not a failure; anything
+    // else is, because it would mean the verb itself is broken rather than the name absent.
+    for (name, removed) in [(RENAMED, false), (DIR, true)] {
+        let r = if removed {
+            std::fs::remove_dir(name)
+        } else {
+            std::fs::remove_file(name)
+        };
+        match r {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            other => panic!("cleaning up {name} failed: {other:?}"),
+        }
+    }
+
+    std::fs::create_dir(DIR).expect("create_dir failed");
+    println!("mkdir ok");
+
+    // **The listing, and the one fact only a listing can give you.** Before this verb bound, a
+    // program holding a directory capability could open a name it already knew and nothing else;
+    // it could not find out what was there. Two assertions: the fixture's own name is present (so
+    // the listing reaches real image contents), and the directory just created comes back marked
+    // as a directory (so `dirent`'s IS_DIR crosses the wire).
+    let mut saw_motd = false;
+    let mut saw_dir = false;
+    for entry in std::fs::read_dir(".").expect("read_dir of the granted directory failed") {
+        let entry = entry.expect("a directory entry did not decode");
+        let name = entry.file_name();
+        if name == fs_proto::fixture::MOTD_NAME {
+            saw_motd = true;
+            assert!(
+                entry.file_type().expect("file_type failed").is_file(),
+                "the motd came back marked as a directory",
+            );
+        }
+        if name == DIR {
+            saw_dir = true;
+            assert!(
+                entry.file_type().expect("file_type failed").is_dir(),
+                "a directory came back marked as a file",
+            );
+        }
+    }
+    assert!(saw_motd, "read_dir did not list the fixture's own file");
+    assert!(saw_dir, "read_dir did not list the directory just created");
+    println!("read_dir ok");
+
+    // A subdirectory is reached by *descending*: `OPENDIR` mints a capability to it and the
+    // enumeration runs through that, which is why this is a different code path from the line
+    // above and worth its own assertion. A directory just made is empty; there are no `.` and
+    // `..` entries on this contract, because they would be names for things no capability
+    // designates.
+    let n = std::fs::read_dir(DIR)
+        .expect("read_dir of a subdirectory failed")
+        .count();
+    assert_eq!(n, 0, "a directory just created was not empty");
+    println!("read_dir descend ok");
+
+    // **Neither remove verb will remove the kind the other one is for**, which is the whole safety
+    // property behind having two. A single "remove whatever you find" is what makes `rm -r`
+    // dangerous, and this contract does not offer it at any opcode.
+    match std::fs::remove_file(DIR) {
+        Err(e) if e.kind() == ErrorKind::IsADirectory => println!("unlink refused a directory"),
+        other => panic!("remove_file on a directory was not refused: {other:?}"),
+    }
+    match std::fs::remove_dir("made-by-std") {
+        Err(e) if e.kind() == ErrorKind::NotADirectory => println!("rmdir refused a file"),
+        other => panic!("remove_dir on a file was not refused: {other:?}"),
+    }
+
+    // **Rename, which matters out of proportion to how often crates name it.** Write-a-temp-then-
+    // rename is how a careful program replaces a file, and it needs the destination to appear with
+    // the source's contents and the source's name to be gone in the same step. Both halves are
+    // asserted, because a rename that copied would pass the first one.
+    std::fs::rename("made-by-std", RENAMED).expect("rename failed");
+    let back = std::fs::read(RENAMED).expect("reading the renamed file failed");
+    assert_eq!(
+        back, b"the second write, shorter",
+        "the renamed file did not carry the source's contents",
+    );
+    match File::open("made-by-std") {
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        other => panic!("the source name survived a rename: {other:?}"),
+    }
+    println!("rename ok");
+
+    std::fs::remove_file(RENAMED).expect("remove_file failed");
+    assert!(
+        !std::fs::exists(RENAMED).expect("exists failed after remove_file"),
+        "a removed name still resolves",
+    );
+    println!("unlink ok");
+
+    std::fs::remove_dir(DIR).expect("remove_dir failed");
+    println!("rmdir ok");
 }
 
 /// Assert that a path is refused as un-nameable, and say which case it was.

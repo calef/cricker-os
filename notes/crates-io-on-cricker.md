@@ -289,22 +289,39 @@ least one call site.
 | 31 | read/write timeouts | `Unsupported` | 1 | 1 | |
 | 32 | `Metadata::accessed` | `Unsupported` | 0 | 0 | **nobody asked for it** |
 
-### Five of these are bindings, not verbs, and that is the whole of the cheap tier
+### Five of these were bindings, not verbs, and milestone 64 bound them
 
-Ranks 5, 11, 12, 13 and 25 (`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename`) are
-each backed by a verb the FS server **already implements**: `fs_server/src/bin/fs_server.rs`
-dispatches `MKDIR`, `OPENDIR`, `READDIR`, `UNLINK`, `RMDIR` and `RENAME` today (milestones 47 and
-48). Nothing is missing from the contract; nothing is missing from the server. What is missing is
-the client side in `patches/std-cricker/overlay/std/src/sys/fs/cricker.rs`, which still refuses.
+Ranks 5, 11, 12, 13 and 25 (`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename`) were
+each backed by a verb the FS server **already implemented**: `fs_server/src/bin/fs_server.rs` has
+dispatched `MKDIR`, `OPENDIR`, `READDIR`, `UNLINK`, `RMDIR` and `RENAME` since milestones 47 and 48.
+Nothing was missing from the contract and nothing was missing from the server; the client side in
+`patches/std-cricker/overlay/std/src/sys/fs/cricker.rs` simply still refused, and its own comments
+still said the verbs did not exist.
 
-Milestone 47's block already said this for `rename`, `unlink` and `rmdir` ("now a binding gap rather
-than a missing verb"). The measurement adds two: `read_dir` and `create_dir`, and puts `create_dir`
-above all of them by demand.
+**All five are bound now**, and the `std_exerciser` demo walks them under a real directory
+capability on both ISAs. See notes/std.md for the behaviours (what `read_dir(".")` means with no
+global namespace, why the listing is drained rather than streamed, and why `remove_file` refuses a
+directory).
 
-**This makes `notes/std.md` stale in one specific claim**, and it is the kind of stale that misleads:
-it lists these as "Unsupported, each because **no verb in the contract backs it**, not because the
-code is missing". That was true when it was written and has not been true since milestone 47. The
-PAL's own comment on `readdir` says the same thing ("needs a verb the contract does not have").
+Milestone 47's block had already said this for `rename`, `unlink` and `rmdir` ("now a binding gap
+rather than a missing verb"). The measurement added two, `read_dir` and `create_dir`, and put
+`create_dir` above all of them by demand.
+
+**A refusal outlived its reason by two milestones and nothing caught it**, which is the finding
+worth more than the five functions. A refusal that looks correct reads exactly like a refusal that
+is correct, and the comment explaining it is written once and then believed. The thing that found it
+was not a review; it was asking fifty crates what they wanted.
+
+**And binding them turned up a bug that only a narrowed capability would have shown.** `OPENDIR` and
+`MKDIR` take the rights the caller wants on the child in the request's second word, and the server
+answers `EPERM` if the intersection with the parent's rights comes up **short of what was asked**
+(§47's monotonicity is the intersection; the refusal is the server telling the truth about it). The
+first version of this binding asked for `dir::ALL`, which works perfectly through the full-rights
+grant every test uses and fails through every narrowed one. A PAL cannot know what its own
+capability carries, so it has to ask for the minimum the operation needs: `ENUMERATE` for a listing,
+and nothing at all for `create_dir`, which closes the handle it gets back. Caught by reading the
+server rather than by a test, and there is still no test that would catch it (a std program spawned
+with a narrowed directory capability does not exist yet; that wants a lane).
 
 ## BUGS
 
