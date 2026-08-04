@@ -77,10 +77,14 @@ pub fn percpu_matches_hart() -> bool {
 /// id in x0, then the target core's MPIDR, the PHYSICAL entry address it begins at (MMU off), and
 /// a context word that arrives in the new core's x0. `0xC400_0003` is `PSCI_CPU_ON` (64-bit).
 ///
-/// TODO(portability): the conduit (`hvc` vs `smc`), the function id, and the CPU list all live in
-/// the device tree (`/psci`, `/cpus`). A portable version reads them instead of hardcoding QEMU
-/// virt's values, the way we insist everywhere else that the machine describe itself. See
-/// notes/device-tree.md and DECISIONS.md §11.
+/// **BUGS: this is QEMU `virt`'s machine, hardcoded, and it is the one place the kernel assumes a
+/// board instead of reading it.** The conduit (`hvc` vs `smc`), the function id, and the CPU list
+/// all live in the device tree (`/psci`, `/cpus`); we read neither, so a second aarch64 board whose
+/// firmware answers on `smc`, or which presents a different set of cores, gets a silent no-op
+/// secondary bring-up rather than an error. Everywhere else in this tree the machine describes
+/// itself (milestone 60, `crates/dtb`), which is what makes this an outlier worth naming here.
+/// `smp::start_secondaries` carries the other half of the same assumption. See notes/device-tree.md
+/// and DECISIONS.md §11.
 pub fn psci_cpu_on(target_mpidr: u64, entry: u64, context: u64) -> i64 {
     const PSCI_CPU_ON: u64 = 0xC400_0003;
     let ret: i64;
