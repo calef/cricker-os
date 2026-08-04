@@ -477,7 +477,7 @@ mod tests {
                 Ok(())
             }
         }
-        let mut assert_debug = |v: &dyn core::fmt::Debug, want: &str| {
+        let assert_debug = |v: &dyn core::fmt::Debug, want: &str| {
             let mut buf = Buf {
                 bytes: [0; 64],
                 n: 0,

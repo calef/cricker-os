@@ -889,7 +889,11 @@ mod tests {
         assert!(s.cleared);
         assert_eq!(s.text(), "$ ab");
         feed_all(&mut d, &mut s, b"x");
-        assert_eq!(s.text(), "$ axb", "typing after ^L must land mid-line on screen");
+        assert_eq!(
+            s.text(),
+            "$ axb",
+            "typing after ^L must land mid-line on screen"
+        );
         feed_all(&mut d, &mut s, b"\r");
         assert_eq!(d.line(), b"axb");
     }

@@ -602,7 +602,7 @@ mod tests {
         assert!(e.one_queue_invariant());
     }
 
-    /// The manual PartialEq and Debug impls answer for themselves. Every use above compares
+    /// The manual `PartialEq` and `Debug` impls answer for themselves. Every use above compares
     /// equal values, so an eq stuck at `true` passed (milestone 85); different variants must
     /// disagree, and the rendering is the string a hang dump prints.
     #[test]
