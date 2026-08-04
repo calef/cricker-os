@@ -496,16 +496,25 @@ boot, a later test asking for 128 contiguous pages found **137 free frames and n
 the failure surfaced far away, as `time_tests` reporting "no swish program in the initrd archive, or
 no memory to wire one", which reads like a packaging bug and is not one.
 
+**The fix taken here was to stop over-provisioning.** `NET_SERVER_BUDGET_PAGES` was 192 on the
+recorded reasoning that `net_stack` caps its heap at 128 pages "so 192 leaves headroom without being
+unbounded", which is a margin nobody measured. It is now **128**, with `net_stack`'s `HEAP_MAX`
+lowered to **96** so the budget still covers the heap's declared worst case with 32 pages for page
+tables and clients' frame mappings. Ten net servers per boot at 64 pages saved each is **640 frames**
+returned, which is six times what the new gate spends. The suite is what proves 96 is enough.
+
 Three facts worth carrying forward, because milestones 54, 55 and 66 will all want more net tests:
 
 - **RAM is pinned at 128 MiB and asserted.** `memory_map_came_from_the_device_tree` fails on any
   other size, deliberately, because a wrong number there means a misparsed `reg`. So "give QEMU more
   memory" is a decision with a test attached, not a knob.
-- **The margin before this milestone was about 550 frames**, roughly 2.2 MiB, at the end of the
-  aarch64 boot. Every net test spends ~208 pages of it permanently.
-- **The failure mode is fragmentation, not exhaustion**: 137 free frames, no 128-page run. So the
-  margin is worse than a total-free number suggests, and a test that needs a *contiguous* region is
-  the one that will break first.
+- **The margin before this milestone was about 315 frames**, 1.3 MiB, at the end of the aarch64
+  boot. One net test spends ~208 of them permanently (192 for the server, 16 for the client), so the
+  suite could afford exactly one more net test and not two.
+- **It is exhaustion, and it was measured, not inferred.** A temporary instrument in
+  `untyped::create` printed `free=107, largest_run>=96` at the failing allocation, which settles the
+  question a total-free number alone leaves open. Worth repeating if this bites again: the
+  instrument is four lines and it turned "somebody's test is flaky" into a number in one run.
 
 The fix is the same one `virtio::MAX_DEVICES` has now asked for eight times: reclaim what a dead or
 finished service held. It is one piece of work that would relieve both ceilings, and it is

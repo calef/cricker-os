@@ -143,9 +143,21 @@ pub fn start_net_pci(image: &'static [u8]) -> Option<EpId> {
 }
 
 /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
-/// transmit buffers, and caches, plus the program's own page tables. `net_stack` caps its heap at 128
-/// pages, so 192 leaves headroom without being unbounded.
-const NET_SERVER_BUDGET_PAGES: u64 = 192;
+/// transmit buffers, and caches, plus the page tables for the heap and for clients' shared frames.
+///
+/// **128, down from 192, because 192 was never measured and the boot could not afford it**
+/// (milestone 107). A `net_stack` is spawned ten times over the aarch64 suite and none of those
+/// regions is ever reclaimed (the server blocks in its serve loop forever, and nothing reaps it), so
+/// this number is multiplied by ten and held until reboot. Adding one more net test took the boot's
+/// free frames down to **107**, and the shell-timing test then asked for 128 contiguous pages and
+/// could not have them; the failure surfaced as "no swish program in the initrd archive", which
+/// reads like a packaging bug and is not one.
+///
+/// The invariant that makes 128 safe rather than lucky: `net_stack::HEAP_MAX` caps the heap at **96**
+/// pages, lowered in the same change, so the budget covers the heap's worst case with 32 pages left
+/// for page tables and clients' frame mappings. Both numbers are stated on both sides; if one moves,
+/// the other must. The suite is what proves 96 is enough for smoltcp's socket set and buffers.
+const NET_SERVER_BUDGET_PAGES: u64 = 128;
 /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
 /// the poll loop clear (`allocator_exerciser` needed three for `alloc` collections; smoltcp asks more).
 const NET_SERVER_STACK_PAGES: u64 = 8;

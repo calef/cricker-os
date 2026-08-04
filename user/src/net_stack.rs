@@ -50,8 +50,15 @@ const IRQ: u64 = 1;
 const UNTYPED: u64 = 3;
 const STACK: u64 = 4;
 
-/// The heap smoltcp allocates against, capped well under the granted budget.
-const HEAP_MAX: u64 = 128 * 4096;
+/// The heap smoltcp allocates against, capped under the granted budget.
+///
+/// **96 pages, down from 128** (milestone 107), and the two numbers are a pair: the spawn service
+/// grants `NET_SERVER_BUDGET_PAGES = 128`, and the difference is what pays for the heap's page
+/// tables and for mapping clients' shared frames. The budget came down because ten `net_stack`
+/// regions are held for the whole boot and never reclaimed, and the aarch64 suite ran out of memory
+/// when an eleventh net test arrived; see `kernel/src/user/virtio_service.rs` for the measurement.
+/// If either number moves, both must.
+const HEAP_MAX: u64 = 96 * 4096;
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
