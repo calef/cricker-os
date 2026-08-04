@@ -270,8 +270,13 @@ transcript, a pipe and a file and now a terminal, and the program holds one capa
   cannot capture, indent, count or truncate them. `2>` is the only way to put them anywhere else, and
   it works by handing the child a *different* endpoint rather than by intercepting this one.
 - **Building it found init's sixteen-slot cspace for the third time.** One more endpoint held across
-  the shell's `build_child` made the boot print nothing at all. It is built last now, at the
-  narrowest point; see notes/pipes.md.
+  the shell's `build_child` made the boot print nothing at all, so the adapter is built **after the
+  shell**; see notes/pipes.md. It was written down as "built last", and merging milestone 22 proved
+  that half wrong: init now builds a `job_reaper` after it and the cspace has room either way. The
+  real constraint was never the ordinal, it was the shell's build. Where the adapter does have to sit
+  is **before init gives the construction budget away**, because it is a system component and that
+  budget is what the system is built from; building it afterwards would spend init's scratch pool on
+  a whole program. See notes/trusted-init.md.
 - **`date` was already speaking the contract before it existed**, which is the `OP_BYTES == 0`
   decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It
   announces no end of stream, because nothing yet reads its output as a stream; when `|` lands, it

@@ -231,6 +231,15 @@ path = "src/flaky.rs"
 test = false
 bench = false
 
+# The interactive boot's corpse collector (milestone 22, the interactive increment). Holds one
+# endpoint capability with READ and nothing else; init endows every job it builds with the same
+# endpoint, and the pages come back to init's budget when this collects the corpse.
+[[bin]]
+name = "job_reaper"
+path = "src/job_reaper.rs"
+test = false
+bench = false
+
 # The C seam (milestone 36). Three files, two binaries: `c_shim` is the Rust user_rt shell that
 # links user/c/c_seam.c (compiled by build.rs with a bare-metal clang) and holds every capability
 # the foreign component is not allowed to see; `c_confiner` builds it, supervises it, and holds the

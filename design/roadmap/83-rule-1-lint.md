@@ -1,6 +1,6 @@
 # 83. A mechanical rule-1 lint
 
-**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79, which found the violation.
+**Status: BUILT.** Raised 2026-08-03, same survey as 79, which found the violation.
 
 CLAUDE.md's first rule, all architecture-specific code under `kernel/src/arch/`, is what makes the
 x86_64 port a new directory instead of a diff across every file, and it is enforced by discipline

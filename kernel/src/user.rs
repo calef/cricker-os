@@ -1842,6 +1842,25 @@ mod force_kill_tests;
 #[cfg(test)]
 mod authority_tests;
 
+/// **The interactive boot's half of the same idea: a job's memory comes home** (milestone 22, the
+/// increment that migrated the hand-validated boot path).
+///
+/// The tree above proves an init that can hand its construction authority away entirely. The
+/// interactive init cannot: it stays the shell's spawn service, so it must keep *some* budget. What
+/// it can do instead is keep a **bounded** one and make it renewable, which is what these two tests
+/// are about. Every job the prompt spawns is built in a region split off that pool and born
+/// supervised, and `job_reaper` (one endpoint capability, no memory at all) collects the corpse
+/// through `Endpoint::REAP`, which returns the region to **init's** pool under §13 region ownership.
+///
+/// The pair is a control and a claim, in that order: three jobs exhaust the pool when nothing
+/// collects, and twelve go through the same pool when `job_reaper` does. Neither is a timing
+/// argument; the assertion in both is which budget the pages are in.
+///
+/// Cross-ISA, because every piece is portable: `job_reaper` is an ordinary program in both archives
+/// and the reap authorization reads two TCB fields.
+#[cfg(test)]
+mod job_reaper_tests;
+
 /// **A memory-unsafe C component, confined** (milestone 36, DECISIONS §31).
 ///
 /// The thesis (§14) is a verified core that confines unverified workloads, and C is the most

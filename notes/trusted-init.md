@@ -264,20 +264,107 @@ there rather than here because it is an exception-path fact, not an init fact.
    nothing new), per-child fault endpoints (costs a thread or a wait-any primitive, which §26.5
    rejected), or the builder reporting the tid it created. Recorded, not chosen.
 
-### What is left of milestone 22 phase B
+## The interactive boot, migrated
 
-The tree proves the pattern on the real capability system, with real programs, on both ISAs. It is
-**not yet the interactive boot's init**: `system_initializer` (riscv) and `hello`'s init role (aarch64) still hold
-their budgets for life, because they stay the shell's spawn service. Migrating them is the next
-increment, and it is deliberately not done blind in the same pass: that boot path is validated by hand
-(the automated suite cannot inject keystrokes), so changing who holds the spawn service there wants an
-interactive run to confirm, not a green unit test. The shape it would take is already clear from this
-tree: the spawn service becomes a sub-server holding the archive and a budget, init wires the shell to
-*it* instead of to itself, and init then drops what it no longer needs.
+The tree above proves the pattern with programs written for it. This is the same discipline applied
+to the boot path a person actually types at: `system_initializer` (riscv) and `hello`'s `init_boot`
+role (aarch64), which until now held the kernel's whole construction budget for life.
 
-The other honest gap: `suptree.rs`'s child builder is a generalization of `system_initializer.rs`'s
-`build_child` rather than a replacement for it, so that loader logic exists twice until system_initializer
-migrates. Recorded here so the duplication is a scheduled removal and not a surprise.
+### The shape, and why it is not the one that was predicted
+
+The prediction recorded here was: *the spawn service becomes a sub-server holding the archive and a
+budget, init wires the shell to it, and init drops what it no longer needs.* That was not built, and
+the reason is worth keeping rather than quietly diverging from.
+
+**The spawn service is the ELF loader, and the ELF loader is the archive.** Moving it out means the
+sub-server holds the initrd, which is every program in the system, so "it can build exactly one
+program" (the property that makes `spawner` worth having) does not survive the move: the sub-server
+would hold strictly more than init does today, and init would hold nothing but a pipe. That is a
+relocation of the authority, not a reduction of it, and it costs an IPC hop on every capability the
+shell delegates, because `spawnproto` moves capabilities and not just words.
+
+So the interactive init keeps the loader and gives up three other things instead.
+
+1. **The root construction budget.** It carves `INIT_OWN_PAGES` (128, for its own scratch page
+   tables) and `JOBS_BUDGET_PAGES` (240, the job pool) off the root untyped and **deletes the root**.
+   After that it can spend at most those two, and it cannot reach the rest of what the kernel gave it
+   or delegate the root to anything it builds.
+2. **The device authority.** The UART device capability and the UART receive interrupt go back as
+   soon as the console and input drivers are built, along with aarch64's test SGI and the kernel's
+   report endpoint, which were never part of the interactive system. An init that kept the device
+   could hand the UART to anything it later builds.
+3. **Anything that reaches a live job's memory.** Each job is built in a region split off the pool,
+   and init deletes that region capability as soon as the job starts. Since §32 the reap does not
+   need it.
+
+### The job pool is bounded *because* it is renewable
+
+Bounding init's budget would be a bad trade on its own: a prompt that runs out of memory after thirty
+commands is worse than a prompt whose init holds too much. What makes it cheap is that the pages come
+back. Every job is born supervised (§26's spawn-slot convention: a `READ` view of one endpoint in the
+reserved fault slot, which `START` reads and clears), and **`job_reaper`** collects the corpse through
+`Endpoint::REAP`. Its entire authority is that one endpoint capability: no untyped, no frame, no TCB,
+nothing it could build with. The reclaimed region returns to *init's* pool, because §13 says a region
+belongs to whoever owns it and init is the one who split it. A process that can free a job's memory
+and can never spend it is exactly what §32 was decided for, and this is its first non-test consumer.
+
+**Why a second process rather than init collecting its own children.** There is no non-blocking
+receive, and init is parked in `RECV` on the shell's spawn channel for its whole life. Multiplexing
+deaths onto that same endpoint was considered and rejected: the shell holds `WRITE` on it, so a
+compromised shell could forge death messages, and `EVENT_FAULT`/`EVENT_EXIT` (1 and 2) collide with
+the program ids `spawnproto` already sends in word 0.
+
+### Proven, both ISAs
+
+- `kernel/src/user/job_reaper_tests.rs`, a control and a claim in that order.
+  `without_a_collector_a_bounded_job_pool_runs_out` builds three jobs in a three-job pool, lets all
+  three *finish*, and shows the fourth refused: a finished job's region is not free memory. Then
+  `job_reaper_returns_every_finished_job_to_the_pool` puts **twelve** jobs through the same pool with
+  the real `job_reaper` binary running, and asserts after each one that the pool came all the way
+  back and at the end that it carves again in one piece. The assertion is which budget the pages are
+  in, never how long anything took.
+- `script/shell-check`, which is the only thing that boots the real interactive init. It reads a
+  sentence init prints **from inside itself**, after deleting the root untyped and before starting the
+  shell: init retypes a page and retypes a kernel object on that slot and prints "construction budget
+  dropped; retype answers NoSuchSlot" only when both answered `NoSuchSlot` (-1) rather than
+  `NotPermitted` (-3). Gone, not narrowed; the other branch prints "NOT dropped" so a boot that kept
+  its budget fails loudly. The script then runs **thirteen jobs through the six-job pool**, so a boot
+  where nothing was collected answers "could not spawn (init is out of memory)" partway down instead
+  of the arithmetic.
+
+### BUGS
+
+- **Recovery is LIFO** (§16, `crates/regions`). A job region reclaimed while it is not at the top of
+  the pool's watermark returns nothing and leaves a hole until the pool's owner dies, which init never
+  does. Sequential commands at a prompt are exactly LIFO and recover fully; two jobs alive at once (a
+  pipeline stage outliving its producer) permanently costs one region, so a long enough session of
+  concurrent pipelines still ends at "could not spawn". Six job slots is generous for a prompt and
+  small enough to keep the gate honest, which is the trade.
+- **Init still holds a writable mapping of everything it ever built.** `build_child`'s scratch window
+  is never unmapped (it cannot be: nothing in the ABI unmaps a page), so init can read and write any
+  page it laid down for a child. Reaping a job undoes this for jobs, because reclaiming a region
+  revokes every mapping of its pages first (§13), but the boot servers are never reclaimed. So the
+  console's, the line editor's, the input driver's, the shell's and the terminal sink adapter's memory
+  is still reachable from init, and giving the construction budget away does not touch that. It is the largest remaining
+  residual and it wants an unmap primitive, not a smaller budget.
+- **The one line init prints costs one more of those**: the shell's output frame stays mapped in init
+  for life, because `Frame::REVOKE` would take the page from the shell too.
+- **The boot servers are not supervised.** Endowing them a supervision endpoint with nobody to
+  restart them would make their corpses persist forever instead of being reaped by the kernel, which
+  is strictly worse. A dead console is still a halt, which is §26's fail-closed floor and correct for
+  a tier-one server nothing can rebuild.
+- **`job_reaper` cannot say anything.** Init holds no channel it could report on, so a refused reap
+  traps rather than being ignored. The visible symptom of the collector dying is that the pool stops
+  coming back and the prompt eventually answers "could not spawn".
+- **A hung job is not collected**, on purpose: `REAP` refuses a live thread (§32), and that is the
+  watchdog case, which belongs to milestone 23. At the prompt the case a person can see is already
+  covered by milestone 24's forcible tier, and those jobs are built from the shell's own untyped
+  rather than init's, so they never reach the collector at all.
+
+The loader duplication is unchanged and still scheduled: `crates/supervision_proto`'s child builder is
+a generalization of the two inits' `build_child`, so the logic exists three times. This increment
+added the fault slot to all three rather than unifying them, because unifying loaders and migrating
+the boot path in one pass would have made a boot failure ambiguous.
 
 ## Not covered, deliberately
 

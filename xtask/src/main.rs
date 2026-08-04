@@ -1120,6 +1120,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "flaky",
             "--bin",
+            "job_reaper",
+            "--bin",
             "display",
             "--bin",
             "painter",
@@ -1223,6 +1225,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("sub_server_supervisor", "sub_server_supervisor"),
         ("flaky", "flaky"),
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): init
+        // endows every job it builds with one supervision endpoint and this collects the corpses, so
+        // a job's region comes back to init's budget. Portable, so both archives carry it.
+        ("job_reaper", "job_reaper"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
@@ -1510,6 +1516,9 @@ fn mkinitrd() -> bool {
         "spawner",
         "sub_server_supervisor",
         "flaky",
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): one
+        // endpoint capability and nothing else, so a job's region comes back to init's budget.
+        "job_reaper",
         "display",
         "painter",
         "c_confiner",
@@ -2889,7 +2898,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 15] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 21] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2939,6 +2948,22 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 15] = [
     // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
     // and its diagnostics ride it, so `2>` names nothing and the line does not run.
     ("wc gate.txt 2> err.txt", Some("declares no second output")),
+    // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
+    // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
+    // budget, and every job runs in a region of its own that `job_reaper` returns when the job ends.
+    // **Seven spawns above plus these six are thirteen jobs through a six-job pool**, so a boot where
+    // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
+    // rather than the arithmetic. (Eleven when milestone 22 wrote this line, and `2>` added two more
+    // spawning lines above; the count is a fact about the whole script, so it is taken at the merge
+    // and not from either half.) Six distinct arguments rather than one repeated, because the
+    // transcript is walked with a moving cursor and six identical answers would let a missed line
+    // pass as its neighbour.
+    ("worker 3", Some("3*3 = 9")),
+    ("worker 4", Some("4*4 = 16")),
+    ("worker 5", Some("5*5 = 25")),
+    ("worker 6", Some("6*6 = 36")),
+    ("worker 7", Some("7*7 = 49")),
+    ("worker 8", Some("8*8 = 64")),
     ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
 ];
 
@@ -3081,6 +3106,25 @@ fn shell_check_leg(riscv: bool) -> bool {
              reached a shell"
         ));
     } else {
+        // **Init gave the construction budget away, and says so from the inside** (milestone 22,
+        // the interactive increment). Init prints this one line after deleting the root untyped and
+        // before starting the shell, and it prints it only when `RETYPE` and `RETYPE_OBJ` on that
+        // slot both answered `NoSuchSlot`: the capability is gone, not narrowed. The other branch
+        // says "NOT dropped", so a boot that kept its budget fails here rather than passing quietly.
+        // It is already in the transcript by now, because the banner comes from a shell init starts
+        // afterwards; there is nothing to wait for.
+        if !seen
+            .lock()
+            .expect("transcript lock")
+            .contains("construction budget dropped")
+        {
+            failed.push(
+                "init never reported dropping its construction budget: either it still holds the \
+                 kernel's root untyped, or the delete did not take (the slot answered something \
+                 other than NoSuchSlot)"
+                    .to_string(),
+            );
+        }
         for (line, _) in SHELL_CHECK_SCRIPT {
             if !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
                 failed.push(format!(
@@ -3138,7 +3182,9 @@ fn shell_check_leg(riscv: bool) -> bool {
     if failed.is_empty() {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
-             file to a reader, and read the clock"
+             file to a reader, read the clock, kept a declared second stream off the \
+             redirection, and ran thirteen jobs through init's six-job pool after init gave \
+             its construction budget away"
         );
         return true;
     }

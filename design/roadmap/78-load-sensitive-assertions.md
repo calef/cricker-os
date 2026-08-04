@@ -1,6 +1,6 @@
 # 78. The load-sensitive assertions, and the three that measure the wrong thing
 
-**Status: NOT-STARTED.** Raised 2026-08-03 after a day in which five distinct assertions failed on
+**Status: PARTIAL.** Raised 2026-08-03 after a day in which five distinct assertions failed on
 pull requests that changed no executable code, two of them documentation only. Milestone 72 fixed the
 one that was a real bug. What is left is a family, and it is not one problem.
 

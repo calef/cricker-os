@@ -388,9 +388,22 @@ two shared frames, the file service and its page, so one more endpoint put `buil
 short while it was retyping the *shell's* address space. The shell was never built, so nothing ever
 printed.
 
-The fix is where rather than what: build it **last**, after the shell and after every boot capability
-but `term_ep` has gone back, which is the narrowest the cspace ever is. `term_ep` goes back
-immediately after.
+The fix is where rather than what: build it **after the shell**, once every boot capability the
+adapter does not need has gone back.
+
+This was first written down as "build it last, which is the narrowest the cspace ever is", and
+merging milestone 22's interactive boot proved the "last" half wrong. That lane added a `job_reaper`
+built after the adapter and a construction-budget giveaway between them, so the adapter is now the
+fifth of six boot components, and the boot is fine. The constraint was never the ordinal; it was that
+the adapter must not be holding a slot while `build_child` retypes the shell's address space.
+
+What the merge did pin down is the other end. The adapter has to be built **before init gives the
+construction budget away**, because it is a system component and the root untyped is what the system
+is built from. Afterwards the only budget left is init's own scratch pool, sized for page tables, and
+spending a whole program out of it would surface much later as some child failing to map a scratch
+page. So `term_ep` no longer goes back "immediately after" the adapter: it stays until init has
+printed its dropped-authority sentence through it, which is the last thing either init does with the
+terminal.
 
 The pattern worth keeping is that all three instances of this presented identically, as a boot that
 reaches userspace and then says nothing, and all three were a capability slot rather than memory.
