@@ -62,6 +62,6 @@ So `disown` means **transfer supervision upward**, not "abandon", and §40 recor
 the cascade close to the only coherent answer, namely that §32 authorizes reaping by matching the
 child's recorded `fault_ep`, which nobody can satisfy once the supervisor's endpoint is gone.
 
-**Sequencing.** Phase one after milestone 47 (it wants `jobs` alongside the other builtins and the same
-shell surface). Phase two is gated on nothing but the SUSPEND decision. **Effort: 1 lane estimated per
+**Sequencing.** Phase one after milestone 47 (navigation and naming), because it wants `jobs` alongside
+the other builtins and the same shell surface. Phase two is gated on nothing but the SUSPEND decision. **Effort: 1 lane estimated per
 phase**, noting estimates for unbuilt work are guesses on a history-calibrated scale.

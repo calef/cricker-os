@@ -733,7 +733,7 @@ impl<'a> Dtb<'a> {
     /// **This memory is ours to protect.** The bootloader loaded a file into RAM for us
     /// and told us where it put it. If we don't reserve it, the frame allocator hands it
     /// out to the first caller and the initrd is destroyed before we ever read a byte of
-    /// it. Milestone 8 (a filesystem) and milestone 10 (a userspace shell to load) both
+    /// it. Milestone 10 (a shell at EL0) and milestone 32 (a real filesystem) both
     /// want this, and by then the bug would be far away from its cause.
     pub fn initrd(&self) -> Result<Option<Region>, Error> {
         let mut start: Option<u64> = None;

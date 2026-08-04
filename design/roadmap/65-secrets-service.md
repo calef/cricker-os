@@ -73,8 +73,8 @@ per-resource scoping cuts that at the root.
 
 ## Consumers
 
-Milestone 55 (SMB needs `ntlm_response`, and is **blocked on this**), milestone 49 (login would use
-`verify`), and anything later that signs.
+Milestone 55, where SMB needs `ntlm_response` and is **blocked on this**; milestone 49, where
+login would use `verify`; and anything later that signs.
 
 ## BUGS
 

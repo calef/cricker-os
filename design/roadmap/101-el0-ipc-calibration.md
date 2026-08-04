@@ -12,8 +12,8 @@ milestone 25 is the alternative the block names.
 
 **What the source actually says.** notes/benchmarks.md:66 names a true EL0-to-EL0 benchmark as "the
 right follow-up" and says it "needs one `CNTKCTL_EL1` bit so EL0 can read the counter". Both halves
-are stale. The bit was opened by milestone 19e (`kernel/src/arch/aarch64/timer.rs:134`, with the
-riscv twin `scounteren.TM` in its timer init), and `ipc_rtt_el0` has been in `kernel/src/bench.rs`
+are stale. The bit was opened by milestone 19e, in `kernel/src/arch/aarch64/timer.rs:134` with the
+riscv twin `scounteren.TM` in its timer init, and `ipc_rtt_el0` has been in `kernel/src/bench.rs`
 since the EL0 primitive suite landed: two EL0 processes, two endpoints, a client self-timing
 `SEND`-then-`RECV` against a server process. The same note reports it, 130 lines below the sentence
 that asks for it.

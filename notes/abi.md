@@ -16,8 +16,8 @@ self-describing environment (a BootInfo page). Hardcoded, out-of-band agreement 
 capability layout between a parent and the children it builds is the normal microkernel pattern
 (seL4 hands a BootInfo only to its *root* task; every other task gets caps placed by its parent per
 a private layout). Our init is that parent. A BootInfo mechanism earns its keep when a loader must
-start programs whose layout it cannot know in advance, which is milestone 23 (live component
-replacement, competing vendors), not now. See "What is deliberately deferred".
+start programs whose layout it cannot know in advance, which is milestone 23 (live component replacement), with competing
+vendors, not now. See "What is deliberately deferred".
 
 ## 1. The syscall convention
 

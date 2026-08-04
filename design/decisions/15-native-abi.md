@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-Decided 2026-07-25, at milestone 19e ("Decision 2" in design/init-and-granular-spawn.md), against a
+Decided 2026-07-25, at milestone 19e, recorded as "Decision 2" in design/init-and-granular-spawn.md, against a
 system that could finally run and deliver distinct programs (19f). The full contract is written up in
 notes/abi.md; this records the decision and why.
 
@@ -21,8 +21,8 @@ layout. Not rejected because it is bad; it is the right tool. Rejected because i
 without a requirement here: init builds every program and knows every layout, so out-of-band
 agreement between one parent and its own children is sufficient, and it is exactly what seL4 does for
 every task below its root. BootInfo earns its place when a loader must start programs it did not build
-and whose layout it cannot know, which is milestone 23 (live component replacement, competing
-vendors). Building it now would be an abstraction ahead of its requirement, which rule 3 and the §5
+and whose layout it cannot know, which is milestone 23 (live component replacement), with competing
+vendors. Building it now would be an abstraction ahead of its requirement, which rule 3 and the §5
 asymmetry both warn against.
 
 The coupled half, **what runs first**: a native compute workload (CoreMark), because the disk is

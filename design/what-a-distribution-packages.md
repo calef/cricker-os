@@ -152,4 +152,4 @@ format, and it would be easy to grow it into a real one before knowing what it m
 - `design/haiku-bfs-and-packages.md`: `packagefs` activation as prior art, and its honest limit
 - `design/roadmap/47-navigation-and-naming.md`: a program namespace is an endowment
 - `notes/live-replacement.md`: swapping a running component, and how "the client did not notice" is proven
-- DECISIONS §10 (no ambient authority), §46 (taking a dependency is a decision)
+- DECISIONS §10 (no ambient authority), §46 (thin primitives or whole subsystems)

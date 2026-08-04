@@ -135,7 +135,7 @@ fn compile_one(manifest_dir: &Path, clang: &Path, flags: &[&str], source: &str, 
 /// backends only and cannot emit RISC-V at all.
 ///
 /// Both backends are required from one compiler even when only one ISA is being built. That is
-/// DECISIONS §19 (architectural parity is a gate) applied to the toolchain: a machine where the two
+/// DECISIONS §19 (parity is a gate, not an aspiration) applied to the toolchain: a machine where the two
 /// architectures would be compiled by two different clangs is a machine where "it works on aarch64"
 /// stops predicting anything about riscv64, and the failure would surface halfway through a build
 /// rather than here.

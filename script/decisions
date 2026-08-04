@@ -44,7 +44,7 @@
 # has already produced two of them; after any renumber, check by content and not by running this.
 # **Milestone 97 is the milestone that closes it** (a citation names what it cites, and the name is
 # compared against the target). Milestone 114 exists partly to make 97 cheap: now that a decision is
-# a file with a title on line 1, `§43 (the clock ladder)` can be checked against
+# a file with a title on line 1, `§43 (reading the clock is a page)` can be checked against
 # `43-clock-authority.md`'s own H1 without parsing a 5,000-line document to find where §43 begins.
 #
 # Also not checked: row title == file title. A row may abbreviate, the same allowance script/roadmap

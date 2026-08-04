@@ -26,7 +26,7 @@ is missing is the *scripting language*.
 | **Sequencing**: `;`, `&&`, `\|\|` | **here** |
 | **Exit status**: `$?`, which `&&` needs | **here** |
 | `>>` and `2>` | **here** (named unbuilt in `notes/pipes.md`) |
-| Variables, assignment, `export` | milestone 47 (studied: "the same question wearing a string costume") |
+| Variables, assignment, `export` | milestone 47, studied there as "the same question wearing a string costume" |
 | Job control: `&`, `jobs`, `fg`, `bg`, `wait`, `kill` | milestone 48 |
 | Subshells, command substitution `$(...)` | milestone 52 |
 | Scripts, `if`/`while`/`for`/`case`, functions | **nowhere yet, and deliberately** |
