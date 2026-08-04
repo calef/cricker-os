@@ -1,0 +1,469 @@
+#!/bin/sh
+#
+# script/catch-up [<since>]: what changed since I last looked?
+#
+# A derived view, not a record. The tree already carries its chronology in four places (the git log,
+# the pull request bodies, the roadmap's Built column, dated decisions), and a hand-maintained trip
+# log would be a fifth copy of facts that already exist, which is the duplication milestones 96 and
+# 114 spent 2026-08-04 removing from the inits and from the decisions. The cautionary example is
+# notes/session-handoff.md: a "current state" document that rotted until milestone 94's sweep found
+# it describing shipped work as pending. Nothing here is maintained by hand, so nothing here can rot.
+#
+# It belongs to the same family as script/roadmap, script/decisions and script/drift: a computed
+# report over the tree, kept in script/ so the command has a witness. notes/scripts.md makes that
+# argument in full (a command living only in a person's head, or in a YAML file, is one nobody can
+# check and one that was silently wrong for its whole life).
+#
+#   script/catch-up              the last seven days, which is the trip-length window
+#   script/catch-up 2026-08-01   everything since that date
+#   script/catch-up v0.3         everything since a tag, branch, or commit
+#
+# What it reports, in the order a returning reader wants it: milestones that changed status, then
+# milestones newly minted, then decisions landed or revised, then what is waiting on Chris (the queue
+# that blocks work), then what is newly ready to start, then the notes and design documents, since
+# those carry the why. Raw commit volume is one summary line at the end, because `git log` already
+# exists and this view earns its place by being the curated one.
+#
+# **It degrades honestly, and that is a requirement rather than a nicety.** The structures it reads
+# are young: design/roadmap/ split out of design/roadmap.md on 2026-08-03, the roadmap's status
+# column did not exist before 2026-07-30, and design/decisions/ is milestone 114's and may not exist
+# on the tree you run this against. A window that reaches back past any of those cannot be reported
+# in full, so every source says which file it read and every gap says what is missing and why. A
+# report that quietly shrinks when its inputs disappear is worse than no report, because the reader
+# cannot tell a quiet week from a broken tool.
+#
+# Read-only and offline: it runs `git show`, `git log`, `git diff` and `script/roadmap`, and writes
+# nothing.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import datetime
+import difflib
+import os
+import re
+import subprocess
+import sys
+
+root, since_arg = sys.argv[1], sys.argv[2]
+
+if since_arg in ("-h", "--help"):
+    print("usage: script/catch-up [<since>]\n\n"
+          "  <since>   a date (2026-08-01) or any git rev (a tag, branch, or commit).\n"
+          "            Defaults to seven days back, which is a trip.\n\n"
+          "Prints what changed in that window: milestone status transitions, milestones newly\n"
+          "minted, decisions landed or revised, what is waiting on Chris, what is ready to\n"
+          "start, and the notes that carry the why. The header of this script says why it is a\n"
+          "computed view rather than a maintained one.\n")
+    sys.exit(0)
+
+# The tree object every git repository shares for "nothing at all". Diffing against it is how a
+# window that predates the first commit reports honestly instead of dividing by zero.
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+WIDTH = 96
+
+
+def git(*args):
+    return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+
+
+def git_ok(*args):
+    r = git(*args)
+    return r.stdout if r.returncode == 0 else None
+
+
+def show(rev, path):
+    """The contents of one file at one revision, or None if it was not there."""
+    return git_ok("show", f"{rev}:{path}")
+
+
+def ls_tree(rev, path):
+    """The names in one directory at one revision, or None if the directory was not there."""
+    out = git_ok("ls-tree", "--name-only", f"{rev}:{path}")
+    return out.split("\n") if out else None
+
+
+def head(title, items, empty=None):
+    """A section. A zero is a fact worth printing, so an empty section still prints its heading and
+    says what the zero means; a section that silently vanishes reads as one nobody thought about."""
+    print()
+    print(f"{title} ({len(items)})")
+    print("-" * min(WIDTH, max(20, len(title) + 8)))
+    if not items:
+        print(f"  {empty or 'nothing'}")
+        return
+    for line in items[:24]:
+        print(f"  {line}")
+    if len(items) > 24:
+        print(f"  ... and {len(items) - 24} more")
+
+
+gaps = []          # what could not be reported, and why
+sources = []       # what was read, so the reader can see the report's footing
+
+
+# ---- the window --------------------------------------------------------------------------------
+# `since` is a date or a rev. A date resolves to the last commit strictly before it, which is the
+# state of the tree when the reader last looked; a rev is taken as given.
+
+head_sha = (git_ok("rev-parse", "HEAD") or "").strip()
+head_branch = (git_ok("symbolic-ref", "--quiet", "--short", "HEAD") or "").strip() or "detached HEAD"
+head_subject = (git_ok("log", "-1", "--format=%s", head_sha) or "").strip()
+
+defaulted = False
+if not since_arg:
+    since_arg = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    defaulted = True
+
+base = None
+if re.fullmatch(r"\d{4}-\d{2}-\d{2}", since_arg):
+    base = (git_ok("rev-list", "-1", f"--before={since_arg} 00:00:00", head_sha) or "").strip()
+    if not base:
+        first = (git_ok("log", "--reverse", "--format=%ad", "--date=short") or "").split("\n")[0]
+        gaps.append(f"no commit exists before {since_arg}; this repository begins {first}, so "
+                    f"everything in this report is measured against an empty tree")
+        base = EMPTY_TREE
+    kind = "date"
+else:
+    base = (git_ok("rev-parse", "--verify", "--quiet", f"{since_arg}^{{commit}}") or "").strip()
+    if not base:
+        print(f"catch-up: {since_arg!r} is neither a YYYY-MM-DD date nor a rev this repository "
+              f"knows.", file=sys.stderr)
+        sys.exit(1)
+    kind = "rev"
+
+base_short = base[:9]
+if base == EMPTY_TREE:
+    base_desc = "the empty tree (before the first commit)"
+else:
+    d = (git_ok("log", "-1", "--format=%ad", "--date=short", base) or "").strip()
+    s = (git_ok("log", "-1", "--format=%s", base) or "").strip()
+    base_desc = f"{base_short} ({d}) {s[:56]}"
+
+print(f"catch-up: since {since_arg}"
+      + (" (the default: seven days back)" if defaulted else f" (read as a {kind})"))
+print(f"          from {base_desc}")
+print(f"          to   {head_sha[:9]} on {head_branch}: {head_subject[:56]}")
+
+
+# ---- the roadmap -------------------------------------------------------------------------------
+# Two formats, because the directory is one day old. The current index is
+# `| N | STATUS | [title](file) | why | built |`; its predecessor design/roadmap.md carried the same
+# first three columns without the link, and before 2026-07-30 carried no status column at all. All
+# three are recognised, and the third is reported as a gap rather than as an empty result.
+
+def split_cells(line):
+    # `\|` inside a cell is an escaped pipe, not a separator: milestone titles use it.
+    return [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+
+
+def parse_roadmap(rev):
+    """(rows, path, statusless_count). rows maps number -> (status or None, title, built).
+
+    A row with no status still counts: the pre-2026-07-30 table named every milestone, so the set
+    of numbers is trustworthy even where the state of each one is not. Keeping the row with a null
+    status is what lets "newly minted" stay exact across a window that reaches back past the status
+    column, while transitions honestly go unreported.
+    """
+    for path in ("design/roadmap/README.md", "design/roadmap.md"):
+        text = show(rev, path)
+        if text is None:
+            continue
+        rows, statusless = {}, 0
+        for line in text.split("\n"):
+            if not re.match(r"^\|\s*\d+\s*\|", line):
+                continue
+            cells = split_cells(line)
+            if len(cells) < 2:
+                continue
+            if len(cells) >= 3 and re.fullmatch(r"[A-Z][A-Z-]*", cells[1]):
+                status, title = cells[1], cells[2]
+                # The Built date is taken as the last cell that looks like a date, not as cells[4].
+                # Two rows in the index (51 and 57 on 2026-08-04) carry a stray empty column, which
+                # a positional read turns into a silently missing date. script/roadmap's row regex
+                # anchors on the first three columns and never sees it.
+                built = cells[-1] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cells[-1]) else ""
+            else:
+                status, title, built = None, cells[1], ""
+                statusless += 1
+            title = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", title)
+            rows[int(cells[0])] = (status, title, built)
+        return rows, path, statusless
+    return None, None, 0
+
+
+old_rows, old_path, old_statusless = parse_roadmap(base)
+new_rows, new_path, _ = parse_roadmap(head_sha)
+
+if new_rows is None:
+    gaps.append("no roadmap at HEAD (design/roadmap/README.md and design/roadmap.md are both "
+                "absent): milestone status cannot be reported at all")
+    old_rows = new_rows = {}
+elif old_rows is None:
+    gaps.append(f"no roadmap existed at {base_short}, so every milestone in this report reads as newly "
+                f"minted rather than as a transition")
+    old_rows = {}
+else:
+    if old_statusless:
+        gaps.append(f"{old_statusless} of {len(old_rows)} rows in {old_path} at {base_short} carry "
+                    f"no status (the column was introduced 2026-07-30), so no transition is "
+                    f"reported for those milestones; which ones are new is still exact")
+    if old_path != new_path:
+        sources.append(f"roadmap: {new_path} at HEAD, {old_path} at {base_short} "
+                       f"(the milestone-76 split, 2026-08-03)")
+
+if new_rows:
+    sources.append(f"roadmap: {new_path} ({len(new_rows)} milestones)")
+
+changed = []
+for n in sorted(set(old_rows) & set(new_rows)):
+    was, now = old_rows[n][0], new_rows[n][0]
+    if was is None or was == now:
+        continue
+    built = f"  built {new_rows[n][2]}" if new_rows[n][2] else ""
+    changed.append(f"{n:>3}  {was} -> {now}{built}\n       {new_rows[n][1][:80]}")
+head("MILESTONES THAT CHANGED STATUS", changed, "no milestone changed status in this window")
+
+minted = [f"{n:>3}  {(new_rows[n][0] or '?'):<12} {new_rows[n][1][:74]}"
+          for n in sorted(set(new_rows) - set(old_rows))]
+head("MILESTONES NEWLY MINTED", minted, "no new milestones")
+
+retired = [f"{n:>3}  was {old_rows[n][0] or 'unstated'}: {old_rows[n][1][:70]}"
+           for n in sorted(set(old_rows) - set(new_rows))]
+if retired:
+    head("MILESTONE ROWS THAT DISAPPEARED", retired)
+
+
+# ---- decisions ---------------------------------------------------------------------------------
+# design/decisions/ is milestone 114's, and DECISIONS.md is what preceded it. Prefer the directory,
+# fall back to the file, and say which was read: a reader who cannot tell which one answered has no
+# way to judge why a status is missing.
+
+def parse_decisions(rev):
+    """(entries, path, unparsed). entries maps number -> (status_or_None, title, body)."""
+    names = ls_tree(rev, "design/decisions")
+    if names:
+        entries, unparsed = {}, 0
+        for name in names:
+            if not name.endswith(".md") or name == "README.md":
+                continue
+            m = re.match(r"(\d+)[a-z]?-", name)
+            if not m:
+                continue
+            body = show(rev, f"design/decisions/{name}") or ""
+            first = body.split("\n")[0] if body else name
+            title = re.sub(r"^#+\s*\d*\.?\s*", "", first).strip() or name
+            sm = re.search(r"\*\*Status:\s*([A-Z][A-Z0-9 -]*)", body[:2000])
+            status = sm.group(1).strip().rstrip(".") if sm else None
+            if status is None:
+                unparsed += 1
+            entries[int(m.group(1))] = (status, title, body)
+        return entries, "design/decisions/", unparsed
+    text = show(rev, "DECISIONS.md")
+    if text is None:
+        return None, None, 0
+    entries = {}
+    parts = re.split(r"^## (\d+)\. (.*)$", text, flags=re.M)
+    for i in range(1, len(parts) - 2, 3):
+        entries[int(parts[i])] = (None, parts[i + 1].strip(), parts[i + 2])
+    return entries, "DECISIONS.md", 0
+
+
+old_dec, old_dec_path, _ = parse_decisions(base)
+new_dec, new_dec_path, unparsed = parse_decisions(head_sha)
+
+if new_dec is None:
+    gaps.append("neither design/decisions/ nor DECISIONS.md exists at HEAD: decisions cannot be "
+                "reported")
+    old_dec = new_dec = {}
+else:
+    if new_dec_path == "DECISIONS.md":
+        sources.append(f"decisions: DECISIONS.md, the single file ({len(new_dec)} sections); "
+                       f"design/decisions/ does not exist on this tree, so no decision carries a "
+                       f"status and supersession cannot be reported as such (milestone 114)")
+    else:
+        sources.append(f"decisions: design/decisions/ ({len(new_dec)} decisions)")
+        if unparsed:
+            gaps.append(f"{unparsed} of {len(new_dec)} decisions have no parseable "
+                        f"**Status:** line; the format may have moved")
+    if old_dec is None:
+        gaps.append(f"no decision record existed at {base_short}; all of them read as new")
+        old_dec = {}
+    elif old_dec_path != new_dec_path:
+        sources.append(f"decisions: read {old_dec_path} at {base_short} and {new_dec_path} at HEAD; "
+                       f"a number means the same decision across the change, by milestone 114's "
+                       f"rule that the split does not renumber")
+
+SUPERSEDED = re.compile(r"supersede|supersession", re.I)
+
+landed, revised, restatused, small = [], [], [], 0
+for n in sorted(set(new_dec) - set(old_dec)):
+    status = f"[{new_dec[n][0]}] " if new_dec[n][0] else ""
+    landed.append(f"{n:>3}  {status}{new_dec[n][1][:76]}")
+for n in sorted(set(old_dec) & set(new_dec)):
+    (was_status, was_title, was_body), (status, title, body) = old_dec[n], new_dec[n]
+    if was_status != status:
+        restatused.append(f"{n:>3}  {was_status or 'no status'} -> {status or 'no status'}"
+                          f"   {title[:56]}")
+    if was_body.strip() == body.strip() and was_title == title:
+        continue
+    diff = difflib.unified_diff(was_body.split("\n"), body.split("\n"), n=0, lineterm="")
+    lines = sum(1 for d in diff if d[:1] in "+-" and d[:3] not in ("+++", "---"))
+    marks = []
+    if was_title != title:
+        marks.append(f"retitled: {title[:44]!r}")
+    if SUPERSEDED.search(body) and not SUPERSEDED.search(was_body):
+        marks.append("now says superseded")
+    if lines >= 4 or marks:
+        note = ("; " + ", ".join(marks)) if marks else ""
+        revised.append(f"{n:>3}  {title[:60]}  ({lines} lines{note})")
+    else:
+        small += 1
+
+head("DECISIONS LANDED", landed, "no new decisions")
+if restatused:
+    head("DECISIONS THAT CHANGED STATUS", restatused)
+head("DECISIONS REVISED", revised,
+     "none revised" + (f" ({small} touched by fewer than four lines)" if small else ""))
+if revised and small:
+    print(f"  ({small} more touched by fewer than four lines)")
+
+
+# ---- waiting on Chris --------------------------------------------------------------------------
+# The queue that blocks work. Under milestone 114 this is a decision whose status is PROPOSED; today
+# it is design/open-decisions.md, which holds the same object one step earlier. Read whichever
+# exists, and say which, because "nothing waiting" from the wrong source is the dangerous answer.
+
+waiting, waiting_src = [], None
+proposed = sorted(n for n, (s, _, _) in new_dec.items() if s and s.startswith("PROPOSED"))
+if new_dec_path == "design/decisions/":
+    waiting_src = "design/decisions/ (status PROPOSED)"
+    waiting = [f"{n:>3}  {new_dec[n][1][:76]}" for n in proposed]
+else:
+    text = show(head_sha, "design/open-decisions.md")
+    if text is None:
+        gaps.append("design/open-decisions.md is absent and no decision carries a status, so what "
+                    "is waiting on Chris cannot be read from the tree")
+    else:
+        waiting_src = "design/open-decisions.md (the queue that precedes a PROPOSED status)"
+        old_text = show(base, "design/open-decisions.md") or ""
+        old_titles = set(re.findall(r"^## \d+\. (.*)$", old_text, re.M))
+        for m in re.finditer(r"^## (\d+)\. (.*)$", text, re.M):
+            fresh = "  NEW" if m.group(2) not in old_titles else ""
+            waiting.append(f"{m.group(1):>3}  {m.group(2)[:72]}{fresh}")
+if waiting_src:
+    sources.append(f"waiting on Chris: {waiting_src}")
+head("WAITING ON CHRIS", waiting, "the queue is empty")
+
+
+# ---- newly ready -------------------------------------------------------------------------------
+# script/roadmap owns readiness (a milestone nothing gates, whose status does not say to leave it
+# alone). Call it rather than reimplementing the rule in a second place, and degrade if the flag is
+# not on this tree: the answer "nothing is ready" and the answer "this tree cannot tell you" look
+# identical to a reader and mean opposite things.
+#
+# **The exit status lies, so probe by behaviour.** An older script/roadmap reads its mode as
+# `sys.argv[2]` and treats anything that is not `--check` as no argument at all, so `--ready`
+# printed the FULL status report and exited 0. Trusting the return code put 51 BUILT milestones
+# under a heading reading "ready to start", which is precisely the failure this section exists to
+# avoid: a wrong answer that looks like an answer. Running it both ways and comparing costs a tenth
+# of a second and asks the only question that matters, which is whether the flag changed anything.
+
+print()
+print("READY TO START")
+print("-" * 22)
+roadmap_bin = os.path.join(root, "script", "roadmap")
+if not os.path.exists(roadmap_bin):
+    print("  script/roadmap is not on this tree; readiness cannot be computed")
+    gaps.append("script/roadmap is absent, so readiness is unreported")
+else:
+    def roadmap(*args):
+        r = subprocess.run([roadmap_bin, *args], capture_output=True, text=True, cwd=root)
+        return r.returncode, (r.stdout + r.stderr).strip()
+
+    code, out = roadmap("--ready")
+    _, bare = roadmap()
+    if code != 0:
+        print(f"  script/roadmap --ready failed ({code}); readiness is unreported")
+        gaps.append("script/roadmap --ready exited non-zero, so readiness is unreported")
+    elif out == bare:
+        print("  script/roadmap on this tree ignores --ready (it prints the same report either")
+        print("  way), so readiness is unreported. Readiness is that script's rule to own, and a")
+        print("  second copy of the rule here would be the duplication this script exists to end.")
+        gaps.append("script/roadmap --ready is not supported on this tree; nothing is listed as "
+                    "ready, which is not the same as nothing being ready")
+    else:
+        for line in out.split("\n"):
+            print(f"  {line}" if line else "")
+        sources.append("readiness: script/roadmap --ready")
+
+
+# ---- notes and design --------------------------------------------------------------------------
+# The notes carry the why, so a note added or rewritten is the single best signal of what was
+# learned. Churn is the measure: a typo fix is not news and a rewrite is.
+
+def numstat(*paths):
+    out = git_ok("diff", "--numstat", f"{base}..{head_sha}", "--", *paths) or ""
+    result = {}
+    for line in out.strip().split("\n"):
+        if not line:
+            continue
+        add, rem, path = line.split("\t")[:3]
+        if add == "-":
+            continue  # binary
+        result[path] = int(add) + int(rem)
+    return result
+
+
+def added(*paths):
+    out = git_ok("diff", "--name-only", "--diff-filter=A", f"{base}..{head_sha}", "--", *paths)
+    return sorted(p for p in (out or "").strip().split("\n") if p)
+
+
+note_churn = numstat("notes/")
+new_notes = added("notes/")
+head("NOTES ADDED", [f"{p}  (+{note_churn.get(p, 0)} lines)" for p in new_notes], "no new notes")
+
+rewritten = sorted(((c, p) for p, c in note_churn.items()
+                    if p not in set(new_notes) and c >= 20), reverse=True)
+head("NOTES SUBSTANTIALLY CHANGED", [f"{p}  ({c} lines)" for c, p in rewritten],
+     "no note changed by 20 lines or more")
+
+# design/ minus the roadmap, which has its own section above.
+design_new = [p for p in added("design/") if not p.startswith("design/roadmap/")]
+if design_new:
+    head("DESIGN DOCUMENTS ADDED", design_new)
+
+
+# ---- volume ------------------------------------------------------------------------------------
+# One line. `git log` already exists, and this report earns its place by being the curated view.
+
+def log_count(*extra):
+    out = (git_ok("log", "--format=%H", *extra, f"{base}..{head_sha}") or "").strip()
+    return len(out.split("\n")) if out else 0
+
+
+count, merges = log_count(), log_count("--merges")
+shortstat = (git_ok("diff", "--shortstat", f"{base}..{head_sha}") or "").strip() or "no file changes"
+
+print()
+print(f"VOLUME: {count} commits ({merges} of them merges), {shortstat}. "
+      f"Use `git log {base_short}..HEAD` for the detail.")
+
+if sources:
+    print()
+    print("READ FROM")
+    print("-" * 22)
+    for s in sources:
+        print(f"  {s}")
+
+if gaps:
+    print()
+    print("NOT REPORTED, AND WHY")
+    print("-" * 22)
+    for g in gaps:
+        print(f"  - {g}")
+PY
