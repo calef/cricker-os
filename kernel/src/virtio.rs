@@ -493,18 +493,20 @@ struct Device {
 /// kernel object, which DECISIONS §16 says is a design fork rather than a task, so a lane that was
 /// asked to partition a disk should not settle it in passing. Seventh receipt.
 ///
-/// **33 for milestone 107's inbound half**, whose two gates each spawn a `net_stack` over the mmio
-/// NIC: one for the guest being connected to, one for the listen grant. Eighth receipt, and the
-/// count is now 33 because 31 was **exactly** the ceiling this boot was already at, which is the
-/// clearest evidence yet that the number tracks "how many devices has this boot ever wired" and not
-/// "how many exist": there are five virtio devices on the aarch64 machine.
+/// **32 for milestone 107's inbound half**, whose gate spawns one more `net_stack` over the mmio
+/// NIC so a host process can connect to the guest. Eighth receipt, and the number is exact: 31 was
+/// **precisely** the ceiling this boot already stood at, which is the clearest evidence yet that
+/// this constant tracks "how many devices has this boot ever wired" rather than "how many exist".
+/// The aarch64 machine has five.
 ///
-/// This lane did consider spending one slot instead of two, by folding the grant checks into the
-/// accept exchange, and refused: the two prove different claims (that a host can reach the guest,
-/// and that a port is authority), and a failure in one should not be reported under the other's
-/// name. Merging tests to fit a table is the table deciding what gets proved. The fix remains the
-/// unregister-on-death that six of these eight notes have now asked for.
-const MAX_DEVICES: usize = 33;
+/// **It was 33 for an hour, and the machine said no**, which is the honest half of this note. That
+/// lane wanted two gates, one for the guest being connected to and one for the listen grant, and
+/// wrote here that merging tests to fit a table is the table deciding what gets proved. Then the
+/// suite ran: the second `net_stack` costs a 192-page untyped region nothing ever reclaims, and a
+/// later test asking for 128 contiguous pages found **137 free frames and no run that long**. The
+/// two claims now share one exchange with distinct stage codes. So the constraint was never this
+/// table; it is the same missing reclamation, one resource over, and it binds harder there.
+const MAX_DEVICES: usize = 32;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

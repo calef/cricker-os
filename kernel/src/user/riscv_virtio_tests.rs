@@ -27,8 +27,7 @@ const NET_TEST_TCP_ECHO: u64 = 2;
 const NET_TEST_TCP_REOPEN: u64 = 3;
 const NET_TEST_UDP_TFTP: u64 = 4;
 const NET_TEST_TCP_ACCEPT: u64 = 5;
-const NET_TEST_TCP_LISTEN_GRANT: u64 = 6;
-/// The one port the inbound tests are granted (milestone 107); the runners forward a host port to
+/// The one port the inbound gate is granted (milestone 107); the runners forward a host port to
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
 /// other and never hold it at once.
 const NET_LISTEN_PORT: u16 = 7778;
@@ -525,10 +524,11 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
     );
 }
 
-/// **The guest is connected TO, on the second ISA** (milestone 107). A host process opens a TCP
-/// connection to a port QEMU forwards into the guest, twice on the same listener; the guest
-/// listens on the port its spawn granted, accepts, reads what arrived, and answers it. See the
-/// aarch64 twin for the shape and for what the stage codes mean.
+/// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
+/// outside the stack's grant is refused as a matter of authority, the granted one binds and is
+/// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
+/// while the guest accepts, reads and answers each. See the aarch64 twin for the shape, for why
+/// both claims share one exchange, and for what the stage codes mean.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
     let Some(report) = virtio_service::start_net_stack(
@@ -543,28 +543,9 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE060 or \
-         0xE070 means nobody ever connected, which is the host side",
-    );
-}
-
-/// A listening port is granted rather than taken, on the second ISA: a port outside the stack's
-/// grant is refused as a matter of authority, the granted one binds, and it is exclusive.
-#[test_case]
-fn a_listen_port_is_granted_rather_than_taken() {
-    let Some(report) = virtio_service::start_net_stack(
-        net_stack_image(),
-        NET_TEST_TCP_LISTEN_GRANT,
-        false,
-        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
-    ) else {
-        crate::println!("    (no virtio-net device attached; skipping)");
-        return;
-    };
-    let verdict = sched::ipc_recv(report)[0];
-    assert_eq!(
-        verdict, NET_CLIENT_OK,
-        "the listen grant did not hold (client code {verdict:#x})",
+        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
+         port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
+         which is the host side",
     );
 }
 

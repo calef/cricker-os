@@ -121,9 +121,7 @@ const NET_TEST_TCP_REOPEN: u64 = 3;
 const NET_TEST_UDP_TFTP: u64 = 4;
 #[cfg(target_arch = "aarch64")]
 const NET_TEST_TCP_ACCEPT: u64 = 5;
-#[cfg(target_arch = "aarch64")]
-const NET_TEST_TCP_LISTEN_GRANT: u64 = 6;
-/// The one port the inbound tests are granted (milestone 107). The runners forward a host port to
+/// The one port the inbound gate is granted (milestone 107). The runners forward a host port to
 /// exactly this one, and the client asks for 8080 as well to prove the grant refuses. Named here
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
@@ -1376,9 +1374,10 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
     );
 }
 
-/// **The guest is connected TO** (milestone 107). Every network exchange this project had proved
-/// was outbound: the TCP gate connects to a slirp `guestfwd` peer, the UDP gate is a request, the
-/// DHCP bring-up is a client. cricker-os could reach the network and could not be reached.
+/// **The guest is connected TO, on a port it was granted** (milestone 107). Every network exchange
+/// this project had proved was outbound: the TCP gate connects to a slirp `guestfwd` peer, the UDP
+/// gate is a request, the DHCP bring-up is a client. cricker-os could reach the network and could
+/// not be reached.
 ///
 /// Here a **host process** opens a TCP connection to a port QEMU forwards into the guest
 /// (`hostfwd`, the mirror of the `guestfwd` the outbound gate uses), sends a payload, and reads
@@ -1388,8 +1387,16 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// connection and going deaf. The host side is xtask's inbound prober, running beside the suite the
 /// way the scanout referee does.
 ///
-/// The client reports OK only if both connections completed with the exact bytes, so a stage code
-/// here names which round and which step.
+/// **The grant half rides in the same exchange**, before the first connection: 8080 must be refused
+/// as a matter of *authority* (`LISTEN_DENIED`, a distinct answer from "in use", because the two
+/// call for opposite responses from a client), 7778 must bind, and asking for 7778 again on a second
+/// socket id must collide. That is who-binds-the-port answered concretely: a port is an exclusive
+/// name in a shared namespace, so it is authority, and the **spawn service** decides the range.
+/// Note that no frame is attached until after all of it, because a listener carries no bytes.
+///
+/// It is one test rather than two because two net servers do not fit: the second costs a 192-page
+/// untyped region nothing reclaims, and the boot has no such run left (see `virtio::MAX_DEVICES`).
+/// The stage codes stand in for the names the second test would have had.
 // RISC-V twin: `riscv_virtio_tests::a_host_process_connects_to_the_guest_and_is_answered`.
 #[cfg(target_arch = "aarch64")]
 #[test_case]
@@ -1406,41 +1413,10 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}). A code of \
-         0xE060 or 0xE070 means nobody ever connected, which is the host side: is the runner \
-         adding a hostfwd (CRICKER_HOSTFWD_PORT) and is xtask's inbound prober running beside \
-         this suite?",
-    );
-}
-
-/// **A listening port is granted, not taken** (milestone 107). The design question underneath
-/// `LISTEN` is who decides which port a program may bind, and the answer here is not POSIX's: a
-/// port is an exclusive name in a shared namespace, so it is authority, and the *spawn service*
-/// hands a net server the range its clients may use. This one is granted exactly 7778.
-///
-/// The client asks for 8080 and must be refused **as a matter of authority** (a distinct reply from
-/// "in use", because the two call for opposite responses), then binds 7778, then proves the port is
-/// exclusive by asking for it a second time on another socket id. It attaches no shared frame at
-/// all, which is the contract's other claim made visible: a listener carries no bytes, so there is
-/// nothing for it to be granted.
-// RISC-V twin: `riscv_virtio_tests::a_listen_port_is_granted_rather_than_taken`.
-#[cfg(target_arch = "aarch64")]
-#[test_case]
-fn a_listen_port_is_granted_rather_than_taken() {
-    let Some(report) = virtio_service::start_net_stack(
-        net_stack_image(),
-        NET_TEST_TCP_LISTEN_GRANT,
-        false,
-        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
-    ) else {
-        crate::println!("    (no virtio-net device attached; skipping)");
-        return;
-    };
-    let verdict = sched::ipc_recv(report)[0];
-    assert_eq!(
-        verdict, NET_CLIENT_OK,
-        "the listen grant did not hold (client code {verdict:#x}); 0xE080 means a port outside \
-         the grant was bound anyway",
+        "the guest did not serve an inbound connection (client code {verdict:#x}). 0xE050 means a \
+         port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
+         0xE070 means nobody ever connected, which is the host side: is the runner adding a \
+         hostfwd (CRICKER_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
     );
 }
 

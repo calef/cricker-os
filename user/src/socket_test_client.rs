@@ -19,10 +19,9 @@
 //!   - `TEST_TCP_ECHO`: a full TCP round trip to slirp's guestfwd echo peer (10.0.2.9:7777 -> a
 //!     `/bin/cat`): connect (handshake), send, receive the echo, close (teardown).
 //!   - `TEST_TCP_ACCEPT`: **the inbound half** (milestone 107), and the only exchange here that is
-//!     not the guest as a client. The guest listens on a granted port and a *host* process connects
-//!     to it through QEMU's `hostfwd`, twice, to prove the listener re-arms.
-//!   - `TEST_TCP_LISTEN_GRANT`: that a port is authority. A port outside the stack's listen grant is
-//!     refused as such, one inside it binds, and it is then exclusive.
+//!     not the guest as a client. A port outside the stack's listen grant is refused as a matter of
+//!     authority, the granted one binds and is exclusive, and then a *host* process connects to it
+//!     through QEMU's `hostfwd` twice, which proves the listener re-arms.
 //!
 //! On success it reports `OK`; any failure reports a stage code, so the kernel test fails loudly
 //! with a hint rather than hanging.
@@ -50,7 +49,6 @@ pub const TEST_TCP_ECHO: u64 = 2;
 pub const TEST_TCP_REOPEN: u64 = 3;
 pub const TEST_UDP_TFTP: u64 = 4;
 pub const TEST_TCP_ACCEPT: u64 = 5;
-pub const TEST_TCP_LISTEN_GRANT: u64 = 6;
 const OK: u64 = 1;
 /// Reported when an exchange could not be completed **for an environmental reason** rather than a
 /// defect in our stack: today only the real-DNS check, whose upstream is the host's resolver. The
@@ -375,7 +373,8 @@ fn tcp_reopen() -> ! {
     done(OK);
 }
 
-/// **The inbound gate: the guest is connected TO, twice** (milestone 107).
+/// **The inbound gate: a granted port, and the guest connected TO through it, twice** (milestone
+/// 107).
 ///
 /// Everything else in this file is the guest as a client. Here it is the server: listen on a port it
 /// was granted, accept a connection a *host* process opened through QEMU's `hostfwd`, read what
@@ -383,17 +382,44 @@ fn tcp_reopen() -> ! {
 /// the load-bearing one: a listener that can accept exactly one connection is a listener a file
 /// server cannot use, and nothing but a second accept proves the re-arm.
 ///
-/// The frame is attached to the *connection* id and never to the listener, which is the two-object
-/// split made visible: `attach_frame(CONN_SID)` is the only frame in this exchange.
+/// **The grant checks ride in the same exchange rather than in a test of their own, and that is the
+/// machine's call, not a preference.** A second net server costs a 192-page untyped region that is
+/// never reclaimed (nothing unregisters a transport or reaps `net_stack`), and the aarch64 test boot
+/// has no room for one: with two, a later test asking for 128 contiguous pages found 137 free frames
+/// and no run that long. So one spawn proves both halves, with distinct stage codes standing in for
+/// the separate test names.
+///
+/// The frame is attached to the *connection* id and never to the listener, and it is attached only
+/// after the listener is bound. That ordering is the two-object split made visible: the whole grant
+/// half runs with no shared frame anywhere, because a listener carries no bytes.
 fn tcp_accept_inbound() -> ! {
-    attach_frame(CONN_SID);
-
-    match call(STACK, req(OP_LISTEN, LISTEN_SID), LISTEN_PORT).0 {
-        LISTEN_GRANTED => {}
-        LISTEN_DENIED => done(0xE050), // the spawn service granted the wrong range
+    // A port outside the grant is refused as a matter of AUTHORITY, which is a different answer from
+    // "somebody has it" and calls for a different response from a client.
+    match call(STACK, req(OP_LISTEN, LISTEN_SID), DENIED_PORT).0 {
+        LISTEN_DENIED => {}
+        LISTEN_GRANTED => done(0xE050), // bound a port nothing granted: the whole point, lost
         LISTEN_IN_USE => done(0xE051),
         _ => done(0xE052),
     }
+
+    // The granted one binds, and this listener is the one the rest of the exchange accepts on.
+    match call(STACK, req(OP_LISTEN, LISTEN_SID), LISTEN_PORT).0 {
+        LISTEN_GRANTED => {}
+        LISTEN_DENIED => done(0xE053), // the spawn service granted the wrong range
+        LISTEN_IN_USE => done(0xE054),
+        _ => done(0xE055),
+    }
+
+    // And it is exclusive, which is the property that makes a port grantable rather than merely a
+    // number. Asking again on a second socket id must collide.
+    match call(STACK, req(OP_LISTEN, CONN_SID), LISTEN_PORT).0 {
+        LISTEN_IN_USE => {}
+        LISTEN_GRANTED => done(0xE056), // two listeners on one port
+        _ => done(0xE057),
+    }
+
+    // Only now a frame, and only for the connection.
+    attach_frame(CONN_SID);
 
     // Two connections in a row, each with its own stage codes so a failure names which one.
     serve_one_inbound(0xE060);
@@ -433,39 +459,6 @@ fn serve_one_inbound(base: u64) {
     }
 }
 
-/// **The listen grant, from the client's side** (milestone 107): a port is authority, and this is
-/// what not having it looks like.
-///
-/// Three questions, and the first is the one that matters. A port *outside* the grant must be
-/// refused as a matter of authority (`LISTEN_DENIED`), not merely fail to work. A port inside it
-/// must bind. And the port must then be exclusive, because exclusivity is the property that makes a
-/// port a grantable thing rather than a number.
-///
-/// This exchange attaches **no frame at all**, which is not an omission: a listener carries no
-/// bytes, so there is nothing for it to be granted. It is the cheapest available proof that the
-/// contract's two objects really are two.
-fn tcp_listen_grant() -> ! {
-    match call(STACK, req(OP_LISTEN, LISTEN_SID), DENIED_PORT).0 {
-        LISTEN_DENIED => {}
-        LISTEN_GRANTED => done(0xE080), // bound a port nothing granted: the whole point, lost
-        LISTEN_IN_USE => done(0xE081),
-        _ => done(0xE082),
-    }
-
-    if call(STACK, req(OP_LISTEN, LISTEN_SID), LISTEN_PORT).0 != LISTEN_GRANTED {
-        done(0xE083); // the granted port was refused
-    }
-
-    match call(STACK, req(OP_LISTEN, CONN_SID), LISTEN_PORT).0 {
-        LISTEN_IN_USE => {}
-        LISTEN_GRANTED => done(0xE084), // two listeners on one port
-        _ => done(0xE085),
-    }
-
-    let _ = call(STACK, req(OP_CLOSE, LISTEN_SID), 0);
-    done(OK);
-}
-
 /// Run the selected client exchange. Entered from `net_stack`'s `_start` when the entry role is nonzero.
 pub fn run(test: u64) -> ! {
     match test {
@@ -474,7 +467,6 @@ pub fn run(test: u64) -> ! {
         TEST_TCP_ECHO => tcp_echo(),
         TEST_TCP_REOPEN => tcp_reopen(),
         TEST_TCP_ACCEPT => tcp_accept_inbound(),
-        TEST_TCP_LISTEN_GRANT => tcp_listen_grant(),
         _ => done(0xE0FF),
     }
 }

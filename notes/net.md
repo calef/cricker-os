@@ -482,9 +482,34 @@ answers were sent (`a_host_process_connects_to_the_guest_and_is_answered`, both 
 fails the leg if what came back was not the guest's answer. The guest's half covers "somebody
 connected"; the host's covers "and got the right answer", which the guest cannot know.
 
-The other gate is `a_listen_port_is_granted_rather_than_taken` (both ISAs): a port outside the grant
-is refused as a matter of authority, the granted one binds, and asking for it again on a second
-socket id reports `LISTEN_IN_USE`.
+The **grant** half rides in the same exchange, ahead of the first connection: 8080 is refused as a
+matter of authority, 7778 binds, and asking for 7778 again on a second socket id reports
+`LISTEN_IN_USE`. No frame is attached until all of that has passed, which is the two-object claim
+proved by construction rather than by assertion.
+
+### The aarch64 test boot has run out of memory, and this is the receipt
+
+That grant half wanted a test of its own, and could not have one. A second `net_stack` spawn costs a
+**192-page untyped region that nothing ever reclaims** (`NET_SERVER_BUDGET_PAGES`), because the
+server blocks in its serve loop forever and no supervisor reaps it. With two extra net servers in the
+boot, a later test asking for 128 contiguous pages found **137 free frames and no run that long**;
+the failure surfaced far away, as `time_tests` reporting "no swish program in the initrd archive, or
+no memory to wire one", which reads like a packaging bug and is not one.
+
+Three facts worth carrying forward, because milestones 54, 55 and 66 will all want more net tests:
+
+- **RAM is pinned at 128 MiB and asserted.** `memory_map_came_from_the_device_tree` fails on any
+  other size, deliberately, because a wrong number there means a misparsed `reg`. So "give QEMU more
+  memory" is a decision with a test attached, not a knob.
+- **The margin before this milestone was about 550 frames**, roughly 2.2 MiB, at the end of the
+  aarch64 boot. Every net test spends ~208 pages of it permanently.
+- **The failure mode is fragmentation, not exhaustion**: 137 free frames, no 128-page run. So the
+  margin is worse than a total-free number suggests, and a test that needs a *contiguous* region is
+  the one that will break first.
+
+The fix is the same one `virtio::MAX_DEVICES` has now asked for eight times: reclaim what a dead or
+finished service held. It is one piece of work that would relieve both ceilings, and it is
+increasingly what stands between this suite and the next network milestone.
 
 ### What is still not proven, and what is deliberately out of scope
 
