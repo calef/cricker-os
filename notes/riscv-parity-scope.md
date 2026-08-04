@@ -114,7 +114,7 @@ tests came along unchanged once three things moved.
 2. **The hand-assembled programs became real ELFs.** Five `global_asm!` blobs (three aarch64, two
    RISC-V) are gone, along with `exec`, the one-page raw-machine-code loader they needed. Their
    behaviours are ordinary, so they are the `outlaw` binary (two roles: read a forbidden address,
-   round-trip through user mode) and the `spinner` that milestone 24 already built. Every program the
+   round-trip through user mode) and the `spinner` that §24's interrupt work already built. Every program the
    kernel runs now arrives as an ELF. The privilege-boundary test hands the forbidden *address* to
    the program in a register rather than baking a constant into machine code, which is the trick that
    makes one program serve two ISAs with different kernel address spaces.

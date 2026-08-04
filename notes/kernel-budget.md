@@ -43,8 +43,8 @@ This is why the kernel stack is kernel-budget-paid and not creator-paid in the p
 sense, and that is correct on its own terms besides: the kernel stack is the memory kernel code
 executes on during a syscall, and letting a process supply it would hand a process the ability
 to corrupt kernel execution. seL4 sidesteps the whole question by being an event kernel (one
-stack per core, no per-thread kernel stack); we chose a process kernel at milestone 6 (blocking
-IPC resumes on a per-thread kernel stack, which is why `schedule()` is forty lines), so we own
+stack per core, no per-thread kernel stack); we chose a process kernel at milestone 6, where blocking
+IPC resumes on a per-thread kernel stack (which is why `schedule()` is forty lines), so we own
 the stacks, now from a bounded budget.
 
 ## Recycling, not allocating

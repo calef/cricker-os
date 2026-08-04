@@ -245,7 +245,7 @@ which is the control this whole milestone rests on and which the test asserts on
 
 ## See also
 
-- DECISIONS §41 (this milestone's decisions), §12 (endpoint-only naming), §13 and §16 (revocation),
-  §26 (the fault endpoint), §31 (the C seam), §32 (`Endpoint::REAP`)
+- DECISIONS §41 (the endpoint is the broker), §12 (a one-shot reply capability), §13 and §16 (revocation),
+  §26 (the fault endpoint), §31 (the C seam), §32 (a supervisor may collect a corpse)
 - notes/ipc-naming.md, notes/supervision.md, notes/object-revocation.md, notes/c-seam.md
 - notes/benchmarks.md for `broker_rtt` and what the default rung costs

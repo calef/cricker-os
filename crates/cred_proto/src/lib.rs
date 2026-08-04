@@ -71,7 +71,7 @@ pub const PAGE: usize = 4096;
 pub const OP_SHIFT: u32 = 56;
 
 /// The longest identity, in bytes. An identity here is **an opaque byte string and nothing more**:
-/// no user id, no group, no home directory, no session. DECISIONS §49 (users, login, attribution)
+/// no user id, no group, no home directory, no session. milestone 49 (users, login, attribution)
 /// is a different milestone and this crate deliberately does not start it. 64 bytes is longer than
 /// any SMB account name and short enough that the whole store is a small fixed array.
 pub const MAX_IDENTITY: usize = 64;

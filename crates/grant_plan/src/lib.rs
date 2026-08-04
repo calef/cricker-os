@@ -86,7 +86,7 @@ pub enum Prog {
     /// number it reports is the authority the command line handed it.
     Budgeter,
     /// A long-running job that *heeds* the cooperative interrupt: it works forever, polling its
-    /// interrupt flag between work units, and on `^C` cleans up and exits (milestone 24). The
+    /// interrupt flag between work units, and on `^C` cleans up and exits (DECISIONS §24). The
     /// cooperative tier made visible: the first `^C` stops it gracefully.
     Heeder,
     /// A runaway that ignores the interrupt entirely: a tight loop that never checks its flag. Only
@@ -215,7 +215,7 @@ impl Prog {
                 reports: true,
                 // A worker finishes in one step; there is no long computation to interrupt, so it
                 // is granted no interrupt channel. The shell waits for its result and no ^C tier
-                // applies (milestone 24).
+                // applies (DECISIONS §24).
                 interruptible: false,
                 clock: false,
             },
@@ -568,7 +568,7 @@ pub struct Manifest {
     /// Endowed with the shared result endpoint (so it can report back). Every phase-1 program
     /// reports; the field exists so a program that does not can drop the channel it never uses.
     pub reports: bool,
-    /// Granted a per-job interrupt channel so `^C` can reach it (milestone 24, DECISIONS §24). A
+    /// Granted a per-job interrupt channel so `^C` can reach it (DECISIONS §24). A
     /// long-running or interactive program declares this and the shell wires the two-tier interrupt
     /// path for it; a program that finishes in one step (worker) declares `false` and is simply
     /// waited on. "Granted by default to interactive programs" is expressed here, per program.
@@ -1707,7 +1707,7 @@ pub fn parse_u64(s: &[u8]) -> Option<u64> {
     Some(v)
 }
 
-// ---- the two-tier interrupt escalation policy (milestone 24, DECISIONS §24) ----
+// ---- the two-tier interrupt escalation policy (DECISIONS §24) ----
 
 /// What the shell should do this step of watching a foreground job for `^C`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

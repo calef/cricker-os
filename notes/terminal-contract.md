@@ -92,7 +92,7 @@ terminal writes, it reads).
   choice: a served request arrives through `recv_cap` with the reply capability and two data words,
   which is why `OP_BYTES` carries eight too.
 
-- **`OP_INTRCOUNT`** (milestone 24): reply immediately with the running count of `^C` the terminal
+- **`OP_INTRCOUNT`** (DECISIONS §24): reply immediately with the running count of `^C` the terminal
   has seen since boot. This is the shell's `^C` sensor for the case a parked read cannot cover: when
   a foreground job is running, the shell is not in `OP_READLINE`, so there is no read to fail with
   `FLAG_INTERRUPTED`. The shell polls this count while watching the job and escalates from its
