@@ -167,7 +167,9 @@ pub fn bring_up_secondaries() {
     for id in 0..MAX_CPUS {
         // Start every core but the one we booted on. On aarch64 that is always core 0; on RISC-V
         // QEMU's boot hart is not guaranteed to be 0, so skip whichever this is (logical id == hart
-        // id there). TODO(portability): read the CPU list from `/cpus` in the device tree.
+        // id there). The list itself is `0..MAX_CPUS`, a constant, where the machine states it in
+        // the device tree's `/cpus`: reading it is unbuilt, and the limitation is named on
+        // `arch::psci_cpu_on`, beside the other half of the same assumption.
         if id == cpu::id() {
             continue;
         }
