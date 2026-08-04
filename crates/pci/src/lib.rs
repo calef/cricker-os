@@ -307,7 +307,7 @@ mod verification {
     use super::*;
 
     /// **ECAM addressing stays inside the window.** Any BDF's config page lies below the
-    /// 256-bus window size (0x1000_0000), so `ecam_base + ecam_offset() + off` for off < 4096
+    /// 256-bus window size (`0x1000_0000`), so `ecam_base + ecam_offset() + off` for off < 4096
     /// cannot escape a correctly-sized mapping. This is the arithmetic the kernel's volatile
     /// accessors trust.
     #[kani::proof]

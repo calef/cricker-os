@@ -432,8 +432,8 @@ mod proofs {
             Some((identity, secret)) => {
                 assert!(identity.len() == id_len(w0));
                 assert!(secret.len() == secret_len(w0));
-                assert!(identity.len() >= 1 && identity.len() <= MAX_IDENTITY);
-                assert!(secret.len() >= 1 && secret.len() <= MAX_SECRET);
+                assert!(!identity.is_empty() && identity.len() <= MAX_IDENTITY);
+                assert!(!secret.is_empty() && secret.len() <= MAX_SECRET);
                 assert!(ID_OFF + identity.len() <= SECRET_OFF);
                 assert!(SECRET_OFF + secret.len() <= page.len());
             }
@@ -451,8 +451,8 @@ mod proofs {
         // And the discrimination itself: a code is a code exactly when it is in range, so no
         // arithmetic on a kernel error word can land inside the reply space.
         match code(r0) {
-            Some(c) => assert!(c == r0 && c >= OK && c <= MAX_CODE),
-            None => assert!(r0 < OK || r0 > MAX_CODE),
+            Some(c) => assert!(c == r0 && (OK..=MAX_CODE).contains(&c)),
+            None => assert!(!(OK..=MAX_CODE).contains(&r0)),
         }
     }
 

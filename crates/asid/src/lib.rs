@@ -142,9 +142,9 @@ mod verification {
         let (word, bit) = (asid as usize / 64, asid as usize % 64);
         assert_eq!(a.bitmap[word] & !(1 << bit), before[word] & !(1 << bit));
         assert_eq!(a.bitmap[word] & (1 << bit), 0);
-        for i in 0..a.bitmap.len() {
+        for (i, (now, was)) in a.bitmap.iter().zip(before.iter()).enumerate() {
             if i != word {
-                assert_eq!(a.bitmap[i], before[i]);
+                assert_eq!(now, was);
             }
         }
     }

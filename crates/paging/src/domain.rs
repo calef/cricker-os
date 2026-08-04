@@ -270,9 +270,8 @@ mod verification {
         if let Ok(pages) = grant_pages(r) {
             kani::assume(iova.is_multiple_of(PAGE_SIZE));
             kani::assume(iova >= r.base);
-            let end = match iova.checked_add(PAGE_SIZE) {
-                Some(e) => e,
-                None => return,
+            let Some(end) = iova.checked_add(PAGE_SIZE) else {
+                return;
             };
             let limit = r
                 .base
