@@ -1,0 +1,30 @@
+[package]
+name = "manual"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# Milestone 40's pure logic, and only the logic: markdown bytes in, styled terminal bytes out, plus
+# the search index both the host builder and the guest reader must agree on. No syscalls, no
+# endpoints, no filesystem, no allocator. The program that does the IO is `user/src/doc.rs`; this is
+# the half that runs on the host in milliseconds and is reachable by Kani.
+#
+# **Zero dependencies, and no `alloc` on the guest path.** DECISIONS §46 rule 1: this is on the
+# verification path, so we write it. The roadmap's plan was `pulldown-cmark`; it is not `no_std`
+# (0.13's lib.rs has no `#![no_std]` and `parse.rs` uses `std::collections::HashMap`), and the std
+# PAL a std program would run on has no stdin and no argv, so the viewer could neither page nor take
+# a page name. See notes/manual.md for the whole reversal.
+#
+# See notes/manual.md.
+
+[dependencies]
+
+[features]
+# The index **writer**, which runs only on the host inside `xtask` and is the one part of this crate
+# that allocates. Off by default so the guest program links no allocator: a `no_std` binary that
+# pulls in `alloc` needs `__rust_alloc` and an OOM handler, and `doc` has neither and wants neither.
+# The *reader* is always compiled, because that is what runs confined.
+builder = []
+
+[lints]
+workspace = true
