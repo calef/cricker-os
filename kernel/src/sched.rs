@@ -2729,13 +2729,12 @@ mod tests {
         crate::sched::reclaim_region(region)
             .expect("reclaim wakes the blocked waiter rather than refusing");
 
-        for _ in 0..50 {
-            if WOKE.load(Ordering::SeqCst) {
-                break;
-            }
-            crate::sched::yield_now();
-        }
-        assert!(WOKE.load(Ordering::SeqCst), "the revoked waiter never woke");
+        // Clock-bounded, not yield-bounded: see `wait_for`. Since §28 the waiter is on another
+        // core, so this core's fifty yields can elapse before it has been scheduled at all.
+        assert!(
+            wait_for(|| WOKE.load(Ordering::SeqCst)),
+            "the revoked waiter never woke"
+        );
         assert!(
             ABORTED.load(Ordering::SeqCst),
             "the woken waiter did not see its IPC aborted",
@@ -3003,13 +3002,11 @@ mod tests {
         // Now send. This should hand the receiver its message and wake it.
         super::ipc_send(ep, [0xABCD, 0, 0]);
 
-        for _ in 0..50 {
-            if RECEIVED.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
-        assert!(RECEIVED.load(Ordering::SeqCst), "the receiver never woke");
+        // Clock-bounded, not yield-bounded: see `wait_for`.
+        assert!(
+            wait_for(|| RECEIVED.load(Ordering::SeqCst)),
+            "the receiver never woke"
+        );
         assert_eq!(
             GOT.load(Ordering::SeqCst),
             0xABCD,
@@ -3048,14 +3045,12 @@ mod tests {
             "wrong message received"
         );
 
-        for _ in 0..50 {
-            if SENT_RETURNED.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
+        // Clock-bounded, not yield-bounded: see `wait_for`. This one has evidence rather than a
+        // theory behind it: under eight spinning host processes it failed here on `rv64` on
+        // 2026-08-04, because fifty yields on an idle core are microseconds and the sender was on
+        // a vCPU the host had descheduled.
         assert!(
-            SENT_RETURNED.load(Ordering::SeqCst),
+            wait_for(|| SENT_RETURNED.load(Ordering::SeqCst)),
             "the sender never woke after its message was taken",
         );
     }
@@ -3292,13 +3287,15 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..100 {
-            super::yield_now();
-        }
+        // Clock-bounded, not yield-bounded: see `wait_for`. It failed here on `sifive-u54` and
+        // `rva22s64` under eight spinning host processes on 2026-08-04, which is the same lesson
+        // `threads_round_robin` learned three tests up: a hundred yields is not a duration, and on
+        // a contended host this core burns them before the worker's vCPU has run at all.
+        let progressed = wait_for(|| PROGRESS.load(Ordering::SeqCst) > 0);
         STOP.store(true, Ordering::SeqCst);
 
         assert!(
-            PROGRESS.load(Ordering::SeqCst) > 0,
+            progressed,
             "a worker made no progress while another thread was blocked on IPC",
         );
 
@@ -3401,9 +3398,14 @@ mod tests {
         // Wake one child. It returns from ipc_recv, its closure ends, it exits and is reaped,
         // and its QuotaToken drops, returning the slot.
         super::ipc_send(ep, [0, 0, 0]);
-        for _ in 0..100 {
-            super::yield_now();
-        }
+        // Clock-bounded, not yield-bounded: see `wait_for`. The slot comes back when the child is
+        // *reaped*, which happens on whichever core it ran on, so a yield count here measures this
+        // core's idleness rather than that child's teardown. Waiting on the budget itself is also
+        // the exact property: the assertion below is the confirmation, not the wait.
+        assert!(
+            wait_for(|| BUDGET.load(Ordering::Relaxed) > 0),
+            "a child exited but its quota slot was never returned to the budget",
+        );
 
         // A slot is free again.
         assert!(
