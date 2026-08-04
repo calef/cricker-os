@@ -162,6 +162,8 @@ mod verification {
         tag: usize,
     }
 
+    // SAFETY: `next` and `set_next` are plain field storage and touch nothing else, which is the
+    // whole of the `Node` contract.
     unsafe impl Node for N {
         fn next(&self) -> Option<NonNull<Self>> {
             self.next

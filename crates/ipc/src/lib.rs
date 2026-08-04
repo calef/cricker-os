@@ -239,6 +239,28 @@ impl<T: Node> Default for Endpoint<T> {
 /// (only shrinking) and pushes only to a queue that was empty, so the emptiness pattern
 /// transitions identically for one waiter or many. FIFO order within a queue is the `intrusive`
 /// crate's own proof; these harnesses prove the decisions made over it.
+///
+/// # The obligations every `unsafe` call in here discharges
+///
+/// Stated once, rather than re-derived at each of the eleven sites; each site's own comment adds
+/// only what is particular to it. (The `#[cfg(test)]` module below does the same thing for the same
+/// reason.)
+///
+/// **Every node outlives the endpoint.** Each harness declares its `N`s in one `let` before it
+/// declares `e`, and Rust drops locals in reverse declaration order, so the `Endpoint` is destroyed
+/// first. A node still parked on a queue when the harness returns was therefore valid for the whole
+/// of its time there, which is the "stays valid for as long as it may be queued" half of
+/// `send`/`recv`'s contract and of `seed`'s.
+///
+/// **Every node is on no queue when it is passed.** Each `N::new()` starts with a null link, `e`
+/// starts empty, and no harness hands the same node to two calls. That is why the harnesses carry a
+/// separate `me` (and, in one case, a `me2`) rather than reusing `s` or `r`: it makes this
+/// obligation a fact about how many locals there are, not an argument about what the previous
+/// operation decided.
+///
+/// Both are properties the *harness* has, not properties Kani checks. Kani would catch a dangling
+/// dereference if one of these were false and a proof reached it, but nothing here proves the
+/// contract is kept; that is what the comments are for.
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -254,6 +276,8 @@ mod verification {
         }
     }
 
+    // SAFETY: `next` and `set_next` read and write the same `next` field and nothing else, which is
+    // the whole of the `Node` contract.
     unsafe impl Node for N {
         fn next(&self) -> Option<NonNull<Self>> {
             self.next
@@ -272,8 +296,11 @@ mod verification {
     unsafe fn seed(e: &mut Endpoint<N>, sender: NonNull<N>, receiver: NonNull<N>) {
         e.pending = kani::any();
         match kani::any::<u8>() {
-            // SAFETY: caller's contract.
+            // SAFETY: `sender` is valid, unqueued and outlives `e`, by this function's own
+            // contract; the arms are exclusive, so it is pushed at most once.
             0 => unsafe { e.senders.push_back(sender) },
+            // SAFETY: the same, for `receiver`, which the contract requires to be a *distinct*
+            // node from `sender` and so separately unqueued.
             1 => unsafe { e.receivers.push_back(receiver) },
             _ => {} // both empty
         }
@@ -283,6 +310,9 @@ mod verification {
     fn send_preserves_the_invariant() {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: `s`, `r` and `me` are three distinct fresh nodes declared before `e`, so each is
+        // valid, on no queue, and outlives the endpoint. That is `seed`'s contract and `send`'s
+        // both; `send` gets `me`, which `seed` never touches.
         unsafe {
             seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r));
             e.send(NonNull::from(&mut me));
@@ -294,6 +324,7 @@ mod verification {
     fn recv_preserves_the_invariant() {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: as in `send_preserves_the_invariant` above; `recv`'s contract on `me` is `send`'s.
         unsafe {
             seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r));
             e.recv(NonNull::from(&mut me));
@@ -305,6 +336,9 @@ mod verification {
     fn signal_preserves_the_invariant() {
         let (mut s, mut r) = (N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: `s` and `r` are distinct fresh nodes declared before `e`, so they are valid,
+        // unqueued and outlive it. `signal` is safe and takes no node, so `seed` is the only
+        // obligation here.
         unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
         e.signal();
         assert!(e.one_queue_invariant());
@@ -318,9 +352,14 @@ mod verification {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let receiver_ptr = NonNull::from(&mut r);
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: `s` and `r` are distinct fresh nodes declared before `e`, so they are valid,
+        // unqueued and outlive it. `receiver_ptr` is `&mut r` taken once and kept, which is the
+        // same pointer `seed` would have been given inline; no second pointer to `r` exists.
         unsafe { seed(&mut e, NonNull::from(&mut s), receiver_ptr) };
 
         let had_receiver = !e.receivers.is_empty();
+        // SAFETY: `me` is a third fresh node declared before `e`, so it is valid, on no queue
+        // (`seed` was given `s` and `r`, never `me`), and outlives the endpoint.
         match unsafe { e.send(NonNull::from(&mut me)) } {
             Send::Rendezvous(got) => {
                 assert!(had_receiver);
@@ -340,8 +379,14 @@ mod verification {
     fn recv_drains_a_pending_signal_first() {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: `s` and `r` are distinct fresh nodes declared before `e`: valid, unqueued,
+        // outliving it.
         unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
         if e.pending > 0 {
+            // SAFETY: `me` is a third fresh node declared before `e`, never given to `seed`, so it
+            // is valid, on no queue, and outlives the endpoint. This receive drains a signal rather
+            // than queueing `me`, but that is what the harness asserts, not what makes the call
+            // sound: the contract is met either way.
             assert_eq!(unsafe { e.recv(NonNull::from(&mut me)) }, Recv::Signal);
         }
     }
@@ -361,14 +406,26 @@ mod verification {
     fn a_collected_sender_is_forgotten() {
         let (mut s, mut r, mut me, mut me2) = (N::new(), N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
+        // SAFETY: `s` and `r` are distinct fresh nodes declared before `e`: valid, unqueued,
+        // outliving it.
         unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
         if matches!(
-            unsafe { e.recv(NonNull::from(&mut me)) },
+            unsafe {
+                // SAFETY: `me` is a fresh node declared before `e` and never given to `seed`, so it
+                // is valid, on no queue, and outlives the endpoint.
+                e.recv(NonNull::from(&mut me))
+            },
             Recv::FromSender(_)
         ) {
             assert!(e.senders.is_empty() && e.receivers.is_empty());
             assert!(!matches!(
-                unsafe { e.recv(NonNull::from(&mut me2)) },
+                unsafe {
+                    // SAFETY: `me2` is a fourth fresh node, declared before `e` and passed to
+                    // nothing else. It exists so this second receive does not reuse `me`: `me` was
+                    // not queued by the receive above (it returned `FromSender`), but a separate
+                    // node makes this site's obligation independent of that reasoning.
+                    e.recv(NonNull::from(&mut me2))
+                },
                 Recv::FromSender(_)
             ));
         }
