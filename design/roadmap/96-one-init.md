@@ -1,10 +1,7 @@
 # 96. One init: the spawn service written twice
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by milestone 50's closure lane, which found it the
+**Status: BUILT** 2026-08-04 (PR #93). Raised 2026-08-04 by milestone 50's closure lane, which found it the
 expensive way.
-
-**Gate: NONE.** Rule 7 says what the fix is, one spawn service in a crate both inits depend on, and
-the parity gate states the test: the same `script/shell-check` line passes on both legs.
 
 **The finding.** There are two inits. `user::initrd()` loads `"init"`, which on aarch64 is
 `hello.rs`'s init role and on riscv64 is `system_initializer`, and **the spawn service is written

@@ -208,8 +208,8 @@ fi
 # marker words are matched with the punctuation attached rather than as bare words.
 #
 # **Markdown is out of scope, and that is a self-consistency exemption rather than a gap.** Prose
-# that explains this convention has to spell the forbidden shape (CLAUDE.md does, and so does
-# design/roadmap/94-untracked-work.md); the em-dash gate below dodges the same problem by building
+# that explains this convention has to spell the forbidden shape (design/roadmap/94-untracked-work.md
+# does); the em-dash gate below dodges the same problem by building
 # its character out of UTF-8 bytes, and a TODO marker cannot be disguised that way without making
 # the sentence unreadable. Prose is also where a *historical* marker legitimately lives: notes/uart.md
 # quotes a milestone-5 TODO that was resolved five milestones ago, as history, not as intent. Code

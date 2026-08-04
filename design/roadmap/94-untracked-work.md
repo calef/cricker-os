@@ -1,6 +1,12 @@
 # 94. The untracked-work sweep, and the convention that ends the category
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, completing 92 and 93's family: those keep
+**Status: PARTIAL** since 2026-08-04 (PR #91, with the minting in PR #94). The sweep ran and the
+TODO lint landed. **Three things are outstanding**, and two of them are this milestone reproducing
+its own failure mode: deliverable two's conventions were drafted in the lane report and never landed
+in CLAUDE.md (Chris's, by the block's own assignment); the nine recorded-accepted blessings were
+never written next to the limitations they bless, so a milestone 93 audit will re-litigate all nine;
+and the sweep's three-state inventory lives only in PR #91's body, which is the exact "nobody reads
+branches" failure the block was written about. Raised 2026-08-03 by Chris, completing 92 and 93's family: those keep
 claims true; this one finds the work the tree has already identified but never gave a home, and
 then changes the working conventions so the category stops refilling.
 
