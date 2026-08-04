@@ -369,6 +369,26 @@ fn namespace_transcript() {
     );
     println!("unlink ok");
 
+    // **A directory can be stat'd, which sounds minor and is not.** `OPEN` refuses a directory, so
+    // `Path::is_dir()` used to be false for every directory that exists, and `create_dir_all` was
+    // not idempotent: it recovers from `AlreadyExists` by asking whether the name is a directory
+    // already, and got told no. Both are asserted here, and `create_dir_all` over the name that
+    // already exists is the one that would have failed.
+    assert!(
+        std::path::Path::new(DIR).is_dir(),
+        "a directory did not answer is_dir",
+    );
+    assert!(
+        !std::path::Path::new(fs_proto::fixture::MOTD_NAME).is_dir(),
+        "a file answered is_dir",
+    );
+    assert!(
+        std::path::Path::new(".").is_dir(),
+        "the granted directory itself did not answer is_dir",
+    );
+    std::fs::create_dir_all(DIR).expect("create_dir_all over an existing directory failed");
+    println!("is_dir ok");
+
     std::fs::remove_dir(DIR).expect("remove_dir failed");
     println!("rmdir ok");
 }

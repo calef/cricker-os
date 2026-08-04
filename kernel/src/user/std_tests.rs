@@ -220,7 +220,7 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
         // so these nine lines are a binding proven rather than a contract widened.
         b"mkdir ok\nread_dir ok\nread_dir descend ok\n".as_slice(),
         b"unlink refused a directory\nrmdir refused a file\n".as_slice(),
-        b"rename ok\nunlink ok\nrmdir ok\n".as_slice(),
+        b"rename ok\nunlink ok\nis_dir ok\nrmdir ok\n".as_slice(),
         b"fs ok\n".as_slice(),
     ] {
         buf[n..n + part.len()].copy_from_slice(part);

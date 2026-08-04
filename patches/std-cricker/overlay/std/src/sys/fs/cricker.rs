@@ -812,13 +812,36 @@ impl Drop for File {
 
 // --- Path-level operations --------------------------------------------------------------------
 
-/// A file's metadata by name: open, `FSTAT`, close. Three messages instead of one, because the
-/// contract has no stat-by-name verb; the effect is the same and the authority is identical (the
-/// name still resolves only under the granted directory).
+/// A name's metadata: open, `FSTAT`, close. Three messages instead of one, because the contract has
+/// no stat-by-name verb; the effect is the same and the authority is identical (the name still
+/// resolves only under the granted directory).
+///
+/// **A directory answers too, and it costs no extra message** (milestone 64). `OPEN` refuses a
+/// directory with `EISDIR`, and that refusal *is* the answer to "what kind of thing is this name",
+/// so it is read as one rather than propagated. Without this, `Path::is_dir()` was false for every
+/// directory, and `std::fs::create_dir_all` was not idempotent: it recovers from `AlreadyExists`
+/// by asking whether the name is already a directory, and got told no.
+///
+/// The size it reports is 0 and that is a placeholder rather than a measurement, for the reason
+/// [`FileAttr`] gives. `modified`/`accessed`/`created` still refuse, so nothing here invents a fact
+/// the contract does not carry.
 pub fn stat(path: &Path) -> io::Result<FileAttr> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    // `.` and `` name the granted directory, which no `OPEN` can reach: it is the directory the
+    // endpoint is bound to rather than a name inside it. Holding the capability at all is the
+    // whole of what there is to know about it.
+    if path.components().all(|c| matches!(c, Component::CurDir)) {
+        return Ok(FileAttr { size: 0, dir: true });
+    }
     let mut opts = OpenOptions::new();
     opts.read(true);
-    File::open(path, &opts)?.file_attr()
+    match File::open(path, &opts) {
+        Ok(file) => file.file_attr(),
+        Err(e) if e.kind() == io::ErrorKind::IsADirectory => Ok(FileAttr { size: 0, dir: true }),
+        Err(e) => Err(e),
+    }
 }
 
 /// No symlinks cross this contract, so following one and not following one are the same thing.

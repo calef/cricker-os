@@ -275,6 +275,7 @@ least one call site.
 | 17 | `process::Command` | no PAL at all | 6 | 10 | `gix-command`, `gix-credentials` |
 | 18 | `env::current_dir` | no PAL at all | 6 | 5 | same namespace question |
 | 19 | `Metadata::modified` | `Unsupported` | 5 | 7 | no verb reports mtime, but §51 gave us a clock |
+| 19a | `Path::is_dir` on a directory | was always `false` | (not counted) | | closed with the five above; `create_dir_all` needed it |
 | 20 | `fs::set_permissions` | `Unsupported` | 4 | 3 | |
 | 21 | `TcpListener` | `Unsupported` | 4 | 11 | no LISTEN verb in the socket contract |
 | 22 | `ToSocketAddrs` / DNS | numeric only | 4 | 5 | |
@@ -302,6 +303,13 @@ still said the verbs did not exist.
 capability on both ISAs. See notes/std.md for the behaviours (what `read_dir(".")` means with no
 global namespace, why the listing is drained rather than streamed, and why `remove_file` refuses a
 directory).
+
+**A sixth came with them and is not in the table above**, because the census had no row for it:
+`Path::is_dir()` was `false` for every directory that exists, since `OPEN` refuses a directory and
+`stat` propagated the refusal. That made `std::fs::create_dir_all` non-idempotent, which is the
+call every crate reaches for rather than `create_dir`. It costs no extra message: the `EISDIR` the
+server already sends *is* the answer. Nothing in a gap list built from `Unsupported` counts would
+have found it, because `stat` never returned `Unsupported`; it returned the wrong thing.
 
 Milestone 47's block had already said this for `rename`, `unlink` and `rmdir` ("now a binding gap
 rather than a missing verb"). The measurement added two, `read_dir` and `create_dir`, and put

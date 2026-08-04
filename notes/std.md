@@ -281,6 +281,23 @@ Four behaviours are worth knowing before you use them:
   answer**, not a mode bit: the directory capability this process holds does not carry the right
   that verb needs (§47's ladder). It is the one error in the map that is about *you* rather than
   about the name.
+- **`metadata` answers for a directory now, at no extra message.** `OPEN` refuses one with
+  `EISDIR`, and that refusal *is* the answer to "what kind of thing is this name", so it is read as
+  one rather than propagated. `Path::is_dir()` used to be false for every directory that exists,
+  which meant `std::fs::create_dir_all` was not idempotent: it recovers from `AlreadyExists` by
+  asking whether the name is already a directory and got told no. `metadata(".")` answers without a
+  message at all, because the granted directory is what the endpoint is bound to rather than a name
+  inside it. The size reported is 0 and is a placeholder; `modified`/`accessed`/`created` still
+  refuse, so nothing here invents a fact the contract does not carry.
+
+**Over-asking for rights is a refusal, not an attenuation**, and it is the trap in this half of the
+PAL. `OPENDIR` and `MKDIR` carry the rights the caller wants on the child, and the server answers
+`EPERM` when the intersection with the parent's comes up *short of the request* (§47's monotonicity
+is the intersection; the refusal is the server telling the truth about it). A PAL cannot know what
+its own capability carries, so it asks for the minimum the operation needs: `ENUMERATE` to
+enumerate, and nothing at all for `create_dir`, which closes the handle it gets back. The first
+version of this binding asked for `dir::ALL` and would have worked through every test in the suite,
+because they all grant the root's full rights, and failed through every narrowed one.
 
 Still Unsupported, and now genuinely because **no verb in the contract backs it**:
 
