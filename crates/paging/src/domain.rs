@@ -401,8 +401,8 @@ mod tests {
                         std::alloc::dealloc(
                             host as *mut u8,
                             Layout::from_size_align(4096, 4096).unwrap(),
-                        )
-                    };
+                        );
+                    }
                 }
             });
         }
