@@ -778,7 +778,7 @@ mod tests {
         // Under Miri, every 61st pattern instead of every pattern: 61 is prime and not a power of
         // the 9-byte alphabet, so the sample still lands on every length and every syntactic role,
         // ~44,000 comparisons instead of 2,657,200. The complete enumeration, which is the claim
-        // this test is named for, is native-only; "Miri-clean" means the sample (notes/miri.md).
+        // this test is named for, is native-only; "Miri-clean" means the sample (notes/undefined-behavior.md).
         let stride: u64 = if cfg!(miri) { 61 } else { 1 };
         for plen in 0..=5usize {
             let combos = (PAT.len() as u64).pow(plen as u32);
@@ -901,7 +901,7 @@ mod tests {
         // quadratic matcher would still look plausible); the interpreter cannot afford the scale
         // (the walk is ~4M matcher steps, most of an hour under Miri). Both assertions still run
         // at both sizes, so Miri checks the memory rules on the same paths and the native run
-        // keeps the scale that settles the question. See notes/miri.md.
+        // keeps the scale that settles the question. See notes/undefined-behavior.md.
         const NAME_LEN: usize = if cfg!(miri) { 2_000 } else { 100_000 };
         let name = [b'a'; NAME_LEN];
         let pattern = b"a*a*a*a*a*a*a*a*a*a*b";

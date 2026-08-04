@@ -10,7 +10,7 @@ sees a `&mut` that aliases, and in a tree with 224 `unsafe` occurrences under `c
 live. The pinned nightly already ships Miri as a rustup component, so the toolchain cost is one line
 in `script/bootstrap`.
 
-The work: a `script/miri` front door delegating to `cargo xtask miri`, which runs `cargo miri test`
+The work: a `script/undefined-behavior-check` front door delegating to `cargo xtask undefined-behavior-check`, which runs `cargo miri test`
 over the host-testable crates. The first full run is most of the milestone: triage every finding,
 fix what is real, and record what is not in the note this milestone writes.
 

@@ -1,6 +1,6 @@
 # Mutation testing: the baseline and the triage rule
 
-Milestone 85. `script/mutants` runs [cargo-mutants](https://mutants.rs/) over the host crates:
+Milestone 85. `script/mutation` runs [cargo-mutants](https://mutants.rs/) over the host crates:
 rewrite one function at a time (replace a return value, delete a match arm, flip an operator),
 rerun the mutated package's tests, and record whether anything noticed. Coverage answers "did this
 line run under a test"; a mutation run answers "would any test notice if this line were wrong",
@@ -30,7 +30,7 @@ Every survivor becomes exactly one of three things, and nothing stays untriaged:
 ## The baseline
 
 The machine-readable copy (what the weekly report diffs against) is `.cargo/mutants-baseline.txt`,
-written by `script/mutants --save-baseline`; the table below is the same numbers with the story
+written by `script/mutation --save-baseline`; the table below is the same numbers with the story
 attached. A **timeout** here is almost always a detected hang, not an undetected bug: the classic
 case is `+=` to `-=` on a walker's cursor, which loops forever and trips cargo-mutants'
 auto-timeout. It is still listed per crate because a timeout that is *not* a hang would be
@@ -114,7 +114,7 @@ takes the total per crate from `cargo mutants --list` on the merged tree, subtra
 and the union of every pass's unviable, and calls the rest caught. Three of 5,551 listed mutants
 could not be matched to any pass's outcome (two in `glob`, one in `ntp_proto`, both crates whose
 line numbers moved when tests landed) and are counted as caught, which is the only place this table
-guesses. `script/mutants --save-baseline` writes the machine-readable copy the weekly job diffs
+guesses. `script/mutation --save-baseline` writes the machine-readable copy the weekly job diffs
 against.
 
 ## Calibration: the exhaustive crates

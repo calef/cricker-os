@@ -389,7 +389,7 @@ mod tests {
     /// which was true and still let a real gate rot: Miri's leak check (milestone 79) reports
     /// every one of them, sixteen reports drowning out whatever it might otherwise say about
     /// this crate. A `Drop` guard is also what a test should have done all along; the leak was
-    /// a shortcut, not a decision (notes/miri.md).
+    /// a shortcut, not a decision (notes/undefined-behavior.md).
     struct PoolGuard;
     impl Drop for PoolGuard {
         fn drop(&mut self) {

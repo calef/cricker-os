@@ -1238,7 +1238,7 @@ mod tests {
         // sampled three orders of magnitude coarser: the native stride is ~315,000 format+parse
         // round trips, which an interpreter turns from a second into the better part of an hour.
         // ~300 samples keep the round trip on Miri's paths; the native run keeps the density.
-        // "Miri-clean" means the sampled walk (notes/miri.md).
+        // "Miri-clean" means the sampled walk (notes/undefined-behavior.md).
         let stride = if cfg!(miri) { 1_000_036_991 } else { 1_000_037 };
         while secs <= MAX_TIMESTAMP {
             let dt = DateTime::from_unix(secs, UtcOffset::UTC).unwrap();
