@@ -60,10 +60,14 @@
 //! oracle: ask about a thousand names and learn which three exist. `cred::Store` also spends the
 //! same work on both, so the timing does not distinguish them either; see notes/credentials.md.
 //!
-//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
-//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
-//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
-//! chose the stem, and against what, is not recorded anywhere.
+//! Name: unrecorded, and it is one of two `*_proto` crates that are. The suffix is settled and
+//! checked (milestone 46, 2026-07-30), so its seven siblings are `recorded`: the rule plus the
+//! service the stem names produces the whole name. It does not here. `cred` is an **abbreviation**,
+//! the first of the three failure modes the naming tenet lists, and the tree contradicts itself
+//! about this one: milestone 63 expanded `credcli` to `credentialer_test_client` and argued
+//! `credentialer` in full, on the ground that the service never hands you a credential, then left
+//! two crates spelled `cred` without saying why. Whatever settles this settles `crates/cred` with
+//! it. Introduced 2026-07-31 with milestone 56.
 
 #![cfg_attr(not(test), no_std)]
 

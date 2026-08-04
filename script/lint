@@ -463,9 +463,17 @@ fi
 #    block, and a blind rename later swept the old name out of that very row.
 #
 #    Presence, not content. This can check that a name carries a reason; it cannot check that the
-#    reason is still true, that a date is right, or that an `unrecorded` entry is honest rather than
-#    lazy. That is the same limit script/decisions records for §N citations, and it is not closeable
-#    by a script, because a reason is prose and prose is checked by reading.
+#    reason is still true, that a date is right, that a `recorded` citation leads anywhere, or that
+#    an `unrecorded` entry is honest rather than lazy. That is the same limit script/decisions
+#    records for §N citations, and it is not closeable by a script, because a reason is prose and
+#    prose is checked by reading.
+#
+#    **Presence of a STATE, never the state `ratified`**, and that is deliberate rather than a
+#    weakness to tighten later. The three states are `ratified`, `recorded` (the tree argues the
+#    name, Chris never ruled) and `unrecorded`, and 54 of 126 names are not ratified today. A gate
+#    keyed on ratification would hold every unrelated merge behind a review queue nobody can hurry,
+#    which is a wall this milestone was written specifically not to build. `script/names
+#    --unratified` is how the queue gets worked; the lint only insists a name say which it is.
 "$(dirname "$0")/names" --check
 
 echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised,"

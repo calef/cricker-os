@@ -76,9 +76,15 @@
 //!   the table is being replaced wholesale. A future `mkpart` that adds an entry to a table it did
 //!   not write must check.
 //!
-//! Name: unrecorded. Introduced 2026-08-03 with milestone 57, alongside `disk_surveyor`, which
-//! Chris approved by name the same day. Nothing records a ratification of this one, and the pairing
-//! of the two names (survey, partition) is visible in the tree without being written down anywhere.
+//! Name: unrecorded, and **explicitly provisional**, which makes it the clearest ratification owed
+//! on this surface. The introducing commit (4db2fd7, 2026-08-03, milestone 57) says
+//! "`disk_partitioner` (provisional name) writes the map `disk_surveyor` reads" and calls its
+//! sibling "`fs_maker` (provisional name)" in the same breath. So the record does not explain the
+//! word; it records that nobody decided it. That sibling is `fs_server/src/bin/mkfs.rs` now, which
+//! is a second provisional name resolved by somebody mid-task on a surface this record does not
+//! cover (see notes/naming.md's BUGS). `disk_surveyor` Chris approved by name the same day,
+//! and the pairing of the two (survey, partition) is visible in the tree without being written
+//! down anywhere.
 
 #![no_std]
 #![no_main]

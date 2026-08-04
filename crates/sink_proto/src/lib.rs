@@ -67,10 +67,12 @@
 //! semantics does, and it is this crate's opcode list that makes the claim true rather than
 //! policy.
 //!
-//! Name: unrecorded for the stem, ratified for the suffix. `_proto` was settled 2026-07-30
-//! (milestone 46) when the tree spelled the wire contract four ways (`fs_proto`, `gfx_proto`,
-//! `netproto`, `line_editor::proto`) for one concept, and `script/lint` has checked it since. Who
-//! chose the stem, and against what, is not recorded anywhere.
+//! Name: recorded (milestone 46, and notes/naming.md's crate section). The wire contract was
+//! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
+//! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
+//! rule plus the service the stem names produces this name, which is the whole of what `recorded`
+//! claims: Chris ruled on the rule, and never on this crate.
+//! The stem is the contract's own word (DECISIONS §51), which that section uses and never defends.
 
 #![no_std]
 

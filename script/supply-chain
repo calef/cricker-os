@@ -29,9 +29,13 @@
 #
 # See notes/scripts.md.
 #
-# Name: unrecorded. Introduced 2026-07-30 to run cargo-deny over every workspace. Hyphenated, and
-# the naming tenet cites `supply-chain` as a form a reader already knows from outside this
-# repository and which should not be respelled.
+# Name: recorded (CLAUDE.md's naming tenet, which cites this name by name). "We do not rename
+# `elf`, and we should not respell `supply-chain` either: a name whose shape a reader already knows
+# from outside costs them nothing." That covers both halves at once, since "supply chain" is the
+# field's phrase for the thing and this script did not coin it; the hyphen is then the directory's
+# rule rather than a choice. It is an argument for keeping the name, made about this name, which is
+# what `recorded` claims. Chris has not ruled on it. Introduced 2026-07-30 to run cargo-deny over
+# every workspace.
 
 set -e
 cd "$(dirname "$0")/.."
