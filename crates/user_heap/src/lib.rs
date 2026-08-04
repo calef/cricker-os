@@ -216,7 +216,18 @@ impl Heap {
     /// The range is exclusively owned, 16-aligned, a multiple of 16 long, and overlaps nothing
     /// the heap already tracks.
     unsafe fn insert_free(&mut self, start: *mut u8, size: usize) {
-        let addr = start.addr();
+        // `expose_provenance`, not `addr`, and it is load-bearing (Miri, milestone 79). This
+        // allocator's arithmetic is integer arithmetic: `alloc` minting a tail block at
+        // `aligned + size` and the predecessor recovery below both conjure pointers from plain
+        // numbers, and a coalesced block can span two donations, so no single donated pointer
+        // could carry provenance for it anyway. Rust's rule for that shape is expose-and-reclaim:
+        // exposing each incoming range here is what entitles every later integer-minted pointer
+        // into it, and with `addr()` (which deliberately does not expose) the first `alloc` that
+        // carved a coalesced block was UB, caught by Miri as a write with no exposed tag. At
+        // runtime the two are the same instruction; the difference is whether the optimizer is
+        // told the escape exists. Strict provenance (`-Zmiri-strict-provenance`) is therefore
+        // off the table for this crate, and honestly so: see notes/miri.md.
+        let addr = start.expose_provenance();
         self.free += size;
 
         // Taken ONCE, and the predecessor check below compares against this same pointer rather
