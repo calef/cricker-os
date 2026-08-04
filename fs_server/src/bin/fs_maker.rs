@@ -222,6 +222,22 @@ pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
 /// somebody else needs). It is the reading that turns "the refused run reported R_NO_ENTROPY" into
 /// "the refused run left an unformatted partition".
 fn check(first_block: u64, blocks: u64) -> ! {
+    // **The signature first, because the alternative is 12,288 IPC round trips.** `FileSystem::open`
+    // scans the whole disk for a valid header (it has no way to know how big the ring is on a disk
+    // it has not opened yet), and on an unformatted partition that scan runs until a read fails at
+    // the end. Block 0 always holds generation zero's header, so its signature is a one-read answer
+    // to "is there a filesystem here at all", and it is the question this role is asked twice.
+    if blk_call(blk::READ, first_block) < 0 {
+        send(REPORT, R_NO_DISK, 0, 0);
+        user_rt::exit()
+    }
+    // SAFETY: BLK_PAGE is a mapped page of BLOCK bytes holding the block just read.
+    let signature = unsafe { core::slice::from_raw_parts(BLK_PAGE as *const u8, 8) };
+    if signature != redoxfs::SIGNATURE {
+        send(REPORT, R_NO_FS, 0, 0);
+        user_rt::exit()
+    }
+
     let mut server = match Server::open(PartitionDisk { first_block, blocks }) {
         Ok(s) => s,
         // The engine says ENOENT for a partition with no valid header anywhere in the ring, which
