@@ -595,6 +595,38 @@ pub fn flush_asid(asid: u16) {
     }
 }
 
+/// **Test-only: let S-mode load and store through pages marked `U`** (`sstatus.SUM`), returning
+/// whether it was already permitted so the caller can put it back.
+///
+/// **RISC-V forbids this by default and aarch64 permits it**, which is a parity difference nothing
+/// in this tree had written down until milestone 58 went looking for why a ported test faulted.
+/// S-mode reading a `U` page raises a load page fault unless `sstatus.SUM` is set; EL1 reading an
+/// EL0 page is simply allowed, because this kernel does not enable `PAN`. So a test that reads
+/// through a *user* virtual address to see what the TLB is holding, which is the only way to observe
+/// a TLB from software, needs this on one ISA and nothing on the other.
+///
+/// It is `#[cfg(test)]` on purpose. No syscall in this ABI dereferences a user pointer (see
+/// [`user_can_read`]), so the running kernel never needs to touch a user page, and leaving `SUM`
+/// clear in a shipping build means a kernel bug that strays into the low half faults instead of
+/// succeeding quietly. Making that reachable outside tests would trade a real protection for
+/// nothing.
+#[cfg(test)]
+pub fn permit_kernel_access_to_user_pages(allowed: bool) -> bool {
+    const SSTATUS_SUM: u64 = 1 << 18;
+    let previous: u64;
+    // SAFETY: sets or clears one `sstatus` bit and reports the old value. Widening what S-mode may
+    // touch is a permission change, not a memory-safety one; the kernel's own mappings are
+    // unaffected.
+    unsafe {
+        if allowed {
+            asm!("csrrs {}, sstatus, {}", out(reg) previous, in(reg) SSTATUS_SUM, options(nostack));
+        } else {
+            asm!("csrrc {}, sstatus, {}", out(reg) previous, in(reg) SSTATUS_SUM, options(nostack));
+        }
+    }
+    previous & SSTATUS_SUM != 0
+}
+
 /// Install a user address space by writing its composed `satp`.
 ///
 /// # Safety

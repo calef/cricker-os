@@ -578,6 +578,22 @@ pub fn asid_of(ttbr: u64) -> u16 {
     (ttbr >> 48) as u16
 }
 
+/// **Test-only: let EL1 load and store through pages marked EL0-accessible.** A no-op here, and the
+/// no-op is the finding.
+///
+/// EL1 may already read an EL0 page: `PAN` (Privileged Access Never) is the feature that would
+/// forbid it and this kernel never sets `PSTATE.PAN`, so there is nothing to permit. **RISC-V is the
+/// other way round**, forbidding it unless `sstatus.SUM` is set, which is why this function exists
+/// at all: without it, a test that reads through a user VA to see what the TLB holds compiles on
+/// both ISAs and faults on one. Nothing in the tree recorded that difference until milestone 58 hit
+/// it. The RISC-V twin carries the full explanation.
+///
+/// Returns the previous state (always `true`) so the two arch modules have one signature.
+#[cfg(test)]
+pub fn permit_kernel_access_to_user_pages(_allowed: bool) -> bool {
+    true
+}
+
 /// Share the kernel into a fresh process root. **A no-op on aarch64:** the kernel lives in a
 /// separate `TTBR1` that every process shares implicitly, so a process's `TTBR0` root carries only
 /// user mappings. It exists so portable `user::AddressSpace` can call it unconditionally; on RISC-V,

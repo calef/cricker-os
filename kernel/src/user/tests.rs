@@ -486,6 +486,9 @@ fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
     // put the reserved root back and turn `VA` into a kernel fault, which is a flaky test rather
     // than a finding. The window is a handful of instructions, so this is cheap insurance.
     let was_enabled = crate::arch::interrupts::disable();
+    // And the ISA difference that kept this test on one architecture as surely as the flush did:
+    // RISC-V's S-mode may not touch a `U` page unless `sstatus.SUM` says so, where EL1 may.
+    let could_reach_user = mmu::permit_kernel_access_to_user_pages(true);
 
     // SAFETY: nothing is at EL0; we are a kernel thread mid-test, and each space outlives
     // its activation. The reads go through the live user translation, which is the point.
@@ -499,6 +502,7 @@ fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
         (ra, rb)
     };
 
+    mmu::permit_kernel_access_to_user_pages(could_reach_user);
     crate::arch::interrupts::restore(was_enabled);
 
     assert_eq!(read_a, 0xAA);
@@ -521,17 +525,22 @@ fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
 /// **This test fails without the shootdown**, which is the property worth having. The sequence:
 ///
 ///   1. a probe thread on **another** core installs space A and reads `VA`, which is what pulls the
-///      translation into *that* core's TLB, tagged with A's ASID
+///      translation into *that* core's TLB, tagged with A's ASID, and **leaves it installed**
 ///   2. this core moves `VA` onto a different frame **with no per-address invalidation at all**, so
 ///      the only thing that can announce the change anywhere is the ASID sweep
 ///   3. this core calls `flush_asid`
-///   4. the probe reads `VA` again, on the same core, still under A's ASID
+///   4. the probe reads `VA` again, on the same core, with the same space still installed
 ///
 /// Step 4 must see the new frame. If the sweep stayed local it sees the old one, and that byte is
 /// exactly the bug: a core still translating an address space that no longer means what it did.
-/// Recycling the ASID onto a new space would turn it into cross-process disclosure, but the
-/// observable is cleaner this way: a recycled space is likely to be handed the same frames the dead
-/// one had, and then the test would pass for the wrong reason.
+///
+/// Two of those choices are load-bearing. **The space is never re-installed**, because a `satp` or
+/// `TTBR0` write between the reads is a second event a core (or an emulator) is entitled to treat as
+/// a flush, and then step 4 would be right for a reason that has nothing to do with the shootdown.
+/// And the mapping is **changed rather than recycled**: tearing the space down and handing its ASID
+/// to a new one is the scenario that matters in production, but the allocator would likely hand the
+/// new space the dead one's frames, and reading the right byte off the right frame by accident is
+/// the same failure of proof.
 ///
 /// # BUGS
 ///
@@ -543,6 +552,10 @@ fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
 /// - **It needs two cores** and skips nothing if it has one: it fails, because the runner passes
 ///   `-smp 4` on both ISAs and a machine that came up single-core is a finding, not a reason to be
 ///   quiet.
+/// - **A broken shootdown could hang this test instead of failing it**, if the reason it were broken
+///   were that the remote core never services the request. The probe's spin is deadline-bounded and
+///   reports `PROBE_GAVE_UP` so that case is named rather than silent, but the failure text would
+///   then be about the handshake and the real cause would be one level down.
 #[test_case]
 fn an_asid_flush_reaches_the_other_cores() {
     use core::sync::atomic::{AtomicU8, AtomicUsize};
@@ -559,20 +572,6 @@ fn an_asid_flush_reaches_the_other_cores() {
     static SEEN_AFTER: AtomicU8 = AtomicU8::new(0);
     static PROBE_CORE: AtomicUsize = AtomicUsize::new(usize::MAX);
     static PROBE_GAVE_UP: AtomicBool = AtomicBool::new(false);
-
-    /// Read one byte through a composed root value as the live user address space, then put the
-    /// reserved root back. The install-read-uninstall is what puts the translation in this core's
-    /// TLB, which is the whole reason the probe exists.
-    fn read_through(space: u64, va: u64) -> u8 {
-        // SAFETY: nothing is at user mode on this core; we are a kernel thread with interrupts
-        // masked, and the caller keeps the address space alive across the call.
-        unsafe {
-            mmu::activate_user(space);
-            let byte = core::ptr::read_volatile(va as *const u8);
-            mmu::deactivate_user();
-            byte
-        }
-    }
 
     /// Spin (never yield) until `done`, so this core stays busy and cannot steal the probe.
     fn spin_until(mut done: impl FnMut() -> bool) -> bool {
@@ -612,15 +611,33 @@ fn an_asid_flush_reaches_the_other_cores() {
 
     let probe = sched::spawn_on(target, move || {
         // Masked for the whole body. Two reasons, and the first is the one that matters: a
-        // preemption would migrate this thread and split the two reads across cores, and a
-        // preemption between an install and its read would fault on a user VA with no user space
-        // installed. This does NOT block the shootdown: RISC-V's SBI RFENCE arrives as an M-mode
-        // software interrupt, which S-mode masking does not touch, and aarch64's `tlbi` needs no
-        // interrupt at all.
+        // preemption would migrate this thread and split the two reads across cores, and it would
+        // also swap the address space out from under them. This does NOT block the shootdown:
+        // RISC-V's SBI RFENCE arrives as an M-mode software interrupt, which S-mode masking does not
+        // touch, and aarch64's `tlbi` needs no interrupt at all. If that were wrong, this test would
+        // hang rather than lie, which is the right way round.
         let was_enabled = crate::arch::interrupts::disable();
+        let could_reach_user = mmu::permit_kernel_access_to_user_pages(true);
         PROBE_CORE.store(crate::cpu::id(), Ordering::SeqCst);
 
-        SEEN_BEFORE.store(read_through(installed, VA), Ordering::SeqCst);
+        // **The space stays installed across both reads**, which is deliberate and is the realistic
+        // shape: the hazard is a core actively running an address space whose mapping changes under
+        // it. It also keeps the measurement clean, because a `satp` write between the reads is a
+        // second event an emulator or a core is entitled to treat as a flush, and then the second
+        // read would be correct for a reason that has nothing to do with the shootdown.
+        //
+        // SAFETY: nothing is at user mode on this core; we are a kernel thread with interrupts
+        // masked, and the space outlives this thread (the test waits for the reap before dropping
+        // it). The space's root carries the kernel high half, so this core's own code and stack stay
+        // mapped throughout.
+        unsafe { mmu::activate_user(installed) };
+
+        // SAFETY: `VA` is mapped user-readable in the installed space, and this ISA has been told
+        // that the kernel may read a user page.
+        SEEN_BEFORE.store(
+            unsafe { core::ptr::read_volatile(VA as *const u8) },
+            Ordering::SeqCst,
+        );
         STAGE.store(1, Ordering::SeqCst);
 
         let deadline = timer::now() + 5 * timer::frequency();
@@ -632,7 +649,14 @@ fn an_asid_flush_reaches_the_other_cores() {
             core::hint::spin_loop();
         }
 
-        SEEN_AFTER.store(read_through(installed, VA), Ordering::SeqCst);
+        // SAFETY: as above. Same address, same installed space, no `satp` write in between.
+        SEEN_AFTER.store(
+            unsafe { core::ptr::read_volatile(VA as *const u8) },
+            Ordering::SeqCst,
+        );
+
+        mmu::deactivate_user();
+        mmu::permit_kernel_access_to_user_pages(could_reach_user);
         STAGE.store(3, Ordering::SeqCst);
         crate::arch::interrupts::restore(was_enabled);
     })
