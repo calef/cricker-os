@@ -430,7 +430,7 @@ That duplication was a rule-7 problem wearing a different hat. What two binaries
 crate, and these two agreed on far more than a constant; a change to the protocol that landed in one
 of them was a boot that hung on the ISA nobody tested.
 
-**Milestone 96 made it one.** `crates/system_builder` holds the construction and the spawn service,
+**Milestone 96 made it one.** `crates/system_initializer` holds the construction and the spawn service,
 and each init is now the table of slot numbers its own kernel granted plus a call into it: the two
 grant orders differ, and nothing else does. The loader went the same way, from three copies
 (`supervision_proto` plus a `build_child` in each init) to `supervision_proto`'s, which the inits

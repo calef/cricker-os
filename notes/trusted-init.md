@@ -371,7 +371,7 @@ everything above (the six boot components, the giveaway, the negative control, t
 written once in each. About three hundred near-identical lines, and the failure mode is the reason it
 mattered rather than the line count: a fix that lands in one and not the other is **a boot that
 reaches userspace and prints nothing at all**, with no fault and no message, which cost three separate
-lanes an evening each. It is now `crates/system_builder`, and each init is the table of slot numbers
+lanes an evening each. It is now `crates/system_initializer`, and each init is the table of slot numbers
 its own kernel granted plus a call into it. Those tables are the one thing the two boards genuinely
 disagree about: aarch64's boot path is shared with milestone 19d's test roles, so it grants a report
 endpoint and a test SGI the interactive system never uses and numbers everything after them

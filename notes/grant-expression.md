@@ -4,7 +4,7 @@ Milestone 31, phase 1. This is the note on the one idea the capability shell exi
 visible: on a cricker-os command line, **naming a resource is how you grant it**. Mark Miller's
 principle, "designation is authorization," applied at the one interface a human touches. The pure
 logic lives in the `grant_plan` crate (host-tested); the wiring is `swish.rs` and, on init's side of
-the channel, `crates/system_builder`'s spawn service. There are still two inits (`hello.rs` init_boot
+the channel, `crates/system_initializer`'s spawn service. There are still two inits (`hello.rs` init_boot
 on aarch64, `system_initializer.rs` on riscv), but since milestone 96 each is a table of the slot
 numbers its kernel granted and nothing else, so the service that decodes a grant expression is
 written once. The manifest half is written up separately in

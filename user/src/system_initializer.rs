@@ -7,7 +7,7 @@
 //! discipline, the shell, the terminal's sink adapter and the job undertaker, wired together with
 //! endpoints and shared pages it creates. Then it stays alive as the spawn service.
 //!
-//! **All of that is `crates/system_builder` now** (milestone 96), and so is the reasoning: what init
+//! **All of that is `crates/system_initializer` now** (milestone 96), and so is the reasoning: what init
 //! gives away once the system is up, why the job pool is bounded, and the honest limits (LIFO
 //! recovery, the retained scratch mappings, the sixteen-slot cspace). This file is the boot entry
 //! and the one thing the two boards genuinely disagree about, which is the order their kernels grant
@@ -23,7 +23,7 @@
 #![no_std]
 #![no_main]
 
-use system_builder::Grants;
+use system_initializer::Grants;
 
 /// **What `kernel::user::riscv_shell_boot` grants, in order.** The kernel inserts these into this
 /// process's cspace before it starts, and the numbers below are that call's `assert_eq!`s read from
@@ -46,7 +46,7 @@ const GRANTS: Grants = Grants {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_a0: u64, initrd_len: u64, fs_rights: u64) -> ! {
-    system_builder::boot(&GRANTS, initrd_len, fs_rights)
+    system_initializer::boot(&GRANTS, initrd_len, fs_rights)
 }
 
 #[panic_handler]

@@ -24,7 +24,7 @@
 
 use abi::{Error, endpoint};
 /// The endowment a child is born holding, for the one loader this tree has (milestone 96). The
-/// interactive boot's own use of it is in `crates/system_builder`; what is left here is milestone
+/// interactive boot's own use of it is in `crates/system_initializer`; what is left here is milestone
 /// 19d's test roles, which build a child out of one budget and hand it two or three capabilities.
 use supervision_proto::Endow;
 use user_rt::{call, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
@@ -356,7 +356,7 @@ fn init(initrd_len: u64) -> ! {
 /// together with endpoints and shared pages init creates. The kernel wires none of it. Then it stays
 /// alive as the spawn service the shell directs.
 ///
-/// **All of that is `crates/system_builder` now** (milestone 96), shared with riscv64's
+/// **All of that is `crates/system_initializer` now** (milestone 96), shared with riscv64's
 /// `user/src/system_initializer.rs`, and so is the reasoning: what init gives away once the system
 /// is up, why the job pool is bounded, and the honest limits. What is left in this file is the one
 /// thing the two boards genuinely disagree about, which is the order their kernels grant
@@ -377,13 +377,13 @@ fn init_boot(initrd_len: u64, fs_rights: u64) -> ! {
 
     /// **What `kernel::user::spawn_init` grants, in order.** This path is shared with milestone
     /// 19d's test roles, which is why it carries two capabilities the interactive system has no use
-    /// for and why its numbering is not riscv64's; `system_builder` deletes them with the device
+    /// for and why its numbering is not riscv64's; `system_initializer` deletes them with the device
     /// authority once the drivers exist.
     ///
     /// The clock is granted ahead of the filesystem pair on purpose, so its slot is the same on
     /// every boot whether or not a disk was attached. Slots 6 and 7 hold nothing when this boot
     /// attached no RedoxFS disk, which is what `fs_rights` (0 for no disk) says.
-    const GRANTS: system_builder::Grants = system_builder::Grants {
+    const GRANTS: system_initializer::Grants = system_initializer::Grants {
         untyped: 0,
         uart_dev: 2,
         uart_irq: 4,
@@ -393,7 +393,7 @@ fn init_boot(initrd_len: u64, fs_rights: u64) -> ! {
         unused: &[REPORT, TEST_IRQ],
     };
 
-    system_builder::boot(&GRANTS, initrd_len, fs_rights)
+    system_initializer::boot(&GRANTS, initrd_len, fs_rights)
 }
 
 /// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
@@ -673,7 +673,7 @@ fn build_child(
         &Endow {
             caps,
             maps,
-            stack_pages: system_builder::CHILD_STACK_PAGES,
+            stack_pages: system_initializer::CHILD_STACK_PAGES,
             ..Endow::new()
         },
     )

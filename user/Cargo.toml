@@ -479,7 +479,7 @@ c_seam = { version = "0.1.0", path = "../crates/c_seam" }
 supervision_proto = { version = "0.1.0", path = "../crates/supervision_proto" }
 # The interactive system, built once (milestone 96). Both inits are a table of the slot numbers
 # their own kernel granted plus a call into this.
-system_builder = { version = "0.1.0", path = "../crates/system_builder" }
+system_initializer = { version = "0.1.0", path = "../crates/system_initializer" }
 swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }

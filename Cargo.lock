@@ -481,7 +481,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "system_builder"
+name = "system_initializer"
 version = "0.1.0"
 dependencies = [
  "abi",
@@ -561,7 +561,7 @@ dependencies = [
  "supervision_proto",
  "swap_proto",
  "swish",
- "system_builder",
+ "system_initializer",
  "user_rt",
  "video_terminal",
  "virtio",

@@ -22,7 +22,7 @@
 //! `system_initializer`'s `build_child` while the two inits kept copies of their own, which meant
 //! the same hundred and thirty lines existed three times with a fault slot each. Milestone 22's
 //! lane recorded that and declined to unify it mid-flight, because a boot failure would then have
-//! been ambiguous between two changes; `system_builder` calls this one now, and nothing else builds
+//! been ambiguous between two changes; `system_initializer` calls this one now, and nothing else builds
 //! a process in userspace.
 //!
 //! What it takes: the builder's own budget and the budget the child is built *from* as separate
@@ -84,7 +84,7 @@ pub const CHILD_STACK_VA: u64 = 0x0050_0000;
 /// The stack a child gets when its builder does not say otherwise ([`Endow::new`]). Four pages,
 /// which is enough for the supervision tree's programs; the flaky sub-server would be fine with one.
 ///
-/// **A child at the interactive prompt gets three times this** (`system_builder::CHILD_STACK_PAGES`),
+/// **A child at the interactive prompt gets three times this** (`system_initializer::CHILD_STACK_PAGES`),
 /// and the difference is deliberate rather than drift: the prompt's children run the shell's
 /// redirection path, whose frames grew twice under measurement. The number is a field on [`Endow`]
 /// so a caller states it, because a builder that silently inherits somebody else's stack size finds
