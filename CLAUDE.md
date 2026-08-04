@@ -51,6 +51,10 @@ are new.
   another lane holds). A generic brief produces a worse lane than an idle slot costs. So the
   steward says "the queue is at one of three and these are ready" and the maintainer writes it.
 
+  **It watches for work at risk**, not only for idleness: a lane worktree with modifications and no
+  commit in half an hour is uncommitted work one prune away from gone, which is the only failure in
+  this system that destroys rather than delays. That check earns its keep more than the idle one.
+
   **It must never hold the main checkout while a developer's gate is running**, which is the race
   that took the `cricker-dev` link out from under a lane on 2026-08-04. `caretaker` and
   `undertaker` were unavailable as names: this tree already spends both on capability-narrowing
@@ -387,6 +391,29 @@ an emulator.
 One purpose per commit. The message explains **why**, not what (the diff shows what). If a
 commit records a correction or a surprise, say so in the message. See the milestone 1
 history for the shape.
+
+**Commit early and push, then curate before reporting.** These two rules read as opposites and are
+not, and the resolution is a criterion rather than a compromise: **`git blame` is what a commit is
+for.** A reader tracing why a line looks the way it does must land on a commit that explains it.
+
+So while working, commit whenever a piece works and push whenever a commit exists, because a pushed
+branch survives a dead session, a killed process and a laptop that will not wake, and nothing else
+does. On 2026-08-04 a lane sat on seven modified files with **zero commits for hours**; had that
+worktree been pruned the work was gone, and it was caught by inspection rather than by any
+mechanism. Uncommitted work in a lane worktree is the one thing no part of this system protects.
+
+Then, before reporting, **squash the checkpoints into the purposes** and force-push. A checkpoint is
+for the lane's own safety and has no reader; a purpose commit has one.
+
+**Never squash across purposes, and never squash-merge a branch.** Milestone 96's lane put the
+loader unification in its own commit *ahead of* the migration precisely so that a boot failure could
+not be ambiguous between two changes, which is the whole reason that structure exists. A
+squash-merge would have destroyed it. The merge commit carries the pull request's title, so
+`git log --first-parent` already reads as one entry per piece of work while the detail stays
+reachable underneath.
+
+The exceptions worth keeping unsquashed: a commit that records a correction or a surprise, and a
+commit whose separateness is itself the argument (96's loader, above).
 
 ## Comments
 
