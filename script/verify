@@ -147,8 +147,10 @@ fi
 # harness (glob's, minutes on its own).
 #
 # Four jobs, not "all cores", because the bound is memory: notes/verification.md records a harness
-# that reached 3.5 GB, and concurrent harnesses multiply the peak. Four fits every machine this
-# runs on (the dev Mac, CI's 4-core runner, cordoba's 23 GB). Override with VERIFY_JOBS=N;
+# that reached 3.5 GB, and concurrent harnesses multiply the peak. Four fits the dev Mac and
+# cordoba's 23 GB; **CI's 16 GB runner fits two**, measured the hard way: four runs were
+# memory-killed mid-glob before verify.yml pinned VERIFY_JOBS=2 (the kill reports as a bare
+# "operation was canceled", which cost an evening to attribute). Override with VERIFY_JOBS=N;
 # VERIFY_JOBS=1 serializes the execution again (the output stays terse either way).
 #
 # Kani requires --output-format=terse with --jobs, which trades the counterexample trace for the

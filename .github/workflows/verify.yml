@@ -98,7 +98,15 @@ jobs:
           cargo kani setup
       # The proofs ARE the thesis (DECISIONS §14). Before 2026-07-30 they ran only on a developer's
       # machine, which meant a change could break a proof and CI would report success.
+      # VERIFY_JOBS=2, not the script's default 4, and this is a measurement, not caution: the
+      # first four runs of the parallel suite on this runner were all killed ~15 minutes in, every
+      # time inside glob's largest harnesses, as a bare "operation was canceled" with orphaned cbmc
+      # processes. That is GitHub's memory kill: four concurrent CBMC formulas at glob's size
+      # exceed the 16 GB this runner has. Two fit. The script's comment about "four fits every
+      # machine" was written before CI measured otherwise; the dev Mac keeps 4.
       - name: script/verify
         if: steps.scope.outputs.needed == 'true'
         run: script/verify
+        env:
+          VERIFY_JOBS: 2
 
