@@ -2365,6 +2365,58 @@ pub mod fixture {
         /// pre-boot contents, or a length nobody asked for. This is the failure the test exists for.
         pub const SAW_NEITHER: u64 = 0x0037_00FF;
     }
+
+    /// **The blank disk milestone 57's write half partitions and formats**, and the layout the two
+    /// programs and the post-run host check all have to agree about.
+    ///
+    /// Everything here is on **its own disk**, regenerated every run, for milestone 37's reason: a
+    /// test that writes a partition table cannot be pointed at a fixture other tests read, or every
+    /// one of their results becomes a function of whether this one ran first (DECISIONS §27).
+    ///
+    /// The disk arrives as 64 MiB of zeros with no table on it at all, which is what makes the
+    /// refusal cases checkable: a program that was denied entropy and wrote nothing leaves a disk
+    /// that still parses as nothing.
+    ///
+    /// ```text
+    ///   LBA      2048..10239    an EFI system partition (nothing formats it; it is here so the
+    ///                           table has more than one entry and more than one unique GUID)
+    ///   LBA     10240..30719    a Linux filesystem partition, likewise
+    ///   LBA     30720..129023   the cricker-os data partition: 48 MiB, 4096-aligned at both ends,
+    ///                           and the one `fs_maker` formats
+    /// ```
+    pub mod blank {
+        /// The disk's size in 512-byte logical blocks. 64 MiB, matching the `sgdisk` fixture disk so
+        /// the two are comparable at a glance.
+        pub const DISK_BLOCKS: u64 = 131_072;
+        /// The logical block size the table counts in. Every disk this project has met uses it, and
+        /// nothing on the blk wire reports it (`disk_surveyor`'s BUGS).
+        pub const LBA: u64 = 512;
+
+        /// The EFI system partition: first and last logical block, inclusive. 2048 is the 1 MiB
+        /// alignment every real tool uses.
+        pub const ESP: (u64, u64) = (2048, 10239);
+        /// The Linux filesystem partition.
+        pub const LINUX: (u64, u64) = (10240, 30719);
+        /// **The cricker-os data partition**, the one that gets a filesystem. Its start and its
+        /// length are both whole multiples of RedoxFS's 4096-byte block, which `fs_maker` requires
+        /// and refuses without: a filesystem whose blocks straddle the partition's first byte would
+        /// read fine through the offset disk that made it and be unreadable by anything else.
+        pub const DATA: (u64, u64) = (30720, 129_023);
+
+        /// How many partitions the table carries. The post-run host check asserts on it.
+        pub const PARTITIONS: usize = 3;
+
+        /// The name written into every entry's 36 UTF-16 units, in order.
+        pub const NAMES: [&str; PARTITIONS] = ["cricker boot", "cricker root", "cricker data"];
+
+        /// The file `fs_maker` creates on the filesystem it just made, so the host tool has
+        /// something to read back. An empty filesystem that opens proves the header; a file the
+        /// guest wrote proves the tree, the allocator and the root node too.
+        pub const MADE_NAME: &str = "made-on-target";
+        /// Its contents, checked byte for byte on the host after the run.
+        pub const MADE_BODY: &[u8] =
+            b"CRK57: this filesystem was created by cricker-os on the target\n";
+    }
 }
 
 #[cfg(test)]

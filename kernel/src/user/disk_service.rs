@@ -18,14 +18,22 @@
 //! endpoints; every byte of GPT judgement happens in userspace, in a crate whose tests run on the
 //! host against tables `sgdisk` and macOS `diskutil` wrote (notes/gpt.md).
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use super::*;
-use crate::cap::{Rights, endpoint_cap};
+use crate::cap::{Rights, endpoint_cap, untyped_cap};
 use crate::sched::EpId;
 
 /// Which mmio block device the surveyor is given. The runners attach the GPT-partitioned image as
 /// the FOURTH mmio disk, after crickerfs (0), RedoxFS (1) and the crash image (2); see
 /// `scripts/qemu-runner-*.sh`, which explain why command-line order is reversed.
 const GPT_DISK: usize = 3;
+
+/// Which mmio block device the **write half** is given: the FIFTH, a 64 MiB image of zeros that the
+/// runner regenerates every boot. Its own disk for milestone 37's reason (DECISIONS §27): a test
+/// that writes a partition table and then a filesystem cannot be pointed at an image other tests
+/// read, or every one of their results becomes a function of whether this one ran first.
+const BLANK_DISK: usize = 4;
 
 /// Where the surveyor maps the page it shares with its block server. Must match
 /// `user/src/disk_surveyor.rs`.
@@ -199,6 +207,205 @@ pub fn start_probe(surveyor_image: &'static [u8]) -> EpId {
         )
     })
     .expect("could not spawn the roster probe");
+
+    report
+}
+
+// =============================================================================================
+// Milestone 57's write half: partitioning and formatting the blank disk
+// =============================================================================================
+
+/// Stack pages **below** the single one `run` maps, for the partitioner.
+///
+/// The same four the surveyor needs and for the same measured reason: `Gpt::parse` walks 128
+/// entries and a debug-build `Entry` is 128 bytes by value. The write path adds a 512-byte block of
+/// scratch on top of that.
+const PARTITION_EXTRA_STACK: usize = 4;
+
+/// Stack pages for `fs_maker`. **The engine's number, not this program's**: RedoxFS recurses
+/// through its tree and htree and commits transactions on the stack, and one page overflows on the
+/// first `open` (`fs_service::FS_STACK_PAGES` records the measurement). Creating a filesystem walks
+/// the same code, so it gets the same stack rather than a smaller guess.
+const MAKER_STACK_PAGES: u64 = 96;
+
+/// The untyped budget every `fs_maker` process draws its heap from, **including the two that are
+/// meant to be refused**. Identical on purpose: the only thing that differs between the three runs
+/// is the capability under test, so a refusal cannot be explained by a smaller budget.
+///
+/// 1.5 MiB is four times the 352 KiB high-water a real mount reaches under this allocator
+/// (DECISIONS §27), and creation touches less than a mount. It is deliberately far below
+/// `fs_service::FS_BUDGET_PAGES`, because an untyped is a **reservation**: three 8 MiB ones do not
+/// fit beside everything else a test boot builds in 128 MiB, and the first symptom of trying is
+/// init failing to get its own budget several tests later.
+const MAKER_BUDGET_PAGES: u64 = 384;
+
+/// The blank disk's block server, wired once per boot. A second server on the same device would
+/// reset its queue out from under the first, so the partitioner, the verifier and `fs_maker` are
+/// four processes sharing one; they run in sequence, which is what makes one shared page safe.
+static BLANK_WIRED: AtomicBool = AtomicBool::new(false);
+static BLANK_BLK_EP: AtomicU64 = AtomicU64::new(0);
+static BLANK_SHARED: AtomicU64 = AtomicU64::new(0);
+
+/// The blank disk's block service: the endpoint clients `CALL`, the page they share with the
+/// server, and (only for the caller that wired it) the server's readiness endpoint.
+pub struct BlankDisk {
+    pub blk_ep: EpId,
+    pub blk_shared: u64,
+    /// `None` for every caller after the first, because the readiness word is sent once.
+    pub blk_ready: Option<EpId>,
+}
+
+/// Bring the blank disk up under a block server, or hand back the one already running.
+///
+/// `None` when the machine has no fifth mmio block device, which is every boot the runner did not
+/// build the blank image for. A fact about the machine, so the caller skips.
+pub fn blank_disk(blk_image: &'static [u8]) -> Option<BlankDisk> {
+    if BLANK_WIRED.load(Ordering::Acquire) {
+        return Some(BlankDisk {
+            blk_ep: BLANK_BLK_EP.load(Ordering::Relaxed),
+            blk_shared: BLANK_SHARED.load(Ordering::Relaxed),
+            blk_ready: None,
+        });
+    }
+    let dev = crate::virtio::find_block_device_n(BLANK_DISK)?;
+    let (blk_ep, ready, blk_shared) = fs_service::spawn_block_server(blk_image, dev);
+    BLANK_BLK_EP.store(blk_ep, Ordering::Relaxed);
+    BLANK_SHARED.store(blk_shared, Ordering::Relaxed);
+    BLANK_WIRED.store(true, Ordering::Release);
+    Some(BlankDisk {
+        blk_ep,
+        blk_shared,
+        blk_ready: Some(ready),
+    })
+}
+
+/// Spawn the partitioner over the blank disk in `role`, with an entropy endpoint or **without one**.
+///
+/// `entropy` is the whole experiment. `Some(ep)` and the program can draw the unique ids a GPT
+/// requires; `None` leaves slot 2 empty and its first `CALL` there comes back as a kernel error,
+/// which `entropy_proto::delivered` reports as "no entropy" rather than as a short reply. Same
+/// binary, same role, same disk, same everything else.
+pub fn start_partitioner(
+    image: &'static [u8],
+    disk: &BlankDisk,
+    role: u64,
+    entropy: Option<EpId>,
+) -> EpId {
+    let report = crate::sched::create_endpoint();
+    let blk_ep = disk.blk_ep;
+    let blk_shared = disk.blk_shared;
+    // Only read when `entropy` is `Some`; the endpoint id is copied out here so the closure below
+    // captures a plain `u64` rather than the `Option` twice.
+    let ep = entropy.unwrap_or_default();
+
+    crate::sched::spawn(move || {
+        let mut maps = [Mapping {
+            va: BLK_PAGE,
+            phys: blk_shared,
+            flags: Flags::user_data(),
+        }; 1 + PARTITION_EXTRA_STACK];
+        for (k, m) in maps[1..].iter_mut().enumerate() {
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = crate::memory::alloc()
+                .expect("no frame for the partitioner's stack")
+                .addr();
+        }
+        // **The grant list IS the experiment**: three entries or two, and nothing else differs.
+        // The entropy endpoint is last precisely so that withholding it is an absent slot rather
+        // than a renumbering, which is what makes the two runs the same program.
+        let with = [
+            endpoint_cap(report, Rights::WRITE), // slot 0: the verdict
+            endpoint_cap(blk_ep, Rights::WRITE), // slot 1: ONE disk, and no way to name another
+            endpoint_cap(ep, Rights::WRITE),     // slot 2: randomness, and no way to reach the RNG
+        ];
+        let grants = match entropy {
+            Some(_) => &with[..],
+            None => &with[..2],
+        };
+        run(
+            image,
+            Spawn {
+                arg0: role,
+                arg1: 0,
+                arg2: 0,
+                grants,
+                maps: &maps,
+            },
+        )
+    })
+    .expect("could not spawn the disk partitioner");
+
+    report
+}
+
+/// Spawn `fs_maker` over the blank disk, with or without either half of the pair it needs.
+///
+/// Three wirings, one binary: both capabilities, no entropy, no disk. The budget, the stack and the
+/// shared page are identical in all three, so the only thing that can explain a refusal is the
+/// capability that is missing.
+pub fn start_maker(
+    image: &'static [u8],
+    disk: &BlankDisk,
+    role: u64,
+    entropy: Option<EpId>,
+    with_disk: bool,
+) -> EpId {
+    let report = crate::sched::create_endpoint();
+    let budget = crate::untyped::create(MAKER_BUDGET_PAGES).expect("no heap budget for fs_maker");
+    let blk_ep = disk.blk_ep;
+    let blk_shared = disk.blk_shared;
+    let has_entropy = entropy.is_some();
+    let ep = entropy.unwrap_or_default();
+    let mut stack = [0u64; MAKER_STACK_PAGES as usize];
+    for f in stack.iter_mut() {
+        *f = crate::memory::alloc()
+            .expect("no frame for the fs_maker stack")
+            .addr();
+    }
+
+    crate::sched::spawn(move || {
+        let mut maps = [Mapping {
+            va: BLK_PAGE,
+            phys: blk_shared,
+            flags: Flags::user_data(),
+        }; 1 + MAKER_STACK_PAGES as usize];
+        for (i, &phys) in stack.iter().enumerate() {
+            maps[1 + i] = Mapping {
+                va: USER_STACK_VA - (i as u64 + 1) * FRAME_SIZE,
+                phys,
+                flags: Flags::user_data(),
+            };
+        }
+        // **Every slot placed explicitly, because the HOLE is the experiment.** A missing
+        // capability here is not the last entry of a shorter list (the disk is slot 1 and the
+        // verdict is slot 3), so `run`'s fill-in-order grants cannot express it: they would
+        // renumber everything above the gap and the program would find its report endpoint where
+        // it looked for a disk. `grant_at` leaves the slot genuinely empty, which is what the
+        // program's first `CALL` there meets, and it is the same move `std_service` makes for a
+        // std program that holds a directory and no network (notes/abi.md §4).
+        crate::sched::grant_at(0, untyped_cap(budget)).expect("fs_maker slot 0 was occupied");
+        if with_disk {
+            crate::sched::grant_at(1, endpoint_cap(blk_ep, Rights::WRITE))
+                .expect("fs_maker slot 1 was occupied");
+        }
+        if has_entropy {
+            crate::sched::grant_at(2, endpoint_cap(ep, Rights::WRITE))
+                .expect("fs_maker slot 2 was occupied");
+        }
+        crate::sched::grant_at(3, endpoint_cap(report, Rights::WRITE))
+            .expect("fs_maker slot 3 was occupied");
+        run(
+            image,
+            Spawn {
+                arg0: role,
+                arg1: 0,
+                arg2: 0,
+                grants: &[], // every one of them is placed above, at its own slot
+                maps: &maps,
+            },
+        )
+    })
+    .expect("could not spawn fs_maker");
 
     report
 }
