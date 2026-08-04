@@ -27,6 +27,9 @@ const REPLY: u64 = 1;
 /// The page the client writes text into, mapped read-only in the server's space. Must match what
 /// the client (init, or the shell) maps and what init hands the server (`CON_SHARED_VA`).
 const SHARED_VA: u64 = 0x0060_0000;
+/// How much of it there is. One frame, which is what `console_service` maps, and the bound every
+/// byte count from a client is clamped to.
+const PAGE: u64 = 4096;
 /// The server's device mapping of the UART registers. Must match init's `CON_UART_VA`.
 const UART_VA: u64 = 0x0070_0000;
 
@@ -36,18 +39,28 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
         // Block until a client hands us a length.
         let (len, _, _) = recv(REQUEST);
 
+        // **Clamp to the page, because the length is the CLIENT's** (milestone 43,
+        // notes/shared-page-audit.md finding 3). This used to be unbounded, with a comment calling
+        // an over-long count "a driver bug" and shrugging it off as a crashed process. The count
+        // does not come from the driver; it arrives in the request word from whoever holds WRITE
+        // on the request endpoint, so `u64::MAX` was a one-message kill of a server every other
+        // client of this console shares. `line_editor` clamps at all four of its length sites; the
+        // asymmetry was the finding.
+        let len = len.min(PAGE);
+
         // Copy that many bytes from the shared page to the UART, one at a time, exactly as the
         // kernel's PL011 driver used to. The difference is only where this code runs.
         let shared = SHARED_VA as *const u8;
         for i in 0..len {
-            // SAFETY: the shared page is mapped read-only in our address space. A malicious length
-            // is a read out of our OWN mapping, which faults us, not the kernel: a driver bug is a
-            // crashed process.
+            // SAFETY: the shared page is mapped read-only in our address space and `len` is
+            // clamped to it above, so every offset is inside the one frame the wiring mapped.
             let byte = unsafe { core::ptr::read_volatile(shared.add(i as usize)) };
             uart_put(byte);
         }
 
-        // Acknowledge, so the client knows the buffer is free to reuse.
+        // Acknowledge with the count actually printed, not the count asked for: a client that
+        // asked for more than a page learns that fewer bytes went out rather than being told its
+        // whole request was honoured.
         send(REPLY, len, 0, 0);
     }
 }
