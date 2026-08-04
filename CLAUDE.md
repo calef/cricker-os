@@ -22,6 +22,44 @@ together" framing anywhere, it is stale; this file is the current word.
 proven piece (green tests first); push after green. You are building the demonstrator. Chris
 reviews architecture and outcomes, not every line.
 
+## The three roles, and the one rule that keeps work moving
+
+Named 2026-08-04, after a night in which eleven agents shipped and the queue still went idle twice
+because nobody's job was noticing. The roles were already real; only their names and the top-up rule
+are new.
+
+- **Maintainer.** One per session, the session itself. Briefs developers, gates and merges their
+  work, mints anything global to the tree (`DECISIONS.md` sections, milestone numbers, names Chris
+  has ratified), and keeps hygiene: prune the worktree, delete the branch, relink `cricker-dev`,
+  leave no QEMU. Holds merge authority when Chris grants it. **Maintainer, not project manager**,
+  because the name has to predict the authority: this role writes code, resolves conflicts and
+  merges, and a coordinate-only reading of it would leave the tree unowned.
+- **Developer.** A subagent executing exactly one milestone. Reports; never merges, never mints,
+  never edits `DECISIONS.md`, `design/` or this file. Names anything new provisionally and says so.
+- **A developer works in a lane**, and the lane is the isolation rather than the person: its own
+  worktree, its own branch, one milestone, no visibility into the others. Two developers in one lane
+  is the merge problem this vocabulary exists to prevent.
+- **Watcher.** Optional, builds nothing. Checks queue depth, pull-request states and unanswered
+  decisions on an interval and says when work has stalled. It exists because the maintainer is
+  structurally bad at noticing its own idleness: when it is busy, it is busy.
+
+**The top-up rule, which is the whole point.** When a developer finishes, the maintainer **launches
+the next work before writing the report**. Not after, and not when Chris next asks. A conversation
+with Chris never blocks the queue; answering a question and keeping lanes full are concurrent, and
+the failure mode is always the same, which is that the answer feels like progress and the idle
+machine is invisible. Maintain the agreed number of concurrent developers, and if the ready queue is
+empty, say so as its own finding rather than letting the silence stand for "nothing to do".
+
+**A developer's final report ends by handing off**: what its work unblocked, and what it found that
+wants a lane of its own. That is the same discipline as milestone 94's, applied to scheduling rather
+than to findings.
+
+**Open decisions live in a file, not in a conversation.** A decision waiting on Chris that exists
+only in chat scrollback is in exactly the medium milestone 94 was written to abolish, and on
+2026-08-04 five of them accumulated there in one day while that milestone was being built. They go
+in `design/open-decisions.md` (name provisional), one entry each: what is being decided, the
+options, the recommendation with its reason, and what is blocked until it is answered.
+
 **Stop and bring it to Chris only when it is genuinely his call:** a design fork not already
 decided, a test that will not pass after real effort, a hardware or external dependency, or the
 machine contradicting the plan. Otherwise proceed and report what you did.
