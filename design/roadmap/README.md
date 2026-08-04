@@ -117,7 +117,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 19 | BUILT | [Run a real workload](19-real-workload.md) | the "runs real workloads" half of the thesis | 2026-07-25 |
 | 20 | BUILT | [A portable HAL, proven on a second architecture](20-portable-hal.md) | the "portable verified core" claim | 2026-07-30 |
 | 21 | BUILT | [Performance measurement: benchmarks with teeth](21-benchmarks.md) | perf claims become measurements, and regressions surface next to their cause | 2026-07-23 |
-| 22 | PARTIAL | [Trusted init: verify it, and shrink what a broken one can do](22-trusted-init.md) | closes the thesis's own soft spot: init is the privileged *unverified* component | |
+| 22 | BUILT | [Trusted init: verify it, and shrink what a broken one can do](22-trusted-init.md) | closes the thesis's own soft spot: init is the privileged *unverified* component | 2026-08-04 |
 | 23 | PARTIAL | [A capability-routed component OS with live replacement](23-component-os-live-replacement.md) | the flagship payoff, and a product ambition | |
 | 24 | OPTIONAL | [A second aarch64 *board*: Virtualization.framework (optional)](24-second-aarch64-board.md) | proves the `arch/` **board** boundary on a second machine of the same ISA; optional | |
 | 25 | PARTIAL | [Cross-OS performance comparison (extends 21)](25-cross-os-comparison.md) | turns perf claims into cross-OS numbers | |

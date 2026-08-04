@@ -1,6 +1,6 @@
 # 22. Trusted init: verify it, and shrink what a broken one can do
 
-**Status: PARTIAL.**
+**Status: BUILT.**
 
 **In brief.** Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded
 
@@ -36,8 +36,18 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    no memory at all and can only *ask*, and the root deletes its untyped once both are running. Proven
    on both ISAs by authority rather than timing: after the handoff, retyping a page or a kernel object
    from init fails with `NoSuchSlot`, and a faulting sub-server is reaped and restarted by its own
-   supervisor. `system_initializer` and `hello`'s init role still hold their budgets for life (they remain the
-   shell's spawn service); migrating that hand-validated boot path is the next increment. Two design
+   supervisor. **That migration then reached the interactive boot itself (BUILT 2026-08-04, both ISAs).**
+   `system_initializer` and `hello`'s init role remain the shell's spawn service, but they no longer
+   hold the construction budget for life: after the boot servers are up, each carves a bounded
+   scratch budget and a bounded job pool, deletes the root, and gives away the UART device
+   capability, its interrupt, and every capability reaching a live job's memory. A new `job_reaper`
+   (one endpoint, `READ`, no untyped, no restart policy) collects finished jobs and returns their
+   regions to the pool. Proven the same way the rest of this milestone is: init prints, from inside
+   itself, that `RETYPE` now answers `NoSuchSlot` rather than `NotPermitted`, and `script/shell-check`
+   runs eleven jobs through a six-job pool, so a boot that collected nothing fails partway down.
+   The predicted sub-server for the spawn service was **refused with a reason** (the spawn service is
+   the ELF loader and the loader is the archive, so a sub-server would hold every program in the
+   system while init held a pipe); see notes/trusted-init.md. Two design
    forks found and reported rather than built through (a reap-only right, and turning a tid into a
    handle). See DECISIONS §26's phase B.2 block and notes/trusted-init.md.
 
