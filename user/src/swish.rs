@@ -635,6 +635,8 @@ const PIPELINE_DONE: &[u8] = b"== pipelines done\n";
 /// - `ls > out.txt` writes a listing into a file; the `ls` after it prints **the same listing**
 ///   (nothing between them changes the directory), and `wc < out.txt` has to agree with what was
 ///   printed. One builtin, two destinations.
+/// - `wc out.txt` is the line above it with the `<` left out, and it has to give the same three
+///   numbers: naming a file to a program that declares an input is the operator, unwritten.
 /// - `date` and `date > date.txt` are one unmodified program sent two places, and `wc < date.txt`
 ///   has to report the length of what `date` printed.
 /// - The last two files are **the same two commands with one operator changed**, so what `>>` does
@@ -646,6 +648,9 @@ fn redirecting(rights: u64) -> ! {
         &b"ls > out.txt"[..],
         b"ls",
         b"wc < out.txt",
+        // The same designation with the operator left out (milestone 31's input operand). It has
+        // to answer what the line above it answered, or one of the two opened something else.
+        b"wc out.txt",
         // The same unmodified `date`, twice, to two destinations.
         b"date",
         b"date > date.txt",
@@ -831,9 +836,12 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
                 // The line reparses into the one stage it is. It cannot fail (this command came out
                 // of it), and a `Line` is what `run_pipeline` reads its stage count off.
                 let Ok(l) = line::split(cmd) else { return };
-                let mut plans: [Option<Endowment>; line::MAX_STAGES] = [None; line::MAX_STAGES];
-                plans[0] = Some(endow);
-                run_pipeline(nav, l, &plans, false, None, Some(g));
+                // **One element, not `MAX_STAGES`**, and that is a stack decision rather than a
+                // tidiness one. An `Endowment` carries a whole `NameSet` by value, so a full-width
+                // array here overflowed the shell's stack at the *first* line this arm ran, which
+                // presented as a data abort one word below the lowest mapped stack page. This line
+                // is a single stage by construction, and `run_pipeline` takes a slice.
+                run_pipeline(nav, l, &[Some(endow)], false, None, Some(g));
             }
             _ => spawn(endow),
         },

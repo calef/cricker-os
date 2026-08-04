@@ -494,7 +494,7 @@ $ echo hello world | wc | wc
   1 3 7
 
 $ wc
-  wc: reads an input stream: give it one with '< name' or a pipe, or it waits forever
+  wc: reads an input stream: name a file, redirect with '<', or pipe into it
 
 $ worker 9 | wc
   worker: does not write a byte stream, so there is nothing for > or | to redirect
@@ -635,6 +635,31 @@ harness gets wrong quietly:
 It drives `scripts/qemu-runner-aarch64.sh` directly rather than `cargo run`, so the process it owns **is**
 QEMU (the runner `exec`s it) and the kill lands on the emulator instead of on cargo. It is not part
 of `script/test`, because it builds a second kernel and boots it twice.
+
+## The shell's stack, a third time, and what the pattern is now
+
+Milestone 50 hit "a boot that printed nothing" three times and one of them was four stack pages
+being one deep call short of the redirection path. Milestone 31's input operand hit the **same
+symptom in the same file** and it is worth naming the shape rather than the instance.
+
+`wc out.txt` reaches `run_pipeline` through `dispatch` -> `dispatch_one` -> `run`, where a line with
+an operator on it reaches it through `dispatch` -> `pipeline`. One frame deeper, on a program whose
+frames carry parsed lines and planned endowments **by value**, and the scripted wiring's six extra
+pages were not enough: a data abort one word below the lowest mapped page, mid-script, with `far`
+equal to `sp`.
+
+Two things came out of it, and the second is the one to keep:
+
+- **An `Endowment` is not small.** The first version of that arm declared
+  `[Option<Endowment>; MAX_STAGES]` for a line that is one stage by construction, and an `Endowment`
+  carries a whole `NameSet`. `run_pipeline` takes a slice, so `&[Some(endow)]` is the same call with
+  the array cost deleted. That alone was not enough, but it is the fix that should have been written
+  first: the reflex of reaching for the full-width array is what made a one-stage line pay for four.
+- **The two wirings gave the shell different stacks, and that was the real oddity.**
+  `system_initializer` maps eight pages and `pipeline_service` mapped seven, so the wiring that is
+  *not* the one a person types was the smaller one, and it is where the overflow landed. They are
+  both eight now. A test wiring with less headroom than the boot wiring will keep finding faults the
+  boot does not have, which is a bug in the harness rather than a signal.
 
 ## BUGS, named where the reader meets them
 
