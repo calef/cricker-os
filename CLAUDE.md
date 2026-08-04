@@ -405,6 +405,13 @@ mechanism. Uncommitted work in a lane worktree is the one thing no part of this 
 Then, before reporting, **squash the checkpoints into the purposes** and force-push. A checkpoint is
 for the lane's own safety and has no reader; a purpose commit has one.
 
+**Squash against the base commit you branched from, never against `origin/main`**, and this trap was
+sprung the day the rule above was written (2026-08-04). Agent worktrees share one `.git`, so
+`origin/main` moves under a lane while it works: a developer that ran `git reset --soft origin/main`
+to squash silently staged **four other lanes' files as its own**, including a deletion, and caught it
+only by reading `git status` before committing. Record the base SHA when the branch is cut and squash
+against that. The wider rule it belongs to: in a worktree, `origin/*` is not a fixed point.
+
 **Never squash across purposes, and never squash-merge a branch.** Milestone 96's lane put the
 loader unification in its own commit *ahead of* the migration precisely so that a boot failure could
 not be ambiguous between two changes, which is the whole reason that structure exists. A
