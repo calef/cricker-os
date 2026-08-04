@@ -51,7 +51,7 @@ A gloss passes on either of two tiers.
 ignoring a short stopword list. A gloss abbreviates and reorders, so `§31 (the foreign-language
 seam)` matches *"The foreign-language seam: C holds no capabilities and makes no policy"*, and
 `milestone 55 (Time Machine over SMB3 with Apple's extensions)` matches a title that differs from it
-by one preposition. 74 of the tree's 102 glosses pass here.
+by one preposition. 76 of the tree's 106 glosses pass here.
 
 **Tier 2, the quotation.** The gloss appears as a contiguous phrase in the record's body, matched on
 normalized whitespace. This is a different act rather than a weaker tier 1: `§4 ("a driver never
@@ -118,25 +118,28 @@ Report every citation, classified:
 $ script/citations
 73 decisions, 115 milestones
 
-GLOSSED CITATIONS (102)
-  cross-reference  5
+GLOSSED CITATIONS (106)
+  cross-reference  6
   date             1
   exempt           1
   path             13
-  quotation        8
-  title            74
+  quotation        9
+  title            76
 
-ATTRIBUTED QUOTATIONS (0)
+ATTRIBUTED QUOTATIONS (1)
 ```
 
 Gate it, which is what `script/lint` runs:
 
 ```
 $ script/citations --check
-citations: 102 glossed citations, all grounded (74 by title, 8 by quotation, 13 by path,
-    5 cross-references, 1 dates)
-citations: 0 attributed quotations, all still present in their sources
+citations: 106 glossed citations, all grounded (76 by title, 9 by quotation, 13 by path,
+    6 cross-references, 1 dates, 1 exempt)
+citations: 1 attributed quotations, all still present in their sources
 ```
+
+The breakdown sums to the total on purpose. A summary line whose parts do not add up is a number
+nobody can check, which is the defect `script/lint`'s shellcheck line was fixed for.
 
 Citing the decision rather than the milestone, in a code comment:
 

@@ -386,9 +386,12 @@ if mode == "--check":
         print("not merely to some thing. See notes/citations.md, including what this cannot check.",
               file=sys.stderr)
         sys.exit(1)
+    # The breakdown sums to the total, deliberately: a summary line whose parts do not add up is a
+    # number nobody can check, which is the habit script/lint's shellcheck line was fixed for.
     print(f"citations: {total} glossed citations, all grounded "
           f"({tally['title']} by title, {tally['quotation']} by quotation, {tally['path']} by path, "
-          f"{tally['cross-reference']} cross-references, {tally['date']} dates)")
+          f"{tally['cross-reference']} cross-references, {tally['date']} dates, "
+          f"{tally['exempt']} exempt)")
     print(f"citations: {attributed} attributed quotations, all still present in their sources")
     sys.exit(0)
 
