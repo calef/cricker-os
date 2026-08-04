@@ -645,3 +645,130 @@ fn a_wrong_mbr_is_refused_through_the_wrapper_too() {
     let zeros = [0u8; BLOCK];
     assert!(table.check_protective_mbr(&zeros).is_err());
 }
+
+// The second mutation pass reached the modules the first never got to (entry, guid, header, the
+// MBR validator), and its survivors have the same two shapes as the first pass's: boundaries
+// never met exactly, and values every fixture happened to share. See notes/mutation-testing.md.
+
+/// Every fixture and every built table uses 128-byte entries, so `check_entry_array`'s size guard
+/// was only ever met at its own boundary. A 256-byte-entry table is legal and a 64-byte one is
+/// not, and the array CRC does not care because both describe the same 16 KiB of zeros.
+#[test]
+fn entry_sizes_other_than_128_are_judged_not_assumed() {
+    // 64 entries of 256 bytes: same 16 KiB, same CRC, legal.
+    assert_eq!(
+        parse_patched(|b| {
+            b[80..84].copy_from_slice(&64u32.to_le_bytes());
+            b[84..88].copy_from_slice(&256u32.to_le_bytes());
+        })
+        .err(),
+        None
+    );
+    // 256 entries of 64 bytes: under the 128-byte floor.
+    assert_eq!(
+        parse_patched(|b| {
+            b[80..84].copy_from_slice(&256u32.to_le_bytes());
+            b[84..88].copy_from_slice(&64u32.to_le_bytes());
+        })
+        .err(),
+        Some(Error::EntrySize(64))
+    );
+}
+
+/// A header may claim every byte of its block: `header_size == block size` leaves no reserved
+/// tail to check and is legal, and the bound's `>` was never met exactly.
+#[test]
+fn a_header_the_size_of_its_block_is_legal() {
+    assert_eq!(
+        parse_patched(|b| b[12..16].copy_from_slice(&512u32.to_le_bytes())).err(),
+        None
+    );
+}
+
+/// A partition may start on the first usable block. Every fixture starts partitions at 2048 with
+/// usable space from 34, so `check_partitions`' lower bound was never met exactly either.
+#[test]
+fn a_partition_on_the_first_usable_block_is_inside_the_range() {
+    let mut array = [0u8; ENTRY_ARRAY_BYTES];
+    let part = Entry::new(types::CRICKER_DATA, PART, 34, 4096);
+    let table = Gpt::create(DISK, BLOCK, BLOCKS, &[part], &mut array).unwrap();
+    assert_eq!(table.partitions().next().unwrap().1.first_lba, 34);
+}
+
+/// The protective record may sit in any of the four MBR slots. Every tool we imaged puts it in
+/// slot 0, where `i * 16` is zero under any arithmetic, so the record-offset math was untested
+/// for every other slot.
+#[test]
+fn a_protective_record_in_a_later_slot_is_still_protective() {
+    let disk = build(&[]).unwrap();
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let mut block = [0u8; BLOCK];
+    block[..disk.mbr().len()].copy_from_slice(disk.mbr());
+    // Move record 0 to record 2 (16 bytes each, table at offset 446), zeroing slot 0.
+    let (a, b) = (446, 446 + 32);
+    let record: [u8; 16] = block[a..a + 16].try_into().unwrap();
+    block[a..a + 16].fill(0);
+    block[b..b + 16].copy_from_slice(&record);
+    table.check_protective_mbr(&block).unwrap();
+}
+
+/// Refusals speak: one formatted error, exact, so a Display replaced with `Ok(())` cannot pass.
+#[test]
+fn an_error_formats_to_its_own_words() {
+    assert_eq!(
+        Error::BlockSize(100).to_string(),
+        "100 is not a logical block size (512..=4096, a power of two)"
+    );
+}
+
+/// The attribute bits are the on-disk format sgdisk and firmware read; pin them. (`1 << 0` is
+/// immune to shift-direction mutation by arithmetic; the others are not.)
+#[test]
+fn the_attribute_bits_are_the_disk_format() {
+    assert_eq!(
+        [
+            entry::ATTR_REQUIRED,
+            entry::ATTR_NO_BLOCK_IO,
+            entry::ATTR_LEGACY_BIOS_BOOTABLE
+        ],
+        [1, 2, 4]
+    );
+}
+
+/// A non-ASCII name survives the round trip. Every test name was ASCII, whose UTF-16 units have a
+/// zero high byte, so a decode reading its two name bytes off by one produced the same units and
+/// the whole name path looked healthy.
+#[test]
+fn a_name_beyond_ascii_round_trips() {
+    let named = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+        .with_name("π¥")
+        .unwrap();
+    let back = Entry::decode(&named.encode());
+    let mut buf = [0u8; 16];
+    let n = back.name_utf8(&mut buf).unwrap();
+    assert_eq!(&buf[..n], "π¥".as_bytes());
+}
+
+/// `name_utf8`'s bound, met exactly: a buffer the name exactly fills is enough, and one byte
+/// under is `NameTooLong`, never a panic.
+#[test]
+fn an_exact_fit_name_buffer_is_enough() {
+    let e = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+        .with_name("abc")
+        .unwrap();
+    let mut exact = [0u8; 3];
+    assert_eq!(e.name_utf8(&mut exact), Ok(3));
+    assert_eq!(&exact, b"abc");
+    let mut short = [0u8; 2];
+    assert_eq!(e.name_utf8(&mut short), Err(Error::NameTooLong));
+}
+
+/// A GUID displays as the string a person looks up, through Display and Debug both, and the
+/// unused type has its name.
+#[test]
+fn a_guid_shows_itself_and_unused_has_a_name() {
+    let g = Guid::from_fields(0x1234_5678, 0x9ABC, 0x4DEF, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(g.to_string(), "12345678-9ABC-4DEF-0102-030405060708");
+    assert_eq!(format!("{g:?}"), "12345678-9ABC-4DEF-0102-030405060708");
+    assert_eq!(types::name(types::UNUSED), Some("unused"));
+}
