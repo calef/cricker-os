@@ -229,12 +229,43 @@ const PCI_QUEUE_DEVICE: u64 = 0x30;
 
 /// Volatile accessors at a physical address through the direct map, in the width the pci
 /// common-config block prescribes per register (it is packed; mmio is uniformly u32).
+///
+/// # Why these two stay safe fns (milestone 112)
+///
+/// They were on milestone 82's list of four safe functions whose SAFETY comment discharged onto
+/// "the caller" while the signature imposed the obligation on nobody. The other three converted to
+/// `unsafe fn`. These did not, and the difference is not that the obligation is weaker: it is that
+/// **the set of callers is closed and the compiler is what closes it.**
+///
+/// `pread` and `pwrite` are private to this module. Every one of their twenty call sites is in the
+/// `impl Transport` block above, and each passes `common + <a constant offset under 0x40>`, `isr`,
+/// or `notify_addr[q]`: three fields of `Transport::Pci`, all resolved from a mapped BAR by
+/// `pci::PciVirtioDevice` and copied in one place, by `Transport::pci`. That is a module invariant,
+/// and a module invariant is a real way to be sound. Converting would have put twenty `unsafe`
+/// blocks in one file, each restating the same sentence, which is the "discharged by ritual rather
+/// than by thought" failure the milestone was written to avoid; and it would not have made anything
+/// checkable, because an `unsafe fn` whose contract nothing verifies is still a contract nothing
+/// verifies.
+///
+/// # BUGS
+///
+/// **Taking the old comment seriously found a way to make it false**, which is the argument for
+/// this milestone in one bug. `notify_addr[q]` is **zero until [`Transport::setup_queue`] resolves
+/// it**, and the `NOTIFY` syscall used to check only that the queue number was in range. A
+/// userspace driver could therefore ring a queue it had never set up, and this module would
+/// `write_volatile` a `u16` through `phys_to_virt(0)`: not inside any BAR, which is exactly what
+/// the comment claimed could not happen. [`notify`] now refuses that queue
+/// ([`Transport::doorbell_ready`]). The mmio transport was never exposed, because it has one fixed
+/// notify register rather than a per-queue address to resolve.
 fn pread<T: Copy>(phys: u64) -> T {
-    // SAFETY: the caller passes addresses inside a device-mapped BAR or mmio window.
+    // SAFETY: `phys` is a field of a `Transport::Pci`, plus at most a common-config offset. Those
+    // fields come from `pci.rs`'s BAR resolution and reach this module only through
+    // `Transport::pci`; this fn is private, so that closed set of call sites is the whole
+    // population. See the module invariant above, and the doorbell bug it did not used to cover.
     unsafe { core::ptr::read_volatile(mmu::phys_to_virt(phys) as *const T) }
 }
 fn pwrite<T: Copy>(phys: u64, v: T) {
-    // SAFETY: as above.
+    // SAFETY: as above, and the same closed call set: `pwrite` is private to this module too.
     unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut T, v) }
 }
 
@@ -356,9 +387,26 @@ impl Transport {
         }
     }
 
-    /// Ring the doorbell for queue `q`. Only [`notify`] calls this, after validation. On mmio the
-    /// notify register carries the queue number as its value; on PCI each queue has its own
-    /// doorbell address, resolved at [`setup_queue`].
+    /// **Is queue `q`'s doorbell a real address yet?** (milestone 112.)
+    ///
+    /// On PCI it is resolved at [`Transport::setup_queue`] and the field is zero until then, so
+    /// ringing an un-set-up queue would write through `phys_to_virt(0)`, outside every BAR. On mmio
+    /// there is one fixed notify register that carries the queue number as its value, so there is
+    /// nothing per-queue to resolve and nothing to be unresolved.
+    ///
+    /// [`notify`] is the gate that uses this. It exists because the SAFETY comment on [`pread`]
+    /// claimed every address reaching it was inside a device-mapped BAR, and this was the path where
+    /// that was false.
+    fn doorbell_ready(&self, q: u16) -> bool {
+        match self {
+            Transport::Mmio { .. } => true,
+            Transport::Pci { notify_addr, .. } => notify_addr[q as usize] != 0,
+        }
+    }
+
+    /// Ring the doorbell for queue `q`. Only [`notify`] calls this, after validation and after
+    /// [`Transport::doorbell_ready`]. On mmio the notify register carries the queue number as its
+    /// value; on PCI each queue has its own doorbell address, resolved at [`setup_queue`].
     fn notify_queue(&self, q: u16) {
         match self {
             Transport::Mmio { mmio_phys } => reg_write(*mmio_phys, REG_QUEUE_NOTIFY, q as u32),
@@ -653,7 +701,8 @@ fn validate_and_shadow(
 pub enum TransportError {
     /// No such device id.
     NoDevice,
-    /// The queue does not fit in the DMA region, or `QUEUE_NUM_MAX` is too small.
+    /// The queue does not fit in the DMA region, `QUEUE_NUM_MAX` is too small, or the queue is in
+    /// range but was never set up, so it has no doorbell to ring (milestone 112).
     BadQueue,
     /// **A descriptor pointed outside the driver's DMA region.** The device was NOT told to go.
     DmaEscape,
@@ -777,6 +826,14 @@ pub fn notify(id: usize, queue: u16) -> Result<(), TransportError> {
     }
     let mut devs = DEVICES.lock();
     let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
+
+    // A queue nobody set up has no doorbell (milestone 112). Before this check, a PCI device's
+    // `notify_addr[queue]` was still zero here and the ring below wrote a u16 through
+    // `phys_to_virt(0)`, which is a kernel store at an address the driver chose the timing of. The
+    // range check above was not enough: an in-range queue can still be an unconfigured one.
+    if !dev.transport.doorbell_ready(queue) {
+        return Err(TransportError::BadQueue);
+    }
 
     let block = queue_block(queue);
     let driver_desc = dev.dma_base + block + DESC_OFF;
@@ -1104,6 +1161,61 @@ mod tests {
         let got_hi = sanitize_driver_features(1, asked_hi);
         assert_eq!(got_hi & (1 << 2), 0, "RING_PACKED was not stripped");
         assert_eq!(got_hi & 1, 1, "VERSION_1 must survive negotiation");
+    }
+
+    /// **A PCI queue in range but never set up has no doorbell, and ringing it would leave the
+    /// BAR** (milestone 112).
+    ///
+    /// `notify(id, queue)` checked `queue < MAX_QUEUES` and nothing else, so a userspace driver
+    /// holding a virtio capability could `NOTIFY` a queue it had never `SETUP_QUEUE`d. On the PCI
+    /// transport `notify_addr[queue]` is zero until `setup_queue` resolves it from
+    /// `queue_notify_off`, so the ring became a `write_volatile` of a `u16` through
+    /// `phys_to_virt(0)`: a kernel store, at a physical address inside no BAR, at a moment the
+    /// driver chose.
+    ///
+    /// This is a **unit test of the predicate, not of the syscall**, and deliberately so: it builds
+    /// the two transport values by hand and touches no device, so it runs on both ISAs and in the
+    /// mmio-only configurations where no PCI virtio device exists at all. Reaching the real syscall
+    /// path would need a live PCI function, which only one of the boot configurations has.
+    #[test_case]
+    fn a_pci_queue_has_no_doorbell_until_it_is_set_up() {
+        // Plausible-looking BAR addresses. Nothing here is ever dereferenced: `doorbell_ready` only
+        // compares the resolved doorbell against zero.
+        let mut t = Transport::Pci {
+            common: 0x4010_0000,
+            notify_base: 0x4010_3000,
+            notify_mult: 4,
+            device_type: 2,
+            notify_addr: [0; MAX_QUEUES],
+            isr: 0x4010_2000,
+        };
+        assert!(
+            !t.doorbell_ready(0),
+            "a PCI queue reported a doorbell before setup_queue resolved one; ringing it would \
+             write through phys_to_virt(0)",
+        );
+
+        // What setup_queue does to the field, without the register traffic.
+        if let Transport::Pci { notify_addr, .. } = &mut t {
+            notify_addr[0] = 0x4010_3000;
+        }
+        assert!(
+            t.doorbell_ready(0),
+            "a resolved doorbell was still reported as absent, which would refuse every notify",
+        );
+        assert!(
+            !t.doorbell_ready(1),
+            "setting up queue 0 must not vouch for queue 1: each queue resolves its own doorbell",
+        );
+
+        // The mmio transport has one fixed notify register, so every in-range queue is ringable.
+        let m = Transport::Mmio {
+            mmio_phys: 0x0a00_0000,
+        };
+        assert!(
+            m.doorbell_ready(0) && m.doorbell_ready(1),
+            "the mmio transport gained a per-queue doorbell it does not have",
+        );
     }
 
     /// **A jump in `avail.idx` larger than the ring is refused, not walked.**
