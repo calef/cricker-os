@@ -3,6 +3,8 @@
 **Status: NOT-STARTED.** Raised 2026-08-04 by Chris, asking whether decisions should be managed the
 way milestones now are: a directory, an index, one document each, and a status.
 
+**Gate: NONE.** Nothing blocks a start; the split is mechanical and its proof method is milestone 76's. Sequence it with milestone 97, which it makes cheap, and when no lane holds unmerged decision edits.
+
 **Measured against the case that justified milestone 76**, because the argument is the same argument
 and the numbers should have to carry it:
 
