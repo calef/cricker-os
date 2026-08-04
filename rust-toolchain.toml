@@ -28,6 +28,6 @@
 # re-export list is the common repair, not the only one**, when upstream's function touches a type
 # the overlay replaces, the overlay has to implement it. A scheduled non-gating CI job against a newer nightly, so the
 # bump is a notice rather than a surprise, is still outstanding (roadmap milestone 42's neighbourhood).
-channel = "nightly-2026-08-03"
+channel = "nightly-2026-08-04"
 components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
 targets = ["aarch64-unknown-none-softfloat", "riscv64imac-unknown-none-elf"]

@@ -25,9 +25,11 @@ things that do.
   deliberately does not have (git spawns itself constantly: hooks, pagers, editors, `git` calling
   `git`), and `mmap` for packfiles.
 
-The recommendation on the record is **gitoxide first**, precisely because its gaps are this
-project's own roadmap rather than a compatibility project; C git then becomes a later, harder
-claim rather than a prerequisite. Chris decides.
+**Decided 2026-08-04 (Chris): gitoxide first.** Its gaps are this project's own roadmap rather
+than a compatibility project, so every `Unsupported` it hits is PAL surface milestone 64 wants
+anyway and lands with a known owner. C git becomes a later, harder claim rather than a
+prerequisite, and the day it is attempted the `fork`/`exec` question is a design fork of its own
+(this kernel spawns by capability, and git spawns itself constantly), not a porting task.
 
 **The measured gap, so nobody starts blind.** `std::fs` answers `Unsupported` for **32 of its 54**
 functions today (milestone 64's table). Git's floor needs, at minimum: create and open with the
