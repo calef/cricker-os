@@ -224,9 +224,19 @@ const PARTITION_EXTRA_STACK: usize = 4;
 
 /// Stack pages for `fs_maker`. **The engine's number, not this program's**: RedoxFS recurses
 /// through its tree and htree and commits transactions on the stack, and one page overflows on the
-/// first `open` (`fs_service::FS_STACK_PAGES` records the measurement). Creating a filesystem walks
-/// the same code, so it gets the same stack rather than a smaller guess.
-const MAKER_STACK_PAGES: u64 = 96;
+/// first `open`.
+///
+/// Half the FS server's 96, and taken from the same measurement rather than trimmed until it fit:
+/// the instrumented high-water of a *full* server workload (mount, reads, writes, a create, two
+/// truncates) is 135,824 bytes on the deeper of the two ISAs, which is 34 pages
+/// (`fs_service::fs_stack_used`, notes/fs-server.md). 48 gives 40% headroom over that, and creating
+/// one filesystem with one file in it walks strictly less of the tree than the workload measured.
+///
+/// It matters that this is not simply 96: a boot runs five of these processes and their stacks are
+/// not freed when they die, so the difference is 1.5 MiB on a 128 MiB machine, and the first symptom
+/// of spending it is an unrelated test failing to get a budget several tests later. That happened
+/// with 96 (2026-08-03) and is why the number is here rather than borrowed.
+const MAKER_STACK_PAGES: u64 = 48;
 
 /// The untyped budget every `fs_maker` process draws its heap from, **including the two that are
 /// meant to be refused**. Identical on purpose: the only thing that differs between the three runs
@@ -245,6 +255,10 @@ const MAKER_BUDGET_PAGES: u64 = 384;
 static BLANK_WIRED: AtomicBool = AtomicBool::new(false);
 static BLANK_BLK_EP: AtomicU64 = AtomicU64::new(0);
 static BLANK_SHARED: AtomicU64 = AtomicU64::new(0);
+
+/// The untyped region the last `fs_maker` process was given, so the next one can hand it back
+/// first. Zero means none yet. See [`start_maker`].
+static LAST_BUDGET: AtomicU64 = AtomicU64::new(0);
 
 /// The blank disk's block service: the endpoint clients `CALL`, the page they share with the
 /// server, and (only for the caller that wired it) the server's readiness endpoint.
@@ -351,7 +365,18 @@ pub fn start_maker(
     with_disk: bool,
 ) -> EpId {
     let report = crate::sched::create_endpoint();
+    // **Give the previous run's reservation back before taking another.** An untyped is a
+    // reservation rather than a cap, and this test starts five of these processes; holding all five
+    // at once costs 7.5 MiB of a 128 MiB machine and the symptom is an unrelated test failing to get
+    // its own budget much later ("no building budget for init", 2026-08-03). The previous process
+    // reported and exited a whole round trip ago, so `destroy` revokes nothing that is live; a
+    // region it refuses (something still pinned) is simply left alone, which is the old behaviour.
+    let previous = LAST_BUDGET.swap(0, Ordering::Relaxed);
+    if previous != 0 {
+        crate::untyped::destroy(previous);
+    }
     let budget = crate::untyped::create(MAKER_BUDGET_PAGES).expect("no heap budget for fs_maker");
+    LAST_BUDGET.store(budget, Ordering::Relaxed);
     let blk_ep = disk.blk_ep;
     let blk_shared = disk.blk_shared;
     let has_entropy = entropy.is_some();

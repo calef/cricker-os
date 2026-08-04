@@ -131,17 +131,36 @@ crash image at 2. Both runner scripts explain this where they do it; getting it 
 hands a test the wrong disk. Its own image, for the same reason milestone 37's crash test has one:
 a test that shares a fixture couples its result to whether some other test ran first.
 
+## The write half, and the disk it has to itself (2026-08-03)
+
+The two items this section used to list as "deliberately not done" were done later the same day, by
+the lane that took the vendor divergence. They are recorded here because they change the picture
+above: **there is now a fifth mmio disk, at slot 4, and it is blank on purpose.**
+
+- **`disk_partitioner`** (provisional name) writes the table `disk_surveyor` reads, drawing its
+  unique GUIDs from the entropy service. notes/gpt.md has the details, including why every write is
+  a read-modify-write.
+- **`fs_maker`** (provisional name) creates a RedoxFS filesystem inside the cricker-os data
+  partition of that table. notes/fs-server.md has the details, including the vendor divergence it
+  needed and why the first attempt at that divergence did not work.
+
+**The claim both are built to make is about the pair.** A disk endpoint and an entropy endpoint are
+jointly sufficient to partition and format a drive, and separately neither is; the kernel test
+withholds each in turn from the same binary, with the same budget, the same stack and the same
+shared page, and then *reads the disk* to show that a refused run wrote nothing.
+
+`fs_maker`'s wiring needed `grant_at` rather than `run`'s fill-in-order grants, and the reason
+generalises: **when the missing capability is not the last slot, withholding it has to leave a
+hole.** A shorter grant list renumbers everything above the gap, so a program that was meant to find
+slot 1 empty would instead find its report endpoint there and write a verdict into a block server.
+
+The blank disk is regenerated every run and shared with nothing, for milestone 37's reason
+(DECISIONS §27). The riscv `virt` machine now uses **seven of its eight** mmio transports (five
+disks, a NIC, an RNG), which is worth knowing before anything wires an eighth: QEMU drops a
+virtio-mmio device past the last transport silently, and the symptom is a test *skipping*.
+
 ## What this lane deliberately did not do
 
-- **It does not write a partition table.** `Gpt::create` exists and is proven; what is missing is a
-  unique GUID per partition, which needs randomness, which this program is not endowed with.
-  `crates/gpt` refuses to invent one (notes/gpt.md: "a GUID that is not random is not unique").
-- **It does not `mkfs` on the target.** Same wall, one crate over: `redoxfs`'s `Header::new` stamps a
-  v4 UUID, so `FileSystem::create` is `std`-gated for exactly the reason the GPT crate refuses a
-  GUID. Un-gating it is a new divergence from the vendored pin, which is a decision rather than a
-  task. design/roadmap/57-partitioning-and-xattrs.md has the shape of the fix
-  (`Header::new_with_uuid(size, uuid: [u8; 16])`, the same injection upstream already uses for
-  `ctime`) and why it is Chris's call.
 - **No hot plug.** The roster is written once and never again. A hot-plug story would change
   `block_roster` (a published-page discipline, the way `clock_proto` has one) rather than its
   readers.
@@ -168,6 +187,13 @@ exactly this twice; it is now three times.
 **`MAX_DEVICES` again**, the sixth bump. Every milestone that wires one more confined device costs a
 table slot forever, because a transport is never unregistered. The constant's comment now says the
 fix is an unregister on process death rather than counting to seven.
+
+**And then the write half counted to seven**, the same day, for the blank disk's block server. The
+comment records that it was told not to and why it did anyway: the unregister has to decide what a
+`Virtio` capability *is* once its holder is dead, and whether a transport may be handed to a second
+driver after the first programmed the device, which is a lifetime decision about a kernel object
+rather than a bookkeeping change. Worth flagging as a real piece of work now: two bumps in one day
+is a different signal from one every few milestones.
 
 ## See also
 

@@ -239,6 +239,12 @@ Stated plainly, because a demonstrator's docs are part of the deliverable:
   and neither a `no_std` engine nor a pure-computation crate has any. Partitioning a real drive from
   cricker-os and formatting one are therefore blocked on the same thing, the entropy service reaching
   the program that does them, and on nothing else.
+
+  **Both were unblocked on 2026-08-03, and the crate still generates nothing.** What it gained is
+  `Guid::v4_from_random`, which takes sixteen bytes the caller brings and sets the six bits RFC 9562
+  reserves, leaving the other 122 exactly as they arrived. That is pure computation, so it belongs
+  here; the randomness stays in the program that holds an entropy endpoint. The section below is
+  what uses it.
 - **No alignment policy.** `Gpt::create` places partitions exactly where it is told. The 2048-block
   (1 MiB) convention that keeps a partition off an SSD erase-block boundary is policy, and a format
   crate that silently moved a partition would be doing policy behind its caller's back.
@@ -252,3 +258,45 @@ Stated plainly, because a demonstrator's docs are part of the deliverable:
 - **4K-native disks are tested but not witnessed.** The block size is taken from the length of the
   block the caller passes, there is a test that builds and parses a 4096-byte-block table, and no
   real 4Kn disk has been through it because we do not have one.
+
+## Writing a table on the target (milestone 57's write half, 2026-08-03)
+
+`disk_partitioner` (provisional name) is the program. It holds two capabilities and they are the
+whole of it: a block-service endpoint for **one** disk, and an **entropy endpoint**. Every byte of
+judgement is still this crate's; the program is I/O, a layout, and a refusal.
+
+### The version-4 stamp, and the one way to get it wrong
+
+`Guid::v4_from_random` sets four version bits and two variant bits. They live in **printed**
+positions, so this is the mixed-endian rule from the top of this note one more time: the version
+nibble is the high nibble of the third group, which is stored little-endian and therefore lands in
+**on-disk byte 7**; the variant bits are the top of the fourth group, stored as written, so on-disk
+**byte 8**.
+
+Setting them at the wrong offsets produces a GUID that is still unique, still unpredictable, and
+reads as some other UUID version to every tool that ever looks at the disk, forever. Nothing in a
+round-trip test catches that, so the test asserts on `to_ascii()` at positions 14 and 19, which are
+where `sgdisk -i` and `uuidgen` read them.
+
+### Read-modify-write, because a partitioner describes a disk rather than owning it
+
+The primary table is 34 logical blocks and the block service's transfer unit is eight of them, so
+the last transfer block is **three quarters table and one quarter somebody's partition**. Writing
+whole transfer blocks would zero the first 3 KiB of a partition the program was only supposed to be
+describing. So every block is read first and the table bytes laid over it. On the test's blank disk
+this is invisible; on a disk with data on it, it is the difference between `parted` and a shredder.
+
+### The refusal is the demonstration
+
+Four GUIDs are drawn **before** the layout is built and long before the first write, so a process
+with no entropy endpoint reports and exits with the disk exactly as it found it. The kernel test
+then runs the *same binary* in its verify role, which holds no entropy at all, and reads the disk:
+that is what turns "it refused" into "it wrote nothing". After the successful run the same reader
+finds both copies of the table agreeing, three names decoding, and three distinct version-4 unique
+GUIDs; and after the run, on the host, `cargo xtask test` parses the same bytes with this crate and
+checks the GUIDs are distinct again from outside the guest.
+
+**What is not proved**: nothing here is crash-atomic. A kill between the primary write and the backup
+write leaves a disk whose two copies disagree, which `check_backup` reports and nothing repairs.
+Real partitioners have the same property; the difference is that milestone 37 *measured* the
+filesystem's crash behaviour and nothing has measured this.
