@@ -142,6 +142,10 @@ fn stack_top(id: usize) -> u64 {
 /// An "id" here is whatever the bring-up call names a core by: an `MPIDR_EL1[39:0]` affinity value
 /// on aarch64, a hart id on RISC-V. Nothing portable interprets it; it is read out of `/cpus` and
 /// handed back to `arch::psci_cpu_on`.
+///
+/// `u64::MAX` is safe as the empty marker rather than merely convenient: an aarch64 affinity value
+/// is 40 bits by architecture, so it cannot reach it, and a RISC-V hart id that could would fail the
+/// hardware-id-equals-index check in [`bring_up_secondaries`] long before anything indexed by it.
 static HWID: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
 /// Per slot: did the tree describe a core this kernel could actually start? False for a core
