@@ -1,0 +1,19 @@
+[package]
+name = "ntlm"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# **Three known-broken primitives, on purpose** (milestone 65; design/roadmap/56-secrets-and-entropy.md).
+# NTLMv2 specifies MD4 and MD5 and nothing chooses them here: shipping them is protocol
+# compliance, the way implementing DES to talk to old hardware would be. DECISIONS §46's rule
+# applies unchanged (depend, do not vendor, so cargo-deny and cargo-audit can see the graph), and
+# so does its discipline: the specification's own test vectors are this crate's tests.
+md4 = { version = "0.10", default-features = false }
+md-5 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+digest = { version = "0.10", default-features = false }
