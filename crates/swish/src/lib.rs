@@ -12,8 +12,13 @@
 //! # What is in here
 //!
 //! - **The routing of a typed line.** [`route`] answers "what kind of thing did the user type",
-//!   including the one ordering that has a bug behind it: `caps` is answered *before* the line is
-//!   split on its operators, or `caps date | wc` would lose everything after the pipe.
+//!   including the one ordering that has a bug behind it: the prefix words (`caps`, `time`) are
+//!   answered *before* the line is split on its operators, or `caps date | wc` would lose everything
+//!   after the pipe.
+//! - **What a duration reads as.** [`write_duration`] and [`write_timing`] (milestone 86), plus
+//!   [`write_untimed`] for the three reasons there is no duration to print. The arithmetic is here
+//!   rather than in the program because it is arithmetic, and the program's half is two reads of a
+//!   page it holds a capability to.
 //! - **Pattern versus text.** [`is_pattern`] and [`expansion`], which decide whether a word is a
 //!   designation to resolve or arbitrary text to print, and which word on a line gets expanded.
 //! - **Every sentence the user reads.** [`write_say`], [`write_refusal`], [`write_outcome`],
@@ -103,6 +108,11 @@ pub enum Say {
 pub enum Route<'a> {
     /// `caps`, with everything after it. The tail is a **whole command line**, operators included.
     Caps(&'a [u8]),
+    /// `time`, with everything after it (milestone 86). The tail is a whole command line for
+    /// [`Caps`](Route::Caps)'s reason, and the shell **re-dispatches** it: what gets timed is the
+    /// line taking the path it would have taken untimed, so "what you time is what you run" is a
+    /// property of the code rather than a claim about it.
+    Time(&'a [u8]),
     /// One command, with no operators on it: the path every line took before milestone 50.
     One(&'a [u8]),
     /// A line with `>`, `<` or `|` on it, already split into stages.
@@ -113,10 +123,11 @@ pub enum Route<'a> {
 
 /// **Read one line and decide what it is.**
 ///
-/// `caps` is asked **before** the line is split, and that ordering is the whole reason this is a
-/// function worth having. Its operand *is* a command line, so it has to see the operators to preview
-/// what they do: `caps date | wc` must print two stages, and splitting first would hand it the word
-/// `date` and silently lose the rest.
+/// The two prefix words are asked about **before** the line is split, and that ordering is the whole
+/// reason this is a function worth having. Their operand *is* a command line, so they have to see
+/// the operators: `caps date | wc` must print two stages, and splitting first would hand it the word
+/// `date` and silently lose the rest. `time date | wc` is the same shape with the same bug behind
+/// it, one milestone later, and it costs one arm rather than a second mechanism.
 ///
 /// A line with no operators takes exactly the path it took before they existed, which is deliberate.
 /// The operators must not make an ordinary command more expensive or more complicated, because an
@@ -127,6 +138,8 @@ pub enum Route<'a> {
 ///
 /// // The tail keeps the pipe. `caps` will preview two stages, not one.
 /// assert!(matches!(route(b"caps date | wc"), Route::Caps(b"date | wc")));
+/// // And `time` keeps it for the same reason: it times the pipeline, not its first word.
+/// assert!(matches!(route(b"time date | wc"), Route::Time(b"date | wc")));
 /// assert!(matches!(route(b"worker 7"), Route::One(b"worker 7")));
 /// match route(b"date | wc") {
 ///     Route::Pipeline(l) => assert_eq!(l.stages().len(), 2),
@@ -134,8 +147,10 @@ pub enum Route<'a> {
 /// }
 /// ```
 pub fn route(cmd: &[u8]) -> Route<'_> {
-    if let Command::Caps(tail) = grant_plan::parse(cmd) {
-        return Route::Caps(tail);
+    match grant_plan::parse(cmd) {
+        Command::Caps(tail) => return Route::Caps(tail),
+        Command::Time(tail) => return Route::Time(tail),
+        _ => {}
     }
     match line::split(cmd) {
         Ok(l) if l.is_plain() => Route::One(l.stages()[0]),
@@ -251,6 +266,121 @@ pub fn write_num(mut v: u64, out: &mut dyn FnMut(&[u8])) {
     out(&digits[i..]);
 }
 
+// ---- `time`: what the shell may say about how long something took (milestone 86) ----
+
+/// **The three reasons a line was not timed**, printed instead of a duration.
+///
+/// Two of them are `date`'s, worded for the prefix position, because they are the same two facts
+/// about the same page: this process holds no clock capability, or the machine has published no time
+/// it believes. The third is the one the prefix position adds, and it is a fact about the line.
+///
+/// **A `time` that cannot measure does not run the command**, which is the decision worth naming
+/// here rather than in a note. `time wc report.txt` is a request to measure something; running it
+/// unmeasured and saying nothing would be DECISIONS §42's silent degradation with a stopwatch on it,
+/// and running it while printing a complaint would leave a person guessing which half happened. So
+/// the refusal is at the prompt, before anything is spawned, the way every other refusal in this
+/// shell is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Untimed {
+    /// `time` with nothing after it. There is no command to run, so there is nothing to time.
+    NothingToTime,
+    /// This shell was granted no clock page, so it cannot read a time at all. Init decides that, and
+    /// a shell in a wiring with no clock service is the ordinary case rather than a fault.
+    NoClock,
+    /// This shell holds a clock and the machine has never published a time it believes
+    /// (`clock_proto::state::UNKNOWN`). The clock is there; what it says is "I do not know".
+    UnknownClock,
+}
+
+/// Write why a line was not timed. The two clock sentences are `date`'s with the program name
+/// changed, deliberately: they name the same two causes and call for the same two fixes, so a person
+/// who has read one has read the other.
+pub fn write_untimed(r: Untimed, out: &mut dyn FnMut(&[u8])) {
+    out(match r {
+        Untimed::NothingToTime => b"  time: name a command to time: time <command>\n".as_slice(),
+        Untimed::NoClock => {
+            b"  time: the time is unknown: this shell holds no clock capability\n".as_slice()
+        }
+        Untimed::UnknownClock => {
+            b"  time: the time is unknown: the machine has no clock it believes\n".as_slice()
+        }
+    });
+}
+
+/// **An elapsed duration, in the largest unit that keeps it readable**, with three digits after the
+/// point and nothing after that.
+///
+/// Three units and no more: seconds, milliseconds, microseconds. A spawn on this system is
+/// milliseconds and a builtin is microseconds, so those are the two a person meets; seconds is there
+/// because a long job exists and `1234567.891 ms` is not a number anybody reads.
+///
+/// **Three digits is a rendering choice, not a resolution claim.** The counter ticks at 62.5 MHz on
+/// the aarch64 board (16 ns) and 10 MHz on the RISC-V one (100 ns), so the last digit of a
+/// microsecond reading is real on one board and rounded on the other. What it must never do is print
+/// more precision than the arithmetic has, which is why there is no nanosecond unit here at all.
+///
+/// ```
+/// use swish::write_duration;
+///
+/// let shown = |nanos| {
+///     let mut s = Vec::new();
+///     write_duration(nanos, &mut |b| s.extend_from_slice(b));
+///     String::from_utf8(s).unwrap()
+/// };
+///
+/// assert_eq!(shown(0), "0.000 us");
+/// assert_eq!(shown(1_234), "1.234 us");
+/// assert_eq!(shown(4_213_000), "4.213 ms");
+/// assert_eq!(shown(90_500_000_000), "90.500 s");
+/// ```
+pub fn write_duration(nanos: u64, out: &mut dyn FnMut(&[u8])) {
+    const MICRO: u64 = 1_000;
+    const MILLI: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
+    let (whole, thousandths, unit) = if nanos >= SEC {
+        (nanos / SEC, (nanos % SEC) / MILLI, b" s".as_slice())
+    } else if nanos >= MILLI {
+        (nanos / MILLI, (nanos % MILLI) / MICRO, b" ms".as_slice())
+    } else {
+        (nanos / MICRO, nanos % MICRO, b" us".as_slice())
+    };
+    write_num(whole, out);
+    out(b".");
+    // Written digit by digit rather than through [`write_num`], because the fraction is **zero
+    // padded** and that function writes no leading zeros: `4.13 ms` and `4.013 ms` are different
+    // numbers and only one of them is what happened. `thousandths` is below 1000 by construction
+    // (every branch above divides its remainder by the next unit down), so three digits is exact.
+    out(&[
+        b'0' + (thousandths / 100 % 10) as u8,
+        b'0' + (thousandths / 10 % 10) as u8,
+        b'0' + (thousandths % 10) as u8,
+    ]);
+    out(unit);
+}
+
+/// **The line `time` prints when it measured something.**
+///
+/// `real` is Unix's word for it and it is the honest one: this is wall-clock time between the shell
+/// deciding to run the line and the line being over. It is **not** CPU time, and there is no `user`
+/// or `sys` row to go with it, because nothing in this kernel is asked how much processor a thread
+/// consumed. That is a scheduler fact and it is unqueried today; if it arrives it is another row
+/// here, not another command.
+///
+/// `stepped` is true when the clock's generation changed while the command ran, which means the
+/// number is a difference of two wall-clock readings that are not on the same clock. Saying so is
+/// the whole reason the shell reads `clock_proto`'s generation rather than just the offset: without
+/// it, a clock corrected mid-command would silently move the answer, and a stopwatch that is
+/// sometimes wrong and never says so is worse than no stopwatch.
+pub fn write_timing(nanos: u64, stepped: bool, out: &mut dyn FnMut(&[u8])) {
+    out(b"  time: real ");
+    write_duration(nanos, out);
+    out(b"\n");
+    if stepped {
+        out(b"  time: the wall clock was stepped while that ran, so this is what the clock\n");
+        out(b"        says elapsed rather than what did\n");
+    }
+}
+
 /// Write what a builtin had to say. Every line is a statement about a name or a capability, never
 /// about a policy: `fs_proto::dir::explain` keeps the filesystem's half next to the decision that
 /// chose the errno, so this function does not get to invent a friendlier word for a refusal.
@@ -295,6 +425,7 @@ pub fn write_help(out: &mut dyn FnMut(&[u8])) {
     out(b"  echo <text>             print <text>\n");
     out(b"  caps                    print this shell's whole endowment\n");
     out(b"  caps <command>          preview what that command would grant\n");
+    out(b"  time <command>          run it and say how long it took (WALL clock, not CPU)\n");
     out(b"  cd [path]               move inside the directory you hold ('cd' is your root)\n");
     out(b"  pwd                     where you are, relative to YOUR root\n");
     out(b"  ls [path]               list a directory you can reach\n");
@@ -399,7 +530,17 @@ pub fn write_outcome(e: &Endowment, answer: u64, out: &mut dyn FnMut(&[u8])) {
 ///
 /// `budget_pages` is what init granted at boot rather than what is left, because there is no syscall
 /// that reports the remainder. The caller passes its own constant and the row says "(initial)".
-pub fn write_holdings(budget_pages: u64, holdings: Holdings, out: &mut dyn FnMut(&[u8])) {
+///
+/// `clock` is the slot holding this shell's read-only clock page, or `None` for a wiring that
+/// granted none (milestone 86). It is a slot number rather than a boolean because the number is not
+/// fixed: a shell wired without a filesystem has one fewer capability below it, and printing a
+/// number this shell did not actually get would make the table a story rather than a reading.
+pub fn write_holdings(
+    budget_pages: u64,
+    holdings: Holdings,
+    clock: Option<u64>,
+    out: &mut dyn FnMut(&[u8]),
+) {
     out(b"  this shell holds, and nothing else:\n");
     out(b"    cap 0  endpoint  terminal   read lines, write text\n");
     out(b"    cap 1  endpoint  spawn      direct init to start a program\n");
@@ -412,11 +553,26 @@ pub fn write_holdings(budget_pages: u64, holdings: Holdings, out: &mut dyn FnMut
     } else {
         out(b"    (no directory capability: a name on the line has nothing to narrow)\n");
     }
-    // The clock is deliberately absent from the list above, and the sentence says whose it is rather
-    // than that there is none. A shell that held the clock page could hand it to anything it spawns;
-    // init holds it and endows exactly the programs whose manifest declares one, which is one fewer
-    // process able to read the time and the reason this line is not a hole (DECISIONS §43).
-    out(b"    (no clock here: init endows 'date' a read-only clock page, this shell cannot)\n");
+    // **The clock, and the rights row is the whole of it** (milestone 86). This shell reads the page
+    // and holds no `GRANT` on it, so `time` can measure a command and nothing typed here can hand a
+    // clock to a child: which processes can read the time is still decided by the manifests init
+    // reads (DECISIONS §43), and the shell's own reading authority does not widen that set by one.
+    //
+    // That distinction is why the row prints the rights rather than just the object. A reader who
+    // saw "clock" in this table and assumed the shell could pass it on would be wrong about the one
+    // thing the table exists to answer.
+    match clock {
+        Some(slot) => {
+            out(b"    cap ");
+            write_num(slot, out);
+            out(b"  frame     clock      READ only, NOT delegable: 'time' measures with\n");
+            out(b"                                  it and no command can be handed it\n");
+        }
+        None => {
+            out(b"    (no clock here: init endows 'date' a read-only clock page, this shell was\n");
+            out(b"     granted none, so 'time' has nothing to measure with)\n");
+        }
+    }
     out(b"  it can name no devices and no other process. authority is what it holds.\n");
 }
 
@@ -434,12 +590,33 @@ pub fn write_caps(
     tail: &[u8],
     budget_pages: u64,
     holdings: Holdings,
+    clock: Option<u64>,
     expand: &mut dyn FnMut(&[u8]) -> Result<NameSet, Say>,
     out: &mut dyn FnMut(&[u8]),
 ) {
-    let tail = grant_plan::trim(tail);
+    let mut tail = grant_plan::trim(tail);
     if tail.is_empty() {
-        return write_holdings(budget_pages, holdings, out);
+        return write_holdings(budget_pages, holdings, clock, out);
+    }
+    // **`caps time <command>` previews the command**, because that is what would run and `time`
+    // moves no authority to it: the shell times with its own clock and the child is spawned with the
+    // endowment the tail names, unchanged. A preview that stopped at the prefix word would answer
+    // "this is not an invocation" about a line that is one, which is the drift between what you
+    // inspect and what you run that `caps` exists to close.
+    //
+    // A loop rather than a recursive call, because `caps time time time date` is a line a person can
+    // type and this function's frame carries a whole split `Line` by value. Bounded recursion on a
+    // shell stack is a bug waiting for a long line (notes/pipes.md has two of those already).
+    let mut timed = false;
+    while let Command::Time(inner) = grant_plan::parse(tail) {
+        timed = true;
+        tail = grant_plan::trim(inner);
+        if tail.is_empty() {
+            return write_untimed(Untimed::NothingToTime, out);
+        }
+    }
+    if timed {
+        out(b"  time grants nothing; what it would run:\n");
     }
     let l = match line::split(tail) {
         Ok(l) => l,
@@ -1061,10 +1238,11 @@ mod tests {
                     dir: true,
                     cwd: Cwd::root(),
                 },
+                None,
                 o,
             );
         });
-        let without = shown(|o| write_holdings(128, Holdings::default(), o));
+        let without = shown(|o| write_holdings(128, Holdings::default(), None, o));
         let differing = with
             .lines()
             .zip(without.lines())
@@ -1077,6 +1255,31 @@ mod tests {
         assert!(with.contains("128 pages"));
     }
 
+    /// **A clock in the endowment is one row, and the row says it cannot be handed on** (milestone
+    /// 86).
+    ///
+    /// The rights half is the whole point. Before this milestone `caps` said the shell held no clock
+    /// and could not endow one; now it holds one and *still* cannot endow one, because what it was
+    /// granted is `READ` without `GRANT`. Those are different sentences about the same guarantee, and
+    /// a table that printed only the object would have lost it.
+    #[test]
+    fn a_clock_is_one_row_and_it_says_the_shell_cannot_pass_it_on() {
+        let with = shown(|o| write_holdings(128, Holdings::default(), Some(5), o));
+        assert!(with.contains("cap 5  frame     clock"), "{with}");
+        assert!(with.contains("NOT delegable"), "{with}");
+
+        // The slot is the caller's to state rather than a constant here, because it moves with the
+        // wiring: a shell granted no directory has one fewer capability under it.
+        let lower = shown(|o| write_holdings(128, Holdings::default(), Some(4), o));
+        assert!(lower.contains("cap 4  frame     clock"), "{lower}");
+
+        // And a shell granted none says what is missing and what it costs, rather than leaving a
+        // reader to wonder why `time` refuses.
+        let without = shown(|o| write_holdings(128, Holdings::default(), None, o));
+        assert!(without.contains("was\n     granted none"), "{without}");
+        assert!(without.contains("nothing to measure with"), "{without}");
+    }
+
     // ---- caps over a whole line ----
 
     #[test]
@@ -1086,11 +1289,12 @@ mod tests {
                 b"   ",
                 128,
                 Holdings::default(),
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );
         });
-        let direct = shown(|o| write_holdings(128, Holdings::default(), o));
+        let direct = shown(|o| write_holdings(128, Holdings::default(), None, o));
         assert_eq!(tail, direct);
     }
 
@@ -1101,6 +1305,7 @@ mod tests {
                 b"date | wc",
                 128,
                 Holdings::default(),
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );
@@ -1124,6 +1329,7 @@ mod tests {
                 b"worker 7 | wc",
                 128,
                 Holdings::default(),
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );
@@ -1141,6 +1347,7 @@ mod tests {
                 b"wc report.txt",
                 128,
                 Holdings::default(),
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );
@@ -1156,11 +1363,107 @@ mod tests {
                 b"help",
                 128,
                 Holdings::default(),
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );
         });
         assert!(s.contains("caps previews a command's grant"), "{s}");
+    }
+
+    /// **`caps time <command>` previews the command, unchanged** (milestone 86).
+    ///
+    /// The assertion is equality with the preview of the same line untimed, not a substring, because
+    /// the claim is that `time` moves no authority at all. One extra line of prose says the prefix
+    /// was seen; every row of the table has to be identical, or the shell would be previewing one
+    /// endowment and spawning another.
+    #[test]
+    fn caps_of_a_timed_command_previews_the_command_itself() {
+        let preview = |line: &'static [u8]| {
+            shown(|o| {
+                write_caps(
+                    line,
+                    128,
+                    Holdings::default(),
+                    Some(5),
+                    &mut |_| Ok(NameSet::empty()),
+                    o,
+                );
+            })
+        };
+        let timed = preview(b"time budgeter --mem 16");
+        let plain = preview(b"budgeter --mem 16");
+        assert_eq!(
+            timed.strip_prefix("  time grants nothing; what it would run:\n"),
+            Some(plain.as_str()),
+            "timing a command must not change one row of what it would be granted",
+        );
+
+        // Nested prefixes collapse rather than recursing, and a prefix with nothing after it is the
+        // same complaint the prompt makes.
+        assert_eq!(preview(b"time time budgeter --mem 16"), timed);
+        assert!(preview(b"time").contains("name a command to time"));
+    }
+
+    // ---- time: the duration, and the three reasons there is not one ----
+
+    /// **The unit boundaries, which are the only place this arithmetic can be wrong.**
+    ///
+    /// Each pair is a value just under a boundary and the one just over it, because a rendering that
+    /// picks its unit with the wrong comparison is right everywhere else. The zero-padding is here
+    /// for the same reason: `4.13 ms` looks like a number and is a different one from `4.013 ms`.
+    #[test]
+    fn a_duration_reads_in_the_largest_unit_that_keeps_it_readable() {
+        let shown_ns = |nanos| shown(|o| write_duration(nanos, o));
+
+        assert_eq!(shown_ns(0), "0.000 us");
+        assert_eq!(shown_ns(999_999), "999.999 us");
+        assert_eq!(shown_ns(1_000_000), "1.000 ms");
+        assert_eq!(shown_ns(999_999_999), "999.999 ms");
+        assert_eq!(shown_ns(1_000_000_000), "1.000 s");
+        // The padding, at each width, because the digits come from a writer that omits leading zeros.
+        assert_eq!(shown_ns(1_001_000), "1.001 ms");
+        assert_eq!(shown_ns(1_010_000), "1.010 ms");
+        assert_eq!(shown_ns(1_100_000), "1.100 ms");
+        // Sub-tick values still render: the counter's resolution is a fact about the input, and a
+        // renderer that refused small numbers would be lying about a different thing.
+        assert_eq!(shown_ns(7), "0.007 us");
+    }
+
+    /// **A stepped clock is said out loud**, which is why the shell reads the generation and not just
+    /// the offset.
+    #[test]
+    fn a_timing_line_says_when_the_clock_moved_under_it() {
+        let steady = shown(|o| write_timing(4_213_000, false, o));
+        assert_eq!(steady, "  time: real 4.213 ms\n");
+        // `real` is Unix's word, and the absence of `user` and `sys` is the honest part: nothing in
+        // this kernel is asked what a thread spent.
+        assert!(!steady.contains("user"));
+        assert!(!steady.contains("sys"));
+
+        let stepped = shown(|o| write_timing(4_213_000, true, o));
+        assert!(stepped.starts_with(&steady), "{stepped}");
+        assert!(stepped.contains("stepped while that ran"), "{stepped}");
+    }
+
+    /// **The two clock refusals are `date`'s sentences**, and that is deliberate rather than a
+    /// coincidence to be tidied: they are the same two causes and they call for the same two fixes,
+    /// so a person who has met one has met the other.
+    #[test]
+    fn an_untimed_line_says_which_of_the_three_reasons_it_was() {
+        let said = |r| shown(|o| write_untimed(r, o));
+        assert!(said(Untimed::NoClock).contains("holds no clock capability"));
+        assert!(said(Untimed::UnknownClock).contains("no clock it believes"));
+        assert!(said(Untimed::NothingToTime).contains("name a command to time"));
+        // Every one of them is attributed, because a bare sentence at a prompt reads as the
+        // command's complaint rather than the shell's.
+        for r in [
+            Untimed::NoClock,
+            Untimed::UnknownClock,
+            Untimed::NothingToTime,
+        ] {
+            assert!(said(r).starts_with("  time: "), "{:?}", said(r));
+        }
     }
 
     // ---- help ----
@@ -1171,7 +1474,7 @@ mod tests {
         // builtin added to the parser and not to the help, which is then a feature nobody at the
         // prompt can find.
         let text = shown(write_help);
-        for verb in ["help", "echo", "caps", "cd", "pwd", "ls", "mkdir"] {
+        for verb in ["help", "echo", "caps", "time", "cd", "pwd", "ls", "mkdir"] {
             assert!(text.contains(verb), "help does not mention {verb}");
             // And it really is a verb this shell answers, rather than a word in a sentence.
             assert!(
@@ -1228,6 +1531,7 @@ mod tests {
                     dir: true,
                     cwd: Cwd::root(),
                 },
+                None,
                 &mut |_| Ok(NameSet::empty()),
                 o,
             );

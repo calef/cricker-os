@@ -87,6 +87,29 @@ license = "MIT OR Apache-2.0"
 # `cfg(kani)` is set by the model checker, not by cargo, so without this every Kani-gated module is
 # an "unexpected cfg" warning. Was duplicated across 19 crates; now stated once.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+# The lint that composes with `undocumented_unsafe_blocks` below (milestone 82). An `unsafe fn`
+# body is one implicit unsafe block, so a function with three unsafe operations carries three
+# invariants under a single signature, and the clippy lint cannot see any of them: it fires on
+# blocks, and there are no blocks. This one takes the implicitness away. Each interior operation
+# gets its own `unsafe {}`, and each block then owes the SAFETY comment the other lint enforces.
+# Together they buy the property this kernel is actually after: every unsafe operation sits next to
+# the written invariant that makes it sound, whether or not its enclosing fn is unsafe.
+#
+# **It found nothing, and that is the record rather than a boast.** All 33 `unsafe fn`s in
+# `kernel/` and `crates/` were already clean, in every configuration `script/lint` builds, before
+# this line existed. The reason is that all 49 packages we own are **edition 2024**, where this
+# lint is warn-by-default as part of `rust_2024_compatibility`, and
+# `script/lint` runs `-D warnings`. So it has been a hard gate here since the edition bump, and was
+# stated nowhere. The milestone's premise, a bounded burn-down of 33 functions, was wrong.
+#
+# The line is worth its one row for the two things the edition default does not give. A reader of
+# the lint policy can see the rule, which is the whole reason milestone 68 put lint policy in one
+# place. And a package at an older edition cannot quietly escape it. That is not hypothetical: the
+# fiftieth package in the tree, `vendor/redoxfs`, is edition 2021, and an external crate pulled into
+# the workspace arrives at whatever edition its author chose.
+#
+# See notes/unsafe-obligations.md for the survey, and for the three things neither lint can reach.
+unsafe_op_in_unsafe_fn = "warn"
 
 [workspace.lints.clippy]
 # --- The one this project most obviously wanted. Every `unsafe` block states the invariant that

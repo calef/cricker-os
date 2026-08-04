@@ -168,9 +168,12 @@ Three things about that shape are deliberate:
 - **The grant does not depend on what the machine has.** A boot with no `clock` program in its initrd
   gets a zeroed frame instead, which reads as `UNKNOWN` and is the honest answer. Slot numbers that
   moved with the hardware would be a wiring nobody could check by reading.
-- **The shell is not on the path.** It holds no clock and cannot delegate one, so the set of processes
-  that can read the time is decided by manifests init reads rather than by anything typed at a prompt.
-  `caps date` prints the row so a person can still see it (notes/date.md).
+- **The shell cannot put a clock on the path.** It was granted none at all until milestone 86; since
+  then it holds one with **`READ` and no `GRANT`**, which it reads to time a command (`time
+  <command>`, notes/time-command.md) and cannot hand to anything it spawns. Either way the set of
+  processes that can read the time is decided by manifests init reads rather than by anything typed
+  at a prompt. `caps date` prints the child's row and `caps` prints the shell's, rights included, so
+  a person can see both (notes/date.md).
 - **`READ` all the way down.** Nothing between the kernel and a spawned child ever holds the writable
   mapping, which is why "there is no `date -s`" is a fact about the wiring rather than a missing flag.
 

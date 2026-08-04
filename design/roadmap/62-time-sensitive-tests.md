@@ -41,6 +41,40 @@ and it depends on a human remembering to apply it.
   some of it could be host-tested against a simulated clock, which is where this project already puts
   logic it wants to check in milliseconds.
 
+## The watchdog cannot tell "stuck" from "slow", and it is the same defect one level up
+
+Added 2026-08-04 from `notes/semihosting.md:82`, which records the limitation and names the fix
+nobody owns. The suite's own deadlock detector has exactly the problem this milestone is about.
+
+**The heartbeat is bumped once per test, at the test's start**, in `Testable::run`, and never while
+a test runs. So "no progress for 60 s" cannot distinguish a genuine deadlock from a test that is
+simply *slower* than 60 s. Both look identical from outside: the heartbeat stops advancing because
+no *new* test started.
+
+**This has already cost a diagnosis.** Milestone 32's FS-server test tripped the watchdog as a false
+deadlock. It was not stuck, it was starved: leaked spinning driver threads crammed onto core 0 slowed
+the RedoxFS mount past 60 s. Raising the limit made it pass, **which is exactly what a deadlock can
+never do**, and that is the tell the current instrument cannot produce on its own. The thread dump
+reinforced the wrong read, because a starved thread and a deadlocked one both sit `Blocked`/`Ready`
+with nothing obviously moving.
+
+**The fix, per the note.** A per-test *progress* heartbeat: the test, or the IPC and scheduler paths
+under it, bumps a counter as work happens, so a slow test keeps the watchdog fed and a wedged one
+does not. The other half already exists and was built while chasing that false deadlock: the
+enriched `sched::dump_threads` reports each thread's EL0 PC and the per-endpoint sender, receiver
+and pending counts, so two dumps a few seconds apart show whether the pipeline is changing state
+(starved but progressing) or frozen.
+
+Until the heartbeat is per-progress, the operating rule is what the note says to do by hand: read a
+watchdog trip as "stuck **or** slow", and confirm which by raising the limit before assuming a lost
+wakeup. That is a human step in the loop for exactly the reason the rest of this milestone gives, a
+red run whose meaning has to be argued about trains everyone to re-run rather than to read.
+
+**It belongs here rather than in a harness milestone** because it is the same failure the bounded
+spins have: a bound expressed in something other than the property under test. Nineteen tests take
+N turns and hope; the watchdog takes 60 seconds and hopes. Whatever answers the first should answer
+the second.
+
 ## BUGS
 
 - **Fixing this cannot be verified by running the suite once.** A flake that fires one run in six is

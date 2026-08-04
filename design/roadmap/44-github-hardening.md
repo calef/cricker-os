@@ -23,4 +23,27 @@ required check that never reports blocks every merge.
 
 **In brief.** Four items, and they split into files we can commit and settings someone with admin has to toggle. **Files:** a `SECURITY.md` policy stating what is in scope (the kernel's confinement boundaries) and what is not (a demonstrator running under QEMU is not a production system), and a code-scanning workflow. **Settings:** private vulnerability reporting, and a ruleset requiring pull requests into `main`. Note the plumbing for the last one already exists, since CI runs on `pull_request`; what is missing is the branch protection that makes it mandatory. One thing to check rather than assume: **CodeQL's Rust support** has been moving through preview, so confirm its current state before committing to it; if it is not ready, the practical scanners are the clippy gate we already run, `cargo-audit`/`cargo-deny` from milestone 42, and a SARIF upload from whatever does work
 
+**Signed commits: a fifth item, deferred on purpose and not previously written down here.** Added
+2026-08-04 from `notes/repo-hardening.md:82`, which files it under **Do NOT enable** with its reason:
+"Nothing here is signed today; turning this on would block every merge until signing is set up.
+Worth doing eventually, as its own decision, not as a side effect of this one."
+
+That reasoning is right about sequencing and it left the eventual decision with no home, so it lives
+here now. Three things it needs, and the second is the one with a real cost:
+
+- **A key and a signing method.** SSH signing is the cheap path (git supports it, GitHub verifies it,
+  and the key already exists on the machine that pushes); GPG is the older path with more tooling
+  around it.
+- **Every automated committer signs too, or the rule blocks them.** This tree merges lane work
+  constantly and takes Dependabot pull requests, and a required-signature rule applies to both. That
+  is the part to check before turning the setting on, because the failure mode is the same one the
+  ruleset note already warns about: a requirement nothing can satisfy blocks every merge.
+- **A statement of what it buys here.** For a public repository with a security thesis, signatures
+  say the commits are from who they claim to be, which is a supply-chain property adjacent to
+  milestone 42's `cargo-audit`/`cargo-deny` work rather than a code-quality one. Say that plainly, or
+  it reads as ceremony.
+
+Sequence it after the ruleset lands and after the required checks are green, for exactly the reason
+the ruleset itself is sequenced after this branch merges.
+
 **Why it matters.** **a public repository with a security thesis should be able to receive a security report privately**, which today it cannot. The pull-request item also changes how this project is built: work currently lands by merging feature branches into `main` locally, and requiring PRs would put every merge behind the same gate rather than trusting the person merging, which is the discipline that caught the reap flake and the conflict markers only because I happened to run the gates by hand
