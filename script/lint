@@ -455,8 +455,22 @@ if [ -n "$doc_name_bad" ]; then
     exit 1
 fi
 
+# 7. **Every crate, program and script/ entry point carries a provenance block** (milestone 115).
+#    A name in this tree is Chris's call, and until now nothing recorded that a call had been made.
+#    The failure was concrete: a lane proposed `system_builder`, the maintainer endorsed it, and
+#    Chris overruled it, and only afterwards did anyone find that milestone 63 had ALREADY refused
+#    that exact name for a reason still true. The refusal sat in one table cell inside one milestone
+#    block, and a blind rename later swept the old name out of that very row.
+#
+#    Presence, not content. This can check that a name carries a reason; it cannot check that the
+#    reason is still true, that a date is right, or that an `unrecorded` entry is honest rather than
+#    lazy. That is the same limit script/decisions records for §N citations, and it is not closeable
+#    by a script, because a reason is prose and prose is checked by reading.
+"$(dirname "$0")/names" --check
+
 echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised,"
-echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated"
+echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated,"
+echo "        every name carries its provenance"
 
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero

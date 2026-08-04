@@ -189,6 +189,153 @@ Two directories, on purpose, and the split is by audience.
 Every `script/` entry needs a row in [scripts.md](scripts.md); `script/lint` fails without one, and
 fails in the other direction too if `README.md` names a script that does not exist.
 
+## Where a name's provenance lives (milestone 115)
+
+**The refusals are the valuable half, and they used to live nowhere.** A ratified name is visible in
+the tree, because it *is* the name. A refused one is visible in no file at all, and the person who
+most needs it is the person about to propose it again.
+
+That is not hypothetical. A lane proposed `system_builder` for the crate milestone 96 extracted, the
+maintainer endorsed it, and Chris overruled it to `system_initializer`. Only afterwards did anyone
+find that **milestone 63 had already refused `system_builder`**, for a reason still true:
+`user/src/builder.rs` calls itself "a minimal init: the system builder", so two programs would claim
+one phrase. The refusal existed, in one table cell inside one milestone block, invisible at the
+moment it was needed. A blind rename then swept the old name out of that very row, and the record of
+the refusal was nearly destroyed by the rename it should have prevented.
+
+**The record is derived, not maintained.** The first draft of the fix was one ratified-names table,
+here in this file. Chris rejected it on 2026-08-04 for scaling the way the original `DECISIONS.md`
+and `design/roadmap.md` scaled, and size is the smaller half of that argument. The **conflict shape**
+is the real one: every lane that adds a name would edit one file, which is exactly what produced
+three section-number collisions in a day.
+
+So:
+
+1. **Provenance lives at the name.** A crate's `lib.rs` header, a program's module doc and a
+   `script/` entry point's comment block each carry a `Name:` block saying when the name was
+   ratified and what was refused. Adding a name touches exactly one file, so two lanes naming two
+   things cannot collide. It also puts the refusal where the next proposer is already reading.
+2. **`script/lint` checks presence, never content.** 126 names today, and a name with no block
+   fails the build.
+3. **`script/names` is the table**, computed on demand, so it cannot drift from the tree. Same
+   family as `script/roadmap`, `script/decisions` and `script/catch-up`.
+4. **The maintainer writes the block at ratification**, in the same commit that applies the name,
+   while the alternatives are still in mind.
+
+### The two forms
+
+```
+Name: ratified <YYYY-MM-DD> (<who>, <where>). Refused `x` (why), `y` (why).
+Name: unrecorded. <what the history does and does not say>
+```
+
+A block runs from its `Name:` line to the next empty comment line, so it may wrap over as many
+lines as the reasons need. Two conventions make the refusals machine-readable without a syntax
+anybody has to remember: **a reason goes in parentheses**, and **the refusal clause ends at its
+sentence**. Both exist because the alternative misfires. `capsh(1)` is cited as the Linux tool that
+made `capsh` unavailable, so a parser that read every backtick would record the citation as a
+refusal of its own; `grant_plan` explains after its list that it is deliberately not named for
+`swish`, and neither `swish` nor the `dwarden` it compares itself to is a refused name.
+
+**`unrecorded` is a first-class answer.** Most of this tree's vocabulary arrived before anyone was
+writing naming decisions down. Inventing a ratification to fill a row would put a false claim in the
+one record whose entire job is saying who claimed what, so where the history does not say, the entry
+says it does not say and cites the commit that introduced the name.
+
+**The number is itself a finding.** Of 126 names, **72 carry a ratification and 54 do not**: 43% of
+this tree's most reader-facing vocabulary arrived without a recorded decision. The unrecorded ones
+are not evenly spread, and the pattern says something. Every name a rename ever touched is recorded,
+because a rename is an argument and somebody wrote it down. What is unrecorded is what nobody
+objected to: `frames`, `regions` and `slots` (the generic-word group the tenet flags and has not
+settled), the `*_proto` stems, the fixtures (`flaky`, `spinner`, `chatty`, `worker`), and about half
+of `script/`.
+
+### EXAMPLES
+
+Has this name been refused before? This is the query the incident above needed and nothing could
+answer:
+
+```
+$ script/names system_builder
+REFUSED for crate system_initializer  (crates/system_initializer/src/lib.rs)
+  ratified 2026-08-04 (Chris, milestone 96), and it is the ratification that raised milestone 115.
+  Refused `system_builder` (milestone 63 had already refused it, for a reason still true:
+  `builder.rs` calls itself "a minimal init: the system builder", so two programs would claim one
+  phrase) and `system_bootloader` ...
+```
+
+Everything that has been turned down, and where the reason lives:
+
+```
+$ script/names --refused
+REFUSED (85), and what holds each refusal
+
+  allocdemo                    program allocator_exerciser
+  allot                        crate grant_plan
+  ...
+  job_killer                   program job_undertaker
+  sanitize                     script undefined-behavior-check
+  sheesh                       crate swish
+```
+
+What nobody has decided, which is the work list this milestone produces rather than a defect:
+
+```
+$ script/names --unrecorded
+UNRECORDED (54 of 126): no ratification is on record
+
+  crate    abi
+  crate    bitfont
+  ...
+  program  driver
+  script   initboot
+```
+
+The whole table, and the gate:
+
+```
+$ script/names | tail -3
+total: 126 names, 72 ratified, 54 unrecorded, 85 refusals
+refused but live: video_terminal
+
+$ script/names --check
+names: NOTE 'video_terminal' is recorded as refused and is also a live name
+names: 126 names carry provenance (43 crates, 54 programs, 29 scripts)
+names: 72 ratified, 54 unrecorded, 85 refusals recorded beside them
+```
+
+That `video_terminal` line is the mechanism working rather than a defect. The name was **refused for
+the program** (`display_terminal` is named for its role) and is **live as the crate** (named for the
+protocol it implements). Both facts are true, the pair is deliberate, and a reader who meets only
+one of them would get it wrong. The check reports the contradiction and never fails on it, because a
+refused word can legitimately survive as ordinary English and a gate that fires on prose is a gate
+people learn to skip.
+
+### BUGS
+
+- **It checks that a name carries a reason, never that the reason is still true.** A block whose
+  argument was overtaken looks exactly like one whose argument holds. That is the same limit
+  `script/decisions --check` records for `§N` citations, and it is not closeable by a script,
+  because a reason is prose and prose is checked by reading. Milestone 97 is the neighbouring case.
+- **It cannot tell an honest `unrecorded` from a lazy one.** The 54 above were each researched
+  against the git history, and nothing stops the fifty-fifth from being a shrug. The only defence is
+  that an `unrecorded` entry cites the commit that introduced the name, so the next reader starts
+  where this one stopped rather than from nothing.
+- **Three surfaces, and the tree has more than three kinds of name.** Crates, programs and `script/`
+  entry points carry blocks. Directories, types, `scripts/` helpers, `kernel`, `xtask`, `fs_server`
+  and `tools/redoxfs_host` do not, and at least one ratified name has no home as a result:
+  **`design/audit-reports/`** (Chris, 2026-08-04), where `audit-trail` was refused because
+  `design/decisions/35-scanner-findings.md` already uses that phrase for a chronological record of
+  dismissals and it is also what an operating system means by it (`auditd`), and bare `audits` was
+  passed over because every file in the directory is a report. Recorded here rather than stretched
+  into a schema that does not fit it.
+- **A type's name is a naming decision the mechanism does not see.** `BootEndowment` was ratified on
+  2026-08-04 (replacing `Grants`) and is mentioned inside `system_initializer`'s block only because
+  its crate happens to export it. `supervision_proto::Endow` is an open naming question (§69) and
+  appears nowhere in this record.
+- **The `Name:` marker is a string in a comment**, so a header that never had one is caught by the
+  gate while a header that loses one to an edit is caught only if the edit removes the whole line.
+
 ## Directories (milestone 63)
 
 The tenet covered crates, programs, modules, shell entry points and markdown, and said nothing about
@@ -270,8 +417,9 @@ Checked, for the current branch only, and skipped on a detached HEAD.
 
 ## What is checked, and what cannot be
 
-`script/lint`'s `naming conventions` block enforces four things, all cheap greps because lint runs
-constantly:
+`script/lint`'s `naming conventions` block enforces seven things, and the first five are cheap greps
+because lint runs constantly. (An earlier version of this sentence said four and then listed five,
+which is the ordinary way a hand-kept count drifts; take it from the script.)
 
 1. **No name ending in `-d`**, over `user/src/*.rs`, `user/Cargo.toml`'s `[[bin]]` names, and
    `crates/*`. Four characters or more, so `kbd` is an abbreviation rather than a daemon. Words that
@@ -290,6 +438,11 @@ constantly:
    pass it in. Rust already has the per-binary "how this program dies" hook, `#[panic_handler]`, and
    both binaries already had one executing the same instruction by two different routes. An entry
    here needs a reason of that calibre.
+6. **`notes/` and `design/` filenames are lowercase and hyphenated**, because they are URL slugs the
+   moment any of this is published. `README.md` is the only exception, and it is GitHub behaviour
+   rather than style.
+7. **Every crate, program and `script/` entry point carries a `Name:` block** (milestone 115, and
+   the section above). Presence only: it cannot check that the reason is still true.
 
 Everything else here is prose because it needs judgement and no checker can supply it. In particular
 **a checker cannot catch the jargon half of §39**: `linedisc` would have passed all four rules above.
