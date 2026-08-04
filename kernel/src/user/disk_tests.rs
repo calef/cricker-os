@@ -79,8 +79,9 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
     );
     assert!(
         mmio >= 4,
-        "four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash image, \
-         and the GPT image); the roster names {mmio}",
+        "at least four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash \
+         image, the GPT image, and since milestone 57's write half the blank one); the roster names \
+         {mmio}",
     );
     assert_eq!(
         pci, 1,
@@ -288,7 +289,8 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
     }
     assert_eq!(partitions, blank::PARTITIONS as u64);
     assert_eq!(
-        data_lba, blank::DATA.0,
+        data_lba,
+        blank::DATA.0,
         "the data partition starts where it was placed",
     );
 
@@ -325,7 +327,8 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
         verdict, R_MADE,
         "fs_maker failed at step {blocks} with errno {first}",
     );
-    let want_blocks = (blank::DATA.1 - blank::DATA.0 + 1) * blank::LBA / fs_proto::blk::BLOCK_SIZE as u64;
+    let want_blocks =
+        (blank::DATA.1 - blank::DATA.0 + 1) * blank::LBA / fs_proto::blk::BLOCK_SIZE as u64;
     assert_eq!(blocks, want_blocks, "the filesystem covers the partition");
     assert_eq!(
         first,

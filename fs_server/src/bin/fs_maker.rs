@@ -174,7 +174,10 @@ pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
         user_rt::exit()
     };
 
-    let disk = PartitionDisk { first_block, blocks };
+    let disk = PartitionDisk {
+        first_block,
+        blocks,
+    };
     // ctime zero: this program holds no clock. See BUGS.
     match FileSystem::create_reserved_with_uuid(disk, None, &[], 0, 0, uuid) {
         Ok(fs) => drop(fs),
@@ -186,7 +189,10 @@ pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
 
     // Reopen through the FS server's own core and put a file in it. A header that parses proves
     // less than a tree that holds a name: the host tool reads this file back after the run.
-    let mut server = match Server::open(PartitionDisk { first_block, blocks }) {
+    let mut server = match Server::open(PartitionDisk {
+        first_block,
+        blocks,
+    }) {
         Ok(s) => s,
         Err(e) => {
             send(REPORT, R_FAILED, 2, e.errno as u64);
@@ -238,7 +244,10 @@ fn check(first_block: u64, blocks: u64) -> ! {
         user_rt::exit()
     }
 
-    let mut server = match Server::open(PartitionDisk { first_block, blocks }) {
+    let mut server = match Server::open(PartitionDisk {
+        first_block,
+        blocks,
+    }) {
         Ok(s) => s,
         // The engine says ENOENT for a partition with no valid header anywhere in the ring, which
         // is what an unformatted one is.
@@ -377,7 +386,11 @@ impl Disk for PartitionDisk {
             }
             // SAFETY: BLK_PAGE is a mapped page of exactly BLOCK bytes and `chunk` is no larger.
             unsafe {
-                core::ptr::copy_nonoverlapping(BLK_PAGE as *const u8, chunk.as_mut_ptr(), chunk.len())
+                core::ptr::copy_nonoverlapping(
+                    BLK_PAGE as *const u8,
+                    chunk.as_mut_ptr(),
+                    chunk.len(),
+                )
             };
         }
         Ok(buffer.len())

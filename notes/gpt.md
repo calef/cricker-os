@@ -162,7 +162,7 @@ load is a serial dependency in the loop. That is the number that decided the tes
 
 ### Proved, symbolically
 
-`script/verify` runs eight harnesses over `gpt`, 95 seconds in total on an M-series laptop:
+`script/verify` runs nine harnesses over `gpt`, about 96 seconds in total on an M-series laptop:
 
 | harness | what it quantifies over | time |
 |---|---|---|
@@ -174,6 +174,7 @@ load is a serial dependency in the loop. That is the number that decided the tes
 | `a_headers_fields_survive_the_round_trip` | every value of all nine header fields | 3 s |
 | `the_header_fields_partition_the_block` | every 512-byte block: no two fields share a byte | 2 s |
 | `create_never_lays_out_a_table_parse_would_reject` | every disk size and every partition placement | 22 s |
+| `stamping_reserves_six_bits_and_keeps_the_other_hundred_and_twenty_two` | all 2^128 random inputs to the v4 stamp | 1 s |
 
 Three of these need their reasoning spelled out, and one of them is a correction.
 

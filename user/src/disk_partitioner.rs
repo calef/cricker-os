@@ -200,11 +200,11 @@ fn partition() -> ! {
     let entries: &[u8] = table.entry_array();
 
     let steps: [(u64, Option<&[u8]>); 5] = [
-        (0, None),                              // the protective MBR
-        (gpt::PRIMARY_HEADER_LBA, None),        // the primary header
+        (0, None),                       // the protective MBR
+        (gpt::PRIMARY_HEADER_LBA, None), // the primary header
         (table.primary_entry_lba(), Some(entries)),
         (table.backup_entry_lba(), Some(entries)),
-        (table.backup_header_lba(), None),      // the backup header, on the last block
+        (table.backup_header_lba(), None), // the backup header, on the last block
     ];
     for (n, (lba, bytes)) in steps.iter().enumerate() {
         let data: &[u8] = match bytes {
@@ -271,7 +271,8 @@ fn verify() -> ! {
     let backup_blocks = block_count.saturating_sub(backup_lba);
     let tail = backup();
     if backup_blocks > 1
-        && let Some(span) = gpt::span::Span::covering(backup_lba * LBA, backup_blocks * LBA, TRANSFER)
+        && let Some(span) =
+            gpt::span::Span::covering(backup_lba * LBA, backup_blocks * LBA, TRANSFER)
         && span.blocks as usize * blk::BLOCK_SIZE <= tail.len()
         && read_span(span, &mut tail[..])
     {
@@ -422,14 +423,14 @@ fn array() -> &'static mut [u8] {
     unsafe { &mut *p }
 }
 
-/// The primary-table read buffer. Same reasoning as [`array`].
+/// The primary-table read buffer. Same reasoning as [`array()`].
 fn primary() -> &'static mut [u8] {
     let p = &raw mut PRIMARY;
     // SAFETY: see above.
     unsafe { &mut *p }
 }
 
-/// The backup-table read buffer. Same reasoning as [`array`].
+/// The backup-table read buffer. Same reasoning as [`array()`].
 fn backup() -> &'static mut [u8] {
     let p = &raw mut BACKUP;
     // SAFETY: see above.

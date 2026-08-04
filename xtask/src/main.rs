@@ -1169,9 +1169,11 @@ fn initrd_riscv() -> bool {
             "credentialer",
             "--bin",
             "credentialer_test_client",
-            // The disk surveyor (milestone 57), portable like the rest.
+            // The disk surveyor (milestone 57), portable like the rest, and its write-half twin.
             "--bin",
             "disk_surveyor",
+            "--bin",
+            "disk_partitioner",
             "--target",
             RISCV_TARGET,
         ],
@@ -2006,7 +2008,9 @@ fn blank_check_after_run() -> bool {
     let table = match gpt::Gpt::parse(&img[lba..2 * lba], &img[2 * lba..34 * lba]) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("BLANK IMAGE CHECK FAILED: the guest's partition table does not parse: {e:?}");
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: the guest's partition table does not parse: {e:?}"
+            );
             return false;
         }
     };
