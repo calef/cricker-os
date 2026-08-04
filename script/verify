@@ -13,67 +13,206 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# --affected-since <base>: decide whether a change can reach the proofs at all, without proving.
+#
+# The proofs are a function of the harness crates and their transitive dependencies, and nothing
+# else: `cargo kani -p <crate>` never compiles the kernel, the user programs, or xtask. So a change
+# confined to crates outside every harness crate's dependency closure provably cannot change a proof
+# outcome, and the 42 minutes are spent on nothing. This mode computes that from `cargo metadata`
+# rather than from a hand-kept path list, so it cannot drift as the graph changes.
+#
+# The posture is the same allow-list-of-inert the workflow's own comment argues for: anything this
+# cannot attribute (the workspace Cargo.toml, Cargo.lock, rust-toolchain.toml, script/, vendor
+# pins) runs the proofs by default, because skipping a needed proof breaks main and running an
+# unneeded one only wastes minutes. The two non-crate exceptions are documentation (the predicate
+# ci.yml already trusts) and workflow files other than verify.yml, which are not inputs to
+# `cargo kani` (verify.yml itself runs, because a change to the proofs' own wiring should be
+# exercised by that wiring).
+#
+# Harness crates are found by grepping for `#[kani::proof]` rather than read from the list below,
+# deliberately: a crate that grows harnesses before it is added to the list still widens the
+# closure, so the scope can only be more conservative than the run.
+#
+# Prints one line per changed file with its classification, then `verify-scope: needed` or
+# `verify-scope: not-needed` as the last line, which is what .github/workflows/verify.yml reads.
+if [ "$1" = "--affected-since" ]; then
+	base="$2"
+	if [ -z "$base" ]; then
+		echo "usage: script/verify --affected-since <base-ref>" >&2
+		exit 2
+	fi
+	exec python3 - "$base" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+
+base = sys.argv[1]
+changed = subprocess.run(
+    ["git", "diff", "--name-only", base, "HEAD"],
+    capture_output=True, text=True, check=True,
+).stdout.splitlines()
+
+DOC = re.compile(r"^(notes/|design/|[A-Z_]+\.md$)")
+
+needed, inert, todo = [], [], []
+for f in changed:
+    if DOC.match(f):
+        inert.append((f, "documentation"))
+    elif f.startswith(".github/"):
+        if f == ".github/workflows/verify.yml":
+            needed.append((f, "the proofs' own wiring"))
+        else:
+            inert.append((f, "workflow file; not an input to cargo kani"))
+    else:
+        todo.append(f)
+
+if todo:
+    try:
+        meta = json.loads(subprocess.run(
+            ["cargo", "metadata", "--format-version", "1", "--locked"],
+            capture_output=True, text=True, check=True,
+        ).stdout)
+        root = meta["workspace_root"]
+        # Repo-relative directory prefix per package. Packages outside the repo (registry deps)
+        # have no files a diff can name; their updates arrive via Cargo.lock, which is
+        # unattributable below and so runs the proofs.
+        pkgs = {}
+        for p in meta["packages"]:
+            d = os.path.dirname(p["manifest_path"])
+            rel = os.path.relpath(d, root)
+            if rel == "." or rel.startswith(".."):
+                continue
+            pkgs[p["id"]] = (p["name"], rel + "/")
+
+        def owner(path):
+            best = None
+            for pid, (_, prefix) in pkgs.items():
+                if path.startswith(prefix):
+                    if best is None or len(prefix) > len(pkgs[best][1]):
+                        best = pid
+            return best
+
+        harness_files = subprocess.run(
+            ["git", "grep", "-lF", "#[kani::proof]", "--", "*.rs"],
+            capture_output=True, text=True,
+        ).stdout.splitlines()
+        harness_ids = {owner(f) for f in harness_files} - {None}
+
+        edges = {n["id"]: [d["pkg"] for d in n.get("deps", [])]
+                 for n in meta["resolve"]["nodes"]}
+        closure, stack = set(), list(harness_ids)
+        while stack:
+            pid = stack.pop()
+            if pid in closure:
+                continue
+            closure.add(pid)
+            stack.extend(edges.get(pid, []))
+
+        for f in todo:
+            pid = owner(f)
+            if pid is None:
+                needed.append((f, "not attributable to a crate; runs by default"))
+            elif pid in closure:
+                needed.append((f, f"in `{pkgs[pid][0]}`, which the proofs build"))
+            else:
+                inert.append((f, f"in `{pkgs[pid][0]}`, outside every harness crate's closure"))
+    except Exception as e:  # noqa: BLE001 -- any failure here must fail toward running
+        print(f"  could not compute the dependency closure ({e}); running by default")
+        needed.extend((f, "closure unavailable") for f in todo)
+
+if not changed:
+    print("  empty diff; running by default")
+    needed.append(("(none)", "empty diff"))
+
+for f, why in inert:
+    print(f"  inert   {f}  ({why})")
+for f, why in needed:
+    print(f"  needed  {f}  ({why})")
+print("verify-scope: " + ("needed" if needed else "not-needed"))
+PY
+fi
+
 if ! cargo kani --version >/dev/null 2>&1; then
 	echo "==> installing Kani (first run only)"
 	cargo install --locked kani-verifier
 	cargo kani setup
 fi
 
+# Verify harnesses in parallel. The suite was serial twice over (one harness at a time, one crate
+# at a time) and nothing required it: harnesses are independent, so this is the classic
+# embarrassingly-parallel shape. What parallelism cannot buy is the floor: each harness is one
+# formula handed to one single-threaded SAT solver, so wall time never drops below the longest
+# harness (glob's, minutes on its own).
+#
+# Four jobs, not "all cores", because the bound is memory: notes/verification.md records a harness
+# that reached 3.5 GB, and concurrent harnesses multiply the peak. Four fits the dev Mac and
+# cordoba's 23 GB; **CI's 16 GB runner fits two**, measured the hard way: four runs were
+# memory-killed mid-glob before verify.yml pinned VERIFY_JOBS=2 (the kill reports as a bare
+# "operation was canceled", which cost an evening to attribute). Override with VERIFY_JOBS=N;
+# VERIFY_JOBS=1 serializes the execution again (the output stays terse either way).
+#
+# Kani requires --output-format=terse with --jobs, which trades the counterexample trace for the
+# parallelism; a failure still names its harness in the summary. To see the full trace, rerun that
+# one harness serially: `cargo kani -p <crate> --harness <name>`.
+set -- -j "${VERIFY_JOBS:-4}" --output-format=terse
+
 # The crates carrying proof harnesses. Grow this list as verification spreads inward from the
 # capability core toward IPC and the MMU invariants.
 echo "==> kani: capability (the capability model)"
-cargo kani -p capability
+cargo kani -p capability "$@"
 
 echo "==> kani: paging (the address arithmetic, and the IOMMU domain's page set)"
-cargo kani -p paging
+cargo kani -p paging "$@"
 
 echo "==> kani: regions (the untyped-region accounting, no double-free)"
-cargo kani -p regions
+cargo kani -p regions "$@"
 
 echo "==> kani: elf (the loader's front half, panic-free on hostile input)"
-cargo kani -p elf
+cargo kani -p elf "$@"
 
 echo "==> kani: frames (the physical frame allocator)"
-cargo kani -p frames
+cargo kani -p frames "$@"
 
 echo "==> kani: dtb (the device-tree parser's leaf readers)"
-cargo kani -p dtb
+cargo kani -p dtb "$@"
 
 echo "==> kani: ipc (the rendezvous state machine)"
-cargo kani -p ipc
+cargo kani -p ipc "$@"
 
 echo "==> kani: slots (the generational thread table)"
-cargo kani -p slots
+cargo kani -p slots "$@"
 
 echo "==> kani: intrusive (the scheduler's queue structure)"
-cargo kani -p intrusive
+cargo kani -p intrusive "$@"
 
 echo "==> kani: asid (the TLB tag allocator)"
-cargo kani -p asid
+cargo kani -p asid "$@"
 
 echo "==> kani: crickerfs (the initrd parser the kernel runs on boot input)"
-cargo kani -p crickerfs
+cargo kani -p crickerfs "$@"
 
 echo "==> kani: pci (config-space decode on hostile-device input)"
-cargo kani -p pci
+cargo kani -p pci "$@"
 
 echo "==> kani: dma_validator (the DMA-confinement validator, no descriptor escapes the grant)"
-cargo kani -p dma_validator
+cargo kani -p dma_validator "$@"
 
 echo "==> kani: ntp_proto (the 1900-epoch era pivot, and no hostile packet moves the clock)"
-cargo kani -p ntp_proto
+cargo kani -p ntp_proto "$@"
 
 echo "==> kani: gpt (the partition table's CRC-32, its round trips, and partitions that overlap)"
-cargo kani -p gpt
+cargo kani -p gpt "$@"
 
 echo "==> kani: calendar (the civil-date arithmetic, and the parser on hostile text)"
-cargo kani -p calendar
+cargo kani -p calendar "$@"
 
 echo "==> kani: glob (matching is total, and a hostile pattern cannot be made to blow up)"
-cargo kani -p glob
+cargo kani -p glob "$@"
 
 echo "==> kani: fs_proto (a directory capability's child never exceeds its parent, at any depth)"
-cargo kani -p fs_proto
+cargo kani -p fs_proto "$@"
 
 echo "==> kani: cred_proto (no request word reads outside the page; nothing but MATCH authenticates)"
-cargo kani -p cred_proto
+cargo kani -p cred_proto "$@"

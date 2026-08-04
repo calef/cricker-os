@@ -630,11 +630,34 @@ script/verify
 ```
 
 Self-installs Kani on first run (its own nightly toolchain and a CBMC backend, a minute of
-download), then runs `cargo kani` over every crate carrying harnesses: **101 harnesses across 17 crates** as of milestone 51, in a few minutes. (This line said 67 for a while after it was 69; the
-count is now taken by grepping `#[kani::proof]` rather than by memory.) Not in `script/bootstrap`,
-because the kernel build does not need it; same self-install pattern as `script/coverage`. A new
-proof crate goes in that script's list, and a new harness in an existing crate is picked up with no
-change.
+download), then runs `cargo kani` over every crate carrying harnesses: **107 harnesses across 19
+crates** as of 2026-08-03. (This line said 67 for a while after it was 69, then "a few minutes" for
+a month after that stopped being true; both counts and the timing are now measured, not remembered.)
+Harnesses within a crate verify in parallel, `-j 4` by default (`VERIFY_JOBS` overrides; the
+script's comment explains the memory bound and the terse-output trade). Measured 2026-08-03, all
+exit-clean on the same tree:
+
+| machine | serial | `-j 4` |
+|---|---|---|
+| dev Mac (Apple Silicon) | 21m40s | **11m19s** |
+| CI (4-core ubuntu-arm) | ~42m | expect ~20m; take the real number from the first merged run |
+| cordoba (4-core Haswell) | 58m41s cold, ~40m solve | not measured; nothing decides on it |
+
+The parallel speedup is 1.9x, not 4x, and the gap is structural: crates still run one at a time and
+the wall clock cannot drop below the longest single harness (glob's), because one harness is one
+formula in one single-threaded solver. The cordoba row exists because a self-hosted runner there
+was considered and declined on these numbers. Not in `script/bootstrap`, because the kernel build
+does not need it; same self-install pattern as `script/coverage`. A new proof crate goes in that
+script's list, and a new harness in an existing crate is picked up with no change.
+
+`script/verify --affected-since <base>` answers a different question without proving anything: can
+the diff since `<base>` reach a proof at all? The proofs are a function of the harness crates and
+their transitive dependencies, so the script asks `cargo metadata` for that closure and classifies
+every changed file; only a change confined to documentation, to workflow files other than
+verify.yml, or to crates outside the closure (the kernel and the user programs, which no proof
+compiles) reports `not-needed`. Anything it cannot attribute, the workspace manifests and lockfile
+included, runs the proofs by default. `.github/workflows/verify.yml` reads the last line, which is
+how a kernel-only pull request stops paying the 42 minutes.
 
 ## The rules that keep proofs cheap and honest
 
