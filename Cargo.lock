@@ -617,6 +617,7 @@ dependencies = [
  "fs_proto",
  "gfx_proto",
  "gpt",
+ "manual",
  "measured_boot",
  "video_terminal",
 ]

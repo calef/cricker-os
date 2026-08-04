@@ -17,7 +17,13 @@ impl Sink for Buf {
 }
 
 fn plain(src: &str, width: u16) -> String {
-    render(src, Style { width, color: false })
+    render(
+        src,
+        Style {
+            width,
+            color: false,
+        },
+    )
 }
 
 fn render(src: &str, style: Style) -> String {
@@ -64,7 +70,13 @@ fn a_code_span_protects_its_contents() {
     // 11,281 code spans in this corpus, many of them full of the characters the other inline rules
     // look for. If this ordering were wrong, `*ptr` inside backticks would open emphasis and eat
     // the rest of the line.
-    let out = render("a `*ptr [x](y)` b\n", Style { width: 80, color: true });
+    let out = render(
+        "a `*ptr [x](y)` b\n",
+        Style {
+            width: 80,
+            color: true,
+        },
+    );
     assert!(out.contains("\x1b[36m*ptr [x](y)"));
     assert!(!out.contains("\x1b[4m"));
 }
@@ -86,10 +98,22 @@ fn underscores_are_never_emphasis() {
 
 #[test]
 fn emphasis_needs_a_closer_that_is_not_a_space() {
-    let styled = render("a *b* c\n", Style { width: 80, color: true });
+    let styled = render(
+        "a *b* c\n",
+        Style {
+            width: 80,
+            color: true,
+        },
+    );
     assert!(styled.contains("\x1b[4mb"));
     // A lone asterisk mid-sentence has no closer and must not swallow the rest of the line.
-    let stray = render("2 * 3 = 6\n", Style { width: 80, color: true });
+    let stray = render(
+        "2 * 3 = 6\n",
+        Style {
+            width: 80,
+            color: true,
+        },
+    );
     assert!(!stray.contains('\x1b'));
 }
 
@@ -145,7 +169,10 @@ fn an_attribute_never_survives_a_newline() {
     );
     for line in out.split('\n') {
         if line.contains('\x1b') {
-            assert!(line.ends_with("\x1b[0m") || !line.contains("\x1b["), "line: {line:?}");
+            assert!(
+                line.ends_with("\x1b[0m") || !line.contains("\x1b["),
+                "line: {line:?}"
+            );
         }
     }
 }
@@ -167,7 +194,11 @@ fn framing_does_not_matter() {
             r.feed(piece, &mut out);
         }
         r.finish(&mut out);
-        assert_eq!(String::from_utf8(out.0).unwrap(), whole, "chunk size {chunk}");
+        assert_eq!(
+            String::from_utf8(out.0).unwrap(),
+            whole,
+            "chunk size {chunk}"
+        );
     }
 }
 
@@ -191,7 +222,7 @@ fn an_overlong_line_is_reported_rather_than_hidden() {
 
 /// Every letter and digit in the repository's own markdown reaches the rendered output, in order.
 ///
-/// This is the claim that replaces a CommonMark conformance suite. A renderer that silently ate a
+/// This is the claim that replaces a `CommonMark` conformance suite. A renderer that silently ate a
 /// construct (an HTML block, a reference link, an indented continuation, a table row) would drop
 /// the characters inside it, and a subsequence check finds that on real files rather than on
 /// invented ones. Subsequence rather than equality because the renderer legitimately *adds*

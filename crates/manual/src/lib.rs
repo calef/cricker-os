@@ -16,8 +16,9 @@
 //! somewhere to put it is a memory grant the program can otherwise do without.
 //!
 //! The cost is stated rather than hidden: a source line longer than [`LINE_MAX`] is truncated, and
-//! a table wider than [`TABLE_COLS`] or longer than [`TABLE_ROWS`] loses what does not fit. See
-//! `BUGS`.
+//! a table wider than [`TABLE_COLS`] loses its right-hand columns. A table *longer* than
+//! [`TABLE_ROWS`] does not lose rows; it spills into a second aligned chunk, because losing text is
+//! the one failure mode a documentation service cannot have. See `BUGS`.
 //!
 //! # What it renders
 //!
@@ -93,9 +94,7 @@ extern crate alloc;
 pub mod index;
 mod render;
 
-pub use render::{
-    Attr, LINE_MAX, MAX_DEPTH, Renderer, Style, TABLE_COLS, TABLE_ROWS, TABLE_TEXT,
-};
+pub use render::{Attr, LINE_MAX, MAX_DEPTH, Renderer, Style, TABLE_COLS, TABLE_ROWS, TABLE_TEXT};
 
 /// Somewhere rendered bytes go.
 ///

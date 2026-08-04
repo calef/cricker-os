@@ -34,10 +34,10 @@
 //!
 //! # EXAMPLES
 //!
-//! The worked example lives on [`build`](builder::build), because it needs the `builder` feature to
-//! run and rustdoc will only compile it when that feature is on. [`normalize`] and [`tokens`] are
-//! the two functions a caller on either side reaches for, and both are exercised by the tests at
-//! the foot of this file.
+//! The worked example lives on the `build` function, because it needs the `builder` feature to run
+//! and rustdoc will only compile it when that feature is on. [`normalize`] and [`tokens`] are the
+//! two functions a caller on either side reaches for, and both are exercised by the tests at the
+//! foot of this file.
 //!
 //! # BUGS
 //!
@@ -312,7 +312,10 @@ pub fn page_record(h: &Header, i: u16, src: &mut impl Pages) -> Option<Page> {
     }
     let per = PAGE / PAGE_REC;
     let mut buf = [0u8; PAGE];
-    if !src.page(h.page_off / PAGE as u64 + (i as usize / per) as u64, &mut buf) {
+    if !src.page(
+        h.page_off / PAGE as u64 + (i as usize / per) as u64,
+        &mut buf,
+    ) {
         return None;
     }
     let rec = &buf[(i as usize % per) * PAGE_REC..][..PAGE_REC];
@@ -323,7 +326,8 @@ pub fn page_record(h: &Header, i: u16, src: &mut impl Pages) -> Option<Page> {
         title_len: rec[PATH_MAX + TITLE_MAX + 1].min(TITLE_MAX as u8),
     };
     p.path.copy_from_slice(&rec[..PATH_MAX]);
-    p.title.copy_from_slice(&rec[PATH_MAX..PATH_MAX + TITLE_MAX]);
+    p.title
+        .copy_from_slice(&rec[PATH_MAX..PATH_MAX + TITLE_MAX]);
     Some(p)
 }
 
@@ -351,10 +355,11 @@ fn u64v(b: &[u8], at: usize) -> u64 {
 
 #[cfg(feature = "builder")]
 mod builder {
-    use super::*;
     use alloc::collections::BTreeMap;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    use super::*;
 
     /// One page offered to the builder.
     pub struct Source<'a> {
@@ -450,7 +455,8 @@ mod builder {
             for (page, count) in byname {
                 let at = post_off + post * POST_REC;
                 out[at..at + 2].copy_from_slice(&page.to_le_bytes());
-                out[at + 2..at + 4].copy_from_slice(&(*count).min(u16::MAX as u32).to_le_bytes()[..2]);
+                out[at + 2..at + 4]
+                    .copy_from_slice(&(*count).min(u16::MAX as u32).to_le_bytes()[..2]);
                 post += 1;
             }
         }
@@ -483,3 +489,106 @@ mod builder {
 
 #[cfg(feature = "builder")]
 pub use builder::{Source, build, title_of};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_query_folds_the_way_the_text_did() {
+        // The one property that makes a lookup possible at all: the builder's tokeniser and the
+        // reader's query normaliser must agree, byte for byte, on what a term is.
+        let mut buf = [0u8; TERM_MAX];
+        let n = normalize(b"Capability!", &mut buf);
+        assert_eq!(&buf[..n], b"capability");
+
+        let mut seen: [[u8; TERM_MAX]; 4] = [[0; TERM_MAX]; 4];
+        let mut lens = [0usize; 4];
+        let mut i = 0;
+        tokens(b"Capability, a `Frame`. x", |t| {
+            if i < 4 {
+                seen[i][..t.len()].copy_from_slice(t);
+                lens[i] = t.len();
+                i += 1;
+            }
+        });
+        // Two terms out of four words: `a` and `x` are single characters, and a per-letter posting
+        // list answers no question anybody asks a manual.
+        assert_eq!(i, 2);
+        assert_eq!(&seen[0][..lens[0]], b"capability");
+        assert_eq!(&seen[1][..lens[1]], b"frame");
+    }
+
+    #[test]
+    fn a_term_longer_than_the_record_folds_to_its_prefix() {
+        let long = b"averyveryverylongidentifiername";
+        let mut buf = [0u8; TERM_MAX];
+        assert_eq!(normalize(long, &mut buf), TERM_MAX);
+    }
+
+    #[test]
+    fn a_header_that_is_not_one_is_refused() {
+        assert_eq!(Header::parse(&[0u8; 64]), Err(Error::BadMagic));
+        assert_eq!(Header::parse(&[0u8; 8]), Err(Error::Truncated));
+    }
+
+    #[cfg(feature = "builder")]
+    #[test]
+    fn every_term_the_builder_wrote_is_found_by_the_reader() {
+        use alloc::vec::Vec;
+
+        // Enough terms to make the term table span several pages, because the binary search over
+        // pages is the part that a single-page index would never exercise. `TERM_REC` is 32 bytes
+        // and a page holds 128 records, so this is four pages of terms.
+        let mut text = alloc::string::String::new();
+        let mut want: Vec<alloc::string::String> = Vec::new();
+        for i in 0..500 {
+            let t = alloc::format!("term{i:04}");
+            text.push_str(&t);
+            text.push(' ');
+            want.push(t);
+        }
+        let bytes = build(&[Source {
+            path: "notes/x.md",
+            title: "X",
+            text: text.as_bytes(),
+        }]);
+        let h = Header::parse(&bytes[..PAGE]).unwrap();
+        assert_eq!(h.terms as usize, want.len());
+
+        let mut src = Slice(&bytes);
+        for t in &want {
+            let hit = lookup(&h, t.as_bytes(), &mut src)
+                .unwrap_or_else(|| panic!("the reader cannot find {t}, which the builder wrote"));
+            assert_eq!(hit.count, 1);
+        }
+        assert!(lookup(&h, b"absent", &mut src).is_none());
+    }
+
+    #[cfg(feature = "builder")]
+    #[test]
+    fn a_record_never_straddles_a_page() {
+        // The property the whole layout exists for: a reader that holds one page never sees half a
+        // record. It is a claim about the offsets, so it is checked on the offsets.
+        let bytes = build(&[Source {
+            path: "a",
+            title: "A",
+            text: b"one two three",
+        }]);
+        let h = Header::parse(&bytes[..PAGE]).unwrap();
+        for off in [h.page_off, h.term_off, h.post_off] {
+            assert_eq!(off % PAGE as u64, 0, "section at {off} is not page aligned");
+        }
+        for rec in [PAGE_REC, TERM_REC, POST_REC] {
+            assert_eq!(PAGE % rec, 0, "{rec}-byte records do not divide a page");
+        }
+        assert_eq!(h.total as usize, bytes.len());
+    }
+
+    #[cfg(feature = "builder")]
+    #[test]
+    fn a_title_is_the_first_level_one_heading() {
+        assert_eq!(title_of(b"intro\n\n# The title\n\n## no\n"), Some("The title"));
+        assert_eq!(title_of(b"## only a section\n"), None);
+    }
+}

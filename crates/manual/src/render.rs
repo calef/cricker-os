@@ -533,11 +533,12 @@ impl Renderer {
         // readable: the prose loses characters and the labels do not.
         let mut w = [0usize; TABLE_COLS];
         for r in 0..rows {
-            for c in 0..self.table.cols[r] as usize {
+            let here = self.table.cols[r] as usize;
+            for (c, width) in w.iter_mut().enumerate().take(here) {
                 let (s, l) = self.table.cell[r][c];
                 let vis = visible(&self.table.text[s as usize..(s + l) as usize]);
-                if vis > w[c] {
-                    w[c] = vis;
+                if vis > *width {
+                    *width = vis;
                 }
             }
         }
@@ -561,7 +562,8 @@ impl Renderer {
         self.margin = BODY;
         for r in 0..rows {
             self.line_start(out);
-            for c in 0..ncols {
+            for (c, width) in w.iter().enumerate().take(ncols) {
+                let width = *width;
                 if c > 0 {
                     self.set(Attr::Marker, out);
                     out.put(b" | ");
@@ -585,33 +587,33 @@ impl Renderer {
                 let (lo, hi) = (s as usize, (s + l) as usize);
                 let mut n = 0;
                 let mut k = lo;
-                while k < hi && n < w[c] {
+                while k < hi && n < width {
                     let step = char_len(&self.table.text[..hi], k);
                     out.put(&self.table.text[k..k + step]);
                     k += step;
                     n += 1;
                 }
                 self.col += n;
-                pad(out, w[c] - n);
-                self.col += w[c] - n;
+                pad(out, width - n);
+                self.col += width - n;
             }
             self.close_line(out);
             if r == 0 && delimited {
                 self.line_start(out);
                 self.set(Attr::Marker, out);
-                for c in 0..ncols {
+                for (c, width) in w.iter().enumerate().take(ncols) {
                     if c > 0 {
                         out.put(b"-+-");
                         self.col += 3;
                     }
                     let dashes = [b'-'; 64];
-                    let mut left = w[c];
+                    let mut left = *width;
                     while left > 0 {
                         let take = left.min(64);
                         out.put(&dashes[..take]);
                         left -= take;
                     }
-                    self.col += w[c];
+                    self.col += *width;
                 }
                 self.close_line(out);
             }
@@ -929,7 +931,7 @@ fn heading_at(s: &[u8]) -> Option<u8> {
     while n < s.len() && s[n] == b'#' {
         n += 1;
     }
-    if n >= 1 && n <= 6 && n < s.len() && s[n] == b' ' {
+    if (1..=6).contains(&n) && n < s.len() && s[n] == b' ' {
         Some(n as u8)
     } else {
         None
@@ -999,7 +1001,7 @@ fn is_delimiter(s: &[u8]) -> bool {
 
 /// Find the closing delimiter for emphasis opened at `open`.
 ///
-/// The rule is deliberately narrower than CommonMark's: a closer must not be preceded by a space,
+/// The rule is deliberately narrower than `CommonMark`'s: a closer must not be preceded by a space,
 /// which is what stops a stray `*` mid-sentence from swallowing the rest of a paragraph. And `_` is
 /// **not** an emphasis delimiter in this renderer at all, because this repository writes
 /// `snake_case` identifiers in running prose constantly (`fs_proto`, `line_editor`,

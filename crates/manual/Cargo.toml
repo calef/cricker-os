@@ -24,6 +24,11 @@ license.workspace = true
 # that allocates. Off by default so the guest program links no allocator: a `no_std` binary that
 # pulls in `alloc` needs `__rust_alloc` and an OOM handler, and `doc` has neither and wants neither.
 # The *reader* is always compiled, because that is what runs confined.
+#
+# `cargo test -p manual` therefore skips the builder's tests, and `cargo test --workspace` runs them:
+# `xtask` depends on this crate with the feature on, and cargo unifies features across one build. So
+# the gate covers them and a single-crate run does not, which is worth knowing before concluding
+# from a green `-p manual` that the index is proven.
 builder = []
 
 [lints]
