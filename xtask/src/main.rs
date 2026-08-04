@@ -2008,10 +2008,12 @@ fn mkblankdisk() -> bool {
 /// different program, on a different operating system, with a different engine build, opening the
 /// file the run left behind. If the two ever disagreed, the guest would be the one to doubt.
 ///
-/// The partition is **sliced out** into its own file first, because `redoxfs_host` takes an image
-/// rather than a device plus an offset (a limitation notes/host-recovery.md records). Slicing is
-/// what a partition-aware tool would do internally, and doing it here keeps the claim about the
-/// guest's bytes rather than about a feature of the tool.
+/// **The filesystem is read out of the partition in place** (milestone 110). This used to slice the
+/// partition into its own file first, because the tool took an image rather than a device plus a
+/// selector; that was twenty lines of the join written in a build script, and it is now in the tool
+/// where a person can use it. The partition is named by **type GUID**, not by slot number, for the
+/// same reason the guest's `mkfs` finds it that way: the type is what the partition is, and the slot
+/// is a fact about this table's current order.
 fn blank_check_after_run() -> bool {
     use fs_proto::fixture::blank;
 
@@ -2068,26 +2070,18 @@ fn blank_check_after_run() -> bool {
             }
         }
     }
-    let Some((_, data)) = parts
+    if !parts
         .iter()
-        .find(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
-    else {
+        .any(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
+    {
         eprintln!("BLANK IMAGE CHECK FAILED: no cricker-os data partition on the guest's disk");
         return false;
-    };
+    }
 
-    // The filesystem inside it, opened by the pinned engine on the host.
-    let at = data.first_lba as usize * lba;
-    let end = (data.last_lba as usize + 1) * lba;
-    if end > img.len() {
-        eprintln!("BLANK IMAGE CHECK FAILED: the data partition runs past the end of the image");
-        return false;
-    }
-    let sliced = workspace_root().join("target/crickerfs-blank-data.img");
-    if let Err(e) = std::fs::write(&sliced, &img[at..end]) {
-        eprintln!("BLANK IMAGE CHECK FAILED: could not slice the partition out: {e}");
-        return false;
-    }
+    // The filesystem inside it, opened by the pinned engine on the host, at the offset the tool
+    // works out from the same table this function just checked.
+    let data_type =
+        String::from_utf8_lossy(&gpt::guid::types::CRICKER_DATA.to_ascii()).into_owned();
     let out = capture(
         "cargo",
         &[
@@ -2097,8 +2091,10 @@ fn blank_check_after_run() -> bool {
             "tools/redoxfs_host/Cargo.toml",
             "--",
             "cat",
-            &sliced.display().to_string(),
+            &path,
             blank::MADE_NAME,
+            "--partition-type",
+            &data_type,
         ],
     );
     match out.as_deref() {
