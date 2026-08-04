@@ -453,6 +453,64 @@ For milestone 54's file service that is the difference between usable and not: a
 opens connections in sequence. For milestone 55's SMB3, which uses several at once, the remaining
 step is real concurrency (userspace threads, or a select-shaped wait), not another verb.
 
+### EXAMPLES: serving a port, end to end
+
+**Spawn side.** Whoever wires the pair decides the inbound authority, and the client never asks for
+it. `socket_proto::listen_grant(lo, hi)` packs an inclusive range into the one word `arg2` carries:
+
+```rust
+// A stack whose client may listen on 7778 and nothing else.
+let report = virtio_service::start_net_stack(
+    image,
+    NET_TEST_TCP_ACCEPT,                                    // which exchange the client drives
+    false,                                                  // mmio, not PCIe
+    socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+)?;
+
+// A stack that serves nobody inbound, which is every other net test in the tree.
+let report = virtio_service::start_net_stack(image, NET_TEST_TCP_ECHO, false,
+                                             socket_proto::NO_LISTEN_GRANT)?;
+```
+
+**Client side.** Bind the port, then accept into a *different* socket id that already has a frame.
+The listener never gets a frame, and `ACCEPT` refuses to install a connection at the listener's own
+id:
+
+```rust
+// 1. Bind. No frame is attached anywhere yet, because a listener carries no bytes.
+match call(STACK, req(OP_LISTEN, LISTEN_SID), 7778).0 {
+    LISTEN_GRANTED => {}
+    LISTEN_DENIED  => /* this stack was never granted 7778: ask the spawner, not again */,
+    LISTEN_IN_USE  => /* somebody already holds it: pick another port */,
+    _ => unreachable!(),
+}
+
+// 2. The connection id is what carries data, so it is what gets the frame.
+attach_frame(CONN_SID);
+
+// 3. Accept, use, close, repeat. The listener re-arms inside ACCEPT, so this loop keeps working.
+loop {
+    if call(STACK, req(OP_ACCEPT, LISTEN_SID), CONN_SID).0 != REP_OK { break; }
+    let (len, _) = call(STACK, req(OP_RECV, CONN_SID), 0);
+    // ... read the request out of the frame at FRAME_VA + OFF_PAYLOAD, write the answer back ...
+    let _ = call(STACK, req(OP_SEND, CONN_SID), reply_len);
+    let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);   // the listener is untouched by this
+}
+```
+
+`user/src/socket_test_client.rs::tcp_accept_inbound` is that sequence with the assertions in it.
+
+**Running the gate.** It is part of the ordinary suite and needs no host setup; xtask picks a free
+loopback port, hands it to the runner as `CRICKER_HOSTFWD_PORT`, and runs the prober thread itself:
+
+```console
+$ script/test                                  # both ISAs, inbound gate included
+$ cargo xtask test --arch aarch64              # just the aarch64 leg
+```
+
+A plain `cargo xtask run` sets no `CRICKER_HOSTFWD_PORT`, so nothing binds a port on your machine
+outside a test run.
+
 ### The gate: a host process connects to the guest, twice
 
 `hostfwd` is `guestfwd`'s mirror, so this costs no host setup: QEMU listens on a loopback port and
