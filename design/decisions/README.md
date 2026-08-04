@@ -45,6 +45,14 @@ of the opening paragraph would otherwise miss, and §26 is the sharpest: its fir
 "not yet built" while three blocks below it record milestone 22 building it. Nothing flagged that,
 because a decision had no status to contradict.
 
+**A decision waiting on Chris is `PROPOSED`, and it lives here rather than in a queue of its own.**
+`design/open-decisions.md` was that queue for one day, and it existed for a good reason: a decision
+that lives only in a conversation's scrollback is in the medium milestone 94 was written to abolish.
+But a proposal is the same object one lifecycle step before `DECIDED`, with the same shape (what is
+being decided, the options, the recommendation and its reason, what is blocked until it is
+answered). So it gets a file and a number when it is raised, and answering it flips a status in
+place instead of moving text between two systems. Numbers 68 to 73 are the six that queue held.
+
 ## The decisions
 
 | # | Status | Decision |
@@ -116,6 +124,12 @@ because a decision had no status to contradict.
 | 65 | DECIDED | [A refusal that is not passive cannot be used as a question](65-active-refusal.md) |
 | 66 | DECIDED | [A refusal is a non-zero status, and not the same one an error gets](66-refusal-status.md) |
 | 67 | DECIDED | [A program's second stream is a declaration, not a number](67-second-stream.md) |
+| 68 | PROPOSED | [`BootEndowment::unused` wants a truer name](68-boot-endowment-name.md) |
+| 69 | PROPOSED | [`Endow` is a verb, and names the same idea as `Endowment`](69-endow-versus-endowment.md) |
+| 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
+| 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
+| 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
+| 73 | PROPOSED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
