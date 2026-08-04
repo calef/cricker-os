@@ -277,3 +277,16 @@ fn probing_one_extension_at_a_time_accumulates() {
     );
     assert!(SBI_REQUIRED.difference(acc).is_empty());
 }
+
+/// **`union` is a set union, not a toggle.** The accumulation test above only ever unions in a bit
+/// that is absent, where `|` and `^` agree, so it cannot see the difference. Overlap can: an
+/// extension unioned in twice must stay, because a set that forgets TIME when TIME is mentioned
+/// again reports working firmware as missing it.
+#[test]
+fn unioning_an_extension_already_present_keeps_it() {
+    let s = SBI_TIME.union(SBI_RFENCE);
+
+    assert_eq!(s.union(SBI_TIME), s);
+    assert!(s.union(s).contains(SBI_TIME), "self-union is identity");
+    assert!(s.union(s).contains(SBI_RFENCE));
+}
