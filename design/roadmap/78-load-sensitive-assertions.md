@@ -115,3 +115,38 @@ already standing twelve lines above it: the budget reclaim must succeed and must
 `SWAPPER_BUDGET_PAGES`. The global count added no coverage on top of that, only the exposure to
 neighbours. One of the five is done; the reaper count, the address-space frames and the two timing
 assertions remain, and the status stays NOT-STARTED for them.
+
+*(That last sentence has been overtaken. The verdicts landed and are recorded per assertion in
+notes/load-sensitive-assertions.md; the status is PARTIAL, and the section below is what is left.)*
+
+## What is left: the software timer grid, on the icount instrument
+
+The timer twins were rebuilt rather than widened, and the rebuild is the model this milestone asked
+for: both tests now assert the **law** directly, that over a window in which `MISSED_TICKS` did not
+move, the deadline advanced by exactly one interval per delivered tick. The deadline is read back
+out of the machine on both ISAs, `CNTV_CVAL_EL0` on aarch64 and the software `DEADLINE` array on
+riscv64, which is kept because SBI's `set_timer` is write-only, with a `deadline()` accessor added
+beside `missed_ticks()` on each. The defect this catches, re-arming from `now()` inside the handler,
+fails on the first tick. A descheduled emulator cannot fail it: a deschedule long enough to slip the
+grid increments `MISSED_TICKS`, which is the re-anchor safety valve working, and the window is
+retried.
+
+**One claim moved out of scope rather than being weakened, and it is riscv64's alone.** Nothing
+proves that SBI actually fired at the software grid's deadlines. `DEADLINE` is our own array; on
+aarch64 the equivalent value is in a register the hardware itself consults, so the readback is
+evidence and on riscv64 it is bookkeeping. The residual gap is an implementation that maintains
+`DEADLINE` correctly and arms SBI with something else, and **no wall-clock margin could distinguish
+that from load either**, which is the same reason the rest of this milestone exists.
+
+The instrument is the one this project already owns. Under `-icount shift=0,sleep=off`, which
+`script/bench` already uses, virtual time is a deterministic function of instructions executed, so
+host scheduling cannot advance it and "the interrupt arrived at the instruction the deadline named"
+becomes a claim a contended runner cannot falsify. Recommended by the lane that rebuilt the twins,
+not built by it. Cost: it belongs in the bench harness rather than the test suite, because
+`script/test` passes no `-icount` and adding it there would change what the whole suite measures.
+
+**And the placement probe stays where it is**, checked against the same question and left alone
+deliberately. Its wait is on exactly the property under test, its failure direction is purely
+positive, and moving it to the icount instrument is not an option even in principle: the icount
+bench boots `-smp 1` *because* a shared virtual clock makes multi-hart timing fictional, and a
+cross-core delivery test cannot run on a one-core instrument.

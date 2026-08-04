@@ -392,6 +392,30 @@ pub fn cntfrq() -> u64 {
     10_000_000
 }
 
+/// **Monotonic nanoseconds since boot**, from [`now`] and [`cntfrq`].
+///
+/// Here rather than in each program because two of them need it and the naive form is wrong:
+/// `ticks * 1_000_000_000` overflows a `u64` about five minutes into a boot at 62.5 MHz, so the
+/// conversion splits into whole seconds and a remainder. `user/src/clock.rs` found that the hard
+/// way; `date` and the shell's `time` then wanted the same five lines, which is CLAUDE.md rule 7 at
+/// the smallest size it comes in.
+///
+/// **This needs no capability**, and that is worth knowing when reading anything that calls it: the
+/// counter is ambient (the kernel opened it to EL0), so a *duration* is measurable by any process.
+/// What needs a capability is the **wall clock**, which is this plus an offset only the clock page
+/// carries. See notes/clock.md.
+pub fn monotonic_nanos() -> u64 {
+    /// Nanoseconds in a second. Spelled here rather than taken from `clock_proto`, because this
+    /// crate is the syscall runtime and depends on `abi` alone; a runtime that pulled in a wire
+    /// contract to name a unit would be the wrong direction for the dependency.
+    const NANOS_PER_SEC: u64 = 1_000_000_000;
+    let freq = cntfrq();
+    let ticks = now();
+    let secs = ticks / freq;
+    let rem = ticks % freq;
+    secs * NANOS_PER_SEC + rem * NANOS_PER_SEC / freq
+}
+
 /// Terminate this process. The kernel reaps the thread and frees its whole address space. Never
 /// returns; the trailing spin is only there to satisfy the `-> !` type if `svc` ever came back.
 pub fn exit() -> ! {
