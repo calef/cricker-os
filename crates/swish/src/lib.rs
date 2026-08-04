@@ -653,7 +653,7 @@ pub fn write_outcome(e: &Endowment, answer: u64, out: &mut dyn FnMut(&[u8])) {
         // unreachable from the interactive prompt at all (a directory grant needs a caretaker that
         // shell cannot build, and it says so), and when it is reachable it will report the way
         // `date` does: diagnostics as text, then an exit status.
-        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc => {}
+        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc | Prog::Doc => {}
     }
 }
 

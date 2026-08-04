@@ -166,7 +166,11 @@ pub struct Renderer {
 
 impl Renderer {
     /// A renderer with no input yet.
-    pub fn new(style: Style) -> Renderer {
+    ///
+    /// `const` so that a `no_std` program can put one in a `static` and never build it on the
+    /// stack: this struct is about eleven kilobytes and a user process gets one 4 KiB stack page,
+    /// so a non-const constructor would overflow at the assignment rather than in use.
+    pub const fn new(style: Style) -> Renderer {
         Renderer {
             style,
             line: [0; LINE_MAX],

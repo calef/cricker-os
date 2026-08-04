@@ -558,6 +558,7 @@ dependencies = [
  "gpt",
  "grant_plan",
  "line_editor",
+ "manual",
  "ntp_proto",
  "sink_proto",
  "smoltcp",

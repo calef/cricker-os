@@ -1223,6 +1223,8 @@ fn initrd_riscv() -> bool {
             "sink",
             "--bin",
             "wc",
+            "--bin",
+            "doc",
             // The credential pair (milestone 56). These were listed in the riscv initrd tables below
             // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
             // file the build was never asked to produce. The lane's own riscv leg went green on a
@@ -1358,6 +1360,10 @@ fn initrd_riscv() -> bool {
         // The consumer (milestone 50). Both archives, for the sink's reason: `date | wc` has to
         // compose on either instruction set or it is not a claim about the system.
         ("wc", "wc"),
+        // The viewer (milestone 40). Both archives for the sink's reason: `doc page.md | wc` is a
+        // claim about how the streams compose, and a claim that holds on one instruction set is not
+        // one.
+        ("doc", "doc"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1625,6 +1631,9 @@ fn mkinitrd() -> bool {
         // `wc` (milestone 50): the right-hand side of a pipe, and the first program that reads a
         // stream. Portable, so both archives carry it.
         "wc",
+        // `doc` (milestone 40): the documentation viewer, a filter from markdown to styled text.
+        // Portable for the same reason as `wc`.
+        "doc",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
