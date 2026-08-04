@@ -2296,6 +2296,25 @@ pub fn endpoint_waiting_senders(ep: EpId) -> usize {
     }
 }
 
+/// **How many receivers are parked on an endpoint.** The twin of [`endpoint_waiting_senders`], and
+/// test support for the same reason (milestone 81).
+///
+/// A test that wants to act *on* a blocked waiter needs to know the waiter is blocked, and "I
+/// yielded, so it must have run" is not that knowledge: since DECISIONS §28 the waiter is placed on
+/// another core, and on the physical core under HVF a yield on this one returns in nanoseconds. So
+/// the wait has to be on the queue itself, which is what this reads.
+#[cfg(test)]
+pub fn endpoint_waiting_receivers(ep: EpId) -> usize {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return 0;
+    };
+    match endpoint_of(sched, ep) {
+        Some(e) => e.debug_counts().1,
+        None => 0,
+    }
+}
+
 /// **The number that says preemption is real**, read by the preemption tests and printed by the
 /// milestone tour.
 ///
@@ -2677,21 +2696,33 @@ mod tests {
         })
         .expect("spawn a waiter");
 
-        // Single core: one yield lets the waiter run and block on the recv.
-        crate::sched::yield_now();
+        // **The waiter must be queued on the endpoint before the reclaim**, or there is nothing to
+        // wake and the test passes on a fiction. This used to be one `yield_now()`, on the premise
+        // (written when the machine was single core, stale since DECISIONS §28 scattered placement)
+        // that yielding hands this core to the waiter. It does not: the waiter is on another core,
+        // and a yield here only says *this* core had nothing else to do.
+        //
+        // Milestone 81 is where that came due. Under TCG the round-robin between vCPUs made one
+        // yield enough often enough to look deliberate; on the physical core under HVF the four
+        // vCPUs are four host threads running at once, this core's yield returns in nanoseconds,
+        // and the reclaim ran before the waiter had ever been scheduled ("the revoked waiter never
+        // woke"). Same defect the milestone-78 family had, found by a *faster* machine rather than
+        // a loaded one: a yield count is not a duration in either direction.
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_receivers(ep) == 1),
+            "the waiter never blocked on the endpoint, so the reclaim had nothing to wake",
+        );
 
         // Reclaiming the endpoint's region now succeeds: the waiter is woken with an error, not left
         // to strand the reclaim.
         crate::sched::reclaim_region(region)
             .expect("reclaim wakes the blocked waiter rather than refusing");
 
-        for _ in 0..50 {
-            if WOKE.load(Ordering::SeqCst) {
-                break;
-            }
-            crate::sched::yield_now();
-        }
-        assert!(WOKE.load(Ordering::SeqCst), "the revoked waiter never woke");
+        // Clock-bounded, not yield-counted, for the reason above.
+        assert!(
+            wait_for(|| WOKE.load(Ordering::SeqCst)),
+            "the revoked waiter never woke",
+        );
         assert!(
             ABORTED.load(Ordering::SeqCst),
             "the woken waiter did not see its IPC aborted",
@@ -2793,6 +2824,23 @@ mod tests {
                  which means preemption is not working and a single bad program can hang this \
                  machine. This is precisely the failure DECISIONS.md §5 predicted for \
                  cooperative scheduling."
+            );
+            core::hint::spin_loop();
+        }
+
+        // **And the spinner has to have actually spun before we stop it**, or the test is vacuous:
+        // a polite thread running on a core nobody was monopolizing says nothing about preemption.
+        // Stopping it the instant the polite thread reported is a race the two orderings decide,
+        // and on the physical core under HVF (milestone 81) it came out the other way: the polite
+        // thread ran first, `STOP` was set, and the spinner was killed before its first increment
+        // ("the spinner never ran at all"). Its own second, since the wait above may have spent all
+        // of the first.
+        let spin_deadline = crate::arch::timer::now() + crate::arch::timer::frequency();
+        while SPINNING.load(Ordering::Relaxed) == 0 {
+            assert!(
+                crate::arch::timer::now() < spin_deadline,
+                "the spinner never ran at all, so nothing was monopolizing this core and the \
+                 polite thread's turn proves nothing about preemption"
             );
             core::hint::spin_loop();
         }
@@ -3221,12 +3269,15 @@ mod tests {
 
         let ep = super::create_endpoint();
 
-        super::spawn(move || {
+        PROGRESS.store(0, Ordering::SeqCst);
+        STOP.store(false, Ordering::SeqCst);
+
+        let blocked = super::spawn(move || {
             super::ipc_recv(ep); // blocks forever (nobody sends); must not starve the worker
         })
         .expect("spawn failed");
 
-        super::spawn(|| {
+        let worker = super::spawn(|| {
             while !STOP.load(Ordering::SeqCst) {
                 PROGRESS.fetch_add(1, Ordering::SeqCst);
                 super::yield_now();
@@ -3234,21 +3285,35 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..100 {
-            super::yield_now();
-        }
+        // Wait for the property, on the clock, rather than counting a hundred yields. The count was
+        // the whole assertion's exposure: since DECISIONS §28 the worker is placed on another core,
+        // and on the physical core under HVF (milestone 81) a hundred yields here elapse in
+        // microseconds, before that core has run the worker even once. The failure read "a worker
+        // made no progress while another thread was blocked on IPC", which describes the scheduler
+        // rather than the test, and is exactly the milestone-78 shape.
+        //
+        // Nothing is weakened: if a blocked thread were requeued and starved the worker, `PROGRESS`
+        // stays 0 for the full two seconds and this fails with the same message it always did.
+        let progressed = wait_for(|| PROGRESS.load(Ordering::SeqCst) > 0);
         STOP.store(true, Ordering::SeqCst);
 
         assert!(
-            PROGRESS.load(Ordering::SeqCst) > 0,
+            progressed,
             "a worker made no progress while another thread was blocked on IPC",
         );
 
-        // Free the blocked receiver so it does not sit in the endpoint queue forever.
+        // Free the blocked receiver so it does not sit in the endpoint queue forever, and wait for
+        // BOTH threads to actually be gone. Twenty yields used to be the wait, which is the same
+        // "count is not a duration" defect one level down: this test's teardown landing late is
+        // precisely the neighbouring state that made other tests' frame and thread accounting fail
+        // (notes/load-sensitive-assertions.md).
         super::ipc_send(ep, [0, 0, 0]);
-        for _ in 0..20 {
-            super::yield_now();
-        }
+        assert!(
+            wait_for(
+                || !crate::sched::thread_present(blocked) && !crate::sched::thread_present(worker)
+            ),
+            "this test's own threads had not finished when it returned",
+        );
     }
 
     /// **An interrupt becomes a message.** DECISIONS §10 and notes/interrupts.md, executed.
@@ -3341,15 +3406,14 @@ mod tests {
         );
 
         // Wake one child. It returns from ipc_recv, its closure ends, it exits and is reaped,
-        // and its QuotaToken drops, returning the slot.
+        // and its QuotaToken drops, returning the slot. Clock-bounded (milestone 81): the 100
+        // yields this used to spend are microseconds on the physical core, well before another
+        // core has run the woken child to completion.
         super::ipc_send(ep, [0, 0, 0]);
-        for _ in 0..100 {
-            super::yield_now();
-        }
 
         // A slot is free again.
         assert!(
-            super::spawn_with_quota(&BUDGET, || {}).is_some(),
+            wait_for(|| super::spawn_with_quota(&BUDGET, || {}).is_some()),
             "a child exited but its quota slot was never returned",
         );
 
