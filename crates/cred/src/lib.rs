@@ -70,6 +70,18 @@ pub const MAX_IDENTITY: usize = 64;
 /// The longest secret [`Record::derive`] will accept. Matches `cred_proto::MAX_SECRET`.
 pub const MAX_SECRET: usize = 256;
 
+/// The longest account name or domain an NTLM secret can be bound to, in bytes. Matches
+/// `cred_proto::MAX_NAME`. Windows caps `sAMAccountName` at 20 characters and a short domain
+/// name at 15, so 64 is generous for both and short enough to keep the record a fixed size.
+pub const MAX_NAME: usize = 64;
+
+/// The longest client blob [`Store::ntlm_proof`] will MAC, in bytes. Matches
+/// `cred_proto::MAX_BLOB`. The blob is the client's `temp` structure ([MS-NLMP] §3.3.2): version
+/// bytes, a timestamp, a client challenge, and the target info it echoed back. A real one is a
+/// couple of hundred bytes; 2 KiB is room for a server that advertises a lot of AV pairs, and a
+/// bound at all is what keeps the shared page's layout fixed.
+pub const MAX_BLOB: usize = 2048;
+
 /// Argon2's own lower bound on `m_cost`, restated so [`Cost::new`] can check it before handing a
 /// value to a function that would overflow on the way to checking it itself.
 const MIN_M_COST: u32 = 8;
@@ -95,6 +107,10 @@ pub enum Error {
     Full,
     /// The encoded record is not one: bad magic, bad version, or a field out of range.
     Encoding,
+    /// The account name or the domain is empty, longer than [`MAX_NAME`], or not UTF-8.
+    Name,
+    /// The client blob is longer than [`MAX_BLOB`].
+    Blob,
 }
 
 /// **The answer**, and it has exactly two values on purpose. A miss and a wrong secret are the
@@ -202,15 +218,35 @@ pub struct Record {
     salt: [u8; SALT_LEN],
     cost: Cost,
     tag: [u8; TAG_LEN],
+    /// The NTLM half: `NTOWFv2`, already bound to an account name and a domain (see
+    /// [`Record::derive_ntlm`]). Meaningless unless [`Record::has_ntlm`] is 1.
+    nt: [u8; ntlm::KEY_LEN],
+    /// 1 if this record was provisioned with an NTLM secret, 0 otherwise. A `u8` rather than a
+    /// `bool` because it is selected in constant time along with the key material, and
+    /// [`subtle::Choice`] is built from a byte.
+    ///
+    /// **This flag is what makes a password-only record safe against an NTLM request**, and the
+    /// alternative was worse. Leaving `nt` as zeros and no flag would mean the record's HMAC key
+    /// is a *known* value, so anyone could compute a proof under it and be told `MATCH`. Filling
+    /// `nt` with entropy instead would work, and was the first design, but it makes every
+    /// provisioning path need a source of randomness for a field nothing reads. The flag is folded
+    /// into the verdict after the MAC has already run, so it costs no branch an attacker can time.
+    has_ntlm: u8,
 }
 
 impl Record {
     /// The encoded length, in bytes. Fixed, because a variable-length encoding would make the
     /// store's footprint depend on the identities in it, which is a small leak for no gain.
-    pub const ENCODED_LEN: usize = 4 + 1 + 1 + 2 + MAX_IDENTITY + SALT_LEN + 12 + TAG_LEN;
+    pub const ENCODED_LEN: usize =
+        4 + 1 + 1 + 2 + MAX_IDENTITY + SALT_LEN + 12 + TAG_LEN + ntlm::KEY_LEN;
 
     const MAGIC: [u8; 4] = *b"CRED";
-    const VERSION: u8 = 1;
+
+    /// Version 2 adds the NTLM half (milestone 65). A version-1 record decoded as one of these
+    /// would have its `has_ntlm` read out of a byte that used to be reserved, so the version byte
+    /// moves rather than the format growing quietly. Nothing in the tree writes a record to a disk
+    /// yet, so there is no migration to write; when there is, this is the number it keys off.
+    const VERSION: u8 = 2;
 
     /// **Turn a secret into a record.** The `salt` must be unpredictable; the credential service
     /// draws it from the entropy service and nothing in this crate invents one, because a salt a
@@ -241,7 +277,48 @@ impl Record {
             salt,
             cost,
             tag,
+            nt: [0; ntlm::KEY_LEN],
+            has_ntlm: 0,
         })
+    }
+
+    /// **Turn a password into a record that can answer an NTLM challenge as well as a login.**
+    ///
+    /// Derives both halves from the one password: the Argon2id tag, so
+    /// [`cred_proto::verify::VERIFY`] works for this identity too, and `NTOWFv2`, bound to `user`
+    /// and `domain` here rather than at request time. Binding them at provisioning is the point:
+    /// a caller of [`Store::ntlm_proof`] chooses neither, so it cannot ask the service to compute
+    /// under a key for an account it named itself.
+    ///
+    /// **What this costs, stated where it is chosen.** `NTOWFv2` is MD4 and one HMAC-MD5 away
+    /// from the password, so a record with an NTLM half is crackable at roughly the speed of MD4
+    /// while the Argon2id tag beside it is not. Provisioning an NTLM secret therefore *lowers*
+    /// the offline strength of that record to the weaker of the two, whatever the KDF cost says.
+    /// That is not a bug in the design, it is the price of speaking NTLMv2 at all, and the way it
+    /// is bounded here is by scope rather than by strength: a secret is per resource, so a
+    /// cracked one authenticates to one share.
+    ///
+    /// [`cred_proto::verify::VERIFY`]: https://docs.rs/cred_proto
+    pub fn derive_ntlm(
+        identity: &[u8],
+        password: &[u8],
+        user: &[u8],
+        domain: &[u8],
+        salt: [u8; SALT_LEN],
+        cost: Cost,
+        scratch: &mut [Block],
+    ) -> Result<Self, Error> {
+        if user.is_empty() || user.len() > MAX_NAME || domain.len() > MAX_NAME {
+            return Err(Error::Name);
+        }
+        let nt = ntlm::ntowfv2(password, user, domain).map_err(|e| match e {
+            ntlm::Error::Password => Error::Secret,
+            ntlm::Error::Name => Error::Name,
+        })?;
+        let mut rec = Record::derive(identity, password, salt, cost, scratch)?;
+        rec.nt = nt;
+        rec.has_ntlm = 1;
+        Ok(rec)
     }
 
     /// The identity this record is for. Public because a provisioner may legitimately want to
@@ -267,7 +344,8 @@ impl Record {
         out[0..4].copy_from_slice(&Self::MAGIC);
         out[4] = Self::VERSION;
         out[5] = self.id_len;
-        // out[6..8] stay zero: reserved, and checked zero on decode so the format has exactly one
+        out[6] = self.has_ntlm;
+        // out[7] stays zero: reserved, and checked zero on decode so the format has exactly one
         // encoding per record and a future field cannot be smuggled past an old reader.
         let mut o = 8;
         out[o..o + MAX_IDENTITY].copy_from_slice(&self.id);
@@ -279,6 +357,8 @@ impl Record {
         out[o + 8..o + 12].copy_from_slice(&self.cost.p.to_le_bytes());
         o += 12;
         out[o..o + TAG_LEN].copy_from_slice(&self.tag);
+        o += TAG_LEN;
+        out[o..o + ntlm::KEY_LEN].copy_from_slice(&self.nt);
         out
     }
 
@@ -292,9 +372,10 @@ impl Record {
         if b.len() != Self::ENCODED_LEN {
             return Err(Error::Encoding);
         }
-        if b[0..4] != Self::MAGIC || b[4] != Self::VERSION || b[6] != 0 || b[7] != 0 {
+        if b[0..4] != Self::MAGIC || b[4] != Self::VERSION || b[6] > 1 || b[7] != 0 {
             return Err(Error::Encoding);
         }
+        let has_ntlm = b[6];
         let id_len = b[5];
         if id_len == 0 || id_len as usize > MAX_IDENTITY {
             return Err(Error::Encoding);
@@ -316,12 +397,23 @@ impl Record {
         o += 12;
         let mut tag = [0u8; TAG_LEN];
         tag.copy_from_slice(&b[o..o + TAG_LEN]);
+        o += TAG_LEN;
+        let mut nt = [0u8; ntlm::KEY_LEN];
+        nt.copy_from_slice(&b[o..o + ntlm::KEY_LEN]);
+        // A record with no NTLM half must encode its `nt` as zeros, or the format would have many
+        // encodings of one record and the round trip would stop being an identity. Same argument
+        // as the padding past a short name, one field along.
+        if has_ntlm == 0 && nt != [0u8; ntlm::KEY_LEN] {
+            return Err(Error::Encoding);
+        }
         Ok(Record {
             id_len,
             id,
             salt,
             cost,
             tag,
+            nt,
+            has_ntlm,
         })
     }
 
@@ -334,6 +426,8 @@ impl Record {
             salt: [0; SALT_LEN],
             cost: Cost::DEFAULT,
             tag: [0; TAG_LEN],
+            nt: [0; ntlm::KEY_LEN],
+            has_ntlm: 0,
         }
     }
 
@@ -356,6 +450,7 @@ impl core::fmt::Debug for Record {
             .field("cost", &self.cost)
             .field("salt", &"<redacted>")
             .field("tag", &"<redacted>")
+            .field("ntowfv2", &"<redacted>")
             .finish()
     }
 }
@@ -436,9 +531,86 @@ impl<const N: usize> Store<N> {
         {
             return Err(Error::Identity);
         }
+        self.insert(rec)
+    }
+
+    /// **Derive and store a credential that can also answer an NTLM challenge.** Same rules as
+    /// [`Store::put`]; the extra inputs are the account name and the domain the NTLM key is bound
+    /// to. See [`Record::derive_ntlm`] for what provisioning this costs.
+    pub fn put_ntlm(
+        &mut self,
+        identity: &[u8],
+        password: &[u8],
+        user: &[u8],
+        domain: &[u8],
+        salt: [u8; SALT_LEN],
+        scratch: &mut [Block],
+    ) -> Result<(), Error> {
+        if self.used == N {
+            return Err(Error::Full);
+        }
+        let rec = Record::derive_ntlm(identity, password, user, domain, salt, self.cost, scratch)?;
+        self.insert(rec)
+    }
+
+    /// The half [`Store::put`] and [`Store::put_ntlm`] share: refuse a duplicate, then take a slot.
+    /// The capacity check is *not* here, because it must happen before the derivation rather than
+    /// after: a full store answering `FULL` after spending four megabytes and three passes on a
+    /// KDF is a way to make provisioning slow for no reason.
+    fn insert(&mut self, rec: Record) -> Result<(), Error> {
+        if self.records[..self.used]
+            .iter()
+            .any(|r| bool::from(r.is(&rec.id, rec.id_len as usize)))
+        {
+            return Err(Error::Identity);
+        }
         self.records[self.used] = rec;
         self.used += 1;
         Ok(())
+    }
+
+    /// **The NTLM question**: is `presented` the `NTProofStr` a holder of this resource's password
+    /// would have computed, for the challenge this server issued and the blob the client sent?
+    ///
+    /// Returns the verdict and the `SessionBaseKey`. **The key is all zeros unless the verdict is
+    /// [`Verdict::Match`]**, which is the release rule and it is enforced here rather than in the
+    /// service: the only way to obtain a session key is to present a proof that a holder of the
+    /// password produced, and nothing that holds this store can be talked out of that.
+    ///
+    /// Constant time in the same three places [`Store::verify`] is: the lookup does not stop at
+    /// the match, the proof comparison does not stop at the first differing byte, and a resource
+    /// with no NTLM half still runs the full MAC before the answer is forced to no. See the
+    /// [`Record::has_ntlm`] field's own note for why that last one is a flag rather than a decoy.
+    ///
+    /// [`Record::has_ntlm`]: Record
+    pub fn ntlm_proof(
+        &self,
+        identity: &[u8],
+        challenge: &[u8; ntlm::CHALLENGE_LEN],
+        blob: &[u8],
+        presented: &[u8; ntlm::KEY_LEN],
+    ) -> Result<(Verdict, [u8; ntlm::KEY_LEN]), Error> {
+        if identity.is_empty() || identity.len() > MAX_IDENTITY {
+            return Err(Error::Identity);
+        }
+        if blob.len() > MAX_BLOB {
+            return Err(Error::Blob);
+        }
+        let sel = self.select(identity);
+        let computed = ntlm::proof(&sel.nt, challenge, blob);
+        let ok = computed.ct_eq(presented) & sel.found & Choice::from(sel.has_ntlm);
+        let mut key = ntlm::session_base_key(&sel.nt, &computed);
+        // Zero it on the way out rather than branching around the derivation: the MAC has already
+        // run, so skipping the copy would only make a refusal measurably faster than an
+        // acceptance, and that is the timing signal this whole file is written to avoid.
+        for b in &mut key {
+            b.conditional_assign(&0u8, !ok);
+        }
+        if bool::from(ok) {
+            Ok((Verdict::Match, key))
+        } else {
+            Ok((Verdict::Mismatch, key))
+        }
     }
 
     /// **The question, and the only one.** Is `presented` the secret for `identity`?
@@ -483,6 +655,8 @@ impl<const N: usize> Store<N> {
             salt: self.decoy.salt,
             tag: self.decoy.tag,
             cost: self.decoy.cost,
+            nt: self.decoy.nt,
+            has_ntlm: 0,
             found: Choice::from(0u8),
         };
         for r in &self.records {
@@ -493,6 +667,10 @@ impl<const N: usize> Store<N> {
             for i in 0..TAG_LEN {
                 sel.tag[i].conditional_assign(&r.tag[i], hit);
             }
+            for i in 0..ntlm::KEY_LEN {
+                sel.nt[i].conditional_assign(&r.nt[i], hit);
+            }
+            sel.has_ntlm.conditional_assign(&r.has_ntlm, hit);
             sel.cost.m_kib.conditional_assign(&r.cost.m_kib, hit);
             sel.cost.t.conditional_assign(&r.cost.t, hit);
             sel.cost.p.conditional_assign(&r.cost.p, hit);
@@ -508,6 +686,10 @@ struct Selection {
     salt: [u8; SALT_LEN],
     tag: [u8; TAG_LEN],
     cost: Cost,
+    /// The selected record's `NTOWFv2`, or the decoy's (which is zeros) on a miss. Safe to MAC
+    /// under either way, because `has_ntlm` is 0 in both cases and forces the verdict to no.
+    nt: [u8; ntlm::KEY_LEN],
+    has_ntlm: u8,
     found: Choice,
 }
 
@@ -839,6 +1021,283 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------------------
+    // The NTLM half (milestone 65). `ntlm`'s own tests pin the chain against RFC 1320, RFC 2202
+    // and [MS-NLMP] §4.2.4; these pin the *store's* wiring of it, which is a different thing and
+    // the one a reimplementation gets wrong: which name is bound at provisioning, whether a
+    // password-only record can be talked into answering, and when a session key is released.
+    // ---------------------------------------------------------------------------------------
+
+    /// [MS-NLMP] §4.2.1's account, and §4.2.4's server challenge.
+    const NT_USER: &[u8] = b"User";
+    const NT_DOMAIN: &[u8] = b"Domain";
+    const NT_PASSWORD: &[u8] = b"Password";
+    const NT_CHALLENGE: [u8; ntlm::CHALLENGE_LEN] =
+        [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+
+    /// §4.2.4.1.3's `temp`, 68 bytes. Transcribed once here and once in `ntlm`'s tests on purpose:
+    /// the two crates are checked against the published document, not against each other.
+    #[rustfmt::skip]
+    const NT_BLOB: [u8; 68] = [
+        0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+        0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x0c, 0x00,
+        0x44, 0x00, 0x6f, 0x00, 0x6d, 0x00, 0x61, 0x00, 0x69, 0x00, 0x6e, 0x00,
+        0x01, 0x00, 0x0c, 0x00,
+        0x53, 0x00, 0x65, 0x00, 0x72, 0x00, 0x76, 0x00, 0x65, 0x00, 0x72, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ];
+
+    fn hex16(s: &str) -> [u8; ntlm::KEY_LEN] {
+        let b: Vec<u8> = (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect();
+        b.try_into().unwrap()
+    }
+
+    /// A two-slot store: one resource provisioned for NTLM, one password-only. The pairing is what
+    /// the tests below need, because the interesting failures are all about one record answering a
+    /// question that belongs to the other.
+    fn ntlm_store() -> (Store<2>, Vec<Block>) {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let mut s = Store::<2>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        s.put_ntlm(
+            b"backups",
+            NT_PASSWORD,
+            NT_USER,
+            NT_DOMAIN,
+            [3u8; SALT_LEN],
+            &mut mem,
+        )
+        .unwrap();
+        s.put(b"login-only", b"correct horse", [4u8; SALT_LEN], &mut mem)
+            .unwrap();
+        (s, mem)
+    }
+
+    /// **The headline, end to end.** A resource provisioned with a password, an account name and a
+    /// domain answers [MS-NLMP] §4.2.4's published challenge with §4.2.4.1.3's published proof and
+    /// hands back §4.2.4.1.2's published session key. Nothing in this test computes an expected
+    /// value; every one of them is a number Microsoft printed.
+    #[test]
+    fn a_provisioned_resource_answers_the_published_ntlm_challenge() {
+        let (s, _) = ntlm_store();
+        let proof = hex16("68cd0ab851e51c96aabc927bebef6a1c");
+        let (verdict, key) = s
+            .ntlm_proof(b"backups", &NT_CHALLENGE, &NT_BLOB, &proof)
+            .unwrap();
+        assert_eq!(verdict, Verdict::Match);
+        assert_eq!(key, hex16("8de40ccadbc14a82f15cb0ad0de95ca3"));
+    }
+
+    /// **A wrong proof gets no session key**, which is the release rule: the only way to obtain
+    /// one is to present a proof a holder of the password produced. Swept over every byte of the
+    /// proof, because a comparison that ignored a byte would be invisible to a single case.
+    #[test]
+    fn a_wrong_proof_is_a_mismatch_and_releases_nothing() {
+        let (s, _) = ntlm_store();
+        let good = hex16("68cd0ab851e51c96aabc927bebef6a1c");
+        for i in 0..ntlm::KEY_LEN {
+            let mut bad = good;
+            bad[i] ^= 0x80;
+            let (verdict, key) = s
+                .ntlm_proof(b"backups", &NT_CHALLENGE, &NT_BLOB, &bad)
+                .unwrap();
+            assert_eq!(verdict, Verdict::Mismatch, "proof byte {i}");
+            assert_eq!(
+                key,
+                [0u8; ntlm::KEY_LEN],
+                "a session key leaked on byte {i}"
+            );
+        }
+    }
+
+    /// A stale challenge or a tampered blob is a mismatch. This is the property that makes a
+    /// captured authentication worthless: the proof commits to both.
+    #[test]
+    fn a_replayed_challenge_or_an_edited_blob_is_a_mismatch() {
+        let (s, _) = ntlm_store();
+        let proof = hex16("68cd0ab851e51c96aabc927bebef6a1c");
+        let mut stale = NT_CHALLENGE;
+        stale[0] ^= 0x01;
+        assert_eq!(
+            s.ntlm_proof(b"backups", &stale, &NT_BLOB, &proof)
+                .unwrap()
+                .0,
+            Verdict::Mismatch,
+        );
+        let mut blob = NT_BLOB;
+        blob[0] ^= 0x01;
+        assert_eq!(
+            s.ntlm_proof(b"backups", &NT_CHALLENGE, &blob, &proof)
+                .unwrap()
+                .0,
+            Verdict::Mismatch,
+        );
+    }
+
+    /// **A password-only record can never answer an NTLM challenge, even though its stored key is
+    /// a value an attacker knows.** `nt` is zeros there, so the attacker computes the proof under
+    /// a key of zeros, which is the strongest form of this attack available, and presents it. The
+    /// `has_ntlm` flag is the only thing that says no.
+    ///
+    /// The same request against a resource nobody provisioned must fail identically, and does,
+    /// because the decoy carries the same zeros and the same flag.
+    #[test]
+    fn a_record_with_no_ntlm_half_refuses_a_proof_computed_under_the_key_it_holds() {
+        let (s, _) = ntlm_store();
+        let forged = ntlm::proof(&[0u8; ntlm::KEY_LEN], &NT_CHALLENGE, &NT_BLOB);
+        for resource in [&b"login-only"[..], b"nobody-at-all"] {
+            let (verdict, key) = s
+                .ntlm_proof(resource, &NT_CHALLENGE, &NT_BLOB, &forged)
+                .unwrap();
+            assert_eq!(
+                verdict,
+                Verdict::Mismatch,
+                "{resource:?} answered a proof computed under a key of zeros",
+            );
+            assert_eq!(key, [0u8; ntlm::KEY_LEN]);
+        }
+    }
+
+    /// The proof is bound to the account name and the domain, which are provisioning inputs and
+    /// not request fields. A caller cannot reach these at all through [`Store::ntlm_proof`], so
+    /// the test reaches around it and shows what would happen if it could: a different name is a
+    /// different key and therefore a different proof.
+    #[test]
+    fn a_proof_for_a_different_account_does_not_verify() {
+        let (s, _) = ntlm_store();
+        for (user, domain) in [
+            (&b"Administrator"[..], &b"Domain"[..]),
+            (b"User", b"OtherDomain"),
+        ] {
+            let key = ntlm::ntowfv2(NT_PASSWORD, user, domain).unwrap();
+            let forged = ntlm::proof(&key, &NT_CHALLENGE, &NT_BLOB);
+            assert_eq!(
+                s.ntlm_proof(b"backups", &NT_CHALLENGE, &NT_BLOB, &forged)
+                    .unwrap()
+                    .0,
+                Verdict::Mismatch,
+                "a proof for {user:?}/{domain:?} opened the account bound to User/Domain",
+            );
+        }
+    }
+
+    /// One password, two derivations: a resource provisioned for NTLM still answers an ordinary
+    /// verify, which is what lets milestone 49's login and milestone 55's SMB server share an
+    /// account instead of needing two.
+    #[test]
+    fn an_ntlm_resource_still_verifies_its_password() {
+        let (s, mut mem) = ntlm_store();
+        assert_eq!(
+            s.verify(b"backups", NT_PASSWORD, &mut mem).unwrap(),
+            Verdict::Match,
+        );
+        assert_eq!(
+            s.verify(b"backups", b"not the password", &mut mem).unwrap(),
+            Verdict::Mismatch,
+        );
+    }
+
+    /// The question's own bounds, which are errors rather than verdicts for the same reason
+    /// [`Store::verify`]'s are: a malformed question is the caller's bug and reporting it as
+    /// "wrong password" is the diagnosis that costs somebody an afternoon.
+    #[test]
+    fn a_malformed_ntlm_question_is_an_error_and_not_a_verdict() {
+        let (s, _) = ntlm_store();
+        let p = [0u8; ntlm::KEY_LEN];
+        assert_eq!(
+            s.ntlm_proof(b"", &NT_CHALLENGE, &NT_BLOB, &p),
+            Err(Error::Identity),
+        );
+        assert_eq!(
+            s.ntlm_proof(&[b'x'; MAX_IDENTITY + 1], &NT_CHALLENGE, &NT_BLOB, &p),
+            Err(Error::Identity),
+        );
+        assert_eq!(
+            s.ntlm_proof(b"backups", &NT_CHALLENGE, &[0u8; MAX_BLOB + 1], &p),
+            Err(Error::Blob),
+        );
+        // The longest legal blob is legal, and an empty one is too: the MAC is defined over both.
+        assert!(
+            s.ntlm_proof(b"backups", &NT_CHALLENGE, &[0u8; MAX_BLOB], &p)
+                .is_ok()
+        );
+        assert!(s.ntlm_proof(b"backups", &NT_CHALLENGE, &[], &p).is_ok());
+    }
+
+    /// Provisioning refuses a name it cannot bind. An empty account name would derive a key for
+    /// "no account", which is a key nothing on the wire will ever present a proof under; an
+    /// over-long one would not fit the wire contract's page. An **empty domain is legal**, because
+    /// NTLMv2 allows one and a machine-local account is exactly that case.
+    #[test]
+    fn provisioning_refuses_a_name_it_cannot_bind() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let mut s = Store::<3>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        let salt = [1u8; SALT_LEN];
+        assert_eq!(
+            s.put_ntlm(b"r", NT_PASSWORD, b"", NT_DOMAIN, salt, &mut mem),
+            Err(Error::Name),
+        );
+        assert_eq!(
+            s.put_ntlm(
+                b"r",
+                NT_PASSWORD,
+                &[b'u'; MAX_NAME + 1],
+                NT_DOMAIN,
+                salt,
+                &mut mem
+            ),
+            Err(Error::Name),
+        );
+        assert_eq!(
+            s.put_ntlm(
+                b"r",
+                NT_PASSWORD,
+                NT_USER,
+                &[b'd'; MAX_NAME + 1],
+                salt,
+                &mut mem
+            ),
+            Err(Error::Name),
+        );
+        assert_eq!(
+            s.put_ntlm(b"r", &[0xff], NT_USER, NT_DOMAIN, salt, &mut mem),
+            Err(Error::Secret),
+            "a password that is not UTF-8 has no UTF-16LE encoding to hash",
+        );
+        assert!(
+            s.put_ntlm(b"r", NT_PASSWORD, NT_USER, b"", salt, &mut mem)
+                .is_ok()
+        );
+    }
+
+    /// A full store refuses an NTLM `PUT` **before** it spends a derivation, same as `put`.
+    #[test]
+    fn a_full_store_refuses_an_ntlm_put_too() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let mut s = Store::<1>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        s.put(b"a", b"s", [1u8; SALT_LEN], &mut mem).unwrap();
+        assert_eq!(
+            s.put_ntlm(
+                b"b",
+                NT_PASSWORD,
+                NT_USER,
+                NT_DOMAIN,
+                [2u8; SALT_LEN],
+                &mut mem
+            ),
+            Err(Error::Full),
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
     // The encoding
     // ---------------------------------------------------------------------------------------
 
@@ -885,6 +1344,65 @@ mod tests {
         let mut mem = scratch(cost);
         let r = Record::derive(b"chris", b"secret", [5u8; SALT_LEN], cost, &mut mem).unwrap();
         let good = r.encode();
+        for pos in 0..Record::ENCODED_LEN {
+            for delta in [1u8, 0x7f, 0x80, 0xff] {
+                let mut b = good;
+                b[pos] ^= delta;
+                if b == good {
+                    continue;
+                }
+                match Record::decode(&b) {
+                    Err(Error::Encoding) => {}
+                    Ok(other) => assert_ne!(
+                        other.encode(),
+                        good,
+                        "byte {pos} ^ {delta:#x} decoded back to the original record",
+                    ),
+                    Err(e) => panic!("byte {pos} ^ {delta:#x}: unexpected {e:?}"),
+                }
+            }
+        }
+    }
+
+    /// **An NTLM record survives its encoding and still answers the published challenge**, and
+    /// every single-byte corruption of one is rejected or changes it. The sweep is repeated for
+    /// this shape rather than trusted from the password-only one because the two exercise
+    /// different validation: `has_ntlm` is 1 here, so the "an unset flag means zero key" check
+    /// that catches half the corruptions above cannot fire, and the sixteen key bytes are live.
+    #[test]
+    fn an_ntlm_record_round_trips_and_no_corruption_of_one_survives() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let r = Record::derive_ntlm(
+            b"backups",
+            NT_PASSWORD,
+            NT_USER,
+            NT_DOMAIN,
+            [3u8; SALT_LEN],
+            cost,
+            &mut mem,
+        )
+        .unwrap();
+        let good = r.encode();
+        let back = Record::decode(&good).unwrap();
+        assert_eq!(back.has_ntlm, 1);
+
+        let mut s = Store::<1>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        s.records[0] = back;
+        s.used = 1;
+        assert_eq!(
+            s.ntlm_proof(
+                b"backups",
+                &NT_CHALLENGE,
+                &NT_BLOB,
+                &hex16("68cd0ab851e51c96aabc927bebef6a1c"),
+            )
+            .unwrap()
+            .0,
+            Verdict::Match,
+            "a decoded record stopped answering the challenge its original answered",
+        );
+
         for pos in 0..Record::ENCODED_LEN {
             for delta in [1u8, 0x7f, 0x80, 0xff] {
                 let mut b = good;

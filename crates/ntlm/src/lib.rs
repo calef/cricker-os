@@ -31,14 +31,14 @@
 //!                                                                     SessionBaseKey (16)
 //! ```
 //!
-//! The service stores **NTOWFv2**, not the NT hash, and [`ntowfv2`] is the only way to make one.
+//! The service stores **`NTOWFv2`**, not the NT hash, and [`ntowfv2`] is the only way to make one.
 //! Two consequences worth having:
 //!
 //! 1. The account name and the domain are bound at provisioning time, so a caller of the runtime
 //!    operation cannot choose them. A caller that could would be choosing half the key derivation,
 //!    which is how "compute a response for `Administrator`" becomes a request the service would
 //!    otherwise happily serve.
-//! 2. A stolen NTOWFv2 authenticates as one account in one domain, where a stolen NT hash
+//! 2. A stolen `NTOWFv2` authenticates as one account in one domain, where a stolen NT hash
 //!    authenticates as that account anywhere the password was reused.
 //!
 //! # BUGS
@@ -69,7 +69,7 @@ use md4::Md4;
 use md5::Md5;
 
 /// The width of every key and every output in NTLMv2: 16 bytes. MD4, MD5 and HMAC-MD5 all produce
-/// 128 bits, so the NT hash, NTOWFv2, `NTProofStr` and `SessionBaseKey` are all this wide. One
+/// 128 bits, so the NT hash, `NTOWFv2`, `NTProofStr` and `SessionBaseKey` are all this wide. One
 /// constant rather than four, because four would invite a mismatch nothing checks.
 pub const KEY_LEN: usize = 16;
 
