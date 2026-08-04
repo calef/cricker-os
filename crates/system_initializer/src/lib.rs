@@ -21,7 +21,7 @@
 //!
 //! # What the kernel hands over, and what this builds from it
 //!
-//! [`Grants`] names the capabilities the kernel granted: a construction budget, the UART's registers
+//! [`BootEndowment`] names the capabilities the kernel granted: a construction budget, the UART's registers
 //! as a device capability, the UART receive interrupt, a read-only view of the wall clock, and, when
 //! this boot attached a RedoxFS disk, the file service and the page its clients share with it. From
 //! those, and nothing else, [`boot`] builds the whole interactive system out of its own budget:
@@ -53,7 +53,7 @@
 //!
 //! It also gives up the UART device capability and the UART interrupt as soon as the drivers that
 //! need them are built, the file service as soon as the shell holds it, and everything in
-//! [`Grants::unused`] with them. The proof is a negative control taken from inside the process and
+//! [`BootEndowment::unused`] with them. The proof is a negative control taken from inside the process and
 //! printed at the prompt, exactly the shape `root_supervisor` uses: after the delete, `RETYPE` and
 //! `RETYPE_OBJ` on that slot must answer `NoSuchSlot` (there is nothing there) rather than
 //! `NotPermitted` (there is, and you may not).
@@ -104,8 +104,8 @@ use user_rt::{call, cap_delete, invoke, recv, recv_cap, send};
 /// The two orders come from `kernel::user::spawn_init` (aarch64) and `kernel::user::riscv_shell_boot`
 /// (riscv64). They differ because the aarch64 path is shared with milestone 19d's test roles, which
 /// were granted a report endpoint and a test interrupt this system has no use for; see
-/// [`unused`](Grants::unused).
-pub struct Grants {
+/// [`unused`](BootEndowment::unused).
+pub struct BootEndowment {
     /// The construction budget, held `WRITE | GRANT`: everything this system is made of.
     pub untyped: u64,
     /// The UART's registers, a device capability to map into the console and input drivers.
@@ -125,7 +125,7 @@ pub struct Grants {
     /// clients share with it. The rights that endpoint carries arrive in `fs_rights`, and **0 means
     /// this boot attached no RedoxFS disk**, in which case these two slots hold nothing at all.
     pub fs_ep: u64,
-    /// The page the file service's clients share with it; see [`fs_ep`](Grants::fs_ep).
+    /// The page the file service's clients share with it; see [`fs_ep`](BootEndowment::fs_ep).
     pub fs_page: u64,
     /// **Capabilities the kernel granted that the interactive system never uses**, deleted with the
     /// device authority once the drivers exist.
@@ -211,7 +211,7 @@ const SH_FS_VA: u64 = 0x0060_0000; // the shell's half of the FS contract (swish
 ///
 /// `initrd_len` is the archive length the kernel passed at entry; `fs_rights` is the `fs_proto::dir`
 /// rights the file-service endpoint carries, and 0 means this boot attached no disk.
-pub fn boot(g: &Grants, initrd_len: u64, fs_rights: u64) -> ! {
+pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     // The archive the kernel mapped read-only; its length arrived at entry.
     // SAFETY: the kernel mapped `initrd_len` bytes of reserved RAM, read-only, at INITRD_VA. It is
     // reserved memory that outlives every process, so the borrow is honest for the whole boot.

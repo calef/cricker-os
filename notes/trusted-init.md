@@ -375,7 +375,7 @@ lanes an evening each. It is now `crates/system_initializer`, and each init is t
 its own kernel granted plus a call into it. Those tables are the one thing the two boards genuinely
 disagree about: aarch64's boot path is shared with milestone 19d's test roles, so it grants a report
 endpoint and a test SGI the interactive system never uses and numbers everything after them
-differently. That is data the crate takes (`Grants::unused`), not code it repeats.
+differently. That is data the crate takes (`BootEndowment::unused`), not code it repeats.
 
 The smaller one was **the loader**. `crates/supervision_proto`'s child builder was a generalization of
 the two inits' `build_child`, so the logic existed three times, and this increment added the fault

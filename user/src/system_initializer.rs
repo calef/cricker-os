@@ -23,7 +23,7 @@
 #![no_std]
 #![no_main]
 
-use system_initializer::Grants;
+use system_initializer::BootEndowment;
 
 /// **What `kernel::user::riscv_shell_boot` grants, in order.** The kernel inserts these into this
 /// process's cspace before it starts, and the numbers below are that call's `assert_eq!`s read from
@@ -32,7 +32,7 @@ use system_initializer::Grants;
 ///
 /// The clock is granted ahead of the filesystem pair on purpose, so its slot is the same on every
 /// boot whether or not a disk was attached.
-const GRANTS: Grants = Grants {
+const GRANTS: BootEndowment = BootEndowment {
     untyped: 0,
     uart_dev: 1,
     uart_irq: 2,

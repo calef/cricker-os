@@ -383,7 +383,7 @@ fn init_boot(initrd_len: u64, fs_rights: u64) -> ! {
     /// The clock is granted ahead of the filesystem pair on purpose, so its slot is the same on
     /// every boot whether or not a disk was attached. Slots 6 and 7 hold nothing when this boot
     /// attached no RedoxFS disk, which is what `fs_rights` (0 for no disk) says.
-    const GRANTS: system_initializer::Grants = system_initializer::Grants {
+    const GRANTS: system_initializer::BootEndowment = system_initializer::BootEndowment {
         untyped: 0,
         uart_dev: 2,
         uart_irq: 4,
