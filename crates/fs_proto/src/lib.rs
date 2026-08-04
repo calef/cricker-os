@@ -3664,6 +3664,38 @@ mod tests {
     // pinned. The equivalences (every `|` over disjoint masked fields, where `^` cannot differ)
     // are recorded in notes/mutation-testing.md rather than tested.
 
+    /// **A record wider than the contract is refused when a blob is rewritten, not carried
+    /// forward.**
+    ///
+    /// [`xattr::store::set`] and [`xattr::store::remove`] re-emit every record they did not touch,
+    /// and those lengths come off the **blob** rather than from a caller the entry points
+    /// bounds-checked. A record's value length is a `u16`, so a torn or forged blob reaches 65535
+    /// where [`xattr::MAX_VALUE`] is 3072, and the only thing standing between that and a rewritten
+    /// blob nobody can read back is `write_record`'s own limit.
+    ///
+    /// Nothing exercised it before, because every other test here builds its blobs through `set`,
+    /// whose `E2BIG` fires first. The mutation run found it as a `||` that could become `&&` with
+    /// the whole suite still green.
+    #[test]
+    fn a_record_wider_than_the_contract_is_refused_when_a_blob_is_rewritten() {
+        use xattr::store::{self, RECORD_HEADER};
+        let over = xattr::MAX_VALUE + 1;
+        let mut blob = vec![0u8; store::record_len(1, over)];
+        blob[0] = 1;
+        blob[5..7].copy_from_slice(&(over as u16).to_le_bytes());
+        blob[RECORD_HEADER] = b'a';
+        // The walker has to hand the oversized record over, or the rewrite path is never reached
+        // and the refusals below would be about an empty blob instead.
+        assert_eq!(store::iter(&blob).count(), 1);
+
+        let mut out = vec![0u8; blob.len() + store::record_len(1, 1)];
+        assert_eq!(
+            store::set(&blob, b"b", xattr::RAW, b"v", &mut out),
+            Err(xattr::ENOSPC),
+        );
+        assert_eq!(store::remove(&blob, b"b", &mut out), Err(xattr::ENOSPC));
+    }
+
     /// The directory rights and the two named bundles, as numbers. `ALL` and `REMOVE_TREE` are
     /// built with `|`, and a mutant that made one an `&` collapsed the bundle to zero: a mount
     /// whose root carries nothing, with every test still green.
