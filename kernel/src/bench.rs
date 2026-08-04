@@ -69,6 +69,7 @@ pub fn run() -> ! {
     null_syscall_el0();
     ctx_switch_el0();
     ipc_rtt_el0();
+    sink_throughput();
     map_el0();
     spawn_el0();
     smp_throughput();
@@ -358,6 +359,8 @@ const EL_IPC_SERVER: u64 = 3;
 const EL_IPC_CLIENT: u64 = 4;
 const EL_MAP: u64 = 5;
 const EL_SPAWN: u64 = 6;
+const EL_SINK_PRODUCER: u64 = 7;
+const EL_SINK_CONSUMER: u64 = 8;
 
 /// The spawner's untyped budget, in pages. **Small on purpose:** each child is split, run, and
 /// destroyed strictly LIFO, so its pages return to this budget (DECISIONS §16), and only one child
@@ -486,6 +489,68 @@ fn ipc_rtt_el0() {
     // send and recv, which is the whole point (comparable to lmbench). The gap between them is roughly
     // the trap cost of the four svcs per round trip.
     println!("bench: ipc_rtt_el0 {ticks} {iters}");
+}
+
+/// **`a | b` throughput, measured from EL0** (milestone 50, notes/pipes.md).
+///
+/// Two EL0 processes and one endpoint, which is literally what a pipeline is here: the shell mints an
+/// endpoint, gives the left stage `WRITE` and the right stage `READ`, and there is no object in
+/// between. The producer packs sixteen bytes into a sink message and `SEND`s; the consumer `RECV`s
+/// and self-times. The reported pair is `[ticks, bytes]` rather than `[ticks, iters]`, because bytes
+/// is the number a Unix pipe can be compared against, which is the whole reason this exists: the
+/// design note said measure the lockstep before deciding anything about buffering.
+///
+/// The comparison is `bench/host/pipe_throughput.rs`, and it deliberately measures a Unix pipe
+/// **twice**: once with the same sixteen-byte writes, which isolates the cost of having no buffer,
+/// and once with the 64 KiB writes a real Unix program would use, which is what Unix actually gets.
+/// Only the first pair is apples to apples.
+fn sink_throughput() {
+    let Some(image) = crate::user::program("os_primitives_benchmarker") else {
+        println!("bench: sink_throughput skipped (no os_primitives_benchmarker in the initrd)");
+        return;
+    };
+    let pipe = sched::create_endpoint();
+    let report = sched::create_endpoint();
+    use crate::cap::{Rights, endpoint_cap};
+
+    // The producer first, so the consumer's first `RECV` meets a waiting sender rather than the
+    // other way round. Either order works (a rendezvous blocks whichever side arrives first) and
+    // this one keeps the warmup honest: the consumer's timed loop starts with the pipe already hot.
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_SINK_PRODUCER,
+                arg1: 0,
+                arg2: 0,
+                // **`WRITE` and nothing else**, which is exactly what the shell delegates to the
+                // left of a `|`. It cannot read back up its own output.
+                grants: &[endpoint_cap(pipe, Rights::WRITE)],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the sink producer");
+
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_SINK_CONSUMER,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(report, Rights::WRITE), // slot 0: report the result
+                    endpoint_cap(pipe, Rights::READ),    // slot 1: the pipe's read end
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the sink consumer");
+
+    let [ticks, bytes, ..] = sched::ipc_recv(report);
+    println!("bench: sink_throughput {ticks} {bytes}");
 }
 
 /// **Map latency, measured from EL0 (the primitive suite).** lmbench's `lat_mmap`. Unlike the three

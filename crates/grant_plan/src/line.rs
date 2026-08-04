@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! line  := stage ('|' stage)*
-//! stage := <command words> ('<' name | '>' name | '>>' name)*
+//! stage := <command words> ('<' name | '>' name | '>>' name | '2>' name | '2>>' name)*
 //! ```
 //!
 //! Three rules, each of which exists to keep a line from meaning something other than it looks
@@ -57,11 +57,26 @@
 //! assert_eq!(split(b"date>report.txt").unwrap().output, Some(&b"report.txt"[..]));
 //! ```
 //!
+//! # `2>` is the same substitution again, and the `2` is not a file descriptor
+//!
+//! `2>` (DECISIONS §67) names where a program's **declared second output** goes. It looks like
+//! Unix's spelling and it is not Unix's mechanism: nothing here agrees in advance that "2" is
+//! anything, so the operator binds to a stream the program's manifest declares
+//! ([`OutputSpec`](crate::OutputSpec)) and is [`Refusal::NoDiagnosticStream`] aimed at a program
+//! that declares none. The digit is kept because it is the spelling a person already knows, not
+//! because a number means anything.
+//!
+//! The digit must be at a word boundary, exactly as it must in a Unix shell: `date 2> err` is the
+//! operator and `worker 2 > out` is the integer `2` and a `>`. A `2` inside a word (`wc2>f`) is part
+//! of the word.
+//!
 //! # BUGS
 //!
-//! - **No `2>`.** There is one output slot. A second stream is a second capability and a second
-//!   convention, and inventing one before a program has two things to say would be inventing the
-//!   convention rather than discovering it. notes/pipes.md carries the analysis.
+//! - **A line has one diagnostic stream, not one per stage.** `2>` goes at the tail like `>`, and
+//!   what it names is where *the line's* diagnostics go, because the shell mints one endpoint for
+//!   the line and hands it to every stage that declares one. So every stage of a pipeline carrying
+//!   a `2>` must declare a diagnostic stream, and a pipeline where only the producer does is
+//!   refused rather than half-wired.
 //! - **No `<<`.** A here-document is refused as [`Refusal::NoRedirectTarget`], because the second
 //!   `<` is read as the operator it is and then there is no name after it. The message is about a
 //!   missing name where the mistake was a missing feature, which is a wording gap and not a
@@ -114,6 +129,31 @@ pub enum Mode {
     Append,
 }
 
+/// **Where a program's second output goes**, which is the whole of `2>` (DECISIONS §67).
+///
+/// It is [`Sink`]'s shape with one variant fewer, and the missing one says what the mechanism is:
+/// there is no `Diagnostics::Pipe`, because a diagnostic that flowed down a `|` into a `wc` would be
+/// counted as output, which is exactly the conflation the second stream exists to end.
+///
+/// [`None`](Diagnostics::None) is not "the program was silenced". It is **the program declares no
+/// second stream**, which is every program but `date` today: its diagnostics ride its one output
+/// in-band, as they always did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Diagnostics {
+    /// This program's manifest declares no second output. Nothing is minted and nothing is
+    /// delegated, and a `2>` aimed here is [`crate::Refusal::NoDiagnosticStream`].
+    #[default]
+    None,
+    /// The declared default: the shell holds the other end and prints what arrives. This is what
+    /// makes `date > when.txt` on a clockless machine print its complaint **and write nothing into
+    /// the file**, which is the loss §67 exists to fix.
+    Printed,
+    /// `2>` named a file. The shell backs it exactly as it backs a `>` (DECISIONS §55), so the
+    /// program still holds one endpoint per stream and can seek, truncate, re-read and stat
+    /// neither.
+    File(crate::FileGrant, Mode),
+}
+
 /// **Where a stage's bytes come from**, which is what `<` and the right-hand side of `|` decide.
 /// [`Sink`]'s mirror, and deliberately the same contract read from the other end.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -142,10 +182,16 @@ pub struct Line<'a> {
     pub input: Option<&'a [u8]>,
     /// The name after `>` or `>>`, if the line has one. It belongs to the last stage.
     pub output: Option<&'a [u8]>,
+    /// The name after `2>` or `2>>`, if the line has one. Like [`output`](Line::output) it is
+    /// written at the tail, and unlike it what it names belongs to the **line**: the shell mints one
+    /// diagnostic endpoint and every declaring stage writes to it.
+    pub diagnostics: Option<&'a [u8]>,
     /// Which of the two spellings named it. Private because it means nothing without
     /// [`output`](Line::output), and a caller that could set the two independently could describe a
     /// line nobody could type; read it through [`mode`](Line::mode).
     append: bool,
+    /// [`append`](Line::append) for `2>>`. Private for the same reason.
+    diag_append: bool,
 }
 
 impl<'a> Line<'a> {
@@ -165,13 +211,27 @@ impl<'a> Line<'a> {
     /// could be typed before this module existed. The shell's old path is kept for exactly these,
     /// so nothing that worked before pays for the operators.
     pub fn is_plain(&self) -> bool {
-        self.nstages == 1 && self.input.is_none() && self.output.is_none()
+        self.nstages == 1
+            && self.input.is_none()
+            && self.output.is_none()
+            && self.diagnostics.is_none()
     }
 
     /// Whether the line's `>` empties the file first. [`Mode::Truncate`] on a line with no `>` at
     /// all, which nothing reads: there is no file for it to describe.
     pub fn mode(&self) -> Mode {
         if self.append {
+            Mode::Append
+        } else {
+            Mode::Truncate
+        }
+    }
+
+    /// [`mode`](Line::mode) for the file `2>` named. `2>` and `2>>` differ in exactly what `>` and
+    /// `>>` differ in, and for the same reason: the shell opens the file, so append is an initial
+    /// offset rather than anything the program could ask for.
+    pub fn diagnostics_mode(&self) -> Mode {
+        if self.diag_append {
             Mode::Append
         } else {
             Mode::Truncate
@@ -207,9 +267,22 @@ impl<'a> Line<'a> {
     }
 }
 
-/// Whether this byte is one of the three operators.
+/// Whether this byte is one of the three single-character operators.
 fn is_op(b: u8) -> bool {
     b == b'|' || b == b'<' || b == b'>'
+}
+
+/// **Whether a `2>` starts here**, which is the one operator this grammar cannot recognise from a
+/// single byte.
+///
+/// `word_start` is where the current word began, and the digit only counts as an operator at a word
+/// boundary: `date 2> err` is a redirection, `worker 2 > out` is the integer `2` followed by a `>`,
+/// and `wc2>f` writes to a file from a program called `wc2`. Every shell draws the line in the same
+/// place, and drawing it anywhere else would make a program's own argument disappear.
+fn is_diag_op(line: &[u8], i: usize, word_start: usize) -> bool {
+    line[i] == b'2'
+        && line.get(i + 1) == Some(&b'>')
+        && (i == word_start || line[i - 1].is_ascii_whitespace())
 }
 
 /// **Split a command line into stages and redirection targets.**
@@ -220,7 +293,9 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
     let mut stages = [&b""[..]; MAX_STAGES];
     let mut ins: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
     let mut outs: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
+    let mut diags: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
     let mut apps = [false; MAX_STAGES];
+    let mut diag_apps = [false; MAX_STAGES];
     let mut n = 0usize;
 
     let mut i = 0usize;
@@ -230,23 +305,36 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         }
         // The command words: everything up to the first operator or the end of the line.
         let start = i;
-        while i < line.len() && !is_op(line[i]) {
+        while i < line.len() && !is_op(line[i]) && !is_diag_op(line, i, start) {
             i += 1;
         }
         stages[n] = crate::trim(&line[start..i]);
 
         // Then the redirections, which must all come after the command words.
-        while i < line.len() && (line[i] == b'<' || line[i] == b'>') {
-            let op = line[i];
-            i += 1;
-            // `>>` is one operator spelled with two characters, and the second one is consumed here
-            // rather than left to be read as an operator with an empty name. A second `<` is not:
-            // there is no here-document, so `<<` falls through and is refused for the name it does
-            // not have.
-            let append = op == b'>' && i < line.len() && line[i] == b'>';
-            if append {
-                i += 1;
+        while i < line.len() && (line[i] == b'<' || line[i] == b'>' || is_diag_op(line, i, i)) {
+            // Which stream this operator names, and how many characters spell it. `>>` is one
+            // operator written with two characters and `2>>` one written with three; the extra
+            // characters are consumed here rather than left to be read as operators with empty
+            // names. A second `<` is not consumed: there is no here-document, so `<<` falls through
+            // and is refused for the name it does not have.
+            #[derive(PartialEq)]
+            enum Which {
+                In,
+                Out,
+                Diag,
             }
+            let (which, append, width) = match line[i] {
+                b'<' => (Which::In, false, 1),
+                b'>' => {
+                    let a = line.get(i + 1) == Some(&b'>');
+                    (Which::Out, a, if a { 2 } else { 1 })
+                }
+                _ => {
+                    let a = line.get(i + 2) == Some(&b'>');
+                    (Which::Diag, a, if a { 3 } else { 2 })
+                }
+            };
+            i += width;
             while i < line.len() && line[i].is_ascii_whitespace() {
                 i += 1;
             }
@@ -257,22 +345,28 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
             if i == t {
                 return Err(Refusal::NoRedirectTarget);
             }
-            let target = &line[t..i];
-            let slot = if op == b'<' { &mut ins } else { &mut outs };
+            let slot = match which {
+                Which::In => &mut ins,
+                Which::Out => {
+                    apps[n] = append;
+                    &mut outs
+                }
+                Which::Diag => {
+                    diag_apps[n] = append;
+                    &mut diags
+                }
+            };
             if slot[n].is_some() {
                 return Err(Refusal::RedirectRepeated);
             }
-            slot[n] = Some(target);
-            if op == b'>' {
-                apps[n] = append;
-            }
+            slot[n] = Some(&line[t..i]);
             // A word after the name is the `< f wc` spelling. Refused rather than reordered: see
             // the module note.
             let mut j = i;
             while j < line.len() && line[j].is_ascii_whitespace() {
                 j += 1;
             }
-            if j < line.len() && !is_op(line[j]) {
+            if j < line.len() && !is_op(line[j]) && !is_diag_op(line, j, j) {
                 return Err(Refusal::WordAfterRedirect);
             }
             i = j;
@@ -302,10 +396,16 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         if outs[k].is_some() && k + 1 != n {
             return Err(Refusal::RedirectMidPipeline);
         }
+        // `2>` goes where `>` goes. What it names belongs to the line rather than to the stage it
+        // is written on (the shell mints one diagnostic endpoint for the whole line), so putting it
+        // anywhere but the tail would suggest a per-stage choice this shell does not make.
+        if diags[k].is_some() && k + 1 != n {
+            return Err(Refusal::RedirectMidPipeline);
+        }
     }
     // A redirection designates one destination, so a pattern in one designates the wrong number of
     // things. Refused here, where the token is read, rather than expanded and then counted.
-    for t in [ins[0], outs[n - 1]].into_iter().flatten() {
+    for t in [ins[0], outs[n - 1], diags[n - 1]].into_iter().flatten() {
         if glob::has_magic(t) {
             return Err(Refusal::PatternInRedirect);
         }
@@ -316,7 +416,9 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         nstages: n,
         input: ins[0],
         output: outs[n - 1],
+        diagnostics: diags[n - 1],
         append: apps[n - 1],
+        diag_append: diag_apps[n - 1],
     })
 }
 
@@ -424,6 +526,87 @@ mod tests {
         let l = split(b"wc < a | wc >> b").unwrap();
         assert_eq!((l.input, l.output), (Some(&b"a"[..]), Some(&b"b"[..])));
         assert_eq!(l.mode(), Mode::Append);
+    }
+
+    /// **`2>` is read as an operator and the `2` never reaches the command** (DECISIONS §67).
+    ///
+    /// The stage text is the assertion. A `2` left in it would arrive at the manifest check as a
+    /// positional token, and `date 2> err.txt` would be refused for an argument `date` does not
+    /// take rather than run with its diagnostics redirected.
+    #[test]
+    fn a_diagnostic_redirection_comes_off_the_tail_like_an_output_one() {
+        let l = split(b"date 2> err.txt").unwrap();
+        assert_eq!(l.stages(), [&b"date"[..]]);
+        assert_eq!(l.diagnostics, Some(&b"err.txt"[..]));
+        assert_eq!(l.output, None);
+        assert_eq!(l.diagnostics_mode(), Mode::Truncate);
+        assert!(!l.is_plain(), "a line with a 2> on it is not the old path");
+
+        // Both operators on one stage, in either order, naming two different files.
+        let l = split(b"date > out.txt 2> err.txt").unwrap();
+        assert_eq!(
+            (l.output, l.diagnostics),
+            (Some(&b"out.txt"[..]), Some(&b"err.txt"[..]))
+        );
+        let l = split(b"date 2> err.txt > out.txt").unwrap();
+        assert_eq!(
+            (l.output, l.diagnostics),
+            (Some(&b"out.txt"[..]), Some(&b"err.txt"[..]))
+        );
+        // And with no whitespace anywhere, which is legal for every other operator here.
+        let l = split(b"date>out.txt 2>err.txt").unwrap();
+        assert_eq!(
+            (l.output, l.diagnostics),
+            (Some(&b"out.txt"[..]), Some(&b"err.txt"[..]))
+        );
+    }
+
+    /// **The digit is only an operator at a word boundary**, which is what keeps a program's own
+    /// integer argument from being eaten by a spelling.
+    #[test]
+    fn a_two_inside_a_word_is_part_of_the_word() {
+        // `worker 2 > out` is the integer 2 and an ordinary output redirection. If the digit were
+        // read as an operator wherever it appeared, this line would silently lose its argument.
+        let l = split(b"worker 2 > out.txt").unwrap();
+        assert_eq!(l.stages(), [&b"worker 2"[..]]);
+        assert_eq!((l.output, l.diagnostics), (Some(&b"out.txt"[..]), None));
+        // And a digit glued to the end of a word stays in the word.
+        let l = split(b"wc2>out.txt").unwrap();
+        assert_eq!(l.stages(), [&b"wc2"[..]]);
+        assert_eq!((l.output, l.diagnostics), (Some(&b"out.txt"[..]), None));
+    }
+
+    /// `2>>` is to `2>` what `>>` is to `>`, and it inherits every rule the others have, because it
+    /// is the same operator with one bit different.
+    #[test]
+    fn the_diagnostic_redirection_appends_and_inherits_every_rule() {
+        let a = split(b"date 2>> err.txt").unwrap();
+        assert_eq!(a.diagnostics, Some(&b"err.txt"[..]));
+        assert_eq!(a.diagnostics_mode(), Mode::Append);
+        // The two spellings name the same file and differ in nothing else.
+        let t = split(b"date 2> err.txt").unwrap();
+        assert_eq!(t.diagnostics, a.diagnostics);
+        assert_eq!(t.stages(), a.stages());
+
+        assert_eq!(split(b"date 2> a 2> b"), Err(Refusal::RedirectRepeated));
+        assert_eq!(split(b"date 2> a 2>> b"), Err(Refusal::RedirectRepeated));
+        assert_eq!(split(b"date 2> f | wc"), Err(Refusal::RedirectMidPipeline));
+        assert_eq!(split(b"date 2> *.txt"), Err(Refusal::PatternInRedirect));
+        assert_eq!(split(b"date 2> f extra"), Err(Refusal::WordAfterRedirect));
+        assert_eq!(split(b"date 2>"), Err(Refusal::NoRedirectTarget));
+        assert_eq!(split(b"date 2>>"), Err(Refusal::NoRedirectTarget));
+        assert_eq!(split(b"date 2>>>f"), Err(Refusal::NoRedirectTarget));
+        // The legal shape at the tail of a pipeline.
+        let l = split(b"echo a | wc > out.txt 2>> err.txt").unwrap();
+        assert_eq!(l.stages(), [&b"echo a"[..], b"wc"]);
+        assert_eq!(
+            (l.output, l.diagnostics),
+            (Some(&b"out.txt"[..]), Some(&b"err.txt"[..]))
+        );
+        assert_eq!(
+            (l.mode(), l.diagnostics_mode()),
+            (Mode::Truncate, Mode::Append)
+        );
     }
 
     /// **There is no here-document**, and `<<` is refused rather than read as `<` twice. The second

@@ -53,6 +53,42 @@ fn spawn_date(page: Option<u64>, fmt: u64, offset_minutes: i64, provenance: u64)
     out
 }
 
+/// **Spawn a `date` that holds a second stream**, and hand back both endpoints (output, diagnostic).
+///
+/// The diagnostic endpoint goes in at the slot `date`'s manifest declares, through `grant_at`, which
+/// is what the real init does through `abi::tcb::CAP_INSERT`'s explicit target. That is the whole
+/// mechanism of DECISIONS §67 on the wiring side: a **named** slot rather than the next free one,
+/// because how many low slots a child gets depends on what else it was granted and a program that
+/// probes one number needs that number not to move.
+///
+/// No clock, deliberately. `date` at the interactive prompt has one and prints the time, so the only
+/// honest way to reach the sentence §67 was taken for is a `date` that was granted no clock, which
+/// is one of the two real unknown-clock causes rather than a fault injected for the test.
+fn spawn_date_with_diagnostics() -> (EpId, EpId) {
+    let image = program("date").expect("no date program in the initrd archive");
+    let out = crate::sched::create_endpoint();
+    let diag = crate::sched::create_endpoint();
+    crate::sched::spawn(move || {
+        crate::sched::grant_at(
+            grant_plan::DIAGNOSTICS_SLOT,
+            endpoint_cap(diag, Rights::WRITE),
+        )
+        .expect("date's declared diagnostic slot was already occupied");
+        run(
+            image,
+            Spawn {
+                arg0: FMT_HUMAN,
+                arg1: 0,
+                arg2: 0,
+                grants: &[endpoint_cap(out, Rights::WRITE)],
+                maps: &[],
+            },
+        )
+    })
+    .expect("could not spawn date");
+    (out, diag)
+}
+
 /// One line of `date`'s output, without its newline.
 ///
 /// The framing is the std PAL's stdout framing (`w0` = the byte count, `w1`|`w2` = the bytes,
@@ -212,6 +248,80 @@ fn an_unknown_clock_is_said_plainly_rather_than_printed_as_1970() {
     );
 
     // The other cause: no capability in the slot, so no mapping either.
+    let n = line(spawn_date(None, FMT_HUMAN, 0, 0), &mut buf);
+    assert_eq!(
+        core::str::from_utf8(&buf[..n]).unwrap(),
+        "date: the time is unknown: this process holds no clock capability",
+    );
+}
+
+/// **A declared second stream carries the complaint, and the output carries nothing** (DECISIONS
+/// §67).
+///
+/// This is the claim `2>` is built on, made where it can be checked by value rather than read off a
+/// transcript. The same `date` binary, spawned with no clock and with a diagnostic endpoint at the
+/// slot its manifest declares:
+///
+/// - the complaint arrives on the **diagnostic** endpoint, ending in `OP_EOF`;
+/// - the **output** endpoint carries `OP_EOF` and not one byte before it.
+///
+/// The second half is the one that matters, and it is exactly what `date > when.txt` used to get
+/// wrong: a shell draining the output into a file would write nothing, so the file is empty and the
+/// complaint went somewhere a person can read. Nothing about the program changed to make that true
+/// except which endpoint it wrote to, which is why the separation is a declaration rather than a
+/// convention about numbers.
+///
+/// The ordering is asserted too, by construction: the diagnostic stream is drained **first** and to
+/// completion. A `date` that had interleaved the two would leave this test blocked, which is the
+/// same deadlock a real prompt would hit, so the harness reproduces the constraint rather than
+/// papering over it.
+#[test_case]
+fn a_declared_second_stream_carries_the_complaint_and_the_output_stays_empty() {
+    let (out, diag) = spawn_date_with_diagnostics();
+
+    let mut buf = [0u8; 128];
+    let n = line(diag, &mut buf);
+    assert_eq!(
+        core::str::from_utf8(&buf[..n]).unwrap(),
+        "date: the time is unknown: this process holds no clock capability",
+        "the complaint should arrive on the declared second stream",
+    );
+    // And the stream ends, which is not decoration: its reader drains to end-of-stream before it
+    // reads anything else, so a program that never said it was finished would hang a prompt.
+    let m = crate::sched::ipc_recv(diag);
+    assert!(
+        matches!(
+            sink_proto::unpack(m[0], m[1], m[2], &mut [0u8; sink_proto::INLINE_MAX]),
+            sink_proto::Msg::Eof
+        ),
+        "the second stream did not end: {m:?}",
+    );
+
+    // **The output, which is where the complaint used to go.** One message, and it is the end of a
+    // stream that carried nothing. This is the assertion `date > when.txt` cares about.
+    let m = crate::sched::ipc_recv(out);
+    assert!(
+        matches!(
+            sink_proto::unpack(m[0], m[1], m[2], &mut [0u8; sink_proto::INLINE_MAX]),
+            sink_proto::Msg::Eof
+        ),
+        "a clockless date wrote {m:?} to its OUTPUT; that is the byte that used to land in the file",
+    );
+}
+
+/// **A `date` granted no second stream says it in-band, exactly as it always did.**
+///
+/// The fallback is the honest one and it is what keeps every other wiring in this tree working: a
+/// program whose declared slot is empty has nothing to write to, and dropping the sentence would be
+/// worse than putting it where it used to go. `spawn_date(None, ..)` above is that wiring, and
+/// `an_unknown_clock_is_said_plainly_rather_than_printed_as_1970` already reads the complaint off
+/// the output endpoint; this names why that is still correct after §67 rather than a leftover.
+///
+/// The pair is what makes the declaration meaningful: the same binary, two wirings, and the sentence
+/// moves because the capability moved.
+#[test_case]
+fn without_a_second_stream_the_complaint_stays_in_band() {
+    let mut buf = [0u8; 128];
     let n = line(spawn_date(None, FMT_HUMAN, 0, 0), &mut buf);
     assert_eq!(
         core::str::from_utf8(&buf[..n]).unwrap(),

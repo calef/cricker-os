@@ -251,17 +251,141 @@ pattern. And **there is no here-document**: `<<` is refused, because the second 
 operator it is and there is then no name after it. The message is about the missing name where the
 mistake was a missing feature, which is a wording gap and is in this note's BUGS.
 
-## `2>`: a closed fork, decided as a declaration (DECISIONS §67)
+## `2>`: built as a declaration (DECISIONS §67)
 
-**Decided 2026-08-03**: option (c) below, the manifest declaration; the analysis that follows is
-the record of the fork as it stood open, kept because the reasoning is the reusable part. The
-build lands with milestone 50's closure.
+**Decided and built 2026-08-03.** A program that has diagnostics **declares a second output in its
+manifest**; the shell plans a second endpoint only for the programs that declare one; `2>` names
+where those bytes go; and aimed at a program that declares none it is a refusal at the prompt, in
+the same voice as every other refusal here. `date` is the first and so far only declarer, because
+`date` is the program the loss was measured on.
 
-**Not built at this note's last update, deliberately.** `>>` was an implementation task and `2>` is not, and the difference is
-worth stating because it is the same difference this project keeps meeting: one is a spelling for
-something the system already has, and the other would create the thing it is a spelling for.
+The analysis of the fork as it stood open is kept below, because the reasoning is the reusable part
+and because reading it explains why the built thing has the shape it does. What follows first is
+what exists.
+
+### The four moving parts, and none of them is a number everybody agrees on
+
+```text
+  crates/grant_plan            OutputSpec::BytesAndDiagnostics { slot }   the declaration
+                               line::Diagnostics { None, Printed, File }  where they go
+                               Refusal::NoDiagnosticStream                aimed at a non-declarer
+
+  crates/grant_plan/line.rs    `2>` and `2>>`, at the tail, like `>` and `>>`
+
+  user/src/swish.rs            one diagnostic endpoint per session, retyped out of the shell's
+                               own budget, delegated to every declaring stage
+
+  user/src/system_initializer  receives it and CAP_INSERTs it at the slot the MANIFEST names,
+                               not at the next free one
+```
+
+The last line is the one to read twice. **The slot is high (eight) and placed explicitly**, and that
+is not a style choice: how many low slots a child gets depends on what the command line granted it
+(`date` gets a clock from init and none from the guest-test harness), so a diagnostic stream that
+landed "next" would sit at slot 2 in one wiring and slot 1 in another, and a program that probes one
+number would read the wrong slot. `abi::tcb::CAP_INSERT` already had an explicit target, added for
+`abi::fault::FAULT_EP_SLOT` for exactly this reason; §67 is its second user.
+
+So the number eight is not a convention anybody has to know. It is in the manifest, `caps` prints
+the stream that uses it, and a program that declares nothing has no slot at all.
+
+### What it looks like, and the case it was built for
+
+At a real prompt, on a machine whose clock works, `date`'s second stream exists and is **empty**:
+
+```text
+$ date 2> err.txt
+  Sun 2026-08-03 22:41:07 UTC
+$ wc < err.txt
+  0 0 0
+```
+
+That is the whole claim in four lines. The answer went to the terminal, the second stream went to
+`err.txt`, and it carried nothing because there was nothing to complain about. Before §67 there was
+one stream, so `err.txt` could not have existed and the timestamp would have been the only thing
+either destination could have held.
+
+And the case it was built for, which needs a `date` that was granted no clock (the interactive
+prompt has one, so this is `kernel::user::date_tests`, asserted by value rather than read off a
+transcript):
+
+```text
+  date, no clock, with a declared second stream:
+     the diagnostic endpoint     "date: the time is unknown: this process holds no clock capability"
+     the output endpoint         OP_EOF, and not one byte before it
+```
+
+The second line is the fix. `date > when.txt` drains the output into the file, and the output is
+empty, so **the file is empty and the complaint is on the screen**. Nothing in `date` decides that;
+it wrote to a different endpoint, and which endpoint it had was its spawner's choice.
+
+`caps` prints both destinations, because a preview that named only one of them would be a
+half-truth about a line that has two:
+
+```text
+$ caps date 2> err.txt
+  date would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    cap 1  frame     clock    read-only. it can read the time and not set it,
+                              and no token on the line could have asked for more
+    output   this shell's result endpoint (it reads the bytes and prints them)
+    diags    err.txt  (this shell writes them there; the program holds a
+             second endpoint and still cannot seek, truncate or stat)
+             this shell empties it first, before the command runs
+    arg    (none)
+  reading the command is reading its whole authority.
+```
+
+The refusal, which is the other half of "a declaration, not a number":
+
+```text
+$ wc gate.txt 2> err.txt
+  wc: declares no second output, so there is nothing for 2> to name (its diagnostics ride its output)
+```
+
+Nothing was denied. `wc` writes one stream, its diagnostics ride it, and the operator has nothing to
+bind to. That is `Refusal::NoSuchProgram`'s shape applied to a stream, and it is the sentence §67
+asked for.
+
+### The one rule a declaring program has to keep, and why it is not free
+
+**Everything a declaring program has to complain about is said, and its second stream closed, before
+it writes a byte of output.**
+
+That is forced by the kernel, not chosen. There is no receive-on-a-set here (the same gap
+`fs_file_caretaker` and `notes/sink-protocol.md` both record), so the shell reads one endpoint at a
+time, and it must read the **diagnostics** first. Consider `date | wc`: the shell is not the reader
+of `date`'s output, `wc` is. A shell that drained the output first would be waiting on `wc`, which is
+waiting on `date`, which is blocked in a rendezvous `SEND` on a diagnostic endpoint nobody is
+listening to. Diagnostics first is the only order in which nobody waits on somebody who is waiting
+on them.
+
+`date` keeps the rule for free, because every complaint it has is a reason it has no answer. A
+program with running commentary (a `rm -rv` that hit one unremovable name halfway through a
+thousand) could not, and would have to buffer or be redesigned. **That is the honest cost of the
+decision and it is in this note's BUGS.**
+
+The rule disappears the day a component sits on the other end of the diagnostic endpoint rather than
+the shell, which is what the terminal's sink adapter is for; see the section on it below.
+
+### What it deliberately does not do
+
+- **There is no `Diagnostics::Pipe`.** A diagnostic that flowed down a `|` into a `wc` would be
+  counted as output, which is the conflation the second stream exists to end. `2>` names a file or
+  nothing.
+- **One diagnostic stream per line, not per stage.** The shell mints one endpoint and hands it to
+  every declaring stage, so `2>` at the tail names where *the line's* diagnostics go. Two declaring
+  stages would interleave on it, which is exactly what Unix's shared fd 2 does; the difference is
+  that here they interleave because the shell chose one destination and not because a number was
+  ambient.
+- **No `2>&1`.** Merging the streams back is not expressible and should not be: the point of the
+  declaration is that the two are different capabilities. A program that wants one stream declares
+  one.
 
 ### There is no second stream today, and that is a fact rather than an omission
+
+*(The record of the fork as it stood open, kept for the reasoning. "Today" below means before
+2026-08-03.)*
 
 A cricker-os program holds **one** output endpoint, in slot 0, placed there by its spawner. Its
 diagnostics travel on it, in-band with everything else:

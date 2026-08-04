@@ -26,10 +26,26 @@
 //! degradation rule, on the time axis).
 //!
 //! `std`'s `SystemTime::now()` has to **panic** there, because it has no error channel. `date` has
-//! one: its output. So this program reads the state word *before* it reads the offset, and prints a
-//! sentence naming which of the two causes it was. The two are worth telling apart because they
-//! call for different fixes: nobody granted this process a clock, or the machine itself never
-//! learned the time.
+//! one, and since DECISIONS §67 it has one that is **not** its output. So this program reads the
+//! state word *before* it reads the offset, and says which of the two causes it was on its declared
+//! second stream. The two are worth telling apart because they call for different fixes: nobody
+//! granted this process a clock, or the machine itself never learned the time.
+//!
+//! # The second stream, and the one rule it comes with
+//!
+//! `date` is the first program in this system to declare a second output ([`DIAG_SLOT`]), and it is
+//! the program the decision was taken for: `date > when.txt` on a clockless machine used to write
+//! "the time is unknown" **into the file**, because a complaint about the run and an answer about
+//! the time travelled on the same endpoint. Now they do not, and the shell prints the complaint
+//! while the file stays empty.
+//!
+//! The rule that buys is real and belongs here rather than only in a note: **everything this program
+//! has to complain about is said, and the stream closed, before it writes a byte of output.** Its
+//! reader is single-threaded and drains the second stream to end-of-stream first (there is no
+//! receive-on-a-set in this kernel), so a program that interleaved the two would block in a
+//! rendezvous send that nobody is listening for. Every complaint here is a reason there is no
+//! answer, so the ordering costs `date` nothing; a program with more to say would have to be written
+//! for it.
 //!
 //! # Arguments, which arrive in registers because that is the ABI
 //!
@@ -74,6 +90,8 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use calendar::{DateTime, Format, UtcOffset};
 use clock_proto::{ClockPage, state};
 use user_rt::{cntfrq, exit, invoke, now, send};
@@ -86,6 +104,20 @@ const REPORT: u64 = 0;
 /// Slot 1: the clock page's `Frame` capability, with `READ` and nothing else. Its *presence* is
 /// what [`clock_page`] probes for; its rights are what stop this program setting the clock.
 const CLOCK_SLOT: u64 = 1;
+
+/// **The declared second stream** (DECISIONS §67, notes/pipes.md): another endpoint with `WRITE`,
+/// speaking the same sink contract as [`REPORT`], carrying this program's complaints rather than its
+/// answer.
+///
+/// `date` is the first program to declare one and the reason the decision was taken: "the time is
+/// unknown" is a statement about the run, not the time, and it used to travel on the same endpoint
+/// as a timestamp. So `date > when.txt` on a clockless machine wrote the complaint into the file,
+/// which is the loss `2>` exists to prevent on Unix and which fd numbering is not needed to fix.
+///
+/// The slot is the one `grant_plan`'s manifest declares, which is what makes this a **declaration**
+/// rather than a number everybody agrees on forever: a program that says nothing has no second
+/// stream, and `2>` aimed at it is refused at the prompt.
+const DIAG_SLOT: u64 = grant_plan::DIAGNOSTICS_SLOT;
 
 /// Where the wiring maps the clock page, read-only. Must match `kernel/src/user.rs`'s
 /// `date_tests::CLOCK_VA`.
@@ -101,25 +133,31 @@ const FMT_UNIX: u64 = 4;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(fmt: u64, offset_minutes: u64, provenance: u64) -> ! {
+    // **Is there a second stream to write to?** Probed once, before anything is said, because every
+    // sentence below has to know which endpoint it is going to. A wiring that granted none (the
+    // guest tests, which spawn this program directly) leaves the slot empty and every complaint goes
+    // back in-band on the output, which is what `date` did before §67.
+    HAS_DIAG.store(granted(DIAG_SLOT), Ordering::Relaxed);
+
     // The state first, before anything computes a time from the offset. This ordering is the whole
     // difference between this program and `SystemTime::now()`: it has an error channel and uses it.
     let Some(page) = clock_page() else {
-        line(b"date: the time is unknown: this process holds no clock capability");
+        complain(b"date: the time is unknown: this process holds no clock capability");
         end();
     };
     let r = page.read();
     if !state::known(r.state) {
-        line(b"date: the time is unknown: the machine has no clock it believes");
+        complain(b"date: the time is unknown: the machine has no clock it believes");
         // Still worth saying which nothing it was, when asked: an unknown clock has a generation
         // too, and "nobody has ever published" reads differently from "somebody published unknown".
         if provenance != 0 {
-            source_line(r.state, r.generation);
+            source_line(diag_slot(), r.state, r.generation);
         }
         end();
     }
 
     let Ok(offset) = UtcOffset::from_minutes(offset_minutes as i64 as i32) else {
-        line(b"date: that UTC offset is not one RFC 3339 can write");
+        complain(b"date: that UTC offset is not one RFC 3339 can write");
         end();
     };
 
@@ -132,15 +170,24 @@ pub extern "C" fn _start(fmt: u64, offset_minutes: u64, provenance: u64) -> ! {
     // 2100 and the calendar's is 0000 to 9999), and it is still an answer rather than a panic,
     // because "unreachable" is a claim about today's policy and this is a claim about arithmetic.
     let Ok(dt) = DateTime::from_unix(unix_secs, offset) else {
-        line(b"date: the clock reads a time outside the calendar's range");
+        complain(b"date: the clock reads a time outside the calendar's range");
         end();
     };
 
+    // **Nothing to complain about, said out loud before the answer starts.** The reader of the
+    // second stream drains it to end-of-stream *before* it reads the first (notes/pipes.md), so a
+    // program that produced output while its complaints were still open would be writing to a reader
+    // that is not listening yet, and both would wait forever. Saying "no complaints" costs one
+    // message and is the whole of the rule a declaring program keeps.
+    diag_end();
     line(dt.format(format_of(fmt)).as_bytes());
     if provenance != 0 {
-        source_line(r.state, r.generation);
+        // Provenance is a fact about the clock rather than a complaint about the run, so it goes
+        // with the answer. That is also why the second stream is already closed above.
+        source_line(REPORT, r.state, r.generation);
     }
-    end();
+    send(REPORT, sink_proto::eof(), 0, 0);
+    exit();
 }
 
 /// The `a0` selector as a [`Format`]. An unrecognised value is `Human` rather than an error: this
@@ -163,7 +210,7 @@ fn format_of(fmt: u64) -> Format {
 /// different claims, and a caller weighing a certificate expiry wants the difference. The
 /// generation says how many times the page has been published to, so a reader can see whether the
 /// clock has been stepped since boot.
-fn source_line(st: u64, generation: u64) {
+fn source_line(slot: u64, st: u64, generation: u64) {
     fn push(buf: &mut [u8; 64], n: &mut usize, bytes: &[u8]) {
         for &b in bytes {
             if *n < buf.len() {
@@ -200,7 +247,7 @@ fn source_line(st: u64, generation: u64) {
         }
     }
     push(&mut buf, &mut n, &digits[d..]);
-    line(&buf[..n]);
+    line_on(slot, &buf[..n]);
 }
 
 /// **Announce the end of the stream, then exit** (milestone 50).
@@ -216,8 +263,51 @@ fn source_line(st: u64, generation: u64) {
 /// rendezvous every send on this system has, and the alternative (a stream whose end is invisible)
 /// makes `date | wc` impossible.
 fn end() -> ! {
+    diag_end();
     send(REPORT, sink_proto::eof(), 0, 0);
     exit();
+}
+
+/// Whether this process was granted a second stream, decided once in [`_start`].
+static HAS_DIAG: AtomicBool = AtomicBool::new(false);
+
+/// Which endpoint a complaint goes to: the declared second stream when there is one, and the output
+/// otherwise. The fallback is honest rather than a silent drop: a program nobody gave a diagnostic
+/// sink still has something to say, and in-band is where it used to say it.
+fn diag_slot() -> u64 {
+    if HAS_DIAG.load(Ordering::Relaxed) {
+        DIAG_SLOT
+    } else {
+        REPORT
+    }
+}
+
+/// Say something about the run rather than about the time.
+fn complain(bytes: &[u8]) {
+    line_on(diag_slot(), bytes);
+}
+
+/// **Close the second stream**, which is not tidiness. Its reader drains it to end-of-stream before
+/// it reads anything else, so a `date` that exited without this would leave the prompt waiting on a
+/// message nobody is going to send.
+fn diag_end() {
+    if HAS_DIAG.load(Ordering::Relaxed) {
+        send(DIAG_SLOT, sink_proto::eof(), 0, 0);
+    }
+}
+
+/// Whether a capability is in `slot`, without touching whatever it names.
+///
+/// [`clock_page`]'s probe, lifted, because §67 gave this program a second slot to ask about. Invoke
+/// a method number no object type defines, so the call can only be refused, and read *which* refusal
+/// came back: an empty slot answers `NoSuchSlot`, and a real object answers `BadMethod`, which is a
+/// refusal from something that exists.
+fn granted(slot: u64) -> bool {
+    /// A method number no object type defines, so the invocation can only ever be refused.
+    const NO_SUCH_METHOD: u64 = 0xffff;
+    // SAFETY: a syscall that cannot succeed; the kernel validates the slot before the method.
+    let r = unsafe { invoke(slot, NO_SUCH_METHOD, 0, 0, 0) };
+    r != abi::Error::NoSuchSlot as i64
 }
 
 /// The clock page, or `None` when this process was granted no clock.
@@ -229,11 +319,7 @@ fn end() -> ! {
 /// from an object that exists and is therefore proof one is there. Same shape as the std PAL's
 /// `granted()`; the two are the same problem.
 fn clock_page() -> Option<ClockPage> {
-    /// A method number no object type defines, so the invocation can only ever be refused.
-    const NO_SUCH_METHOD: u64 = 0xffff;
-    // SAFETY: a syscall that cannot succeed; the kernel validates the slot before the method.
-    let r = unsafe { invoke(CLOCK_SLOT, NO_SUCH_METHOD, 0, 0, 0) };
-    if r == abi::Error::NoSuchSlot as i64 {
+    if !granted(CLOCK_SLOT) {
         return None;
     }
     // SAFETY: the wiring maps the clock page read-only at CLOCK_VA alongside the capability the
@@ -255,6 +341,12 @@ fn monotonic_nanos() -> u64 {
 
 /// Send `bytes` and a newline to the output endpoint, 16 bytes per message.
 fn line(bytes: &[u8]) {
+    line_on(REPORT, bytes);
+}
+
+/// [`line`], to a named endpoint. The two streams speak the same contract, which is the point: a
+/// diagnostic is bytes, and the only thing that makes one a diagnostic is which endpoint it is on.
+fn line_on(slot: u64, bytes: &[u8]) {
     let mut out = [0u8; 96];
     let n = bytes.len().min(out.len() - 1);
     out[..n].copy_from_slice(&bytes[..n]);
@@ -269,7 +361,7 @@ fn line(bytes: &[u8]) {
                 w2 |= (b as u64) << (8 * (i - 8));
             }
         }
-        send(REPORT, chunk.len() as u64, w1, w2);
+        send(slot, chunk.len() as u64, w1, w2);
     }
 }
 

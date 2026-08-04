@@ -55,13 +55,16 @@ const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
 /// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
 ///
-/// **Eight rather than four since milestone 50**, and it is a measured number rather than a round
-/// one: the shell's redirection path carries a parsed line, an array of planned endowments, a
-/// listing buffer and a file buffer all by value, and four pages overflowed at the first
-/// `ls > out.txt` (a data abort one word below the lowest stack page). The kernel's own scripted
-/// wiring had already found the same floor and maps seven. The cost is 16 KiB per child, which is
-/// nothing next to a page table.
-const CHILD_STACK_PAGES: u64 = 8;
+/// **Twelve since DECISIONS §67**, and every step of that number was measured rather than chosen.
+/// Four overflowed at the first `ls > out.txt`; eight held until `2>` put a **second** `FileOut` on
+/// `run_pipeline`'s frame, each carrying a 256-byte staging buffer by value, and the scripted wiring
+/// faulted twenty-four bytes below its lowest page. Four extra rather than one, because every
+/// previous instance bought exactly enough and the next change found the wall again. The cost is
+/// 48 KiB of address space per child, which is nothing next to a page table.
+///
+/// `kernel::user::pipeline_service`'s `SHELL_EXTRA_STACK` must stay level with this: a test wiring
+/// with less headroom than the boot wiring finds faults the boot does not have (notes/pipes.md).
+const CHILD_STACK_PAGES: u64 = 12;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
 /// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
@@ -313,6 +316,11 @@ fn spawn_service(
         } else {
             None
         };
+        let diagnostics = if wiring.diagnostics {
+            opt_cap(recv_cap(spawn_ep).1)
+        } else {
+            None
+        };
         let budget = if mem_pages > 0 {
             opt_cap(recv_cap(spawn_ep).1)
         } else {
@@ -365,6 +373,23 @@ fn spawn_service(
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
             let mut caps = [out; 4];
             let mut n = 1usize;
+            // **The declared second stream, at the slot the manifest names** (DECISIONS §67). Read
+            // from the program's own declaration for the same reason the clock is: the shell knows
+            // there is one (it minted the endpoint) and only the program knows where it goes. The
+            // slot is high and explicit rather than next-in-line, because how many low slots this
+            // child gets depends on what else the line granted, and a stream the program probes for
+            // by number cannot move under it.
+            let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
+            // Either half missing means no second stream reaches the child, and it then says what it
+            // has to say in-band, which is what every program did before §67.
+            let placed_buf = match (diagnostics, diag_slot) {
+                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
+                _ => None,
+            };
+            let placed: &[(u64, u64, u64)] = match &placed_buf {
+                Some(p) => p,
+                None => &[],
+            };
             // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
             // It comes from the manifest rather than from the request, because a person does not
             // designate a clock: `date` declares that it reads one, and init is the only process
@@ -388,7 +413,7 @@ fn spawn_service(
             }
             let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
             let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
-            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], maps).ok());
+            let built = elf.and_then(|e| build_child_at(UNTYPED, e, &caps[..n], placed, maps).ok());
             let ok = match built {
                 Some(tcb) => {
                     let started = tcb_start(tcb, 0, arg, 0) == 0;
@@ -415,13 +440,23 @@ fn spawn_service(
             } else if !ok {
                 send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+            // **A child that was never built cannot end its own second stream**, and the shell
+            // drains that stream to `OP_EOF` before it reads anything else, so nothing would ever
+            // come back. init closes it on the child's behalf. It is the same hole `SPAWN_OK`
+            // closed for the output side, one stream over.
+            if !ok && let Some(ep) = diagnostics {
+                send(ep, sink_proto::eof(), 0, 0);
+            }
         }
 
         // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
         // mapped, the budget and the streams inserted), and the shell holds the originals it kept
         // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
         // filling across a long session.
-        for s in [job_ut, job_fr, sink, source, budget].into_iter().flatten() {
+        for s in [job_ut, job_fr, sink, source, diagnostics, budget]
+            .into_iter()
+            .flatten()
+        {
             cap_delete(s);
         }
     }
@@ -440,6 +475,24 @@ fn build_child(
     build_ut: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
+    maps: &[(u64, u64, u64)],
+) -> Result<u64, ()> {
+    build_child_at(build_ut, elf, caps, &[], maps)
+}
+
+/// [`build_child`] with capabilities that go in a **named** slot rather than the next free one.
+///
+/// `placed` is `(child_slot, our_slot, rights)`, inserted after `caps` through
+/// `abi::tcb::CAP_INSERT`'s explicit target. One caller today: a declared diagnostic stream
+/// (DECISIONS §67), which sits above every ordinary grant because how many of those there are
+/// depends on what the command line named, and a program that probes one slot number needs that
+/// number not to move. The kernel already had the mechanism, for the fault endpoint, for the same
+/// reason.
+fn build_child_at(
+    build_ut: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
     // The child's aspace, code/data frames, stack, and TCB all come from `build_ut`. For a normal
@@ -520,6 +573,14 @@ fn build_child(
     for &(our_slot, rights) in caps {
         // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    for &(child_slot, our_slot, rights) in placed {
+        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
+        // behaviour this call exists to avoid.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, child_slot + 1) } < 0 {
             return Err(());
         }
     }

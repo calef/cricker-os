@@ -30,6 +30,19 @@ const ROLE_IPC_SERVER: u64 = 3;
 const ROLE_IPC_CLIENT: u64 = 4;
 const ROLE_MAP: u64 = 5;
 const ROLE_SPAWN: u64 = 6;
+const ROLE_SINK_PRODUCER: u64 = 7;
+const ROLE_SINK_CONSUMER: u64 = 8;
+
+// Sink-throughput slots. The producer holds only the pipe it writes into; the consumer holds the
+// report first, so slot 0 stays "the endpoint I report on" across every reporting role.
+const SINK_PIPE_OUT: u64 = 0; // the producer SENDs sink messages here
+const SINK_PIPE_IN: u64 = 1; // the consumer RECVs them here (slot 0 is REPORT)
+
+/// Messages in the sink-throughput loop, each carrying [`sink_proto::INLINE_MAX`] bytes. 5 000 is
+/// the same order as [`IPC_ITERS`] so the two are comparable under TCG, and it is 80 000 bytes, which
+/// is past the 64 KiB a Unix pipe buffers: a producer that could run ahead would have had to stop at
+/// least once, which is what makes the comparison about back pressure rather than about buffer size.
+const SINK_MSGS: u64 = 5_000;
 
 // Spawn-benchmark slots. slot 0 REPORT (the final result home to the bench boot), slot 1 UNTYPED
 // (the spawner's whole budget), slot 2 CHILD_DONE (children SEND here, the spawner RECVs; it also
@@ -93,8 +106,47 @@ pub extern "C" fn _start(role: u64, _x1: u64, _x2: u64) -> ! {
         ROLE_IPC_CLIENT => ipc_client(),
         ROLE_MAP => map_bench(),
         ROLE_SPAWN => spawn_bench(),
+        ROLE_SINK_PRODUCER => sink_producer(),
+        ROLE_SINK_CONSUMER => sink_consumer(),
         _ => exit(),
     }
+}
+
+/// **The writing half of `a | b`**, and it is the whole of what a program on the left of a pipe
+/// does: pack sixteen bytes into the sink contract's three words and `SEND`. No buffer, no flush, no
+/// knowledge of who is reading.
+///
+/// The warmup messages are part of the contract with [`sink_consumer`], which discards exactly that
+/// many before it starts timing, so the first rendezvous and the consumer's own spawn land outside
+/// the window.
+fn sink_producer() -> ! {
+    let payload = [b'x'; sink_proto::INLINE_MAX];
+    for _ in 0..(SINK_MSGS + 64) {
+        let (w0, w1, w2, _) = sink_proto::pack(&payload);
+        send(SINK_PIPE_OUT, w0, w1, w2);
+    }
+    send(SINK_PIPE_OUT, sink_proto::eof(), 0, 0);
+    exit();
+}
+
+/// **The reading half of `a | b`, self-timed**: how long it takes for [`SINK_MSGS`] messages to
+/// cross a pipe that is an endpoint and nothing else.
+///
+/// It reports **bytes**, not iterations, because that is the number a Unix pipe can be compared
+/// against: `bench/host/pipe_throughput.rs` moves the same bytes through a real `pipe(2)`. What the
+/// comparison is *for* is the cost of full lockstep (notes/pipes.md): there is no buffer here, so
+/// every sixteen bytes is a rendezvous and the producer can never run ahead.
+fn sink_consumer() -> ! {
+    for _ in 0..64 {
+        recv(SINK_PIPE_IN);
+    }
+    let start = now();
+    for _ in 0..SINK_MSGS {
+        recv(SINK_PIPE_IN);
+    }
+    let ticks = now().wrapping_sub(start);
+    send(REPORT, ticks, SINK_MSGS * sink_proto::INLINE_MAX as u64, 0);
+    exit();
 }
 
 /// **Null syscall latency.** The cheapest possible boundary crossing: an unrecognized syscall

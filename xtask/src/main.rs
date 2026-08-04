@@ -2878,7 +2878,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 11] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 15] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2910,6 +2910,24 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 11] = [
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
     ("caps date", Some("cap 1  frame     clock")),
+    // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
+    // whole of the decision, and only this gate runs them through the real init: the guest tests
+    // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a
+    // capability at the slot a manifest names, so `date` there never receives a second stream.
+    //
+    // `date` is the declarer, and at *this* prompt it has a clock and nothing to complain about. So
+    // the assertion is that its second stream exists, is separate, and is **empty**: `2> err.txt`
+    // creates the file, `date` closes the stream with nothing on it, and `wc` counts zero of
+    // everything. A shell that had merged the two streams would put a timestamp in there.
+    ("date 2> err.txt", Some("UTC")),
+    ("wc < err.txt", Some("0 0 0")),
+    // And the visibility surface names the second destination, which is what stops `caps date >
+    // when.txt` being a half-truth: two destinations on one line, and a reader can see that the
+    // complaint is not going into the file.
+    ("caps date 2> err.txt", Some("diags    err.txt")),
+    // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
+    // and its diagnostics ride it, so `2>` names nothing and the line does not run.
+    ("wc gate.txt 2> err.txt", Some("declares no second output")),
     ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
 ];
 
