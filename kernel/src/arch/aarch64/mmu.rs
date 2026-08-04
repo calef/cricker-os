@@ -571,6 +571,13 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
     root | (asid as u64) << 48
 }
 
+/// Read the ASID back out of a composed [`ttbr0_value`]. The inverse of the line above, and it
+/// exists so a portable test can ask "which tag is this space wearing?" without knowing that this
+/// ISA keeps it in bits 63:48 and RISC-V keeps it in `satp[59:44]`.
+pub fn asid_of(ttbr: u64) -> u16 {
+    (ttbr >> 48) as u16
+}
+
 /// Share the kernel into a fresh process root. **A no-op on aarch64:** the kernel lives in a
 /// separate `TTBR1` that every process shares implicitly, so a process's `TTBR0` root carries only
 /// user mappings. It exists so portable `user::AddressSpace` can call it unconditionally; on RISC-V,
@@ -607,11 +614,21 @@ unsafe fn set_ttbr0(ttbr: u64) {
 
 /// Discard every TLB entry tagged with `asid`, on every core. The teardown half of the ASID
 /// contract (crates/asid): after this, and only after this, the number may tag someone else.
+///
+/// The **leading** `dsb ishst` is the half that was missing until milestone 58. The trailing pair
+/// makes the invalidation complete before we return; the leading one makes our earlier page-table
+/// stores visible to the other cores' table walkers *before* the invalidate is broadcast, which is
+/// what the architecture requires of any `tlbi` that publishes a table change. At the teardown site
+/// this function was written for, nothing was published (the tables are about to be freed), so its
+/// absence never bit; a caller using this to announce a mapping change would have found otherwise.
+/// RISC-V's twin gets the same ordering for free, because `sfence.vma` is defined to order the
+/// executing hart's own page-table writes.
 pub fn flush_asid(asid: u16) {
     let arg = (asid as u64) << 48; // tlbi aside1is takes the ASID in bits 63:48
     // SAFETY: TLB maintenance is always sound.
     unsafe {
         core::arch::asm!(
+            "dsb ishst",
             "tlbi aside1is, {arg}",
             "dsb ish",
             "isb",

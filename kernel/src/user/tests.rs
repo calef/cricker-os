@@ -461,22 +461,19 @@ fn a_real_elf_from_the_initrd_runs_at_el0_and_verifies_itself() {
 /// spaces shared a tag, B's read would hit A's still-cached entry and see A's byte: one
 /// process reading another's memory, the exact bug the sledgehammer flush used to prevent.
 ///
-/// **aarch64-only, and deliberately NOT ported, because the property is not true on RISC-V
-/// yet.** `riscv64::mmu::write_satp` issues an unconditional `sfence.vma` on every root switch,
-/// so that ISA still swings the sledgehammer: a twin of this test would read B's byte because
-/// everything was just flushed, not because the tagging works, and it would pass forever
-/// whatever happened to the ASIDs. That is a test converted into something that passes for the
-/// wrong reason, which is worse than no test. RISC-V does allocate and tag ASIDs (`asid_bits`
-/// probes the width, `ttbr0_value` packs it into `satp[59:44]`), so the flush is what makes them
-/// pointless there; dropping it is a kernel change with its own shootdown consequences, not a
-/// test-portability change. Recorded in notes/riscv-parity-scope.md as an open gap.
-#[cfg(target_arch = "aarch64")]
+/// **This ran on aarch64 only until milestone 58, and the reason it could not be ported is worth
+/// keeping.** `riscv64::mmu::write_satp` used to issue an unconditional `sfence.vma` on every root
+/// switch, so a RISC-V twin would have read B's byte because everything had just been flushed, not
+/// because the tagging works: a test that cannot fail for its stated reason, which is worse than no
+/// test. Porting it was never a test-portability change; it needed the ASID shootdown underneath.
+/// Now that RISC-V's context switch flushes nothing either, the assertion means the same thing on
+/// both ISAs and this is one suite, which is what DECISIONS §19 asks for.
 #[test_case]
 fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
     let mut a = AddressSpace::new(2).expect("no space A");
     let mut b = AddressSpace::new(2).expect("no space B");
 
-    let (asid_a, asid_b) = (a.ttbr0() >> 48, b.ttbr0() >> 48);
+    let (asid_a, asid_b) = (mmu::asid_of(a.ttbr0()), mmu::asid_of(b.ttbr0()));
     assert_ne!(asid_a, asid_b, "two live spaces share an ASID");
     assert_ne!(asid_a, 0, "a user space got the kernel's ASID 0");
     assert_ne!(asid_b, 0, "a user space got the kernel's ASID 0");
@@ -485,22 +482,233 @@ fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
     a.map_new(VA, Flags::user_data()).expect("map A")[0] = 0xAA;
     b.map_new(VA, Flags::user_data()).expect("map B")[0] = 0xBB;
 
+    // Masked across the whole sequence: a preemption between an `activate_user` and its read would
+    // put the reserved root back and turn `VA` into a kernel fault, which is a flaky test rather
+    // than a finding. The window is a handful of instructions, so this is cheap insurance.
+    let was_enabled = crate::arch::interrupts::disable();
+
     // SAFETY: nothing is at EL0; we are a kernel thread mid-test, and each space outlives
-    // its activation. The reads go through the live TTBR0 translation, which is the point.
+    // its activation. The reads go through the live user translation, which is the point.
     let (read_a, read_b) = unsafe {
         mmu::activate_user(a.ttbr0());
         let ra = core::ptr::read_volatile(VA as *const u8);
-        mmu::activate_user(b.ttbr0()); // milestone 15: this flushes NOTHING
+        // Flushes NOTHING: milestone 15 on aarch64, milestone 58 on RISC-V.
+        mmu::activate_user(b.ttbr0());
         let rb = core::ptr::read_volatile(VA as *const u8);
         mmu::deactivate_user();
         (ra, rb)
     };
 
+    crate::arch::interrupts::restore(was_enabled);
+
     assert_eq!(read_a, 0xAA);
     assert_eq!(
         read_b, 0xBB,
-        "B read A's byte: a stale TLB entry crossed address spaces, so the nG/ASID              tagging is broken",
+        "B read A's byte: a stale TLB entry crossed address spaces, so the tagging is broken \
+         (aarch64: the nG bit and TTBR0's ASID; RISC-V: a non-global PTE and satp.ASID)",
     );
+}
+
+/// **An ASID flush reaches the OTHER cores, which is the whole of milestone 58 on RISC-V.**
+///
+/// The test above proves tagging keeps two spaces apart on one core. This one proves the other half
+/// of the contract, the half that is a distributed protocol on one ISA and a single instruction on
+/// the other: when `crates/asid` says "flush, then the number may tag someone else", the flush has
+/// to have reached every core that could be holding an entry wearing it. aarch64's `tlbi aside1is`
+/// broadcasts in hardware. RISC-V's `sfence.vma` affects only the hart that runs it, so `flush_asid`
+/// has to IPI the others through SBI RFENCE and wait for them.
+///
+/// **This test fails without the shootdown**, which is the property worth having. The sequence:
+///
+///   1. a probe thread on **another** core installs space A and reads `VA`, which is what pulls the
+///      translation into *that* core's TLB, tagged with A's ASID
+///   2. this core moves `VA` onto a different frame **with no per-address invalidation at all**, so
+///      the only thing that can announce the change anywhere is the ASID sweep
+///   3. this core calls `flush_asid`
+///   4. the probe reads `VA` again, on the same core, still under A's ASID
+///
+/// Step 4 must see the new frame. If the sweep stayed local it sees the old one, and that byte is
+/// exactly the bug: a core still translating an address space that no longer means what it did.
+/// Recycling the ASID onto a new space would turn it into cross-process disclosure, but the
+/// observable is cleaner this way: a recycled space is likely to be handed the same frames the dead
+/// one had, and then the test would pass for the wrong reason.
+///
+/// # BUGS
+///
+/// - **The probe is placed, not pinned.** `spawn_on` is a hint and an idle core may steal, so the
+///   probe records where it actually ran and the test asserts only that it was not *this* core. It
+///   cannot land here: this thread spins without yielding, so its core never goes idle and never
+///   steals. Both of the probe's reads happen inside one thread with interrupts masked, so they
+///   cannot land on two different cores.
+/// - **It needs two cores** and skips nothing if it has one: it fails, because the runner passes
+///   `-smp 4` on both ISAs and a machine that came up single-core is a finding, not a reason to be
+///   quiet.
+#[test_case]
+fn an_asid_flush_reaches_the_other_cores() {
+    use core::sync::atomic::{AtomicU8, AtomicUsize};
+
+    const VA: u64 = 0x40_0000;
+    const OLD: u8 = 0xAA;
+    const NEW: u8 = 0xBB;
+
+    /// 0 = starting, 1 = the probe has cached the translation, 2 = the remap and sweep are done,
+    /// 3 = the probe has re-read. `SeqCst` throughout: this is a handshake between two cores whose
+    /// whole purpose is ordering, and shaving it would be optimizing the thing under test.
+    static STAGE: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_BEFORE: AtomicU8 = AtomicU8::new(0);
+    static SEEN_AFTER: AtomicU8 = AtomicU8::new(0);
+    static PROBE_CORE: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static PROBE_GAVE_UP: AtomicBool = AtomicBool::new(false);
+
+    /// Read one byte through a composed root value as the live user address space, then put the
+    /// reserved root back. The install-read-uninstall is what puts the translation in this core's
+    /// TLB, which is the whole reason the probe exists.
+    fn read_through(space: u64, va: u64) -> u8 {
+        // SAFETY: nothing is at user mode on this core; we are a kernel thread with interrupts
+        // masked, and the caller keeps the address space alive across the call.
+        unsafe {
+            mmu::activate_user(space);
+            let byte = core::ptr::read_volatile(va as *const u8);
+            mmu::deactivate_user();
+            byte
+        }
+    }
+
+    /// Spin (never yield) until `done`, so this core stays busy and cannot steal the probe.
+    fn spin_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = timer::now() + 5 * timer::frequency();
+        while timer::now() < deadline {
+            if done() {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        done()
+    }
+
+    STAGE.store(0, Ordering::SeqCst);
+    PROBE_CORE.store(usize::MAX, Ordering::SeqCst);
+    PROBE_GAVE_UP.store(false, Ordering::SeqCst);
+
+    let cores = crate::smp::online_count();
+    assert!(
+        cores >= 2,
+        "a cross-core TLB shootdown test needs two online cores; this machine has {cores}",
+    );
+    let here = crate::cpu::id();
+    let target = (0..cores).find(|&c| c != here).expect("cores >= 2");
+
+    let mut space = AddressSpace::new(2).expect("no address space");
+    space.map_new(VA, Flags::user_data()).expect("map")[0] = OLD;
+    let installed = space.ttbr0();
+    let asid = mmu::asid_of(installed);
+
+    // The frame `VA` will be moved onto, written through the direct map because the kernel cannot
+    // name a user VA. It comes from the general allocator rather than the space's own region, so the
+    // space never owns it and its teardown cannot free it out from under us.
+    let fresh = crate::memory::alloc().expect("out of memory");
+    // SAFETY: the allocator just handed us this frame exclusively; the direct map reaches it.
+    unsafe { core::ptr::write_volatile(mmu::phys_to_virt(fresh.addr()) as *mut u8, NEW) };
+
+    let probe = sched::spawn_on(target, move || {
+        // Masked for the whole body. Two reasons, and the first is the one that matters: a
+        // preemption would migrate this thread and split the two reads across cores, and a
+        // preemption between an install and its read would fault on a user VA with no user space
+        // installed. This does NOT block the shootdown: RISC-V's SBI RFENCE arrives as an M-mode
+        // software interrupt, which S-mode masking does not touch, and aarch64's `tlbi` needs no
+        // interrupt at all.
+        let was_enabled = crate::arch::interrupts::disable();
+        PROBE_CORE.store(crate::cpu::id(), Ordering::SeqCst);
+
+        SEEN_BEFORE.store(read_through(installed, VA), Ordering::SeqCst);
+        STAGE.store(1, Ordering::SeqCst);
+
+        let deadline = timer::now() + 5 * timer::frequency();
+        while STAGE.load(Ordering::SeqCst) < 2 {
+            if timer::now() > deadline {
+                PROBE_GAVE_UP.store(true, Ordering::SeqCst);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        SEEN_AFTER.store(read_through(installed, VA), Ordering::SeqCst);
+        STAGE.store(3, Ordering::SeqCst);
+        crate::arch::interrupts::restore(was_enabled);
+    })
+    .expect("spawn_on failed");
+
+    assert!(
+        spin_until(|| STAGE.load(Ordering::SeqCst) >= 1),
+        "the probe never cached the translation on core {target}",
+    );
+
+    // Move `VA` onto the fresh frame with NO per-address invalidation, so `flush_asid` is the only
+    // announcement in the system and the test measures it alone.
+    {
+        // SAFETY: `space.root()` is this live space's low-half root, and the direct map makes
+        // `phys_to_ptr` valid for its tables. `|| None`: the tables reaching `VA` already exist, so
+        // the mapper never allocates.
+        let mut mapper = unsafe {
+            Mapper::<_, _, mmu::Format>::new(space.root(), Half::Low, || None, phys_to_ptr)
+        };
+        let (old, flush) = mapper.unmap(VA).expect("VA was not mapped");
+        assert_ne!(
+            old,
+            fresh.addr(),
+            "the allocator handed back the frame we just unmapped: nothing would change"
+        );
+        mapper
+            .map(VA, fresh.addr(), Flags::user_data())
+            .expect("remap onto the fresh frame");
+
+        // Discharged with a no-op ON PURPOSE, and this is the only place in the tree that does it.
+        // The real per-address flush (`arch::mmu::flush_tlb`) broadcasts too, so using it here would
+        // make the test pass whatever `flush_asid` did. `assume_no_stale_entry` would be a lie: a
+        // stale entry is precisely what we arranged.
+        flush.flush(|_| {});
+    }
+
+    mmu::flush_asid(asid);
+    STAGE.store(2, Ordering::SeqCst);
+
+    assert!(
+        spin_until(|| STAGE.load(Ordering::SeqCst) == 3),
+        "the probe never finished its second read",
+    );
+    assert!(
+        !PROBE_GAVE_UP.load(Ordering::SeqCst),
+        "the probe timed out waiting for the remap: the handshake, not the TLB, is broken",
+    );
+    assert_ne!(
+        PROBE_CORE.load(Ordering::SeqCst),
+        here,
+        "the probe ran on this core, so a local flush would have covered it and the test proves \
+         nothing about the shootdown",
+    );
+
+    assert_eq!(
+        SEEN_BEFORE.load(Ordering::SeqCst),
+        OLD,
+        "the probe did not read the original mapping, so it never cached the entry this test is \
+         about",
+    );
+    assert_eq!(
+        SEEN_AFTER.load(Ordering::SeqCst),
+        NEW,
+        "STALE TLB ON ANOTHER CORE: core {} still translates {VA:#x} to the frame this space \
+         stopped using, after a flush of its ASID. On RISC-V that means the SBI RFENCE never \
+         reached it (sfence.vma is local); reuse the number and the next address space reads this \
+         one's memory.",
+        PROBE_CORE.load(Ordering::SeqCst),
+    );
+
+    assert!(
+        wait_for(|| !sched::thread_present(probe)),
+        "the probe thread was never reaped",
+    );
+    drop(space);
+    crate::memory::free(fresh);
 }
 
 /// The loader honours the file's permissions, and does not widen them.

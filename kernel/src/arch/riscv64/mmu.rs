@@ -557,6 +557,13 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
     SATP_MODE_SV39 | ((asid as u64) << SATP_ASID_SHIFT) | (root >> 12)
 }
 
+/// Read the ASID back out of a composed [`ttbr0_value`]. The inverse of the line above, and it
+/// exists so a portable test can ask "which tag is this space wearing?" without knowing that this
+/// ISA keeps it in `satp[59:44]` and aarch64 keeps it in `TTBR0_EL1[63:48]`.
+pub fn asid_of(satp: u64) -> u16 {
+    ((satp >> SATP_ASID_SHIFT) & 0xffff) as u16
+}
+
 /// Discard every TLB entry tagged with `asid`, **on every online hart**. The teardown half of the
 /// ASID contract (crates/asid): after this, and only after this, the number may tag someone else.
 /// The aarch64 twin of this function is one instruction, and the gap between them is milestone 58.
