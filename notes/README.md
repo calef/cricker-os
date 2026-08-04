@@ -328,8 +328,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   operation (this kernel has one wait point, so the provision endpoint is deleted at both ends
   rather than guarded), why we depend on RustCrypto's `argon2` rather than write or vendor one and
   run the RFC 9106 vectors to prove it, the debug-build overflow panic our exhaustive corruption
-  test found inside that dependency, and an honest list of what this does not protect against,
-  starting with the fact that it cannot serve NTLMv2 and why.
+  test found inside that dependency, and an honest list of what this does not protect against.
+- [NTLM](ntlm.md): milestone 65, the other half of the same store: **hold the key, expose the
+  operation, never the key.** NTLMv2 does not verify a presented secret, so "secret in, boolean
+  out" does not describe it: the server holds a key and computes a MAC, which is why this needed a
+  milestone rather than another opcode. Why the store holds `NTOWFv2` rather than the NT hash (the
+  account name and domain are bound at provisioning, so a caller cannot choose half the key
+  derivation), what crosses the shared frame and what never does, why the `SessionBaseKey` is
+  released only against a proof that verified, and why the client-side operation the roadmap named
+  is deliberately absent. Also three broken primitives shipped on purpose with their blast radius
+  stated, the published vectors from RFC 1320, RFC 2202 and [MS-NLMP] §4.2.4 that pin them, the
+  four-zero transcription error the machine caught, and an honest `BUGS` list starting with
+  revocation being per holder rather than per secret.
 - [The framebuffer contract](framebuffer-contract.md): milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the
