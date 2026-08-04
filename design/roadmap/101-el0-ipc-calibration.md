@@ -1,11 +1,20 @@
 # 101. The L4 calibration, read from the IPC number that pays for the trap
 
-**Status: NOT-STARTED.** Raised 2026-08-04 as "build the EL0-to-EL0 IPC benchmark nobody owns", and
-that is not what the tree says. **The benchmark exists and has been published for days.** The
+**Status: PARTIAL** since 2026-08-04 (PR #104). Raised 2026-08-04 as "build the EL0-to-EL0 IPC
+benchmark nobody owns", and that is not what the tree says. **The benchmark exists and has been published for days.** The
 milestone survives because the comparison built on it did not follow, and the corrected comparison
 is considerably worse for us than the one on the page.
 
-**Gate: NONE.** The paragraph that overstates the L4 comparison by a factor of three can be
+**Gate: NONE.** What remains is one step, reading cycles from a PMU instead of deriving them from
+nanoseconds and an assumed clock. That rides milestone 16's silicon (board expected
+~2026-08-21) and is deferred to milestone 74 by name, so it is blocked in fact while gating on
+nothing this project controls.
+
+**The prediction in this file was tested and was wrong.** It forecast 12-24x; the measured answer is
+~1.1x to 1.7x, an error the same size as the one it was written to correct, in the other direction.
+The 12-24x figures below are left standing as the prediction of record rather than quietly fixed.
+
+The paragraph that overstates the L4 comparison by a factor of three can be
 corrected today, and the block says it should not wait for a board. Reading cycles from a PMU
 rather than estimating them rides milestone 16's silicon, and folding the whole thing into
 milestone 25 is the alternative the block names.
