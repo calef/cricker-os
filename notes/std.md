@@ -249,10 +249,18 @@ opens, every other name is an ordinary `NotFound`, and a write through a read-on
 `ErrorKind::ReadOnlyFilesystem`. Nothing in the PAL knows whether slot 4 leads to a directory or to
 one file, and it does not need to.
 
-Unsupported, each because **no verb in the contract backs it**, not because the code is missing:
+Still Unsupported, but **for two different reasons now**, and the difference is the whole of what a
+lane picking this up needs to know. This paragraph used to say "each because no verb in the contract
+backs it, not because the code is missing"; that was true when it was written and stopped being true
+at milestone 47.
 
-- **Directory iteration** (`read_dir`), `mkdir`, `unlink`, `rename`, `rmdir`, `remove_dir_all`,
-  `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
+- **Bindings, not missing verbs.** `read_dir`, `create_dir`, `remove_file`, `remove_dir` and
+  `rename` are each backed by a verb `fs_server` dispatches today (`OPENDIR`, `READDIR`, `MKDIR`,
+  `UNLINK`, `RMDIR`, `RENAME`, milestones 47 and 48). The contract has them, the server answers
+  them, and this PAL still refuses. Milestone 64's measurement puts `create_dir` and `read_dir` near
+  the top of what real crates ask for; see notes/crates-io-on-cricker.md for the order.
+- **No verb backs it**: `remove_dir_all` (userspace recursion over the two above), `canonicalize`,
+  `hard_link`, symlinks and `read_link`, `copy`.
 - **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb
   reports one. The second half of that reason is now stale and is recorded as such: there **is** a
   wall clock to interpret a timestamp against since milestone 51, so what stands between
