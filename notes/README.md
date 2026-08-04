@@ -64,7 +64,8 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
   after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
   separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
-  watermark.
+  watermark. Milestone 90 closed the asymmetry that inventory found: the per-CPU secondary stacks
+  left `.bss` for a region with an unmapped page under each, proven by a page-table walk.
 - [Reading aarch64 assembly](reading-assembly.md): five rules that decode almost
   everything, the addressing-mode table, and a line-by-line walkthrough of `boot.s`.
   **Start here if a code block looks like noise.**
