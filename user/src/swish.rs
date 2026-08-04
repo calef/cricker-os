@@ -61,7 +61,7 @@
 
 use clock_proto::{ClockPage, state};
 use fs_proto::{dirent, fs};
-use grant_plan::expand::{Expander, NameSet};
+use grant_plan::expand::{Expander, NameSet, Resume};
 use grant_plan::line::{self, Line, Source};
 use grant_plan::nav::{self, Cwd, Refused, Step};
 use grant_plan::{
@@ -199,6 +199,43 @@ struct Nav {
     /// `handles[i]` is the directory capability for level `i + 1`; level 0 is [`fs::ROOT`], the
     /// capability the endpoint itself designates.
     handles: [u64; nav::MAX_DEPTH],
+    /// The sweep in progress, when the line is under `xargs` (milestone 109). Zeroed outside one.
+    batching: Batching,
+}
+
+/// **The state of a batched sweep**, which lives on [`Nav`] because the expander is the one place a
+/// pattern becomes a set and a batch is a *kind of expansion* rather than a second mechanism.
+///
+/// Putting it here is what makes every command path inherit batching for free: `echo`, an
+/// invocation, a `caps` preview and a pipeline stage all reach a pattern through [`Nav::expand`],
+/// so none of them needs to know that a sweep is running.
+#[derive(Clone, Copy, Default)]
+struct Batching {
+    /// Where this batch resumes, or `None` outside a sweep.
+    ///
+    /// **Cleared once a pattern has been expanded**, so only the *first* pattern on a line is
+    /// batched. That is not a new limitation: only the first pattern on a line is expanded at all
+    /// (notes/glob-grant.md), because no manifest declares a second name slot.
+    resume: Option<Resume>,
+    /// Which batch this is, counting from one, for the header printed before it runs.
+    index: u64,
+    /// Where the batch after this one resumes, or `None` when this was the last.
+    next: Option<Resume>,
+    /// How many names this batch designated, which is the authority that moved.
+    names: u64,
+}
+
+/// **This batch did not run as planned, so the sweep stops here.**
+///
+/// A global for the reason [`DIAG_EP`] is one: the refusal and outcome printers are free functions
+/// reached from every command path, and threading a `&mut Nav` through all of them to carry one bit
+/// would be a wide diff for a narrow fact. Single-threaded EL0, so `Relaxed` is the whole ordering
+/// story.
+static TROUBLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Record that whatever just printed was a refusal or a failure rather than an answer.
+fn trouble() {
+    TROUBLE.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// A resolved path lead: the directory handle it designates, plus the temporary capabilities opened
@@ -222,6 +259,7 @@ impl Nav {
             rights: 0,
             cwd: Cwd::root(),
             handles: [0; nav::MAX_DEPTH],
+            batching: Batching::default(),
         }
     }
 
@@ -239,6 +277,7 @@ impl Nav {
             rights,
             cwd: Cwd::root(),
             handles: [0; nav::MAX_DEPTH],
+            batching: Batching::default(),
         }
     }
 
@@ -480,13 +519,33 @@ impl Nav {
         };
         let w = self.walk(lead)?;
 
-        let mut e = Expander::new(pattern);
+        // **The batched and unbatched expanders decide membership identically**, which is why the
+        // sweep is a policy on this one function rather than a second path: `xargs rm *.txt` and
+        // `rm *.txt` cannot disagree about what the pattern designates, only about how much of it
+        // one invocation is handed.
+        let resume = self.batching.resume;
+        let mut e = match resume {
+            Some(r) => Expander::batch(pattern, r),
+            None => Expander::new(pattern),
+        };
         let said = self.each_entry(w.handle, &mut |name, is_dir| e.offer(name, is_dir));
         self.unwind(&w);
-        match said {
-            Say::Nothing => e.finish().map_err(Say::Cannot),
-            other => Err(other),
+        if said != Say::Nothing {
+            return Err(said);
         }
+        let Some(_) = resume else {
+            return e.finish().map_err(Say::Cannot);
+        };
+        let batch = e.finish_batch().map_err(Say::Cannot)?;
+        // Only the first pattern of a line is batched, and only the first is expanded at all.
+        self.batching.resume = None;
+        self.batching.next = batch.next();
+        self.batching.names = batch.names.len() as u64;
+        // **Printed before anything runs, once per batch**, which is the per-batch form of the
+        // property the globbing lane exists for: what is shown is what *this* invocation is handed.
+        // The union is never shown because the union is exactly what nobody can hold.
+        swish::write_batch(self.batching.index, &batch.names, &mut print);
+        Ok(batch.names)
     }
 
     /// Read a directory in rounds, calling `each` with every entry. The body `ls` had, lifted out so
@@ -804,8 +863,8 @@ const TIMING_DONE: &[u8] = b"== timings done\n";
 /// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
 fn interactive(rights: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
-    print(b"commands: help, echo <text>, caps [command], time <command>, cd, pwd, ls,\n");
-    print(b"          mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
+    print(b"commands: help, echo <text>, caps [command], time <command>, xargs <command>,\n");
+    print(b"          cd, pwd, ls, mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
 
     // Whether the navigation builtins and the redirection operators have anything to name is
     // decided here, by one capability. A boot that wired no FS service starts this program with
@@ -865,6 +924,7 @@ fn dispatch(nav: &mut Nav, cmd: &[u8]) {
     match swish::route(cmd) {
         Route::Caps(tail) => caps(nav, tail),
         Route::Time(tail) => time_command(nav, tail),
+        Route::Xargs(tail) => xargs(nav, tail),
         Route::One(stage) => dispatch_one(nav, stage),
         Route::Pipeline(l) => pipeline(nav, l),
         Route::Cannot(r) => say(Say::Cannot(r)),
@@ -933,6 +993,79 @@ fn time_command(nav: &mut Nav, tail: &[u8]) {
     );
 }
 
+/// The most batches one sweep will run. A ceiling so a resume rule that failed to advance costs a
+/// bounded number of spawns rather than a prompt that never comes back, in exactly the spirit of
+/// [`ROUNDS`]. Eight names a batch, so this is 2048 names, and a directory that large is a machine's
+/// problem before it is this shell's.
+const MAX_BATCHES: u64 = 256;
+
+/// **Run a command once per batch of what its pattern matched** (milestone 109).
+///
+/// # Why this is a prefix word and not a program
+///
+/// A batching *program* would have to hold, at once, at least the union of every batch it hands
+/// out. There is no carrier for that union: that is the premise of the whole milestone, since a set
+/// larger than [`grant_plan::expand::MAX_NAMES`] is exactly what cannot be handed over. So such a
+/// program could only be given the **directory** plus a pattern, which is milestone 47's rejected
+/// "the directory plus a name list" answer wearing a different hat: it over-grants catastrophically,
+/// and it hands the batcher authority over names the pattern never matched.
+///
+/// Unix's `xargs` can be a program precisely because it holds *nothing*. Names in a pipe are text,
+/// and `rm`'s authority there comes from its uid. Here a name in a pipe is still text, so a
+/// `find | xargs rm` analogue would spawn an `rm` holding no authority at all; the pipe cannot carry
+/// the thing that has to be batched. What can mint a per-batch caretaker is whatever holds the
+/// directory capability with the right to delegate it, and in this system that is the shell asking
+/// init. So the batching goes where the authority already is.
+///
+/// This is **not** milestone 47's rejected "make `rm` a builtin", either. `rm` stays a program with
+/// an attenuated grant; what became a builtin is the *iteration*, which is a property of how the
+/// shell delegates rather than of anything any command does. `caps` and `time` are the precedent.
+///
+/// # It stops at the first batch that does not run
+///
+/// Unix carries on and reports 123 at the end, and that is its mechanism talking: its `xargs` cannot
+/// know what a child did to the names it was handed. Here the shell printed each batch's set before
+/// that batch ran, so it can name the boundary, and a sweep that stopped is a **prefix** of the
+/// match rather than an arbitrary subset. Batch four succeeding after batch three failed is the
+/// outcome worth designing against, because the user would have no way to tell which names it left.
+fn xargs(nav: &mut Nav, tail: &[u8]) {
+    // Collapse a nested prefix rather than recursing, [`time_command`]'s reason: `xargs xargs rm
+    // *.txt` is a line a person can type, batching a batch is still one sweep, and every level of
+    // recursion costs a frame on a stack that has run out four times already.
+    let mut tail = grant_plan::trim(tail);
+    while let Command::Xargs(inner) = grant_plan::parse(tail) {
+        tail = grant_plan::trim(inner);
+    }
+    if tail.is_empty() {
+        print(b"  xargs: name a command to batch\n");
+        return;
+    }
+    let mut sweep = swish::Sweep::default();
+    let mut resume = Resume::Start;
+    for _ in 0..MAX_BATCHES {
+        nav.batching = Batching {
+            resume: Some(resume),
+            index: sweep.batches + 1,
+            next: None,
+            names: 0,
+        };
+        TROUBLE.store(false, core::sync::atomic::Ordering::Relaxed);
+        dispatch(nav, tail);
+        let batching = nav.batching;
+        nav.batching = Batching::default();
+        if TROUBLE.swap(false, core::sync::atomic::Ordering::Relaxed) {
+            sweep.stop();
+            break;
+        }
+        sweep.ran(batching.names);
+        match batching.next {
+            Some(r) => resume = r,
+            None => break,
+        }
+    }
+    swish::write_sweep(&sweep, &mut print);
+}
+
 /// Parse one line with `grant_plan` and act on it. All parsing and the manifest check are the host-tested
 /// crate; this function is only IO and capability moves.
 fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
@@ -963,6 +1096,7 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
         // interception to find every arm.
         Command::Caps(tail) => caps(nav, tail),
         Command::Time(tail) => time_command(nav, tail),
+        Command::Xargs(tail) => xargs(nav, tail),
         Command::Pwd => print_pwd(nav),
         Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
@@ -983,6 +1117,10 @@ fn print_pwd(nav: &Nav) {
 /// about a policy, and the wording is [`swish::write_say`]'s so a host test can hold it: this shell
 /// does not get to invent a friendlier word for a refusal.
 fn say(s: Say) {
+    // Anything but silence is a refusal or a failure, and under `xargs` that ends the sweep.
+    if s != Say::Nothing {
+        trouble();
+    }
     swish::write_say(s, &mut print);
 }
 
@@ -1032,6 +1170,7 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
 /// Print a refusal in the capability model's voice, which is [`swish::write_refusal`]'s job: the
 /// fixed half is `grant_plan`'s and the program name is supplied where one helps.
 fn refuse(spec: RunSpec, refusal: Refusal) {
+    trouble();
     swish::write_refusal(&spec, refusal, &mut print);
 }
 
@@ -1044,6 +1183,7 @@ fn spawn(e: Endowment) {
     // prompt says nothing. Authority the user thought they granted must never quietly evaporate,
     // which is the same rule that makes an unexpected token a refusal instead of a shrug.
     if e.file.is_some() {
+        trouble();
         print(
             b"  a file grant needs init to build the caretaker; this shell cannot deliver one yet\n",
         );
@@ -1057,6 +1197,7 @@ fn spawn(e: Endowment) {
     // ungranted `rm` would be the worst possible failure of this model: a program told to destroy
     // something, holding nothing, saying nothing.
     if e.dir.is_some() {
+        trouble();
         print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
         return;
     }
@@ -1213,6 +1354,12 @@ const MAX_TEXT_CHUNKS: usize = 32;
 
 /// Report what the spawned program did, in terms of the grant it was given.
 fn outcome(e: Endowment, answer: u64) {
+    // **The only failure a spawned child reports back today**, which is why the sweep's stop rule
+    // is honest about its reach: there is no exit status on this path, so a child that ran and did
+    // the wrong thing looks to a sweep exactly like one that succeeded. See notes/glob-grant.md.
+    if answer == spawnproto::SPAWN_FAILED {
+        trouble();
+    }
     swish::write_outcome(&e, answer, &mut print);
 }
 

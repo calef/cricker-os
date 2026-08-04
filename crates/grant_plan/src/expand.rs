@@ -178,7 +178,52 @@ impl NameSet {
         self.iter().any(|(n, _)| n == name)
     }
 
-    /// `(name, is_dir)` per name, in the order the directory yielded them.
+    /// **Keep the [`MAX_NAMES`] smallest names offered**, in ascending byte order, which is how one
+    /// [`Batch`] is selected out of a match too large to hand over at once.
+    ///
+    /// Returns whether the set had **room before this name**. `false` says a batch's worth of names
+    /// has already been seen and at least one more matched, which is exactly [`Batch::more`]: the
+    /// name still goes in when it sorts below the largest held, displacing that one, so what comes
+    /// out is the smallest prefix of the ordering rather than the first names the directory happened
+    /// to yield.
+    ///
+    /// The caller has already established that `name` can travel in a grant, which is why this takes
+    /// a [`Name`] rather than bytes.
+    fn keep_smallest(&mut self, name: Name, is_dir: bool) -> bool {
+        // Where it belongs: the first slot holding a name that sorts after it.
+        let at = (0..self.n)
+            .find(|&i| self.names[i].as_bytes() > name.as_bytes())
+            .unwrap_or(self.n);
+        let room = self.n < MAX_NAMES;
+        if room {
+            self.n += 1;
+        } else if at == MAX_NAMES {
+            // Full, and this name sorts after everything held. It belongs to a later batch.
+            return false;
+        }
+        let mut i = self.n - 1;
+        while i > at {
+            self.names[i] = self.names[i - 1];
+            self.dirs[i] = self.dirs[i - 1];
+            i -= 1;
+        }
+        self.names[at] = name;
+        self.dirs[at] = is_dir;
+        room
+    }
+
+    /// The **last** name in the set, which is a batch's watermark: the exclusive lower bound the
+    /// next batch resumes from. `None` for an empty set, which is a sweep that is over.
+    pub fn last(&self) -> Option<&[u8]> {
+        (self.n > 0).then(|| self.names[self.n - 1].as_bytes())
+    }
+
+    /// `(name, is_dir)` per name, in the order the directory yielded them, or in **byte order** for
+    /// a set [`Expander::batch`] selected.
+    ///
+    /// The two differ because a batch's last name is its successor's boundary, so batching needs a
+    /// total order and one expansion needs none. Sorting the unbatched case too would be a change to
+    /// what `echo *.txt` prints, bought for nothing.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], bool)> {
         (0..self.n).map(|i| (self.names[i].as_bytes(), self.dirs[i]))
     }
@@ -203,6 +248,45 @@ pub struct Expander<'a> {
     /// two ways it happens are the two ways a grant could silently become a prefix of what the
     /// command matched.
     refused: Option<Refusal>,
+    /// Where this batch resumes from, or `None` for the unbatched expansion that refuses at the
+    /// bound. See [`Expander::batch`].
+    resume: Option<Resume>,
+    /// A match beyond this batch was seen. Only ever set in batching mode, where being over the
+    /// bound is a fact to report rather than a refusal.
+    more: bool,
+}
+
+/// **Where a batch starts**: at the beginning, or immediately after the last name of the batch
+/// before it.
+///
+/// The resume point is a **name**, not a directory cursor, and that is the decision the rest of
+/// batching hangs on. A cursor into a listing is invalidated by the very thing a batched command is
+/// usually doing: `rm` takes eight names away, and every entry after them shifts. notes/glob-grant.md
+/// already records that hazard from the other end (`rm`'s namespace sweep re-reads from cursor 0
+/// because a set namespace is fixed and a real directory is not).
+///
+/// A name is stable under both removal and insertion, so the rule "the [`MAX_NAMES`] smallest
+/// matches strictly greater than this" terminates whether the command destroys what it was handed or
+/// leaves it alone. That is the case Unix never has to think about, because its `xargs` reads names
+/// out of a pipe that was materialized before the first child ran; a shell with no allocator cannot
+/// materialize anything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Resume {
+    #[default]
+    Start,
+    After(Name),
+}
+
+/// **One batch of a match too large to hand over at once**: the names this invocation designates,
+/// and whether the pattern still matches something beyond them.
+///
+/// `more` is what makes a sweep terminate without anyone counting: the shell asks for a batch, runs
+/// it, and asks again from [`NameSet::last`] until a batch says there is nothing after it. Nobody
+/// ever holds the whole match, which is the point rather than an accident of the implementation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Batch {
+    pub names: NameSet,
+    pub more: bool,
 }
 
 impl<'a> Expander<'a> {
@@ -212,6 +296,29 @@ impl<'a> Expander<'a> {
             pattern,
             set: NameSet::empty(),
             refused: None,
+            resume: None,
+            more: false,
+        }
+    }
+
+    /// **One batch of an expansion, resumed from a name** (milestone 109).
+    ///
+    /// The same membership decision as [`Expander::new`] and a different collection policy: instead
+    /// of refusing the ninth match, this takes the [`MAX_NAMES`] smallest matches strictly after
+    /// `resume` and reports that the rest exist. Membership is decided once, in [`Expander::offer`],
+    /// so a batched line and an unbatched one cannot disagree about what a pattern designates.
+    ///
+    /// The two collection policies are deliberately *not* one. An unbatched line means "hand this
+    /// over", and a ninth match makes that impossible, so it is refused loudly with nothing spawned;
+    /// a batched line means "hand this over in as many pieces as it takes", and a ninth match is the
+    /// reason it was typed.
+    pub fn batch(pattern: &'a [u8], resume: Resume) -> Self {
+        Expander {
+            pattern,
+            set: NameSet::empty(),
+            refused: None,
+            resume: Some(resume),
+            more: false,
         }
     }
 
@@ -228,12 +335,28 @@ impl<'a> Expander<'a> {
         if !crate::file_name_fits(name) {
             // It matched and it cannot travel in a grant. Refusing is the only honest answer: a
             // grant missing a name the command matched is a grant that does not mean what the line
-            // said.
+            // said. **Batching does not soften this**, and that is the point of deciding it here
+            // rather than in either collector: a name a batch would have to drop is exactly the
+            // silent prefix the whole mechanism exists to refuse.
             self.refused.get_or_insert(Refusal::MatchNotNameable);
             return;
         }
-        if !self.set.push(name, is_dir) {
-            self.refused.get_or_insert(Refusal::TooManyNames);
+        let Some(resume) = self.resume else {
+            if !self.set.push(name, is_dir) {
+                self.refused.get_or_insert(Refusal::TooManyNames);
+            }
+            return;
+        };
+        // A batch takes what is strictly after its watermark, so a name an earlier batch already
+        // designated is not offered to this one however the directory has been rearranged since.
+        if let Resume::After(w) = resume
+            && name <= w.as_bytes()
+        {
+            return;
+        }
+        let Some(n) = Name::new(name) else { return };
+        if !self.set.keep_smallest(n, is_dir) {
+            self.more = true;
         }
     }
 
@@ -260,6 +383,10 @@ impl<'a> Expander<'a> {
     /// authority nobody named. Saying so at the prompt is the same rule that makes an unplaceable
     /// token a refusal instead of a shrug.
     pub fn finish(self) -> Result<NameSet, Refusal> {
+        debug_assert!(
+            self.resume.is_none(),
+            "a batched expander finishes as a Batch"
+        );
         if let Some(r) = self.refused {
             return Err(r);
         }
@@ -267,6 +394,44 @@ impl<'a> Expander<'a> {
             return Err(Refusal::NoMatch);
         }
         Ok(self.set)
+    }
+
+    /// The batch, for an expander built by [`Expander::batch`].
+    ///
+    /// **An empty batch is not [`Refusal::NoMatch`] when it is a continuation.** The first batch of
+    /// a sweep answers for the whole pattern, so a pattern matching nothing is refused there exactly
+    /// as an unbatched one is; a later batch coming back empty means the sweep is over, which is a
+    /// normal ending rather than a line that designated nothing. Getting this backwards would print
+    /// "no name here matches that pattern" at the *end* of a successful sweep.
+    pub fn finish_batch(self) -> Result<Batch, Refusal> {
+        debug_assert!(
+            self.resume.is_some(),
+            "an unbatched expander finishes as a set"
+        );
+        if let Some(r) = self.refused {
+            return Err(r);
+        }
+        if self.set.is_empty() && self.resume == Some(Resume::Start) {
+            return Err(Refusal::NoMatch);
+        }
+        Ok(Batch {
+            names: self.set,
+            more: self.more,
+        })
+    }
+}
+
+impl Batch {
+    /// Where the batch after this one resumes, or `None` when this was the last.
+    ///
+    /// Both halves matter: a batch with nothing after it ends the sweep, and so does an empty batch,
+    /// because there is no watermark to carry forward.
+    pub fn next(&self) -> Option<Resume> {
+        if !self.more {
+            return None;
+        }
+        let last = self.names.last()?;
+        Name::new(last).map(Resume::After)
     }
 }
 
@@ -491,6 +656,216 @@ mod tests {
         // print `["a.txt", "logs"]`, this is the test that says so on purpose.
         let set = expand(b"*", &[(b"a.txt", false), (b"logs", true)]).unwrap();
         assert_debug(&set, "[[97, 46, 116, 120, 116], [108, 111, 103, 115]]");
+    }
+
+    // ---- batching at the bound (milestone 109) ----
+
+    /// **Twenty names in one directory, listed in an order that is deliberately not sorted.** A
+    /// batch that took the first eight the directory yielded would answer differently from one that
+    /// took the eight smallest, which is what makes the ordering claims below claims.
+    const TWENTY: [&[u8]; 20] = [
+        b"b13.txt", b"b06.txt", b"b15.txt", b"b16.txt", b"b17.txt", b"b18.txt", b"b19.txt",
+        b"b00.txt", b"b01.txt", b"b02.txt", b"b03.txt", b"b04.txt", b"b05.txt", b"b14.txt",
+        b"b07.txt", b"b08.txt", b"b09.txt", b"b10.txt", b"b11.txt", b"b12.txt",
+    ];
+
+    /// Which of [`TWENTY`] this is, as a bit, for the seen-mask the sweeps keep. This crate has no
+    /// allocator, in tests or out, so "every name exactly once" is twenty bits rather than a sorted
+    /// vector.
+    fn which(name: &[u8]) -> u32 {
+        let i = TWENTY
+            .iter()
+            .position(|n| *n == name)
+            .expect("a batch named something that is not in the directory");
+        1 << i
+    }
+
+    /// One batch over a listing, the way the shell's sweep drives it.
+    fn batch(pattern: &[u8], resume: Resume, listing: &[(&[u8], bool)]) -> Result<Batch, Refusal> {
+        let mut e = Expander::batch(pattern, resume);
+        for &(name, is_dir) in listing {
+            e.offer(name, is_dir);
+        }
+        e.finish_batch()
+    }
+
+    /// [`TWENTY`] as a listing.
+    fn twenty() -> [(&'static [u8], bool); 20] {
+        core::array::from_fn(|i| (TWENTY[i], false))
+    }
+
+    /// **The headline: a match too large to hand over is batched instead of refused**, and the
+    /// batches partition the match exactly. No name is designated twice and none is dropped, which
+    /// is the property [`Refusal::TooManyNames`] was protecting by refusing outright.
+    #[test]
+    fn batches_partition_the_match_with_no_name_taken_twice_or_dropped() {
+        let listing = twenty();
+        assert_eq!(
+            expand(b"b*.txt", &listing),
+            Err(Refusal::TooManyNames),
+            "unbatched, this is the refusal milestone 109 exists to answer",
+        );
+
+        let mut seen = 0u32;
+        let mut sizes = [0usize; 8];
+        let mut batches = 0usize;
+        let mut resume = Resume::Start;
+        // Bounded so a resume rule that failed to advance fails this test instead of hanging it.
+        for _ in 0..8 {
+            let b = batch(b"b*.txt", resume, &listing).expect("a batch of a matching pattern");
+            sizes[batches] = b.names.len();
+            batches += 1;
+            for (name, _) in b.names.iter() {
+                let bit = which(name);
+                assert_eq!(seen & bit, 0, "a name appeared in two batches");
+                seen |= bit;
+            }
+            match b.next() {
+                Some(r) => resume = r,
+                None => break,
+            }
+        }
+        assert_eq!(batches, 3, "twenty names is eight, eight and four");
+        assert_eq!(sizes[..3], [MAX_NAMES, MAX_NAMES, 4]);
+        assert_eq!(seen, (1 << 20) - 1, "the batches are not the match");
+    }
+
+    /// A batch is the smallest names **in order**, not the first ones the directory yielded, and
+    /// that is what makes its last name a boundary rather than a guess.
+    #[test]
+    fn a_batch_is_the_smallest_names_after_the_watermark_in_order() {
+        let b = batch(b"b*.txt", Resume::Start, &twenty()).unwrap();
+        let mut prev: &[u8] = b"";
+        for (name, _) in b.names.iter() {
+            assert!(
+                name > prev,
+                "a batch is ordered: {name:?} came after {prev:?}"
+            );
+            prev = name;
+        }
+        assert_eq!(b.names.iter().next().map(|(n, _)| n), Some(&b"b00.txt"[..]));
+        assert_eq!(b.names.last(), Some(&b"b07.txt"[..]));
+
+        // And the second batch continues the ordering rather than restarting it.
+        let second = batch(b"b*.txt", b.next().unwrap(), &twenty()).unwrap();
+        assert_eq!(
+            second.names.iter().next().map(|(n, _)| n),
+            Some(&b"b08.txt"[..]),
+        );
+        assert_eq!(second.names.last(), Some(&b"b15.txt"[..]));
+    }
+
+    /// **The watermark is exclusive**, so the name that ended one batch is not in the next. An
+    /// inclusive bound would grant it twice, and for `rm` the second grant would name a file that
+    /// the first batch has already removed.
+    #[test]
+    fn the_watermark_is_exclusive() {
+        let listing: [(&[u8], bool); 3] = [(b"a", false), (b"b", false), (b"c", false)];
+        let b = batch(b"*", Resume::After(Name::new(b"a").unwrap()), &listing).unwrap();
+        assert_eq!(b.names.len(), 2);
+        assert!(!b.names.contains(b"a") && b.names.contains(b"b"));
+        assert!(
+            !b.more,
+            "three names is one batch even resumed from the first"
+        );
+    }
+
+    /// **`more` is a fact about what is left, not about how full the batch is.** Exactly a batch's
+    /// worth of matches ends the sweep in one round; one more starts a second.
+    #[test]
+    fn more_says_whether_a_batch_follows() {
+        let listing = twenty();
+        assert!(
+            !batch(b"b*.txt", Resume::Start, &listing[..MAX_NAMES])
+                .unwrap()
+                .more
+        );
+        let over = batch(b"b*.txt", Resume::Start, &listing[..MAX_NAMES + 1]).unwrap();
+        assert!(over.more);
+        assert_eq!(over.names.len(), MAX_NAMES);
+        assert_eq!(
+            over.next(),
+            Name::new(over.names.last().unwrap()).map(Resume::After),
+        );
+    }
+
+    /// **The case a directory cursor would get wrong**, and the whole reason [`Resume`] is a name.
+    ///
+    /// A batched `rm` removes what each batch designated, so the directory the next batch enumerates
+    /// is missing every name granted so far and every later entry has shifted. Resuming by name
+    /// sweeps it exactly once; resuming by position would skip or repeat.
+    #[test]
+    fn a_sweep_of_a_shrinking_directory_takes_every_name_once() {
+        let mut live: [Option<&[u8]>; 20] = core::array::from_fn(|i| Some(TWENTY[i]));
+        let mut seen = 0u32;
+        let mut resume = Resume::Start;
+        for _ in 0..8 {
+            let mut e = Expander::batch(b"b*.txt", resume);
+            for name in live.iter().flatten() {
+                e.offer(name, false);
+            }
+            let b = e.finish_batch().unwrap();
+            for (name, _) in b.names.iter() {
+                let bit = which(name);
+                assert_eq!(
+                    seen & bit,
+                    0,
+                    "a shrinking directory handed a name over twice"
+                );
+                seen |= bit;
+                // The command runs: every name it was granted is gone before the next enumeration.
+                live[bit.trailing_zeros() as usize] = None;
+            }
+            match b.next() {
+                Some(r) => resume = r,
+                None => break,
+            }
+        }
+        assert_eq!(seen, (1 << 20) - 1, "the sweep left names behind");
+        assert!(live.iter().all(Option::is_none));
+    }
+
+    /// **An empty first batch is still `NoMatch`; an empty later one is the end.** Backwards, this
+    /// prints "no name here matches that pattern" at the end of a sweep that worked.
+    #[test]
+    fn an_empty_batch_means_the_end_only_when_it_is_a_continuation() {
+        let listing: [(&[u8], bool); 1] = [(b"a.txt", false)];
+        assert_eq!(
+            batch(b"*.rs", Resume::Start, &listing),
+            Err(Refusal::NoMatch)
+        );
+        let done = batch(b"*", Resume::After(Name::new(b"a.txt").unwrap()), &listing).unwrap();
+        assert!(done.names.is_empty() && !done.more);
+        assert_eq!(done.next(), None);
+    }
+
+    /// **Batching does not soften the other refusal.** A matched name that cannot travel in a grant
+    /// stops the sweep, because a batch missing a name the pattern matched is the silent prefix this
+    /// mechanism exists to refuse. Batching splits an authority; it never shrinks one.
+    #[test]
+    fn a_batch_still_refuses_a_match_it_cannot_name() {
+        let listing: [(&[u8], bool); 2] = [(b"one.txt", false), (b"seventeen-bytes!!", false)];
+        assert_eq!(
+            batch(b"*", Resume::Start, &listing),
+            Err(Refusal::MatchNotNameable),
+        );
+    }
+
+    /// Membership is decided in one place, so a batched line and an unbatched one designate the same
+    /// names: the dot rule and the type bit hold identically under batching.
+    #[test]
+    fn a_batch_designates_what_an_expansion_would() {
+        let listing: [(&[u8], bool); 3] = [(b".config", false), (b"visible", false), (b"d", true)];
+        let b = batch(b"*", Resume::Start, &listing).unwrap();
+        assert_eq!(
+            b.names.len(),
+            2,
+            "the dot rule is the expander's, not the collector's",
+        );
+        assert!(!b.names.contains(b".config"));
+        let mut it = b.names.iter();
+        assert_eq!(it.next(), Some((&b"d"[..], true)));
+        assert_eq!(it.next(), Some((&b"visible"[..], false)));
     }
 
     /// A listing that offers the same name twice (`READDIR` re-reads the directory per round, so a
