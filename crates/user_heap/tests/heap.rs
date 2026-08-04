@@ -128,6 +128,59 @@ fn first_fit_reuses_a_hole_of_exactly_the_right_size() {
 }
 
 #[test]
+fn a_block_that_fits_exactly_leaves_nothing_behind() {
+    let mut a = arena();
+    let mut h = Heap::new();
+    // Only the first 4 KiB is donated and the rest of the arena is slack on purpose. An allocator
+    // that carved a remainder out of an exact fit would write a free-list node at the region's end,
+    // and inside a Box that is the test process's own heap rather than an assertion failure.
+    const DONATED: usize = 4096;
+    // SAFETY: the low 4 KiB of a freshly boxed 4096-aligned arena this test owns, handed over whole.
+    unsafe { h.add_region(a.0.as_mut_ptr(), DONATED) };
+
+    let p = h.alloc(layout(DONATED, MIN_ALIGN)).unwrap();
+    // Nothing is left, and "nothing" is no blocks rather than one empty one: a zero-length block on
+    // the list is a node written past the end of what was donated.
+    assert_eq!(h.block_count(), 0);
+    assert_eq!(h.free_bytes(), 0);
+    assert!(h.alloc(layout(1, 1)).is_none());
+
+    // SAFETY: `p` came from `h.alloc` with exactly this layout, and is freed once.
+    unsafe { h.dealloc(p, layout(DONATED, MIN_ALIGN)) };
+    assert_eq!(h.block_count(), 1);
+    assert_eq!(h.free_bytes(), DONATED);
+}
+
+#[test]
+fn a_split_never_invents_bytes_nobody_donated() {
+    let mut a = arena();
+    let mut h = Heap::new();
+    const DONATED: usize = 4096;
+    // SAFETY: the low 4 KiB of a freshly boxed 4096-aligned arena this test owns, handed over whole.
+    unsafe { h.add_region(a.0.as_mut_ptr(), DONATED) };
+
+    // A front-padded split, so both remainders are computed from the block's size. Nothing exposes
+    // a block's size to read back, and `free_bytes` is an independent counter that a wrong split
+    // does not touch, so the only observable consequence of the arithmetic rotting is a heap that
+    // later hands out memory nobody gave it.
+    let pad = h.alloc(layout(16, 16)).unwrap();
+    let over = h.alloc(layout(64, 64)).unwrap();
+    // SAFETY: `over` came from `h.alloc` with exactly this layout, and is freed once.
+    unsafe { h.dealloc(over, layout(64, 64)) };
+    // SAFETY: `pad` came from `h.alloc` with exactly this layout, and is freed once.
+    unsafe { h.dealloc(pad, layout(16, 16)) };
+    assert_eq!(h.block_count(), 1);
+    assert_eq!(h.free_bytes(), DONATED);
+
+    // The whole donation is available again, and not one grid cell more.
+    assert!(h.alloc(layout(DONATED + MIN_ALIGN, 8)).is_none());
+    let all = h.alloc(layout(DONATED, MIN_ALIGN)).unwrap();
+    assert_eq!(all.as_ptr(), a.0.as_mut_ptr());
+    // SAFETY: `all` came from `h.alloc` with exactly this layout, and is freed once.
+    unsafe { h.dealloc(all, layout(DONATED, MIN_ALIGN)) };
+}
+
+#[test]
 fn thrashing_does_not_fragment_the_heap_to_death() {
     // The kernel heap's milestone-4 test, re-proven for the userspace twin: interleaved
     // allocate/free churn must end with the heap as one block, not confetti.

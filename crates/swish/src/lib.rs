@@ -830,6 +830,19 @@ mod tests {
     }
 
     #[test]
+    fn pwd_prints_the_position_relative_to_this_shells_own_root() {
+        // The leading slash is this shell's root, not the system's. A shell holding one directory
+        // capability has no name for anything above it, so `/` at depth zero is the honest answer
+        // rather than a borrowed one, and `pwd` is the only place a user sees it.
+        assert_eq!(shown(|o| write_pwd(&Cwd::root(), o)), "  /\n");
+
+        let mut cwd = Cwd::root();
+        assert!(cwd.descend(b"docs"));
+        assert!(cwd.descend(b"drafts"));
+        assert_eq!(shown(|o| write_pwd(&cwd, o)), "  /docs/drafts\n");
+    }
+
+    #[test]
     fn an_unresolvable_name_is_repeated_back_and_a_flag_only_line_is_not() {
         let named = shown(|o| write_refusal(&spec_of(b"cat 7"), Refusal::NoSuchProgram, o));
         assert!(named.starts_with("  cat: "), "{named}");
