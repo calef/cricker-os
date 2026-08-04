@@ -374,8 +374,9 @@ mod verification {
 mod tests {
     use super::*;
 
-    /// A fake 3-function config space: a virtio-blk at 00:01.0 with two BARs and a capability
-    /// list, an empty bus otherwise. Offsets are byte addresses into per-function 4 KB pages.
+    /// A fake config space: a virtio-blk at 00:01.0 with two BARs and a capability list, a
+    /// multifunction device at 00:02, a device whose first BAR is 64-bit at 00:03, and empty
+    /// slots everywhere else. Offsets are byte addresses into per-function 4 KB pages.
     struct FakeCfg {
         space: std::collections::HashMap<(u8, u8, u8, u64), u32>,
     }
@@ -419,6 +420,27 @@ mod tests {
                 (f.0, f.1, f.2, 0x70),
                 u32::from_le_bytes([0x11, 0x00, 0, 0]),
             ); // MSI-X, end of list
+
+            // 00:01.1 answers, and must never be enumerated: the header at 00:01.0 says
+            // single-function. A device that aliases its config space across all eight functions
+            // is why that bit is checked instead of probing all eight and believing the answers.
+            s.insert((0, 1, 1, 0x00), 0x1042_1af4);
+
+            // 00:02.0, multifunction (header type bit 7 set): virtio-net at function 0 and
+            // virtio-rng at function 1, functions 2..8 empty so the per-function "nobody home"
+            // check has something to reject.
+            s.insert((0, 2, 0, 0x00), 0x1041_1af4);
+            s.insert((0, 2, 0, 0x0c), 0x0080_0000); // header type is byte 0x0e of this dword
+            s.insert((0, 2, 1, 0x00), 0x1044_1af4);
+
+            // 00:03.0, a virtio-gpu whose FIRST BAR is 64-bit and assigned. The blk device's
+            // 64-bit BAR is the last pair and unassigned, so nothing there shows the walk
+            // resuming two slots on, or a base whose high half is nonzero.
+            s.insert((0, 3, 0, 0x00), 0x1050_1af4);
+            s.insert((0, 3, 0, 0x0c), 0);
+            s.insert((0, 3, 0, 0x10), 0xc000_0004); // 64-bit memory BAR, base 0x1_c000_0000
+            s.insert((0, 3, 0, 0x14), 0x0000_0001);
+
             FakeCfg { space: s }
         }
 
@@ -436,10 +458,14 @@ mod tests {
             if !self.space.contains_key(&key) {
                 return;
             }
-            let v = match off & !3 {
-                0x10 if v == u32::MAX => !(0x1000u32 - 1), // BAR0: size 0x1000
-                0x20 if v == u32::MAX => (!(0x4000u32 - 1)) | 0b100, // BAR4 low: size 0x4000, keep type bits
-                0x24 if v == u32::MAX => u32::MAX,                   // BAR4 high: all bits writable
+            // Keyed on the device too: 00:01 and 00:03 both have a BAR at 0x10 and they are
+            // different sizes.
+            let v = match (bdf.dev, off & !3) {
+                (1, 0x10) if v == u32::MAX => !(0x1000u32 - 1), // BAR0: size 0x1000
+                (1, 0x20) if v == u32::MAX => (!(0x4000u32 - 1)) | 0b100, // BAR4 low: size 0x4000, keep type bits
+                (1, 0x24) if v == u32::MAX => u32::MAX, // BAR4 high: all bits writable
+                (3, 0x10) if v == u32::MAX => (!(0x2000u32 - 1)) | 0b100, // BAR0 low: size 0x2000
+                (3, 0x14) if v == u32::MAX => u32::MAX, // BAR0 high
                 _ => v,
             };
             self.space.insert(key, v);
@@ -530,10 +556,12 @@ mod tests {
         );
     }
 
-    /// Enumeration finds the one real device and nothing else: empty slots (vendor 0xffff) are
-    /// skipped, and a single-function device's functions 1..8 are never probed as devices.
+    /// Enumeration reports every function that answers and nothing else. The three properties
+    /// come as one walk because they only exist together: empty slots (vendor 0xffff) are
+    /// skipped, the multifunction device's function 1 is found, and the single-function device's
+    /// function 1 is never probed even though this fixture would answer for it.
     #[test]
-    fn enumeration_finds_the_virtio_disk_and_skips_empty_slots() {
+    fn enumeration_follows_the_multifunction_bit_and_skips_what_does_not_answer() {
         let mut cfg = FakeCfg::new();
         let mut found = Vec::new();
         enumerate(
@@ -543,16 +571,66 @@ mod tests {
         );
         assert_eq!(
             found,
-            vec![(
-                Bdf {
-                    bus: 0,
-                    dev: 1,
-                    func: 0
-                },
-                VIRTIO_VENDOR,
-                VIRTIO_BLK_MODERN
-            )],
+            vec![
+                (
+                    Bdf {
+                        bus: 0,
+                        dev: 1,
+                        func: 0
+                    },
+                    VIRTIO_VENDOR,
+                    VIRTIO_BLK_MODERN
+                ),
+                (
+                    Bdf {
+                        bus: 0,
+                        dev: 2,
+                        func: 0
+                    },
+                    VIRTIO_VENDOR,
+                    VIRTIO_NET_MODERN
+                ),
+                (
+                    Bdf {
+                        bus: 0,
+                        dev: 2,
+                        func: 1
+                    },
+                    VIRTIO_VENDOR,
+                    VIRTIO_RNG_MODERN
+                ),
+                (
+                    Bdf {
+                        bus: 0,
+                        dev: 3,
+                        func: 0
+                    },
+                    VIRTIO_VENDOR,
+                    VIRTIO_GPU_MODERN
+                ),
+            ],
         );
+    }
+
+    /// An empty slot costs exactly one config read, which is the entire job of the vendor-id
+    /// check on function 0. Without it every empty slot on the bus also pays a header-type read
+    /// and eight per-function reads, and the walk still returns the right answer, so read count
+    /// is the only thing that can see the guard.
+    #[test]
+    fn an_empty_slot_costs_one_config_read() {
+        let mut cfg = FakeCfg::new();
+        let mut reads = 0usize;
+        enumerate(
+            1,
+            &mut |b, o| {
+                reads += 1;
+                cfg.read32(b, o)
+            },
+            &mut |_, _, _| {},
+        );
+        // 29 empty slots at one read each, plus the three that answer: blk 3 (id, header type,
+        // one function), the multifunction device 10 (id, header type, eight functions), gpu 3.
+        assert_eq!(reads, 29 + 3 + 10 + 3);
     }
 
     /// The BAR probe decodes an assigned 32-bit BAR and an UNassigned 64-bit BAR (base 0), sizes
@@ -600,6 +678,55 @@ mod tests {
         assert_eq!(cfg.read32(bdf, 0x20), 0b100);
     }
 
+    /// A 64-bit BAR in the *first* slot: the base is assembled from both halves, the upper half
+    /// is not a BAR of its own, and the walk stops after six slots. None of the three is visible
+    /// on the blk device, whose 64-bit BAR is unassigned and sits in the last pair, so a base
+    /// that ignored its high half and a walk that ran one slot long both read as correct there.
+    #[test]
+    fn a_64_bit_bar_in_the_first_slot_keeps_its_high_half() {
+        let cfg = std::cell::RefCell::new(FakeCfg::new());
+        let bdf = Bdf {
+            bus: 0,
+            dev: 3,
+            func: 0,
+        };
+        // A high-water mark rather than a log of every access: the mutants that make this walk
+        // run forever are caught by a timeout, and a growing Vec would turn that into an OOM.
+        let highest = std::cell::Cell::new(0u64);
+        let bars = read_bars(
+            bdf,
+            &mut |b, o| {
+                highest.set(highest.get().max(o));
+                cfg.borrow_mut().read32(b, o)
+            },
+            &mut |b, o, v| {
+                highest.set(highest.get().max(o));
+                cfg.borrow_mut().write32(b, o, v);
+            },
+        );
+
+        assert_eq!(
+            bars[0],
+            Some(Bar {
+                base: 0x1_c000_0000,
+                size: 0x2000,
+                is_64: true
+            })
+        );
+        assert_eq!(
+            bars[1], None,
+            "the upper half of a 64-bit BAR is not its own BAR"
+        );
+
+        // A type-0 header has six BAR slots, 0x10 through 0x24. 0x28 is the Cardbus CIS pointer,
+        // and a walk that ran one slot long would size that pointer as if it were a BAR.
+        assert_eq!(
+            highest.get(),
+            BAR0 + 20,
+            "the probe touched a register outside the six BAR slots"
+        );
+    }
+
     /// The capability walk yields the two virtio vendor capabilities with their (bar, offset,
     /// length) and the notify multiplier, and skips the MSI-X capability in the same list.
     #[test]
@@ -622,6 +749,25 @@ mod tests {
         assert_eq!(caps[1].cfg_type, VIRTIO_CAP_NOTIFY);
         assert_eq!((caps[1].bar, caps[1].offset), (4, 0x3000));
         assert_eq!(caps[1].notify_off_multiplier, 4);
+    }
+
+    /// A function whose status register does not advertise a capability list is not walked. The
+    /// capability pointer at 0x34 is undefined on such a function, so following it decodes
+    /// whatever bytes happen to sit there as a capability chain. This fixture keeps its real
+    /// chain in place and only clears the status bit, which is the case that tells the two
+    /// apart.
+    #[test]
+    fn a_function_without_a_capability_list_is_not_walked() {
+        let mut cfg = FakeCfg::new();
+        let bdf = Bdf {
+            bus: 0,
+            dev: 1,
+            func: 0,
+        };
+        cfg.space.insert((0, 1, 0, COMMAND), 0);
+        let mut caps = Vec::new();
+        virtio_caps(bdf, &mut |b, o| cfg.read32(b, o), &mut |c| caps.push(c));
+        assert!(caps.is_empty(), "walked a list the device does not claim");
     }
 
     /// A capability list that loops must terminate, not hang: hostile or broken hardware gets a
@@ -652,6 +798,16 @@ mod tests {
         assert_eq!(intx_irq(32, 2, 1), 34);
         assert_eq!(intx_irq(32, 4, 1), 32);
         assert_eq!(intx_irq(32, 1, 2), 34, "pin B advances the rotation too");
+    }
+
+    /// The two command-register bits, pinned to their spec positions. This crate never reads
+    /// them back (the kernel writes them into the register), so a wrong value here surfaces as a
+    /// device that silently never decodes memory or never gets to DMA, with nothing in the decode
+    /// path to catch it.
+    #[test]
+    fn the_command_bits_are_the_specified_positions() {
+        assert_eq!(CMD_MEMORY_SPACE, 0x0002);
+        assert_eq!(CMD_BUS_MASTER, 0x0004);
     }
 
     /// **A modern virtio PCI device id is `0x1040 + the virtio device type`**, which is what lets
