@@ -98,6 +98,15 @@ apart.
 **It only works when a host is attached.** On a real Raspberry Pi with no debugger plugged
 in, semihosting does nothing. Our [UART](uart.md) works everywhere, on real silicon, forever.
 
+**"A host is attached" is narrower than "we are under QEMU."** QEMU 11.0.2 does not intercept
+semihosting on the **HVF** path: with `-accel hvf` the `hlt #0xf000` is not swallowed but raised
+into the guest as a real synchronous exception, `EC 0x00` (Unknown reason,
+`ESR_EL1 = 0x02000000`), with the operation number still sitting in `x0`. Our exception handler
+correctly panics on an exception it does not recognise, and under `cfg(test)` the panic handler
+calls `exit`, which takes the same trap again: an unbounded loop, on every core. This is measured,
+not inferred (milestone 81), and it is why the HVF test leg reads the transcript for its verdict
+rather than the process's exit status. See [the HVF leg](hvf-leg.md).
+
 So the split is principled: **the UART does everything a real machine can do, and semihosting
 does the one thing a real machine fundamentally cannot** (terminate the emulator with a
 status code).

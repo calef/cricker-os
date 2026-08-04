@@ -2,7 +2,7 @@
 
 What the machine knows about the time, who is allowed to change it, and why the three answers are
 three different capabilities. Milestone 51 lane A; the decision and its argument are
-[DECISIONS §43](../DECISIONS.md), the contract is `crates/clock_proto`.
+[DECISIONS §43](../design/decisions/43-clock-authority.md), the contract is `crates/clock_proto`.
 
 ## The thing this replaced
 
@@ -13,7 +13,7 @@ read the notes. Differencing two `SystemTime`s gave a correct duration; any abso
 fiction that looked exactly like a fact.
 
 The defect was never the missing hardware. It was that the interface lied, which is the same shape
-[§42](../DECISIONS.md) forbids for filesystems: not that FAT is weak, but that `rename()` on it
+[§42](../design/decisions/42-truthful-filesystem.md) forbids for filesystems: not that FAT is weak, but that `rename()` on it
 succeeds and the caller cannot tell.
 
 ## Counter plus offset

@@ -412,24 +412,36 @@ reaches userspace and then says nothing, and all three were a capability slot ra
 
 ### A correction: there are two inits, and this note said there was one
 
+*Written 2026-08-03; the duplication it describes was removed by milestone 96 the next day. The
+finding is kept because it is the reason the crate exists.*
+
 The section below on `script/shell-check` says it "is the only thing in the tree that runs the real
-`system_initializer`". **That is wrong about which program it runs on aarch64**, and building `2>`
+`system_initializer`". **That was wrong about which program it runs on aarch64**, and building `2>`
 found it the hard way: the shell delegated a diagnostic endpoint, nobody received it, and the prompt
 hung on the first `date` with no fault and no message.
 
 `kernel/src/main.rs` hands off to `user::initrd()`, which loads the program named **`init`**, and on
 aarch64 that is `user/src/hello.rs`'s `init_boot` role. `user/src/system_initializer.rs` is riscv64's.
-Both serve `grant_plan::spawnproto`, and **the serving loop is written twice**, once in each file,
+Both serve `grant_plan::spawnproto`, and **the serving loop was written twice**, once in each file,
 about a hundred and forty near-identical lines: the same delegation order, the same slot ordering,
-the same clock rule, now the same `build_child_at`.
+the same clock rule, the same `build_child_at`.
 
-That duplication is a rule-7 problem wearing a different hat. What two binaries must agree on is a
-crate, and these two agree on far more than a constant; a change to the protocol that lands in one
-of them is a boot that hangs on the ISA nobody tested. It is not fixed here, because merging two
-inits is its own lane, but it is now written down where the next person will meet it.
+That duplication was a rule-7 problem wearing a different hat. What two binaries must agree on is a
+crate, and these two agreed on far more than a constant; a change to the protocol that landed in one
+of them was a boot that hung on the ISA nobody tested.
+
+**Milestone 96 made it one.** `crates/system_initializer` holds the construction and the spawn service,
+and each init is now the table of slot numbers its own kernel granted plus a call into it: the two
+grant orders differ, and nothing else does. The loader went the same way, from three copies
+(`supervision_proto` plus a `build_child` in each init) to `supervision_proto`'s, which the inits
+reach through the crate. What the two files still say for themselves is the thing that is genuinely
+theirs, which is what the kernel put in which slot.
 
 What the gate proves is unchanged and is the reason it caught this: `script/shell-check` boots
-**both** ISAs, so it runs both inits, which is exactly what a single-ISA gate would have missed.
+**both** ISAs, so it runs both inits, which is exactly what a single-ISA gate would have missed. It
+is still the gate, because a shared crate removes the *drift* and not the risk: init's sixteen-slot
+cspace and the shell's bounded stack are both still sized in a constant and consumed in an order,
+and both still fail by printing nothing at all.
 
 ### Where the bytes go by default, and why it is not this shell
 

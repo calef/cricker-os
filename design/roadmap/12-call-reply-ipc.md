@@ -20,7 +20,7 @@ to, or a thread pool shares a reply path, the convention breaks.
 **Prior art.** Mach's `send-once` right (it had this in the 1980s); seL4's `Reply` cap minted on
 `Call`, with a call chain that also enables priority donation.
 
-**Detail.** DECISIONS.md "Open design ideas" (Call/Reply) and notes/ipc-naming.md already work the
+**Detail.** design/open-design-ideas.md (Call/Reply) and notes/ipc-naming.md already work the
 functional and safety triggers. It widens the §4 syscall surface (a `Call` method, a `Reply`
 object), so it is a real decision, not a speculative add. This milestone turns that entry into code
 and gives it its own numbered §.

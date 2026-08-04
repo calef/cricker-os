@@ -110,6 +110,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             maps: &[],
             blobs: &[(SPAWNER_IMAGE_VA, flaky)],
             fault: Some(rootfault),
+            ..Endow::new()
         },
     ) else {
         bail(10)
@@ -136,6 +137,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(rootfault),
+            ..Endow::new()
         },
     ) else {
         bail(12)

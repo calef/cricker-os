@@ -66,7 +66,7 @@ Without it, an atomic is a load-exclusive / store-exclusive retry loop (`LDXR` /
 which is fine on one core and degrades badly under contention on many.
 
 **Our spinlocks are the code that cares.** The moment we go SMP (see
-[DECISIONS.md](../DECISIONS.md) §6) we hit a real performance cliff between our own two
+[DECISIONS](../design/decisions/06-single-core-first.md) §6) we hit a real performance cliff between our own two
 deployment targets.
 
 ### And we can't use the normal escape hatch
@@ -195,4 +195,4 @@ good exercise in aarch64 system registers, and is the prerequisite for every opt
 (a runtime branch), and let it inform whether the general mechanism is worth it.
 
 Then decide, deliberately, at milestone 7, alongside the process-model decision point
-([DECISIONS.md](../DECISIONS.md) §8).
+([DECISIONS](../design/decisions/08-process-model-deferred.md) §8).

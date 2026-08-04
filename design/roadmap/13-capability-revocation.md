@@ -21,7 +21,7 @@ use-after-free.
 
 **Prior art.** seL4's CDT plus recursive revoke, a first-class kernel object there.
 
-**Blocking precondition.** DECISIONS.md "Open design ideas" (revocation) and
+**Blocking precondition.** design/open-design-ideas.md (revocation) and
 notes/capability-lifecycle.md state the invariant this must not break: **no reclamation of any kind
 until revocation lands.** This milestone is that work, and the precondition is why it comes before
 14.

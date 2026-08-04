@@ -136,6 +136,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
                 ],
                 blobs: &[],
                 fault: Some(faultep),
+                ..Endow::new()
             },
         ) else {
             bail(11)

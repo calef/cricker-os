@@ -132,7 +132,12 @@ const NET_CLIENT_NO_ANSWER: u64 = 2;
 /// of them elapses in almost no real time, timing out before a parallel result on another core
 /// lands. A ~2 s deadline gives the other cores real time to finish while staying far under the
 /// 60 s hang watchdog, so a genuine hang still fails.
-fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+///
+/// `pub(super)` so the sibling test modules under `user` can use this one rather than growing a
+/// sixth copy of it. Milestone 81 needed it in two of them: running on the physical core makes the
+/// yield-count version fail for the *mirror* reason it fails on a loaded host, since a yield on an
+/// idle core costs nanoseconds there. See notes/hvf-leg.md.
+pub(super) fn wait_for(mut done: impl FnMut() -> bool) -> bool {
     let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
     while crate::arch::timer::now() < deadline {
         if done() {

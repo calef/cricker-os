@@ -1,21 +1,57 @@
 #!/bin/sh
 #
-# Index and validate DECISIONS.md.
+# Validate and report the architecture decisions in design/decisions/ (index: README.md, one file
+# per decision).
 #
-# **Why this exists rather than one file per decision.** DECISIONS.md is ~2,700 lines, which invites
-# splitting it into a directory. Measured first: 34 sections, median 73 lines, only six over 120. It is
-# long because the project has made 34 decisions, not because any one is bloated, and what it actually
-# lacked was a table of contents. Splitting would also make the failure mode WORSE in one specific way:
-# on 2026-07-30 two concurrent milestones both claimed §30, and that was caught because one file means
-# a duplicate number is a text conflict a human sees. As `30-dma.md` and `30-c-seam.md` it would have
-# merged clean and silently. So: an index, and a gate that makes the collision impossible instead.
+# Why this exists: 2,000-odd `§N` citations across the kernel, the crates, the notes and the roadmap
+# point into this record, ~400 of them from code comments, and a citation of a section that does not
+# exist is a dangling footnote in the one place this project asks a reader to trust prose. Two
+# concurrent milestones both claimed §30 on 2026-07-30 and it was caught only because a person
+# noticed.
 #
-#   script/decisions           print the index
+# Why a directory instead of the old single DECISIONS.md (milestone 114): the same case milestone 76
+# made for the roadmap, with nearly the same numbers. The file reached 5,320 lines and 67 sections,
+# it took three section-number collisions in one day, and it took a structural defect this script
+# could not see. That defect is worth naming, because §61 predicted it and the prediction is what
+# got damaged: commit 255879e appended §67 twice, once correctly and once into the MIDDLE of §61's
+# BUGS sentence, because the insertion anchored on the string `## Reading` and the first occurrence
+# of that string in the file was a wrapped prose line inside §61 saying that this script "cannot see
+# a section in the WRONG PLACE, only a missing number". Every gate reported clean for a day.
+#
+# An earlier version of this header argued AGAINST splitting, on the grounds that a duplicate number
+# in one file is a text conflict a human sees, where `30-dma.md` and `30-c-seam.md` would merge clean
+# and silently. That argument was right about the risk and wrong about the remedy: the collision is
+# checkable, and it is checked below. Recorded rather than deleted, because the reasoning is the
+# record.
+#
+# What is checked, and which defect each check answers:
+#   - every index row links to a decision file that exists, and every decision file has an index row;
+#   - the status vocabulary, in the index AND in each file's own Status line, and the two must agree
+#     (a decision that was overtaken and says so nowhere is the failure milestone 114 was raised for:
+#     §26 opened "not yet built" for a week after milestone 22 built it);
+#   - `SUPERSEDED BY N` names a decision that exists, so the pointer out of a retired decision is as
+#     checked as a pointer into one;
+#   - each file holds exactly one decision: one H1, on line 1, whose number matches the filename
+#     (the §67-inside-§61 class, and the appended-past-the-closer class);
+#   - two files claiming one number is fatal, which is the collision the old single file made visible
+#     by accident and this makes visible on purpose;
+#   - no gap in the numbering (the usual cause is a renumber on merge that left a hole);
+#   - every `§N` citation TREE-WIDE resolves to an index row (vendor/, patches/ and lockfiles
+#     excluded: other people's text and generated files).
+#
+# Deliberately NOT checked, and this is the gap that matters: whether a citation that resolves points
+# where its author MEANT. A well-formed citation to the wrong section is invisible here, and the tree
+# has already produced two of them; after any renumber, check by content and not by running this.
+# **Milestone 97 is the milestone that closes it** (a citation names what it cites, and the name is
+# compared against the target). Milestone 114 exists partly to make 97 cheap: now that a decision is
+# a file with a title on line 1, `§43 (the clock ladder)` can be checked against
+# `43-clock-authority.md`'s own H1 without parsing a 5,000-line document to find where §43 begins.
+#
+# Also not checked: row title == file title. A row may abbreviate, the same allowance script/roadmap
+# makes.
+#
+#   script/decisions           print the index, grouped by status
 #   script/decisions --check   validate; non-zero on a problem (wired into script/lint)
-#
-# The check answers three questions no reader can answer by eye at this length: is every section number
-# unique, does the table of contents match the sections, and does every `§N` cited anywhere in the tree
-# actually exist?
 
 set -e
 
@@ -28,35 +64,142 @@ import subprocess
 import sys
 
 root, mode = sys.argv[1], sys.argv[2]
-path = os.path.join(root, "DECISIONS.md")
-text = open(path).read()
+d = os.path.join(root, "design", "decisions")
+index_path = os.path.join(d, "README.md")
 
-sections = [(int(m.group(1)), m.group(2).strip())
-            for m in re.finditer(r"^## (\d+)\. (.*?)$", text, re.M)]
+# The lifecycle, in the order a decision travels it. See design/decisions/README.md.
+VOCAB = ["PROPOSED", "DECIDED", "AMENDED", "SUPERSEDED BY"]
 
 problems = []
 
-seen = {}
-for num, title in sections:
-    if num in seen:
-        problems.append(f"§{num} is used twice: {seen[num]!r} and {title!r}")
-    seen[num] = title
 
-# Gaps are legal (a decision can be withdrawn) but worth surfacing, because the usual cause is a
-# section that was renumbered on merge and left a hole nobody meant to leave.
-if sections:
-    missing = sorted(set(range(1, max(seen) + 1)) - set(seen))
+def parse_status(text):
+    """Return the status token, or None. `SUPERSEDED BY N` keeps its number."""
+    m = re.match(r"(SUPERSEDED BY \d+|PROPOSED|DECIDED|AMENDED)\b", text)
+    return m.group(1) if m else None
+
+
+# ---- the index ---------------------------------------------------------------
+rows = {}
+try:
+    index = open(index_path).read()
+except FileNotFoundError:
+    print(f"decisions: {index_path} not found", file=sys.stderr)
+    sys.exit(1)
+
+ROW = re.compile(r"^\| (\d+) \| ([A-Z][A-Z0-9 ]*[A-Z0-9]) \| \[((?:\\\||[^\]])+)\]\(([^)]+)\) \|")
+for i, line in enumerate(index.split("\n"), start=1):
+    if not re.match(r"^\| \d+ \| ", line):
+        continue
+    m = ROW.match(line)
+    if not m:
+        problems.append(f"index line {i} looks like a decision row but does not parse "
+                        f"(number | STATUS | [title](file)): {line[:60]}...")
+        continue
+    num, status, title, target = int(m.group(1)), m.group(2), m.group(3), m.group(4)
+    if num in rows:
+        problems.append(f"§{num} has two index rows (line {i})")
+    if parse_status(status) != status:
+        problems.append(f"§{num}: status {status!r} is not in the vocabulary "
+                        f"({', '.join(VOCAB)}) (line {i})")
+    # Single-digit decisions zero-pad their filenames (01-target-architecture.md) so the
+    # directory sorts the way the record reads.
+    if not re.fullmatch(rf"0?{num}-[a-z0-9][a-z0-9-]*\.md", target):
+        problems.append(f"§{num}: row links to {target!r}, not to its own file")
+    elif not os.path.exists(os.path.join(d, target)):
+        problems.append(f"§{num}: row links to {target!r}, which does not exist")
+    rows[num] = (status, title, target)
+
+if not rows:
+    problems.append("no decision rows found in the index: has the table format changed?")
+
+# A gap is almost always a renumber on merge that left a hole nobody meant to leave. A withdrawn
+# proposal does not make one: it stays, as the record of what was declined.
+if rows:
+    missing = sorted(set(range(1, max(rows) + 1)) - set(rows))
     if missing:
         problems.append(f"gap in the numbering: {', '.join('§' + str(n) for n in missing)}")
 
-# Every §N cited anywhere in the tree must resolve. This is the check that pays: 418 references live in
-# code comments, and a citation of a section that does not exist is a dangling footnote in the one place
-# this project asks readers to trust prose.
-refs = subprocess.run(
-    ["git", "grep", "-hoE", "§[0-9]+", "--", ":!DECISIONS.md", ":!vendor", ":!*.lock"],
-    cwd=root, capture_output=True, text=True,
-).stdout
+# `SUPERSEDED BY N` must point somewhere. The retired decision is kept, never deleted, so its
+# forward pointer is the only way a reader gets from it to what replaced it.
+for num, (status, _, _) in rows.items():
+    m = re.fullmatch(r"SUPERSEDED BY (\d+)", status)
+    if m and int(m.group(1)) not in rows:
+        problems.append(f"§{num} says it is superseded by §{m.group(1)}, which has no index row")
 
+# ---- the files ---------------------------------------------------------------
+FNAME = re.compile(r"(\d+)-[a-z0-9][a-z0-9-]*\.md")
+
+# Pass one: every decision's own title, taken from its H1 rather than from the index, because the
+# index is allowed to abbreviate and this has to be exact. Used below to tell a PASTED decision from
+# an ordinary numbered subheading: §41 legitimately runs "## 1." to "## 4." over the four things
+# building milestone 23 settled, so the number alone proves nothing and the title does.
+titles = {}
+for fname in sorted(os.listdir(d)):
+    m = FNAME.fullmatch(fname)
+    if not m:
+        continue
+    first = open(os.path.join(d, fname)).readline().rstrip("\n")
+    h = re.match(r"# (\d+)\. (.+)$", first)
+    if h:
+        titles[h.group(2).strip()] = int(h.group(1))
+
+ids = {}
+for fname in sorted(os.listdir(d)):
+    if fname == "README.md":
+        continue
+    m = FNAME.fullmatch(fname)
+    if not m:
+        problems.append(f"{fname}: not the index and not a decision file "
+                        f"(expected <number>-<slug>.md); nothing else lives here")
+        continue
+    num = int(m.group(1))
+    if num in ids:
+        problems.append(f"§{num} is claimed by two files: {ids[num]} and {fname} "
+                        f"(one number, one decision, or every citation to it is ambiguous)")
+        continue
+    ids[num] = fname
+
+    if num not in rows:
+        problems.append(f"{fname}: no index row for §{num}")
+    elif rows[num][2] != fname:
+        problems.append(f"{fname}: the index row for §{num} links to {rows[num][2]}")
+
+    lines = open(os.path.join(d, fname)).read().split("\n")
+    if not re.match(rf"# {num}\. \S", lines[0] if lines else ""):
+        problems.append(f"{fname}: line 1 must be '# {num}. <title>' (found {lines[0][:40]!r})")
+    fence = False
+    for n, line in enumerate(lines[1:], start=2):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        if line.startswith("# "):
+            problems.append(f"{fname}:{n}: a second H1: one file is one decision, and appended "
+                            f"text belongs under it, not beside it")
+        # The shape of the 2026-08-03 defect: a whole decision pasted into a file that already held
+        # one. A number alone does not prove it (§41 numbers its own four subsections), so the test
+        # is the TITLE: a heading that repeats another decision's title is that decision arriving
+        # somewhere it does not live.
+        h = re.match(r"#{1,6} (\d+)\. (.+)$", line)
+        if h and titles.get(h.group(2).strip()) not in (None, num):
+            problems.append(f"{fname}:{n}: §{h.group(1)}'s heading ({h.group(2)[:40]!r}) inside "
+                            f"§{num}'s file: one file is one decision")
+
+    if num in rows:
+        first = next((line for line in lines[1:] if line.strip()), "")
+        sm = re.match(r"\*\*Status: (.+?)\.\*\*", first)
+        if not sm:
+            problems.append(f"{fname}: the first line after the title must be "
+                            f"'**Status: <token>.**' (found {first[:40]!r})")
+        elif parse_status(sm.group(1)) != sm.group(1):
+            problems.append(f"§{num}: file status {sm.group(1)!r} is not in the vocabulary")
+        elif sm.group(1) != rows[num][0]:
+            problems.append(f"§{num}: file says {sm.group(1)}, index says {rows[num][0]} "
+                            f"(a decision whose status is contradicted by its own index row)")
+
+# ---- citations, tree-wide ----------------------------------------------------
 # **`git grep` output is not only matches.** For a binary file it prints the SENTENCE
 # "Binary file <path> matches" instead, so this stream can contain prose about files rather than
 # text from them. Feeding that to `int()` is how this check died three times on 2026-08-02 with
@@ -67,6 +210,12 @@ refs = subprocess.run(
 # artifact did, because the error named a string that appears nowhere in the tree. So parse only
 # what the pattern promised, and say plainly when the stream contains something else: a checker
 # that cannot read its own input should report that, not crash inside a conversion.
+refs = subprocess.run(
+    ["git", "grep", "-hoE", "§[0-9]+", "--", ":!design/decisions", ":!vendor", ":!patches",
+     ":!*.lock"],
+    cwd=root, capture_output=True, text=True,
+).stdout
+
 cited = set()
 unparsed = []
 for token in refs.split():
@@ -75,30 +224,38 @@ for token in refs.split():
     else:
         unparsed.append(token)
 if unparsed:
-    # Almost certainly "Binary file ... matches", which means something is tracked that should not
-    # be. Name it rather than guessing, and do not fail on it: the citation check itself is still
-    # valid for everything that did parse.
     joined = " ".join(unparsed[:12])
     print(f"decisions: ignoring {len(unparsed)} unparseable git-grep token(s): {joined}",
           file=sys.stderr)
     print("decisions: this usually means a binary file is tracked (git grep prints a sentence, "
           "not a match). Check `git ls-files` for build artifacts.", file=sys.stderr)
-dangling = sorted(cited - set(seen))
-for n in dangling:
-    problems.append(f"§{n} is cited in the tree but DECISIONS.md has no such section")
+for n in sorted(cited - set(rows)):
+    problems.append(f"§{n} is cited in the tree but no decision has that number")
 
+# ---- report ------------------------------------------------------------------
 if mode == "--check":
-    for p in problems:
+    for p in sorted(set(problems)):
         print(f"decisions: {p}", file=sys.stderr)
     if problems:
         sys.exit(1)
-    print(f"decisions: {len(sections)} sections, numbering clean, every cited § resolves")
+    print(f"decisions: {len(rows)} decisions, {len(ids)} files, status vocabulary clean, "
+          f"index and files agree, every tree-wide citation resolves")
     sys.exit(0)
 
-width = max(len(t) for _, t in sections)
-print(f"DECISIONS.md: {len(sections)} decisions, {len(text.splitlines())} lines\n")
-for num, title in sections:
-    print(f"  §{num:<3} {title[:width]}")
-for p in problems:
-    print(f"\nPROBLEM: {p}")
+by_status = {}
+for n, (status, title, _) in rows.items():
+    by_status.setdefault(status.split(" BY ")[0], []).append((n, status, title))
+
+for status in ["PROPOSED", "DECIDED", "AMENDED", "SUPERSEDED"]:
+    items = sorted(by_status.get(status, []))
+    if not items:
+        continue
+    print(f"\n{status} ({len(items)})")
+    for n, full, title in items:
+        tag = f" -> §{full.split()[-1]}" if full.startswith("SUPERSEDED") else ""
+        print(f"  §{n:<3} {title[:72]}{tag}")
+
+print(f"\ntotal: {len(rows)} decisions")
+for p in sorted(set(problems)):
+    print(f"PROBLEM: {p}")
 PY

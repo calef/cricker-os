@@ -135,6 +135,28 @@ before returning, so its own teardown is not the late-landing state a later test
 finds in flight; this test was a candidate supplier for the reaper test's baseline drift, three
 tests upstream of it in the same file.
 
+## Postscript: a fast machine finds the same family (milestone 81, 2026-08-04)
+
+The day after this landed, the aarch64 suite was run on the physical Apple Silicon core under
+Hypervisor.framework for the first time (notes/hvf-leg.md), and **every** failure it produced was
+this family, found from the **opposite direction**: five of them, one per run, in `sched.rs`
+(three), `user/reap_tests.rs` and `user/supervision_tests.rs`. Four were yield counts standing in
+for a wait (one `yield_now()`, then 100, then 4000, then 2000). The fifth,
+`a_thread_that_never_yields_is_preempted_anyway`, was a vacuity guard racing a scheduling order.
+
+The diagnostic above needs one word added to stay right. "A slow machine produces a deficit" is
+true, but the deficit's cause is that **a yield count is not a duration**, and that is symmetric: a
+loaded host burns cheap yields while another vCPU is descheduled, and a native host burns them in
+nanoseconds while another core has not been dispatched at all. Both arrive as "the thing I was
+waiting for has not happened yet", both are positive-direction failures, and both take the same
+fix, which is to wait on the property with the clock as the bound. So the checklist for reading any
+of the remaining 34 sites does not change; only the reason to expect a hit does.
+
+The timer verdicts came through untouched, which is the stronger result: none of the re-aimed
+assertions failed on a machine where guest time *is* host time and there is no icount instrument.
+Aiming a test at the re-arm law instead of at elapsed wall clock made it accelerator-independent,
+which is a property this note could not have claimed the day it was written.
+
 ## BUGS
 
 - **The `<=` frame assertions can be masked by a coincidence.** A real leak of `k` frames passes

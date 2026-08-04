@@ -126,7 +126,7 @@ use-after-free, no double-free. The safety is structural.
 seL4's answer is a capability-derivation tree plus a recursive `revoke` that walks it, unmapping the
 object from every holder. It is expensive (a tree walk) and it is kernel-tracked (every derivation
 recorded), which is precisely why it is a first-class object there and parked here. See
-[DECISIONS.md](../DECISIONS.md) "Open design ideas" for the deferral and its trigger.
+[design/open-design-ideas.md](../design/open-design-ideas.md) for the deferral and its trigger.
 
 ## Where authority can enter at all
 

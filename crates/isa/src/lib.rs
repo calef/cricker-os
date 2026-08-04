@@ -37,6 +37,15 @@
 //! verbs, [`riscv64::Isa::missing_requirements`] and [`aarch64::Isa::missing_requirements`], which
 //! answer "can this machine run us at all". Everything else is for the boot print.
 //!
+//! # The third module, which belongs to neither
+//!
+//! [`cpu_list`] is milestone 100's, and it is here because both architectures answer the same
+//! question the same way: `/cpus` holds a `cpu@` node per core with that core's hardware id in
+//! `reg`, and nothing above it needs to know whether the id is an MPIDR affinity value or a hart id.
+//! It sits beside the two arch records rather than inside either, which is the shape the question
+//! has. `aarch64::Psci` is the counterpart that genuinely is arch-specific, and it lives in the
+//! aarch64 module for exactly that reason.
+//!
 //! **There is no trait and no per-chip abstraction here**, and there should not be one until a
 //! second real board says what the abstraction is (CLAUDE.md's rule against speculative
 //! trait-ification). Two records that share no code is the honest shape when two ISAs answer the
@@ -53,4 +62,5 @@
 #![no_std]
 
 pub mod aarch64;
+pub mod cpu_list;
 pub mod riscv64;

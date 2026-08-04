@@ -169,7 +169,7 @@ if [ -n "$found" ]; then
     echo "$found" >&2
     echo "" >&2
     echo "Put the allow on the ITEM, with a comment saying which configuration has no caller." >&2
-    echo "See DECISIONS.md §38." >&2
+    echo "See DECISIONS §38." >&2
     exit 1
 fi
 echo "module-wide suppression: none"
@@ -271,10 +271,12 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/Cargo.toml --lib
 
-# DECISIONS.md's numbering, and that every §N cited in the tree resolves. Two concurrent milestones
-# both claimed §30 on 2026-07-30 and it was caught only because an agent noticed; 418 code comments
-# cite a section by number, so a dangling citation is a broken footnote in the one place this project
-# asks a reader to trust prose. See script/decisions.
+# The decision index (design/decisions/README.md and one file per decision, milestone 114): its
+# numbering, its status vocabulary, that each decision's own Status line agrees with its index row,
+# and that every §N cited in the tree resolves. Two concurrent milestones both claimed §30 on
+# 2026-07-30 and it was caught only because an agent noticed; ~400 code comments cite a section by
+# number, so a dangling citation is a broken footnote in the one place this project asks a reader to
+# trust prose. See script/decisions, including what it still cannot check.
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
 
@@ -343,10 +345,10 @@ fi
 
 # 2. "Daemon" appears nowhere. §39's vocabulary is component / service / contract, and the word is
 #    excluded from code, comments and notes. Three files are exempt because they are where the
-#    ARGUMENT about the word lives: DECISIONS.md, design/, and notes/naming.md. A rule's rationale
+#    ARGUMENT about the word lives: design/, which holds the decisions, and notes/naming.md. A rule's rationale
 #    has to be able to name the thing it rejects, and this script does too.
 if git -C "$(dirname "$0")/.." grep -Iilnw daemon -- \
-    ':!vendor' ':!DECISIONS.md' ':!design' ':!notes/naming.md' ':!script/lint' \
+    ':!vendor' ':!design' ':!notes/naming.md' ':!script/lint' \
     > /tmp/cricker-daemon.txt 2>/dev/null; then
     echo "lint: \"daemon\" outside the three places the argument about the word lives:" >&2
     cat /tmp/cricker-daemon.txt >&2

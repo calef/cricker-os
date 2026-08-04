@@ -108,7 +108,7 @@ exist**:
 | Address space isolation | the MMU and page tables | **4** |
 | Taking the CPU back from a program that won't yield | preemptive threads, timer interrupts | **5, 6** |
 
-That last row is the async argument ([DECISIONS.md](../DECISIONS.md) §5) arriving from a
+That last row is the async argument ([DECISIONS](../design/decisions/05-preemptive-threads.md) §5) arriving from a
 different direction. **A user program never calls `.await`.** If you cannot take the CPU away
 from it by force, you cannot safely run it, and you do not have an operating system.
 
@@ -159,7 +159,7 @@ a **forged frame**, and no new code at all.
 
 That last one is the interesting bit. **IRQs are live the instant we land in EL0.** If they were
 masked, a user program in a tight loop could never be preempted, and the machine would be gone.
-Which is precisely the failure [DECISIONS §5](../DECISIONS.md) spent a whole milestone refusing
+Which is precisely the failure [DECISIONS §5](../design/decisions/05-preemptive-threads.md) spent a whole milestone refusing
 to accept.
 
 ## The trap frame grew a field, for free
@@ -256,7 +256,7 @@ stack it is standing on, so the *next* thread does it. `exit()` never returns,
 not resumed.
 
 So the mechanism behind *"a driver bug is a crashed process, not a dead machine"*
-([DECISIONS §10](../DECISIONS.md)) was already sitting in the kernel, finished, before we knew we
+([DECISIONS §10](../design/decisions/10-capability-microkernel.md)) was already sitting in the kernel, finished, before we knew we
 needed it.
 
 ## The fault is a PERMISSION fault, and that word is the whole boundary

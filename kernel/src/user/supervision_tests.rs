@@ -162,12 +162,12 @@ fn a_faulting_child_reports_to_its_supervisor_and_is_reaped_then_respawned() {
         "the respawned child never ran: the supervision cycle did not recover",
     );
     // The respawn exits unsupervised, so it is reaped by the scheduler; reclaim once it is gone.
-    for _ in 0..2000 {
-        if sched::reclaim_region(region2).is_ok() {
-            break;
-        }
-        sched::yield_now();
-    }
+    // Clock-bounded (milestone 81): 2000 yields elapse in microseconds on the physical core, which
+    // would leave the region unreclaimed and this test's litter for a neighbour to trip over.
+    assert!(
+        super::tests::wait_for(|| sched::reclaim_region(region2).is_ok()),
+        "the respawned child was never reaped, so its region could not be reclaimed",
+    );
 }
 
 /// **A clean exit flows too, distinguished by the event code.** The other half of §26's "both
