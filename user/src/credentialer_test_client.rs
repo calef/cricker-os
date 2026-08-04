@@ -76,6 +76,11 @@ const PEOPLE: [(&[u8], &[u8]); 3] = [
     (b"graeme", b"and a third one"),
 ];
 
+/// One share: the resource name, the password, the account name, and the domain. A named type
+/// rather than a bare tuple because four `&[u8]`s in a row are a puzzle at the use site, which is
+/// exactly what clippy's `type_complexity` is for.
+type Share = (&'static [u8], &'static [u8], &'static [u8], &'static [u8]);
+
 /// **Three shares, one per family member**, each with its own account name and password, which is
 /// what "a secret is scoped to a resource rather than to an identity" means in practice
 /// (design/roadmap/65-secrets-service.md). A leaked key here authenticates to one share and to
@@ -84,7 +89,7 @@ const PEOPLE: [(&[u8], &[u8]); 3] = [
 /// The **first** uses [MS-NLMP] §4.2.1's account (`Domain\User`, password `Password`) on purpose:
 /// that is the account Microsoft publishes every intermediate value for, so the kernel test can
 /// assert against printed numbers rather than against something this tree computed.
-const SHARES: [(&[u8], &[u8], &[u8], &[u8]); 3] = [
+const SHARES: [Share; 3] = [
     (b"backups-chris", b"Password", b"User", b"Domain"),
     (
         b"backups-corinne",

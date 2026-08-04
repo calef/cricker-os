@@ -17,3 +17,11 @@ md4 = { version = "0.10", default-features = false }
 md-5 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 digest = { version = "0.10", default-features = false }
+
+# cargo-machete (script/lint) reports `md-5` unused here and is wrong, the same way it is wrong
+# about `redox_syscall` in fs_server: the crate's LIB name is `md5` and its PACKAGE name is `md-5`,
+# so a source grep for the package name finds nothing. `use md5::Md5;` is the only spelling that
+# compiles. The dependency is load-bearing; MD5 is half of HMAC-MD5, which is every operation in
+# this crate except the NT hash.
+[package.metadata.cargo-machete]
+ignored = ["md-5"]
