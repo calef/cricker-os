@@ -169,7 +169,7 @@ const PF_CRICKER: u64 = 1 << 3;
 const PF_NAMES: u64 = 1 << 4;
 const PF_UNIQUE: u64 = 1 << 5;
 
-// `fs_maker`'s roles and verdicts. Must match fs_server/src/bin/fs_maker.rs.
+// `mkfs`'s roles and verdicts. Must match fs_server/src/bin/mkfs.rs.
 const ROLE_MAKE: u64 = 0;
 const ROLE_CHECK: u64 = 1;
 const R_MADE: u64 = 0x_4D_4B_46_53_44;
@@ -236,7 +236,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
         assert_eq!(word, fs_proto::fixture::READY);
     }
     let entropy = entropy_endpoint();
-    let maker = program("fs_maker").expect("no fs_maker program in the initrd archive");
+    let maker = program("mkfs").expect("no mkfs program in the initrd archive");
     use fs_proto::fixture::blank;
 
     // 1. The partitioner, with the disk and NO entropy endpoint. It must refuse, and it must refuse
@@ -300,7 +300,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
     let [verdict, ..] = crate::sched::ipc_recv(report);
     assert_eq!(
         verdict, M_NO_ENTROPY,
-        "fs_maker with no entropy endpoint reported {verdict:#x}; it must refuse",
+        "mkfs with no entropy endpoint reported {verdict:#x}; it must refuse",
     );
 
     // 5. And with entropy and no disk: nothing to read a table off, nothing to write to.
@@ -308,7 +308,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
     let [verdict, ..] = crate::sched::ipc_recv(report);
     assert_eq!(
         verdict, M_NO_DISK,
-        "fs_maker with no block endpoint reported {verdict:#x}; there is nothing it can write to",
+        "mkfs with no block endpoint reported {verdict:#x}; there is nothing it can write to",
     );
 
     // 6. Neither refusal created anything. A partition that has been *described* is not a partition
@@ -325,7 +325,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
     let [verdict, blocks, first, ..] = crate::sched::ipc_recv(report);
     assert_eq!(
         verdict, R_MADE,
-        "fs_maker failed at step {blocks} with errno {first}",
+        "mkfs failed at step {blocks} with errno {first}",
     );
     let want_blocks =
         (blank::DATA.1 - blank::DATA.0 + 1) * blank::LBA / fs_proto::blk::BLOCK_SIZE as u64;
@@ -343,7 +343,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
     let [verdict, n, ..] = crate::sched::ipc_recv(report);
     assert_eq!(
         verdict, R_FOUND,
-        "the filesystem fs_maker created does not hold the file it wrote",
+        "the filesystem mkfs created does not hold the file it wrote",
     );
     assert_eq!(n, blank::MADE_BODY.len() as u64);
 }

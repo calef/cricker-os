@@ -60,7 +60,7 @@ and priced it is notes/redoxfs-audit.md).
 
      This is the same shape upstream already uses one line away: `create` takes `ctime` as a
      parameter because a `no_std` engine has no clock, and now takes the disk id as one because it
-     has no randomness. The caller that supplies it is `fs_maker`, which holds an entropy endpoint;
+     has no randomness. The caller that supplies it is `mkfs`, which holds an entropy endpoint;
      **no randomness enters vendored code.**
 
      Ages like divergence 3 (re-applied forever, can conflict on a pin bump), and is the one most
@@ -87,7 +87,7 @@ and priced it is notes/redoxfs-audit.md).
   `--no-default-features` (pure no_std core); `tools/redoxfs_host` builds it with `std` only,
   deliberately not `fuse`, so host mkfs/inspection needs no macFUSE. The FS server still only ever
   opens an existing image (roadmap §32, port plan item 4); since divergence 4 the *creation* path
-  builds for `no_std` as well, and `fs_maker` is the one program that uses it. What stays std-gated
+  builds for `no_std` as well, and `mkfs` is the one program that uses it. What stays std-gated
   is the randomness: `FileSystem::create`, `create_reserved`, `Header::new` and the encryption
   branch, all because they invent a value rather than take one.
 - **Kept honest by:** `cargo xtask test` runs the host round-trip test (`cargo test --manifest-path

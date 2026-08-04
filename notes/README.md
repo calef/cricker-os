@@ -185,7 +185,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   budget, proven by authority (a dropped untyped answers `NoSuchSlot`) rather than by timing. The
   interactive boot is migrated too: init keeps the ELF loader (moving it would relocate the authority
   rather than reduce it) but drops the root untyped for a bounded job pool, gives back the UART and its
-  interrupt, and builds every job in a region `job_reaper` returns when the job ends, so a bounded
+  interrupt, and builds every job in a region `job_undertaker` returns when the job ends, so a bounded
   budget is affordable. Honest limits included: recovery is LIFO, and init still maps every page it
   ever laid down for a child.
 - [Delegating a capability](delegation.md): a capability system where processes can't pass
@@ -519,7 +519,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   `fs_proto::verb`, saying what a request's words mean and which rights the server demands, so the
   three caretakers that proxy this contract dispatch off the contract instead of off three
   hand-written matches, and a verb with no row is a compile error rather than a capability that is
-  quietly missing. Milestone 57's write half added `fs_maker`, the server's opposite (it creates a
+  quietly missing. Milestone 57's write half added `mkfs`, the server's opposite (it creates a
   filesystem and never serves one), the vendor divergence that let it (the uuid becomes an argument,
   the way `ctime` already was) and the correction underneath: the *first* divergence taken for this
   could not have worked, because a `Header` a caller can build has nowhere to go when the write path

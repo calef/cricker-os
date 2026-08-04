@@ -392,7 +392,7 @@ The fix is where rather than what: build it **after the shell**, once every boot
 adapter does not need has gone back.
 
 This was first written down as "build it last, which is the narrowest the cspace ever is", and
-merging milestone 22's interactive boot proved the "last" half wrong. That lane added a `job_reaper`
+merging milestone 22's interactive boot proved the "last" half wrong. That lane added a `job_undertaker`
 built after the adapter and a construction-budget giveaway between them, so the adapter is now the
 fifth of six boot components, and the boot is fine. The constraint was never the ordinal; it was that
 the adapter must not be holding a slot while `build_child` retypes the shell's address space.

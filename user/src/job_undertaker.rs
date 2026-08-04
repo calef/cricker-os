@@ -1,4 +1,4 @@
-//! **The interactive boot's corpse collector** (milestone 22 phase B.2, the interactive increment).
+//! **The interactive boot's undertaker** (milestone 22 phase B.2, the interactive increment).
 //!
 //! The prompt's init builds a fresh process for every command a person runs. Before this program
 //! existed, each of those processes stayed dead-but-uncollected forever and its region stayed spent,

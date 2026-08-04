@@ -40,7 +40,7 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    `system_initializer` and `hello`'s init role remain the shell's spawn service, but they no longer
    hold the construction budget for life: after the boot servers are up, each carves a bounded
    scratch budget and a bounded job pool, deletes the root, and gives away the UART device
-   capability, its interrupt, and every capability reaching a live job's memory. A new `job_reaper`
+   capability, its interrupt, and every capability reaching a live job's memory. A new `job_undertaker`
    (one endpoint, `READ`, no untyped, no restart policy) collects finished jobs and returns their
    regions to the pool. Proven the same way the rest of this milestone is: init prints, from inside
    itself, that `RETYPE` now answers `NoSuchSlot` rather than `NotPermitted`, and `script/shell-check`

@@ -53,8 +53,8 @@ bench = false
 # Same `el0` gate and the same test/bench reasoning as above. Provisional name (milestone 57's
 # lane): Chris settles program names.
 [[bin]]
-name = "fs_maker"
-path = "src/bin/fs_maker.rs"
+name = "mkfs"
+path = "src/bin/mkfs.rs"
 required-features = ["el0"]
 test = false
 bench = false
@@ -92,12 +92,12 @@ redox_syscall = { version = "0.9.0", default-features = false }
 # logic with no dependencies of its own, so it costs the host build nothing.
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 
-# The partition table (milestone 57): `fs_maker` finds the partition it is to format by reading the
+# The partition table (milestone 57): `mkfs` finds the partition it is to format by reading the
 # GPT off the disk it holds, with the same parser `disk_surveyor` uses. Pure no_std logic with no
 # dependencies of its own and no I/O at all, so it costs the host build nothing and the sans-IO core
 # never sees it.
 gpt = { version = "0.1.0", path = "../crates/gpt" }
-# The entropy contract (milestone 56): `fs_maker`'s uuid comes over this wire, from a service, and
+# The entropy contract (milestone 56): `mkfs`'s uuid comes over this wire, from a service, and
 # never from inside the engine.
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 

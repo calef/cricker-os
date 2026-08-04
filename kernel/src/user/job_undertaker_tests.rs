@@ -61,26 +61,26 @@ fn pool_came_back(pool: u64) -> bool {
     spent(pool) == 0
 }
 
-/// **Start the real `job_reaper` binary** the way the interactive init starts it: an ordinary user
+/// **Start the real `job_undertaker` binary** the way the interactive init starts it: an ordinary user
 /// process whose entire capability space is one endpoint with `READ`.
 ///
 /// Deliberately the real program out of the initrd rather than a stub, because what is under test is
 /// a *program's* behaviour, and a stub would be this test's opinion of it.
-fn spawn_job_reaper(deaths: sched::EpId) -> u64 {
-    let bytes = program("job_reaper").expect("no job_reaper program in the initrd archive");
-    let (space, entry) = load(bytes).expect("job_reaper is not loadable");
-    let aspace = readopt_user_aspace(space).expect("register the job_reaper aspace");
+fn spawn_job_undertaker(deaths: sched::EpId) -> u64 {
+    let bytes = program("job_undertaker").expect("no job_undertaker program in the initrd archive");
+    let (space, entry) = load(bytes).expect("job_undertaker is not loadable");
+    let aspace = readopt_user_aspace(space).expect("register the job_undertaker aspace");
 
-    let tcb_region = crate::untyped::create(2).expect("no tcb region for job_reaper");
-    let tid = sched::create_tcb(tcb_region).expect("no tcb for job_reaper");
+    let tcb_region = crate::untyped::create(2).expect("no tcb region for job_undertaker");
+    let tid = sched::create_tcb(tcb_region).expect("no tcb for job_undertaker");
     let slot = sched::tcb_insert_cap(tid, crate::cap::endpoint_cap(deaths, Rights::READ), None)
         .expect("insert the supervision endpoint");
     assert_eq!(
         slot, 0,
-        "job_reaper reads its supervision endpoint from slot 0",
+        "job_undertaker reads its supervision endpoint from slot 0",
     );
-    sched::configure_tcb(tid, entry, USER_STACK_TOP, aspace).expect("configure job_reaper");
-    sched::start_tcb(tid, [0; 3]).expect("start job_reaper");
+    sched::configure_tcb(tid, entry, USER_STACK_TOP, aspace).expect("configure job_undertaker");
+    sched::start_tcb(tid, [0; 3]).expect("start job_undertaker");
     tid
 }
 
@@ -134,7 +134,7 @@ fn without_a_collector_a_bounded_job_pool_runs_out() {
     sched::reclaim_region(pool).expect("the job pool did not come back");
 }
 
-/// **The claim: a bounded job pool is enough, because `job_reaper` gives every region back.**
+/// **The claim: a bounded job pool is enough, because `job_undertaker` gives every region back.**
 ///
 /// Twelve jobs through a pool with room for three. Each one is built in a region split off the pool
 /// and born supervised (§26's spawn-slot convention); it runs, reports, and exits; and the pool comes
@@ -147,11 +147,11 @@ fn without_a_collector_a_bounded_job_pool_runs_out() {
 /// pool committed and fail at the first `pool_came_back`. The last two assertions close the other
 /// half: the returned pages are genuinely spendable again rather than un-bumped bookkeeping.
 #[test_case]
-fn job_reaper_returns_every_finished_job_to_the_pool() {
+fn job_undertaker_returns_every_finished_job_to_the_pool() {
     let pool = crate::untyped::create(POOL_PAGES).expect("no job pool");
     let deaths = sched::create_endpoint();
     let report = sched::create_endpoint();
-    spawn_job_reaper(deaths);
+    spawn_job_undertaker(deaths);
 
     for i in 0..JOBS {
         assert!(

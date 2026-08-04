@@ -287,7 +287,7 @@ opens without truncating, so `mkfs` over an existing image left stale blocks pas
 produced an image that failed to open. Removing the file first makes it idempotent, which the test
 flow relies on (it regenerates the image every run).
 
-## `mkfs` on the target: `fs_maker`, and the divergence it needed (milestone 57)
+## `mkfs` on the target: `mkfs`, and the divergence it needed (milestone 57)
 
 **The heading above still holds and is now narrower than it reads.** The *server* never creates, and
 that is a property of the server rather than of the system: since 2026-08-03 a different program in
@@ -334,7 +334,7 @@ randomness enters vendored code.** `vendor/README.md` divergence 4 records it;
 
 ### The program
 
-`fs_maker` (provisional name) is `fs_server`'s opposite in the one package: that one opens an image
+`mkfs` (provisional name) is `fs_server`'s opposite in the one package: that one opens an image
 and never creates, this one creates one and never serves. Its whole authority is a block-service
 endpoint for one disk and an entropy endpoint, and the kernel test withholds each in turn from the
 same binary with the same budget, stack and shared page.
