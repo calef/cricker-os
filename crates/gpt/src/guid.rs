@@ -60,6 +60,30 @@ impl Guid {
         self.0
     }
 
+    /// Stamp 16 random bytes into an RFC 9562 version-4 GUID.
+    ///
+    /// **This crate has no randomness and this function does not invent any**: the caller brings the
+    /// bytes, from a source that is genuinely unpredictable, and all this does is set the six bits
+    /// the format reserves. On cricker-os the caller is `disk_partitioner`, which holds an entropy
+    /// endpoint; a GUID built from a counter would be unique on one disk and collide with every
+    /// other machine's, which is the failure the format's uniqueness rule exists to prevent.
+    ///
+    /// Six bits are spent: four for the version (`4`) and two for the variant (`0b10`). They land in
+    /// **printed** positions, so this is the mixed-endian rule again: the version nibble is the high
+    /// nibble of the third group, which is stored little-endian and therefore lives in on-disk byte
+    /// 7; the variant bits are the top of the fourth group, which is stored as written, so on-disk
+    /// byte 8. Setting them at the wrong offsets produces a GUID that is still unique and reads as
+    /// some other version, which nothing would ever catch.
+    ///
+    /// The remaining 122 bits are the caller's bytes, unmodified. A partition GUID does not have to
+    /// be a v4 UUID (the spec asks only that it be unique), but every real tool writes one, and a
+    /// disk this OS partitions should not be the odd one out under `sgdisk -i`.
+    pub const fn v4_from_random(mut bytes: [u8; 16]) -> Guid {
+        bytes[7] = (bytes[7] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Guid(bytes)
+    }
+
     /// True for the all-zero GUID. See [`Guid::ZERO`].
     pub const fn is_zero(self) -> bool {
         let mut i = 0;
@@ -336,6 +360,44 @@ mod tests {
             None,
             "G is not hex"
         );
+    }
+
+    /// The six reserved bits land where a **reader** looks for them, which is the only thing about
+    /// `v4_from_random` that can be wrong: at any other offsets the GUID is still unique, still
+    /// unpredictable, and reads as some other UUID version forever.
+    ///
+    /// So the check is the printed form, not the bytes: position 14 is the version nibble and
+    /// position 19 is the variant, and both are where `sgdisk -i` and `uuidgen` read them.
+    #[test]
+    fn stamping_random_bytes_gives_a_version_4_guid() {
+        for fill in [0x00u8, 0xff, 0x5a, 0xa5] {
+            let g = Guid::v4_from_random([fill; 16]);
+            let text = g.to_ascii();
+            assert_eq!(text[14], b'4', "version nibble, from a {fill:#04x} fill");
+            assert!(
+                matches!(text[19], b'8' | b'9' | b'A' | b'B'),
+                "variant bits, from a {fill:#04x} fill: got {}",
+                text[19] as char,
+            );
+        }
+    }
+
+    /// The other 122 bits are the caller's, untouched. A "stamp" that quietly normalised more than
+    /// the format reserves would be throwing away entropy the caller paid a round trip for.
+    #[test]
+    fn stamping_keeps_every_bit_it_does_not_reserve() {
+        let raw = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let out = Guid::v4_from_random(raw).to_bytes();
+        for (i, (&before, &after)) in raw.iter().zip(out.iter()).enumerate() {
+            match i {
+                7 => assert_eq!(after, (before & 0x0f) | 0x40),
+                8 => assert_eq!(after, (before & 0x3f) | 0x80),
+                _ => assert_eq!(after, before, "byte {i} was modified"),
+            }
+        }
     }
 
     #[test]
