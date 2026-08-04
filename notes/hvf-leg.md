@@ -23,20 +23,25 @@ physical core and `-cpu host` is the only answer.
 It skips the host-logic crates, the vendored RedoxFS round trip and the `fs_server` core, and
 prints one line saying so. Those are host code on the host; no accelerator exists on that path, so
 re-running them costs about 30 seconds and proves nothing the TCG leg has not. What the leg does
-re-run is everything an accelerator can change: the 232 kernel tests under QEMU, the host-side
+re-run is everything an accelerator can change: the 234 kernel tests under QEMU, the host-side
 scanout referee, and the post-run image checks.
 
 ## What it costs (measured 2026-08-04, M-series, warm build)
 
 | command | what ran | wall clock |
 |---|---|---|
-| `script/test --arch aarch64` | host crates + the 232-test aarch64 kernel suite under TCG + image checks | 58 s, 52 s |
-| `script/test --hvf` | the same 232-test suite on the physical core + image checks | 16 s, 12 s |
+| `script/test --arch aarch64` | host crates + the 234-test aarch64 kernel suite under TCG + image checks | 58 s, 52 s |
+| `script/test --hvf` | the same 234-test suite on the physical core + image checks | 16 s, 12 s |
 | `cargo test --workspace --exclude kernel --exclude user --exclude user_rt` | the host crates alone | 14 s |
+
+The counts here read 232 when the timings were taken, and are 234 in the merged tree: milestone 86's
+`time` brought two kernel tests with it. The number is a fact about the whole suite rather than
+about this leg, so it is taken at the merge (CLAUDE.md), and the wall clocks are left as measured
+because two tests do not move a twelve-second figure.
 
 Two samples each, on a machine that was not otherwise idle (another lane was building). Subtract
 the 14 seconds of host crates that only the TCG row contains and the comparison is about 40 s
-against about 14 s for the same fixtures, the same 232 tests, and the same post-run image checks:
+against about 14 s for the same fixtures, the same 234 tests, and the same post-run image checks:
 roughly a **3x** win on the leg, and more than that on the booted suite alone, since a fixed few
 seconds of both numbers is cargo and image building.
 
