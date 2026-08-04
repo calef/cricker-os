@@ -3413,7 +3413,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 27] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 30] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -3433,6 +3433,20 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 27] = [
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
     ("caps wc gate.txt", Some("input    gate.txt")),
+    // **Milestone 40 at the same interface.** `gate.txt` holds "hello world" twice, on two lines,
+    // and markdown says two source lines in one paragraph are one paragraph. So this answer is
+    // evidence that the renderer *ran*: it re-flowed them onto one line, which neither `cat` nor a
+    // program that copied its input would do.
+    ("doc gate.txt", Some("hello world hello world")),
+    // And it is an ordinary pipeline stage rather than something that reached for a file. The
+    // numbers are spelled out for the reason the ones above are: this is a boot gate, and deriving
+    // them from the arithmetic would hide the case where both the arithmetic and the boot are
+    // wrong. Two spaces of body indent, "hello world hello world", one newline: 26 bytes, 4 words,
+    // one line.
+    ("doc gate.txt | wc", Some("1 4 26")),
+    // The negative control, and the same refusal `wc` gets, because `doc` declares the same thing:
+    // it reads a stream, and a viewer that could open the page it renders could open any page.
+    ("doc", Some("name a file")),
     // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
     // the check is the one word that separates a real time from both ways of not having one:
     // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
