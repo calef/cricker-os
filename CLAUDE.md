@@ -39,9 +39,22 @@ are new.
 - **A developer works in a lane**, and the lane is the isolation rather than the person: its own
   worktree, its own branch, one milestone, no visibility into the others. Two developers in one lane
   is the merge problem this vocabulary exists to prevent.
-- **Watcher.** Optional, builds nothing. Checks queue depth, pull-request states and unanswered
-  decisions on an interval and says when work has stalled. It exists because the maintainer is
-  structurally bad at noticing its own idleness: when it is busy, it is busy.
+- **Steward.** Runs on an interval and holds a *lent* authority, which is what the name says: it
+  merges what has earned it (green on every check, from a developer briefed this session, touching
+  no syscall surface, no `DECISIONS.md` section and no dependency addition), cleans up behind
+  finished work (delete the branch, prune the worktree, relink `cricker-dev`), reports queue depth
+  against the target, and raises what has stalled or gone unanswered. It exists because the
+  maintainer is structurally bad at noticing its own idleness: when it is busy, it is busy.
+
+  **It does not brief developers**, because briefing is judgment and the good outcomes come from
+  briefs that name the specific hazard (the sixteen-slot cspace, the claim to verify, the file
+  another lane holds). A generic brief produces a worse lane than an idle slot costs. So the
+  steward says "the queue is at one of three and these are ready" and the maintainer writes it.
+
+  **It must never hold the main checkout while a developer's gate is running**, which is the race
+  that took the `cricker-dev` link out from under a lane on 2026-08-04. `caretaker` and
+  `undertaker` were unavailable as names: this tree already spends both on capability-narrowing
+  programs.
 
 **The top-up rule, which is the whole point.** When a developer finishes, the maintainer **launches
 the next work before writing the report**. Not after, and not when Chris next asks. A conversation
