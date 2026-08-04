@@ -530,7 +530,9 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // below builds another driver, and neither the test SGI nor the report endpoint is part of the
     // interactive system at all. An init that kept them would be keeping the authority to hand the
     // UART to anything it later builds, which is the same kind of thing the construction budget is.
-    for c in [request, reply, con_shared, UART_DEV, UART_IRQ, TEST_IRQ, REPORT] {
+    for c in [
+        request, reply, con_shared, UART_DEV, UART_IRQ, TEST_IRQ, REPORT,
+    ] {
         cap_delete(c);
     }
 

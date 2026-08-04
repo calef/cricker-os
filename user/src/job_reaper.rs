@@ -35,7 +35,7 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{recv_fault, reap};
+use user_rt::{reap, recv_fault};
 
 /// The supervision endpoint init endows every job with, held `READ`: the right to receive deaths
 /// here, which is the same right §32 makes the right to collect them.

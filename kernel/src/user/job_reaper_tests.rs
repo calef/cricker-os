@@ -160,15 +160,14 @@ fn job_reaper_returns_every_finished_job_to_the_pool() {
              previous job's region, so a bounded budget is not enough after all",
             spent(pool),
         );
-        let region = crate::untyped::split(pool, JOB_REGION_PAGES)
-            .unwrap_or_else(|| panic!("job {i} could not be carved out of a pool that just \
-                                       reported itself empty"));
+        let region = crate::untyped::split(pool, JOB_REGION_PAGES).unwrap_or_else(|| {
+            panic!(
+                "job {i} could not be carved out of a pool that just \
+                                       reported itself empty"
+            )
+        });
         build_child_in(region, REPORT_STUB, Some(report), Some(deaths));
-        assert_eq!(
-            sched::ipc_recv(report)[0],
-            REPORT_WORD,
-            "job {i} never ran",
-        );
+        assert_eq!(sched::ipc_recv(report)[0], REPORT_WORD, "job {i} never ran",);
     }
 
     assert!(
