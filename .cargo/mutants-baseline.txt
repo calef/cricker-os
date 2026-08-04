@@ -1,0 +1,42 @@
+# Written by script/mutants --save-baseline: crate caught missed timeout unviable.
+# The prose baseline, and what each survivor means, is notes/mutation-testing.md.
+# Run of 2026-08-03, 5551 mutants, before this branch's triage tests landed; caught is
+# derived as total-minus-the-rest because the run was resumed twice (see the note).
+abi 27 1 0 1
+asid 21 2 0 2
+bitfont 11 0 0 2
+block_roster 53 1 0 4
+c_seam 21 1 0 3
+calendar 369 7 3 16
+capability 37 1 0 16
+clock_proto 54 2 7 3
+compositor 209 14 0 10
+coremark 106 2 1 0
+cred 127 3 1 16
+cred_proto 72 2 0 13
+crickerfs 107 0 0 8
+dma_validator 79 0 0 6
+dtb 294 1 20 10
+elf 98 0 0 4
+entropy_proto 21 2 0 0
+frames 93 3 1 12
+fs_proto 489 37 9 31
+gfx_proto 120 6 0 6
+glob 110 14 6 5
+gpt 423 5 1 36
+grant_plan 367 26 20 76
+intrusive 4 3 0 4
+ipc 24 5 0 4
+isa 147 22 3 40
+line_editor 183 46 2 6
+measured_boot 118 9 4 6
+ntp_proto 156 16 0 14
+paging 256 39 0 17
+pci 88 27 4 3
+regions 11 0 0 1
+sink_proto 43 2 0 2
+slots 26 5 0 13
+socket_proto 15 2 0 0
+swish 44 3 9 2
+user_heap 20 3 5 7
+video_terminal 211 79 0 11

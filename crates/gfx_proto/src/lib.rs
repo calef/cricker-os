@@ -444,4 +444,36 @@ mod tests {
             "a rectangle starting off the surface"
         );
     }
+    /// Milestone 85: the pattern's whole point is that a wrong buffer is wrong at almost every
+    /// pixel, but no test pinned a single pixel's value, so every `&` in the channel math could
+    /// become `|` and every shift could reverse with the checksum happily agreeing with itself.
+    /// Five hand-computed values, chosen so each operator's mutation changes at least one:
+    /// (0,0) is the zero anchor, (1,0) and (0,1) isolate the red and green shifts, (7,3) makes
+    /// the xor visible (7 xor 6 is 1), and (300,200) overflows every channel so the masks bite.
+    #[test]
+    fn the_pattern_is_the_pattern() {
+        assert_eq!(pixel(0, 0), 0x00_0000);
+        assert_eq!(pixel(1, 0), 0x05_0025);
+        assert_eq!(pixel(0, 1), 0x01_034A);
+        assert_eq!(pixel(7, 3), 0x26_0C25);
+        assert_eq!(pixel(300, 200), 0xA4_EE2C);
+        assert_eq!(pixel_at(WIDTH as usize + 1), pixel(1, 1));
+    }
+
+    /// FNV-1a's xor is what lets a bit CLEAR change the digest; an or there only accumulates set
+    /// bits and collides exactly where it matters. Two surfaces differing in one low bit of one
+    /// pixel must digest differently.
+    #[test]
+    fn the_checksum_sees_a_one_bit_change() {
+        let a = checksum(pixel_at);
+        let b = checksum(|i| if i == 0 { pixel_at(0) ^ 1 } else { pixel_at(i) });
+        assert_ne!(a, b);
+    }
+
+    /// The refusal errno is the wire contract's negative-is-an-error convention; a deleted minus
+    /// sign turns every refusal into a success code of 22.
+    #[test]
+    fn the_refusal_is_negative() {
+        assert_eq!(EINVAL, -22);
+    }
 }

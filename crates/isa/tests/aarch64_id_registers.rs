@@ -108,6 +108,24 @@ fn a_reserved_asid_encoding_is_refused_rather_than_rounded() {
     assert!(cpu.missing_requirements().asid_bits);
 }
 
+/// **`ASIDBits = 0b0000` means 8, and 8 is enough.** Every other test here uses a 16-bit part, so
+/// this is the only witness for ARM's other legal encoding, and it guards both edges at once: the
+/// decoder must not lump `0b0000` in with the reserved values (that would refuse every 8-bit part
+/// ever made), and the requirement check is `< 8`, not `<= 8` (8 is exactly what `crates/asid`
+/// assumes, so a part with exactly 8 must boot).
+#[test]
+fn eight_asid_bits_decode_and_suffice() {
+    // ASIDBits = 0b0000, everything else a normal part.
+    let cpu = Isa::decode(0, mmfr0(0b0000, 0b0000, 0b0001, 0b0000, 0b0101), 0);
+
+    assert_eq!(
+        cpu.asid_bits, 8,
+        "0b0000 is ARM's encoding for 8, not reserved"
+    );
+    assert!(!cpu.missing_requirements().asid_bits);
+    assert!(!cpu.missing_requirements().any());
+}
+
 /// Every `PARange` encoding ARM has defined, and the reserved ones reported as zero rather than
 /// guessed at. The raw field goes into `TCR_EL1.IPS` whatever it is; this decoding is for the boot
 /// line, and a wrong number there is a wrong number in the one place a reader would trust it.

@@ -1141,6 +1141,55 @@ mod tests {
         assert_eq!(Short(1 << 15).nanos(), 500_000_000);
         assert_eq!(MAX_ROOT_DISTANCE.secs(), 16);
     }
+
+    // Milestone 85 survivors. The exhaustive sweeps quantify over the CONVERSIONS; these are the
+    // edges and accessors the sweeps never touch. See notes/mutation-testing.md.
+
+    /// `UNIX_LIMIT` is a wall with two sides, and only the far side was ever tested, so the
+    /// constant's own arithmetic could change with nothing failing.
+    #[test]
+    fn the_range_limit_is_exactly_where_the_docs_say() {
+        assert!(Timestamp::from_unix(UNIX_LIMIT - 1, 0).is_some());
+        assert!(Timestamp::from_unix(UNIX_LIMIT, 0).is_none());
+    }
+
+    /// An interval answers for its own sign and magnitude. `nanos()` was the only accessor any
+    /// test read, so `ticks`, `abs_ticks` and `is_negative` could return constants.
+    #[test]
+    fn an_interval_knows_its_sign_and_magnitude() {
+        let earlier = Timestamp::from_unix(1_785_412_800, 0).unwrap();
+        let later = Timestamp::from_unix(1_785_412_801, 0).unwrap();
+        let forward = later.since(earlier);
+        assert_eq!(forward.ticks(), 1i128 << 32);
+        assert_eq!(forward.abs_ticks(), 1u128 << 32);
+        assert!(!forward.is_negative());
+        let backward = earlier.since(later);
+        assert_eq!(backward.ticks(), -(1i128 << 32));
+        assert_eq!(backward.abs_ticks(), 1u128 << 32);
+        assert!(backward.is_negative());
+        // Zero is not negative: the boundary the < sits on.
+        assert!(!earlier.since(earlier).is_negative());
+    }
+
+    /// RFC 5905's lambda with a delay big enough that halving and remainder-by-2 differ; the
+    /// fixture reply's tiny delay could not tell them apart.
+    #[test]
+    fn root_distance_halves_the_delay_it_is_given() {
+        let mut p = Packet::parse(&REPLY).unwrap();
+        p.root_delay = Short(6 << 16);
+        p.root_dispersion = Short(1 << 16);
+        assert_eq!(p.root_distance().secs(), 4);
+    }
+
+    /// Stratum 15 is the last hop that still counts as synchronised (RFC 5905 MAXSTRAT); the
+    /// rejection tests only ever probed 16, so > could rot to >= and refuse a legal server.
+    #[test]
+    fn the_fifteenth_stratum_is_still_a_time_source() {
+        let w = tweak(|w| w[1] = MAX_STRATUM);
+        assert!(query().accept(&w, T4).is_ok());
+        let w = tweak(|w| w[1] = MAX_STRATUM + 1);
+        assert_eq!(query().accept(&w, T4), Err(Reject::Stratum(16)));
+    }
 }
 
 // =================================================================================================

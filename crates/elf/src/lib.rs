@@ -690,6 +690,82 @@ mod tests {
         );
     }
 
+    /// **Execute-only code is legal, and its flags read back exactly.** Every other fixture sets
+    /// `PF_R`, so this is the only place the readable bit is ever *clear*: it proves the
+    /// unreachable check keys on "neither readable nor executable" rather than on readability
+    /// alone, and that `is_readable` tests its own bit (a mask read as `|` or `^` reports a
+    /// PF_X-only segment readable; both are wrong the same way, visible only here).
+    #[test]
+    fn an_execute_only_segment_is_accepted_and_is_not_readable() {
+        let bytes = Builder::new().seg(PF_X, 0x40_0000, &[0xaa; 16], 16).build();
+        let elf = Elf::parse(&bytes).expect("execute-only code is reachable");
+        let seg = elf.segments().next().unwrap();
+        assert!(seg.is_executable());
+        assert!(!seg.is_readable());
+        assert!(!seg.is_writable());
+    }
+
+    /// `e_phentsize` smaller than a program header means the table entries we would read do not
+    /// exist as described. The builder always writes 56, so this patches the header bytes to lie.
+    #[test]
+    fn a_short_phentsize_is_refused() {
+        let mut bytes = good();
+        bytes[54..56].copy_from_slice(&8u16.to_le_bytes());
+        assert_eq!(Elf::parse(&bytes).err(), Some(Error::BadProgramHeaders));
+    }
+
+    /// The header-count cap is exclusive: exactly `MAX_PHNUM` (64) headers must still parse,
+    /// because the cap exists to stop a stalling count, not to shrink what a real file may hold.
+    #[test]
+    fn exactly_the_maximum_header_count_is_accepted() {
+        let mut b = Builder::new();
+        for i in 0..64u64 {
+            // Distinct pages, so the overlap check stays quiet; the first segment holds the entry.
+            b = b.seg(PF_R | PF_X, 0x40_0000 + i * 0x1000, &[0xaa; 8], 8);
+        }
+        let bytes = b.build();
+        let elf = Elf::parse(&bytes).expect("64 headers is within the cap");
+        assert_eq!(elf.segments().count(), 64);
+    }
+
+    /// The entry range is half-open: an entry at exactly `vaddr + memsz` is one past the last
+    /// byte of the segment, which is not a place execution can begin.
+    #[test]
+    fn an_entry_one_past_the_code_segment_is_refused() {
+        let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16);
+        b.entry = 0x40_0010; // vaddr + memsz, the first address outside
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::EntryNotExecutable)
+        );
+    }
+
+    /// Two segments in *adjacent* pages share an edge, not a page: `[0x400000, 0x401000)` and
+    /// `[0x401000, 0x402000)` must not be called an overlap. Both declaration orders, because the
+    /// half-open comparison has one strict `<` per side and each order exercises a different side.
+    #[test]
+    fn segments_in_adjacent_pages_are_accepted() {
+        let ascending = Builder::new()
+            .seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16)
+            .seg(PF_R | PF_W, 0x40_1000, &[0xbb; 16], 16)
+            .build();
+        Elf::parse(&ascending).expect("adjacent pages, code first");
+
+        let descending = Builder::new()
+            .seg(PF_R | PF_W, 0x40_1000, &[0xbb; 16], 16)
+            .seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16)
+            .build();
+        Elf::parse(&descending).expect("adjacent pages, code second");
+    }
+
+    /// Pins the byte order of the field reader with a value whose two bytes differ. Every field
+    /// the parser checks happens to have a zero high byte in the other fixtures, so a reader that
+    /// picked up the wrong neighbouring byte would still pass them.
+    #[test]
+    fn u16le_reads_the_two_bytes_in_little_endian_order() {
+        assert_eq!(u16le(&[0x00, 0xcd, 0xab], 1), 0xabcd);
+    }
+
     #[test]
     fn two_segments_in_the_same_page_are_refused() {
         let bytes = Builder::new()

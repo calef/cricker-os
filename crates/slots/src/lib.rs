@@ -345,6 +345,37 @@ mod tests {
         assert_eq!(t.len(), 1);
     }
 
+    /// `get_mut` hands back the entry itself, and a write through it lands in that slot and no
+    /// other. The kernel reaches every thread this way and `unwrap()`s the result on the switch
+    /// path (`sched.rs`), so a `get_mut` that refused a live name would be a panic in the
+    /// scheduler rather than a lookup that missed.
+    #[test]
+    fn get_mut_reaches_the_live_entry_and_writes_through_it() {
+        let mut t: Table<u32, 4> = Table::new();
+        let a = t.insert_with(|_| 1).unwrap();
+        let b = t.insert_with(|_| 2).unwrap();
+
+        *t.get_mut(a).expect("a live name must resolve") = 41;
+        assert_eq!(t.get(a), Some(&41));
+        assert_eq!(t.get(b), Some(&2), "the write landed in the wrong slot");
+
+        t.remove(a);
+        assert_eq!(t.get_mut(a), None, "a dead name resolved through get_mut");
+    }
+
+    /// Empty in both directions. Nothing in the tree calls `is_empty` yet (it exists because a
+    /// type with `len` owes one), which makes it exactly the kind of accessor that can rot into a
+    /// constant with no caller to notice.
+    #[test]
+    fn a_table_is_empty_only_while_it_holds_nothing() {
+        let mut t: Table<u32, 2> = Table::new();
+        assert!(t.is_empty(), "a fresh table holds nothing");
+        let a = t.insert_with(|_| 9).unwrap();
+        assert!(!t.is_empty());
+        t.remove(a);
+        assert!(t.is_empty(), "removing the last entry must empty the table");
+    }
+
     /// Out-of-range slots and wrong generations are both just `None`.
     #[test]
     fn garbage_names_are_none() {

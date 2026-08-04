@@ -745,6 +745,20 @@ mod tests {
     }
 
     #[test]
+    fn echo_writes_no_empty_runs() {
+        // In the program `out` is the shell's `print`, and every call is one CALL on the terminal
+        // endpoint. A word with nothing before it must not cost a round trip that carries no
+        // bytes, which is what emitting the zero-length whitespace run ahead of it would be.
+        let mut writes: Vec<Vec<u8>> = Vec::new();
+        let said = echo(b"one  two", &mut |_| Ok(NameSet::empty()), &mut |b| {
+            writes.push(b.to_vec());
+        });
+        assert_eq!(said, Say::Nothing);
+        assert!(writes.iter().all(|w| !w.is_empty()), "{writes:?}");
+        assert_eq!(writes.concat(), b"one  two");
+    }
+
+    #[test]
     fn a_pattern_that_matched_nothing_stops_echo_rather_than_printing_itself() {
         // zsh's answer rather than bash's, and the model forces it: if `echo` printed the pattern
         // where `rm` refuses, the two would disagree about what the line means.
@@ -817,6 +831,19 @@ mod tests {
             shown(|o| write_say(Say::Failed(-2), o)).trim(),
             fs_proto::dir::explain(-2)
         );
+    }
+
+    #[test]
+    fn pwd_prints_the_position_relative_to_this_shells_own_root() {
+        // The leading slash is this shell's root, not the system's. A shell holding one directory
+        // capability has no name for anything above it, so `/` at depth zero is the honest answer
+        // rather than a borrowed one, and `pwd` is the only place a user sees it.
+        assert_eq!(shown(|o| write_pwd(&Cwd::root(), o)), "  /\n");
+
+        let mut cwd = Cwd::root();
+        assert!(cwd.descend(b"docs"));
+        assert!(cwd.descend(b"drafts"));
+        assert_eq!(shown(|o| write_pwd(&cwd, o)), "  /docs/drafts\n");
     }
 
     #[test]

@@ -300,4 +300,27 @@ mod tests {
             }
         }
     }
+
+    /// The verdict bits are a wire format: the checker ORs them into `RPT_VERDICT`'s payload and
+    /// the report reader ANDs them back out, at runtime, across a process boundary. Each must be a
+    /// distinct single bit and the exact values are load-bearing. Milestone 85's mutation run
+    /// showed nothing pinned them: `1 << 1` could become `1 >> 1`, which is zero, and that claim
+    /// would silently vanish from every verdict.
+    #[test]
+    fn the_verdict_bits_are_distinct_single_bits() {
+        use checks::{
+            FAULT_ADDR_AS_EXPECTED, IN_GRANT_WRITE_LANDED, OUTPUT_CORRECT, WITNESS_FAR_INTACT,
+            WITNESS_RO_INTACT,
+        };
+        assert_eq!(
+            [
+                IN_GRANT_WRITE_LANDED,
+                WITNESS_RO_INTACT,
+                WITNESS_FAR_INTACT,
+                FAULT_ADDR_AS_EXPECTED,
+                OUTPUT_CORRECT
+            ],
+            [1, 2, 4, 8, 16]
+        );
+    }
 }

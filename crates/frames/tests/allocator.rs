@@ -217,3 +217,48 @@ fn bitmap_sizing() {
     assert_eq!(FrameAllocator::frames_in(0x800_0000), 32768);
     assert_eq!(FrameAllocator::bitmap_bytes(32768), 4096);
 }
+
+/// Milestone 85 survivors: `is_used` could return `Some(true)` unconditionally, `index_of` could
+/// refuse the base frame (`<` rotting to `<=`), and `frame_range` could turn a zero-size range
+/// into one frame (its guard's `||` rotting to `&&` makes `mark_used(addr, 0)` round the empty
+/// range up). The base frame and the empty range are the boundaries no other test touched.
+#[test]
+fn the_base_frame_and_the_empty_range_are_exact() {
+    let mut bits = [0u8; 8];
+    let mut a = allocator(&mut bits);
+
+    // The base frame is ours to answer for, free until allocated.
+    assert_eq!(a.is_used(Frame::from_addr(BASE)), Some(false));
+    // One byte below it is not ours at all: None, never a verdict.
+    assert_eq!(a.is_used(Frame::from_addr(BASE - FRAME_SIZE)), None);
+
+    // A zero-size range touches no frame, wherever it starts.
+    a.mark_used(BASE + 100, 0);
+    a.mark_used(BASE, 0);
+    assert_eq!(a.is_used(Frame::from_addr(BASE)), Some(false));
+
+    // And an allocated frame answers true, so Some(false) above is not a stuck constant.
+    let f = a.alloc().unwrap();
+    assert_eq!(a.is_used(f), Some(true));
+}
+
+/// The other end of `index_of`, which the base-frame test above leaves open: the first frame past
+/// the last one we manage.
+///
+/// 60 frames in an 8-byte bitmap on purpose. Index 60 is then a real bit *inside* the bitmap, still
+/// 1 from the 0xff fill because `mark_free` clamps to `total`, so an inclusive upper bound answers
+/// `Some(true)` for an address we do not own instead of crashing on a byte past the end. That is the
+/// dangerous shape: `free` would find the bit set, sail past its double-free assert, clear a bit
+/// outside the range and decrement `used` for somebody else's frame.
+#[test]
+fn a_frame_past_the_last_one_is_not_ours() {
+    let mut bits = [0u8; 8];
+    let mut a = FrameAllocator::new(BASE, 60, &mut bits);
+    a.mark_free(BASE, 60 * FRAME_SIZE);
+
+    assert_eq!(
+        a.is_used(Frame::from_addr(BASE + 59 * FRAME_SIZE)),
+        Some(false)
+    );
+    assert_eq!(a.is_used(Frame::from_addr(BASE + 60 * FRAME_SIZE)), None);
+}

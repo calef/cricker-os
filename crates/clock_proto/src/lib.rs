@@ -605,4 +605,28 @@ mod tests {
             }
         );
     }
+
+    /// The request word is a wire format shared with the clock service at runtime; `req` and `op`
+    /// must be inverses AND put the opcode in bits 63:56 exactly, because the service on the other
+    /// side of the endpoint decodes with its own copy of the constant. Milestone 85's mutation run
+    /// showed the shift direction and the whole function bodies were pinned by nothing.
+    #[test]
+    fn the_request_word_is_the_wire_format_it_claims() {
+        assert_eq!(propose::req(propose::PROPOSE), 1u64 << 56);
+        assert_eq!(propose::op(propose::req(propose::STATE)), propose::STATE);
+        assert_eq!(propose::op(0), 0);
+    }
+
+    /// The plausibility window's endpoints are seconds times a billion, and the multiplication is
+    /// exactly the kind of arithmetic a mutant can quietly break (a `/` there made the floor
+    /// microscopic, and every implausible proposal became plausible). Pin the products.
+    #[test]
+    // Asserting on constants is this test's entire purpose: the constant is the thing a mutant
+    // rewrites, and the assertion is what notices (milestone 85).
+    #[allow(clippy::assertions_on_constants)]
+    fn the_sanity_window_is_where_it_says() {
+        assert_eq!(policy::NOT_BEFORE_NANOS, 1_767_225_600_000_000_000);
+        assert_eq!(policy::NOT_AFTER_NANOS, 4_102_444_800_000_000_000);
+        assert!(policy::NOT_BEFORE_NANOS < policy::NOT_AFTER_NANOS);
+    }
 }

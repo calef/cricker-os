@@ -184,6 +184,20 @@ fn a_partition_outside_the_usable_range_is_refused() {
     assert!(build(&[exact]).is_ok());
 }
 
+/// `last_lba` is inclusive, so a partition whose two bounds are the same block is one block long
+/// rather than empty, and legal. Every other partition in this suite and in `real_disks.rs` spans
+/// thousands of blocks, so the range check had only ever been met from far away: the equal case was
+/// never judged, and a `<=` there refuses a legal disk with nothing failing.
+#[test]
+fn a_partition_of_exactly_one_block_is_legal() {
+    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 2048);
+    let disk = build(&[one]).expect("first_lba == last_lba is one block, not none");
+
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let (_, e) = table.partitions().next().unwrap();
+    assert_eq!((e.first_lba, e.last_lba), (2048, 2048));
+}
+
 /// The smallest disk that can hold a 128-entry table is 68 blocks: MBR, header, 32 array blocks,
 /// one usable block, 32 array blocks, header. One block less and there is nowhere to put a
 /// partition, which is an error rather than a table with an empty usable range.
@@ -515,4 +529,270 @@ fn the_documentation_sample_is_a_valid_disk() {
     let table = Gpt::parse(&disk[512..1024], &disk[1024..]).unwrap();
     table.check_protective_mbr(&disk[..512]).unwrap();
     assert_eq!(table.partitions().count(), 1);
+}
+
+// =================================================================================================
+// The layout guards, boundary by boundary. Milestone 85's mutation run showed the suite could not
+// tell `>` from `>=` in any of `parse`'s range checks: `real_disks.rs` corrupts one byte at a time,
+// so every corrupt header dies at the CRC before the layout logic ever runs, and every table
+// `build` makes is TIGHT (array against usable range, usable range against backup array), so the
+// comparisons below were never exercised one side at a time. These tests forge headers with a
+// VALID CRC and one layout lie each. One of the survivors was not a missing test but a missing `=`:
+// `parse` accepted last_usable_lba equal to the backup array's first block. See
+// notes/mutation-testing.md.
+
+/// Recompute the header CRC after a patch, so the forgery reaches the layout checks.
+fn reforge(block: &mut [u8]) {
+    let hsize = u32::from_le_bytes(block[12..16].try_into().unwrap()) as usize;
+    block[16..20].fill(0);
+    let crc = gpt::crc::crc32(&block[..hsize]);
+    block[16..20].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// Parse a tight, empty table whose header has been patched and re-CRCed.
+fn parse_patched(patch: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+    let disk = build(&[]).unwrap();
+    let mut block: [u8; BLOCK] = disk.header().try_into().unwrap();
+    patch(&mut block);
+    reforge(&mut block);
+    Gpt::parse(&block, &disk.array).map(|_| ())
+}
+
+fn set_u64(block: &mut [u8], offset: usize, value: u64) {
+    block[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+// UEFI 2.10 §5.3.2 header field offsets.
+const ALTERNATE_LBA: usize = 32;
+const FIRST_USABLE_LBA: usize = 40;
+const LAST_USABLE_LBA: usize = 48;
+
+/// The tight table `build` makes, in numbers the tests below patch around: array at LBA 2..=33,
+/// usable at 34..=131038, backup array at 131039..=131070, backup header at 131071.
+const PRIMARY_END: u64 = 34;
+const BACKUP_ARRAY_FIRST: u64 = BLOCKS - 33;
+
+#[test]
+fn a_one_block_usable_range_is_a_range_and_a_backwards_one_is_not() {
+    // first == last is one usable block, which is legal.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, PRIMARY_END)).err(),
+        None
+    );
+    // first > last is no range at all.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, PRIMARY_END - 1)).err(),
+        Some(Error::UsableRange {
+            first: PRIMARY_END,
+            last: PRIMARY_END - 1
+        })
+    );
+}
+
+#[test]
+fn the_usable_range_may_start_after_the_table_but_not_inside_it() {
+    // Slack between the primary table and the usable range is legal; every table `build` makes is
+    // tight, so without this a `>` here could rot into `<` unnoticed.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, FIRST_USABLE_LBA, 2048)).err(),
+        None
+    );
+    // A usable range that starts on the entry array's last block is an overlap.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, FIRST_USABLE_LBA, PRIMARY_END - 1)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+#[test]
+fn a_disk_with_no_room_for_the_backup_is_refused() {
+    // alternate_lba says the disk is 11 blocks; the backup array alone needs 33.
+    assert_eq!(
+        parse_patched(|b| {
+            set_u64(b, ALTERNATE_LBA, 10);
+            set_u64(b, FIRST_USABLE_LBA, PRIMARY_END);
+            set_u64(b, LAST_USABLE_LBA, PRIMARY_END);
+        })
+        .err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+/// The bug the mutation run found: `block_count - backup_reserved` is the backup array's first
+/// block, and the check was `>`, so equality (one usable block INSIDE the backup array) parsed
+/// clean. A partition placed on that block would overwrite the backup entry array.
+#[test]
+fn the_usable_range_stops_before_the_backup_array() {
+    // The tight maximum, one below the backup array, is legal (this is what `create` emits).
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST - 1)).err(),
+        None
+    );
+    // Equal to the backup array's first block: refused, since the fix.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+    // Past it, likewise.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST + 1)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+#[test]
+fn the_entry_array_shape_guards_are_exact() {
+    // Empty is not a shape: there is no entry count to derive.
+    assert_eq!(
+        Gpt::create(DISK, BLOCK, BLOCKS, &[], &mut []).err(),
+        Some(Error::EntryArrayShape { have: 0 })
+    );
+    // Longer than an entry but not a whole number of them.
+    assert_eq!(
+        Gpt::create(DISK, BLOCK, BLOCKS, &[], &mut [0u8; 200]).err(),
+        Some(Error::EntryArrayShape { have: 200 })
+    );
+    // Exactly one entry is the smallest legal array, and it holds exactly one partition.
+    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 4096);
+    let mut array = [0u8; entry::SIZE];
+    let table = Gpt::create(DISK, BLOCK, BLOCKS, &[one], &mut array).unwrap();
+    assert_eq!(table.partitions().count(), 1);
+}
+
+/// `check_protective_mbr` is a thin wrapper over `mbr::validate`, and every other call in the
+/// suite hands it a good block, so a body replaced with `Ok(())` passed (a milestone 85
+/// survivor). One bad block through the wrapper is what pins the plumbing.
+#[test]
+fn a_wrong_mbr_is_refused_through_the_wrapper_too() {
+    let disk = build(&[]).unwrap();
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let zeros = [0u8; BLOCK];
+    assert!(table.check_protective_mbr(&zeros).is_err());
+}
+
+// The second mutation pass reached the modules the first never got to (entry, guid, header, the
+// MBR validator), and its survivors have the same two shapes as the first pass's: boundaries
+// never met exactly, and values every fixture happened to share. See notes/mutation-testing.md.
+
+/// Every fixture and every built table uses 128-byte entries, so `check_entry_array`'s size guard
+/// was only ever met at its own boundary. A 256-byte-entry table is legal and a 64-byte one is
+/// not, and the array CRC does not care because both describe the same 16 KiB of zeros.
+#[test]
+fn entry_sizes_other_than_128_are_judged_not_assumed() {
+    // 64 entries of 256 bytes: same 16 KiB, same CRC, legal.
+    assert_eq!(
+        parse_patched(|b| {
+            b[80..84].copy_from_slice(&64u32.to_le_bytes());
+            b[84..88].copy_from_slice(&256u32.to_le_bytes());
+        })
+        .err(),
+        None
+    );
+    // 256 entries of 64 bytes: under the 128-byte floor.
+    assert_eq!(
+        parse_patched(|b| {
+            b[80..84].copy_from_slice(&256u32.to_le_bytes());
+            b[84..88].copy_from_slice(&64u32.to_le_bytes());
+        })
+        .err(),
+        Some(Error::EntrySize(64))
+    );
+}
+
+/// A header may claim every byte of its block: `header_size == block size` leaves no reserved
+/// tail to check and is legal, and the bound's `>` was never met exactly.
+#[test]
+fn a_header_the_size_of_its_block_is_legal() {
+    assert_eq!(
+        parse_patched(|b| b[12..16].copy_from_slice(&512u32.to_le_bytes())).err(),
+        None
+    );
+}
+
+/// A partition may start on the first usable block. Every fixture starts partitions at 2048 with
+/// usable space from 34, so `check_partitions`' lower bound was never met exactly either.
+#[test]
+fn a_partition_on_the_first_usable_block_is_inside_the_range() {
+    let mut array = [0u8; ENTRY_ARRAY_BYTES];
+    let part = Entry::new(types::CRICKER_DATA, PART, 34, 4096);
+    let table = Gpt::create(DISK, BLOCK, BLOCKS, &[part], &mut array).unwrap();
+    assert_eq!(table.partitions().next().unwrap().1.first_lba, 34);
+}
+
+/// The protective record may sit in any of the four MBR slots. Every tool we imaged puts it in
+/// slot 0, where `i * 16` is zero under any arithmetic, so the record-offset math was untested
+/// for every other slot.
+#[test]
+fn a_protective_record_in_a_later_slot_is_still_protective() {
+    let disk = build(&[]).unwrap();
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let mut block = [0u8; BLOCK];
+    block[..disk.mbr().len()].copy_from_slice(disk.mbr());
+    // Move record 0 to record 2 (16 bytes each, table at offset 446), zeroing slot 0.
+    let (a, b) = (446, 446 + 32);
+    let record: [u8; 16] = block[a..a + 16].try_into().unwrap();
+    block[a..a + 16].fill(0);
+    block[b..b + 16].copy_from_slice(&record);
+    table.check_protective_mbr(&block).unwrap();
+}
+
+/// Refusals speak: one formatted error, exact, so a Display replaced with `Ok(())` cannot pass.
+#[test]
+fn an_error_formats_to_its_own_words() {
+    assert_eq!(
+        Error::BlockSize(100).to_string(),
+        "100 is not a logical block size (512..=4096, a power of two)"
+    );
+}
+
+/// The attribute bits are the on-disk format sgdisk and firmware read; pin them. (`1 << 0` is
+/// immune to shift-direction mutation by arithmetic; the others are not.)
+#[test]
+fn the_attribute_bits_are_the_disk_format() {
+    assert_eq!(
+        [
+            entry::ATTR_REQUIRED,
+            entry::ATTR_NO_BLOCK_IO,
+            entry::ATTR_LEGACY_BIOS_BOOTABLE
+        ],
+        [1, 2, 4]
+    );
+}
+
+/// A non-ASCII name survives the round trip. Every test name was ASCII, whose UTF-16 units have a
+/// zero high byte, so a decode reading its two name bytes off by one produced the same units and
+/// the whole name path looked healthy.
+#[test]
+fn a_name_beyond_ascii_round_trips() {
+    let named = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+        .with_name("π¥")
+        .unwrap();
+    let back = Entry::decode(&named.encode());
+    let mut buf = [0u8; 16];
+    let n = back.name_utf8(&mut buf).unwrap();
+    assert_eq!(&buf[..n], "π¥".as_bytes());
+}
+
+/// `name_utf8`'s bound, met exactly: a buffer the name exactly fills is enough, and one byte
+/// under is `NameTooLong`, never a panic.
+#[test]
+fn an_exact_fit_name_buffer_is_enough() {
+    let e = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+        .with_name("abc")
+        .unwrap();
+    let mut exact = [0u8; 3];
+    assert_eq!(e.name_utf8(&mut exact), Ok(3));
+    assert_eq!(&exact, b"abc");
+    let mut short = [0u8; 2];
+    assert_eq!(e.name_utf8(&mut short), Err(Error::NameTooLong));
+}
+
+/// A GUID displays as the string a person looks up, through Display and Debug both, and the
+/// unused type has its name.
+#[test]
+fn a_guid_shows_itself_and_unused_has_a_name() {
+    let g = Guid::from_fields(0x1234_5678, 0x9ABC, 0x4DEF, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(g.to_string(), "12345678-9ABC-4DEF-0102-030405060708");
+    assert_eq!(format!("{g:?}"), "12345678-9ABC-4DEF-0102-030405060708");
+    assert_eq!(types::name(types::UNUSED), Some("unused"));
 }

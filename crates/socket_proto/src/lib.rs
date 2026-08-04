@@ -156,13 +156,15 @@ mod tests {
         }
     }
 
-    /// The payload plus its header fits a page, which is the frame the client was granted. If this
-    /// ever exceeded it, a full-size send would write past the end of the shared frame.
+    /// The payload is exactly the rest of the frame: the header, then bytes to the last one on the
+    /// page. Larger and a full-size send writes past the end of the frame the client was granted;
+    /// smaller and part of a granted page is unreachable, which nothing anywhere would report.
     #[test]
-    fn a_full_payload_fits_the_shared_frame() {
-        assert!(
-            OFF_PAYLOAD as usize + DATA_MAX <= 4096,
-            "a full payload overruns the frame"
+    fn a_full_payload_fills_the_shared_frame_exactly() {
+        assert_eq!(
+            OFF_PAYLOAD as usize + DATA_MAX,
+            4096,
+            "the payload is not the whole frame minus its header"
         );
     }
 

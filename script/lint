@@ -493,6 +493,63 @@ fi
 cargo machete crates kernel user xtask fs_server tools/redoxfs_host >/dev/null
 echo "unused dependencies: none in our packages"
 
+# A `#[test]` inside a `#[cfg(kani)]` module never runs, and nothing says so. `cargo test` does not
+# set `kani`, so the module is not compiled: the test does not fail, does not get skipped, and does
+# not appear in the count. It simply is not there.
+#
+# This is not hypothetical. Milestone 85's glob triage appended two tests to the end of
+# `mod verification` instead of `mod tests`, then reported them as killing fourteen mutants. They
+# had never executed. The mutation run is what caught it, four hours later, and only because a
+# survivor list disagreed with a paragraph; moving the two tests took the suite from 15 to 18 and
+# killed eleven mutants at once.
+#
+# `.cargo/mutants.toml` already records the same fact from the other side, which is why mutants
+# inside `mod verification` are excluded from the run. The tree has 18 `mod verification` blocks
+# and 3 `mod proofs`, so there are 21 places for this to happen again.
+echo "==> tests the suite cannot see"
+python3 - <<'PY'
+import pathlib
+import re
+import sys
+
+bad = []
+for path in pathlib.Path('.').rglob('*.rs'):
+    if 'target' in path.parts or 'vendor' in path.parts:
+        continue
+    src = path.read_text(errors='replace')
+    # Walk each `#[cfg(kani)] mod NAME { ... }` to its matching brace and look inside. A brace
+    # counter rather than a regex, because these modules nest and hold string literals of their own.
+    for head in re.finditer(r'#\[cfg\(kani\)\]\s*(?:pub\s+)?mod\s+(\w+)\s*\{', src):
+        depth, i = 0, head.end() - 1
+        while i < len(src):
+            if src[i] == '{':
+                depth += 1
+            elif src[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        body = src[head.end():i]
+        if '#[test]' in body:
+            n = body.count('#[test]')
+            bad.append(f'{path}: {n} #[test] inside #[cfg(kani)] mod {head.group(1)}')
+
+if bad:
+    print('lint: a #[test] inside a #[cfg(kani)] module is never compiled by cargo test:',
+          file=sys.stderr)
+    for line in bad:
+        print(f'  {line}', file=sys.stderr)
+    print('', file=sys.stderr)
+    print('Move it to `mod tests`. A test that cannot run is worse than no test, because it '
+          'reports a coverage it does not have.', file=sys.stderr)
+    sys.exit(1)
+
+blocks = sum(len(re.findall(r'#\[cfg\(kani\)\]\s*(?:pub\s+)?mod\s+\w+', p.read_text(errors='replace')))
+             for p in pathlib.Path('.').rglob('*.rs')
+             if 'target' not in p.parts and 'vendor' not in p.parts)
+print(f'kani modules: {blocks} blocks, none hiding a #[test]')
+PY
+
 # Spelling, over prose AND code. The documentation is part of the deliverable here, so a typo in a
 # note is a defect in the product. Configuration and the honest assessment of what this found are in
 # _typos.toml.

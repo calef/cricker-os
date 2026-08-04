@@ -728,6 +728,12 @@ mod tests {
             };
         }
         fn run(&self) -> bool {
+            self.run_range(0, self.driver_idx)
+        }
+        /// The same run with explicit batch indices, for the tests that need a slot other than
+        /// 0..2: `avail.idx` is a free-running u16, so real batches start at arbitrary indices and
+        /// the slot arithmetic (`idx % qsize`, `4 + slot * 2`) only shows its shape there.
+        fn run_range(&self, from: u16, to: u16) -> bool {
             validate_and_shadow(
                 0x1_0000_0000, // dma_base: an arbitrary in-test region
                 0x1000,        // dma_size
@@ -735,8 +741,8 @@ mod tests {
                 DA,
                 SD,
                 SA,
-                0,
-                self.driver_idx,
+                from,
+                to,
                 QSIZE,
                 &|p| {
                     if p == DA + 2 {
@@ -869,6 +875,86 @@ mod tests {
             r.run(),
             "a bounded cyclic chain with valid addresses should validate and terminate"
         );
+    }
+
+    /// **The walk follows the descriptor's own `next` field, not a fixed successor.** Chain 0 -> 2
+    /// with descriptor 1 poisoned (aimed at kernel memory): a walk that misdecodes `next` and steps
+    /// to slot 1 refuses the batch, and one that never steps lands nothing at slot 2. The existing
+    /// chain test used 0 -> 1 -> 2, where "always step to 1" still validates.
+    #[test]
+    fn the_chain_walk_lands_on_the_declared_next_slot() {
+        let mut r = Rings::new();
+        r.set_desc(0, BASE + 0x200, 16, F_NEXT, 2); // chains to 2, skipping 1
+        r.set_desc(1, 0xffff_0000_4008_0000, 16, 0, 0); // poison: reached only by a wrong step
+        r.set_desc(2, BASE + 0x400, 32, 0, 0);
+        r.driver_ring[0] = 0;
+        r.driver_idx = 1;
+        assert!(r.run(), "a 0 -> 2 chain was refused");
+        assert_eq!(
+            r.shadow_desc.borrow()[2].addr,
+            BASE + 0x400,
+            "the chain did not shadow the slot its next field names"
+        );
+    }
+
+    /// **A clear `F_NEXT` means the `next` field is dead, whatever else the flags say.** The
+    /// descriptor is device-writable (bit 1 set, so the flag word is nonzero) with `F_NEXT` (bit 0)
+    /// clear and a garbage `next` of 15 in an 8-slot queue. A correct validator ignores both; one
+    /// that reads the chain bit with `|` instead of `&`, or hardcodes "has next", trips the
+    /// `next >= qsize` refusal on a valid descriptor.
+    #[test]
+    fn a_clear_next_flag_makes_the_next_field_dead() {
+        let mut r = Rings::new();
+        r.set_desc(0, BASE + 0x200, 64, F_WRITE, 15);
+        r.driver_ring[0] = 0;
+        r.driver_idx = 1;
+        assert!(
+            r.run(),
+            "a valid unchained descriptor was refused for its dead next field"
+        );
+    }
+
+    /// **The available-ring slot arithmetic, pinned at an index where the operators diverge.**
+    /// `avail.idx` free-runs, so a batch starting at 11 uses slot 11 % 8 = 3, and the head is read
+    /// at `avail + 4 + 3*2` = avail + 10 (mirrored at the same offset in the shadow). The
+    /// wrong-operator addresses all differ there: 11 / 8 = 1 lands on ring[1], 4 + (3+2) = 9 maps
+    /// to ring[2], 4 + 3/2 = 5 maps to ring[0]. Indices 0..2, which every other test uses, cannot
+    /// tell these apart (0*2 = 0+2 is off by the same slot, 2*2 = 2+2 exactly). Every slot except 3
+    /// holds head 9, out of the 8-entry table, so any misdirected read refuses the batch; the
+    /// mirror is checked by where head 5 lands in the shadow ring.
+    #[test]
+    fn the_slot_arithmetic_holds_at_a_free_running_index() {
+        let mut r = Rings::new();
+        r.set_desc(5, BASE + 0x200, 16, 0, 0);
+        r.driver_ring = [9; 8]; // every slot but 3 is an out-of-table head
+        r.driver_ring[3] = 5;
+        assert!(
+            r.run_range(11, 12),
+            "the head at slot 3 was not read from slot 3"
+        );
+        assert_eq!(
+            r.shadow_ring.borrow()[3],
+            5,
+            "the head was not mirrored at slot 3 of the shadow ring"
+        );
+        assert_eq!(r.shadow_ring.borrow()[2], 0, "the mirror strayed to slot 2");
+        assert_eq!(r.shadow_ring.borrow()[0], 0, "the mirror strayed to slot 0");
+        assert_eq!(
+            *r.shadow_idx.borrow(),
+            12,
+            "the shadow avail.idx was not published"
+        );
+    }
+
+    /// **`RING_END` is the value its formula documents: 0x100 + 6 + 8*8 = 0x146.** The used ring is
+    /// 2 (flags) + 2 (idx) + 8 bytes per element times `LAYOUT_QSIZE` = 8 elements + 2 (avail event).
+    /// Nothing else pins the value: every relation the proofs and the compile-time asserts state
+    /// (`RING_END <= RING_BLOCK`, disjoint blocks) still holds for the smaller wrong values an
+    /// operator slip produces, and the kernel aliases this constant, so a silent shrink would
+    /// under-reserve the ring area a real device writes into.
+    #[test]
+    fn ring_end_is_the_documented_value() {
+        assert_eq!(RING_END, 0x146);
     }
 
     #[test]

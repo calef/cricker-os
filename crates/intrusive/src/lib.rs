@@ -265,12 +265,24 @@ mod tests {
         }
         assert_eq!(q.len(), 3);
 
+        // A non-empty queue says so. Milestone 85: every earlier assertion met is_empty only in
+        // the empty state, so a body stuck at `true` passed.
+        assert!(!q.is_empty());
+
+        // len falls by exactly one per pop. The push side was asserted above; the pop side was
+        // not, and the scheduler trusts this counter for its run-queue accounting.
+        // SAFETY: the popped node is one of the live locals above and is no longer linked.
+        let first = q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag });
+        assert_eq!(first, Some(1));
+        assert_eq!(q.len(), 2);
+
         let tags: Vec<u32> = core::iter::from_fn(|| q.pop_front())
             // SAFETY: `p` was just popped, so it is one of the live locals above and is no longer linked.
             .map(|p| unsafe { (*p.as_ptr()).tag })
             .collect();
-        assert_eq!(tags, vec![1, 2, 3]);
+        assert_eq!(tags, vec![2, 3]);
         assert!(q.is_empty());
+        assert_eq!(q.len(), 0);
     }
 
     /// The empty-again transitions: a queue drained to empty accepts new nodes correctly (the

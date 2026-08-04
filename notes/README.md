@@ -408,6 +408,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
   clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
   sampled paths, never the exhaustive claims. Run by `script/miri`, weekly in CI plus on demand.
+- [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
+  **would any test notice if this line were wrong?** cargo-mutants (pinned in
+  `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function
+  at a time and reruns the tests; the survivors are the product. The per-crate baseline, the
+  calibration verdict on the exhaustive crates (`ntp_proto`, `gpt`), the three-way triage rule
+  (write the test, record the exclusion, or defer on the record), and why the weekly `mutation
+  testing` workflow is a report rather than a gate.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,

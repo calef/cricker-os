@@ -498,6 +498,50 @@ mod tests {
         one_region_confines::<Sv39>();
     }
 
+    /// **A grant of more than one page maps every whole page in it, and stops at the partial tail.**
+    /// Every other test in this module grants exactly one page, and a one-page region is the shape
+    /// that can tell nothing apart: a page count and the constant 1 agree on it, and so do
+    /// [`grant_page`]'s whole-page test and its opposite. Two pages and a half separates all three.
+    #[test]
+    fn a_multi_page_grant_maps_its_whole_pages_and_not_the_partial_tail() {
+        let mut frames: Vec<u64> = Vec::new();
+        let root = frame();
+        let base = frame_at(0x2000_0000);
+        let regions = [DmaRegion {
+            base,
+            size: 2 * PAGE_SIZE + PAGE_SIZE / 2,
+        }];
+        // SAFETY: as in `one_region_confines`.
+        unsafe {
+            build_identity_domain::<_, _, Aarch64>(
+                root,
+                || {
+                    let f = frame();
+                    frames.push(f);
+                    Some(f)
+                },
+                phys_to_ptr,
+                &regions,
+            )
+            .expect("domain build failed");
+        }
+        // SAFETY: `root` is the table the build above populated, reachable through `phys_to_ptr`.
+        let m = unsafe {
+            Mapper::<fn() -> Option<u64>, _, Aarch64>::new(root, Half::Low, || None, phys_to_ptr)
+        };
+        assert_eq!(m.translate(base), Some((base, Flags::user_data())));
+        assert_eq!(
+            m.translate(base + PAGE_SIZE),
+            Some((base + PAGE_SIZE, Flags::user_data())),
+            "the grant's second whole page is missing: an honest driver is starved",
+        );
+        assert_eq!(
+            m.translate(base + 2 * PAGE_SIZE),
+            None,
+            "the trailing half page was mapped whole: the device reaches past its grant",
+        );
+    }
+
     /// Two disjoint regions (the driver's DMA region and the kernel's shadow page are not adjacent)
     /// both map, and the gap between them does not: the domain is exactly the allow-list, no more.
     #[test]

@@ -1,6 +1,6 @@
 //! Reading the ISA out of real and hand-written device trees, on the host, in milliseconds.
 //!
-//! Three trees, and each is here for a reason no other one covers:
+//! Four trees, and each is here for a reason no other one covers:
 //!
 //! * **QEMU's own `virt`**, borrowed from the `dtb` crate's fixtures so the two crates cannot
 //!   disagree about what the machine we test on says. This is the tree the RISC-V suite actually
@@ -9,6 +9,9 @@
 //!   `riscv,isa` string, the `g` abbreviation, and harts that differ from each other.
 //! * **`narrow-machine`**, hand-written, so the refusal path has a witness rather than only a
 //!   comment saying it would refuse.
+//! * **`wide-hart-first`**, hand-written, with the wide hart ahead of the narrow one, because the
+//!   other trees happen to declare their narrowest hart first and would forgive a loop that never
+//!   replaces an answer it already holds.
 
 use isa::riscv64::*;
 
@@ -18,6 +21,7 @@ use isa::riscv64::*;
 const QEMU_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv64-virt.dtb");
 const MIXED: &[u8] = include_bytes!("fixtures/mixed-cpus.dtb");
 const NARROW: &[u8] = include_bytes!("fixtures/narrow-machine.dtb");
+const WIDE_FIRST: &[u8] = include_bytes!("fixtures/wide-hart-first.dtb");
 
 /// Read the tree only. The `sbi` half of the record stays at its default, which is "no firmware
 /// answered", because a device tree cannot speak for the firmware.
@@ -153,6 +157,67 @@ fn narrow_machine_is_refused() {
         !missing.extensions.contains(M),
         "and M is present, so it is not named"
     );
+}
+
+/// **The narrowest hart wins from second place, and a hart with no base cannot erase one.**
+///
+/// The other fixtures declare their narrowest hart first, so they would pass with a loop that
+/// never replaces a value it already holds. This tree is ordered against that: rv64/sv48 first,
+/// rv32/sv32 second. Keeping the first hart's answer here is a wrong-accept, and the fault it
+/// defers is the worst kind: the scheduler places a thread on the rv32 core and every pointer is
+/// the wrong width.
+///
+/// The third hart is the other half of the same loop: it declares `riscv,isa-extensions` with no
+/// base at all, which is a legal modern node, and its Unknown must not overwrite the rv32 the
+/// tree already established.
+#[test]
+fn the_narrow_hart_wins_regardless_of_order() {
+    let cpu = parse(WIDE_FIRST);
+
+    assert_eq!(cpu.harts, 3);
+    assert_eq!(cpu.described, 3);
+    assert_eq!(cpu.base, Base::Rv32, "narrowest declared base, not first");
+    assert_eq!(cpu.mmu, MmuType::Sv32, "narrowest declared MMU, not first");
+
+    let missing = cpu.missing_requirements();
+    assert!(missing.base, "one rv32 hart makes the machine rv32 to us");
+    assert!(missing.mmu, "one sv32 MMU is the one a thread might get");
+    assert!(missing.any());
+}
+
+/// **Each requirement refuses the boot on its own.** `Missing::any` is one `||` chain, and the
+/// mutation that survives a combined fixture is the one that turns a single missing requirement
+/// into a boot: every field here is a wrong-accept if it stops being sufficient by itself.
+#[test]
+fn each_missing_requirement_refuses_alone() {
+    assert!(
+        !Missing::default().any(),
+        "nothing missing, nothing refused"
+    );
+
+    let base = Missing {
+        base: true,
+        ..Missing::default()
+    };
+    assert!(base.any());
+
+    let extensions = Missing {
+        extensions: A,
+        ..Missing::default()
+    };
+    assert!(extensions.any(), "no atomics alone must refuse");
+
+    let mmu = Missing {
+        mmu: true,
+        ..Missing::default()
+    };
+    assert!(mmu.any());
+
+    let sbi = Missing {
+        sbi: SBI_RFENCE,
+        ..Missing::default()
+    };
+    assert!(sbi.any(), "no RFENCE alone must refuse");
 }
 
 /// **Missing SBI is reported even on a machine whose silicon is fine**, because the four calls the

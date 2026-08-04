@@ -807,6 +807,162 @@ mod tests {
         vt
     }
 
+    /// **A rendition names two palette entries, and reverse swaps which is ink.** Every other test
+    /// compares one `Attr` against another, which cannot see a packer that lost a field or a
+    /// `colours` that returns a constant: both sides move together. These are the numbers.
+    #[test]
+    fn a_rendition_resolves_to_the_palette_entries_it_names() {
+        assert_eq!(Attr::DEFAULT.fg(), DEFAULT_FG);
+        assert_eq!(Attr::DEFAULT.bg(), DEFAULT_BG);
+        assert!(!Attr::DEFAULT.reverse());
+        assert_eq!(Attr::DEFAULT.colours(), (PALETTE[7], PALETTE[0]));
+        // A background that is not 7, so a mask that widened to "always 7" is visible.
+        assert_eq!(Attr::new(3, 4, false).colours(), (PALETTE[3], PALETTE[4]));
+        assert_eq!(
+            Attr::new(3, 4, true).colours(),
+            (PALETTE[4], PALETTE[3]),
+            "reverse swaps ink and paper, it does not pick different colours"
+        );
+    }
+
+    /// **The damage box's arithmetic, at the edges where a bounding box is decided.** A rectangle
+    /// that already contains the other must be its own union either way round, which is the case
+    /// that reads both operands' far edges; the cell-by-cell unions elsewhere only ever grow the
+    /// second operand's, so half of `union` was never consulted.
+    #[test]
+    fn a_damage_box_contains_a_rectangle_it_already_covered() {
+        let big = CellRect {
+            col: 1,
+            row: 2,
+            cols: 4,
+            rows: 3,
+        };
+        let inside = CellRect {
+            col: 2,
+            row: 3,
+            cols: 1,
+            rows: 1,
+        };
+        assert_eq!(big.union(inside), big);
+        assert_eq!(inside.union(big), big);
+        // Eight-pixel glyphs, so a rect at (1, 2) starts at (8, 16) and is 32 by 24.
+        assert_eq!(big.to_pixels(), (8, 16, 32, 24));
+    }
+
+    /// The grid's size in cells and in pixels, as numbers rather than as the expression that
+    /// computes them. 6 by 3 because 6*8, 6+8 and 6/8 are three different answers.
+    #[test]
+    fn the_grid_reports_its_size_in_cells_and_in_pixels() {
+        let t = Vt::new(6, 3);
+        assert_eq!((t.cols(), t.rows()), (6, 3));
+        assert_eq!(t.width(), 48);
+        assert_eq!(t.height(), 24);
+    }
+
+    /// **The pixel is a pure function of the grid**, so it can be pinned exactly. `L` at cell
+    /// (1, 1) in green: its top row is ink in the leftmost four columns and paper in the fifth,
+    /// and its second row is paper at the left edge. Those three pixels separate every way the
+    /// cell-versus-glyph coordinate split can go wrong (a mixed-up divide and remainder agree at
+    /// cell (0, 0), which is where every other pixel assertion sits).
+    #[test]
+    fn a_pixel_names_its_cell_and_its_place_inside_the_glyph() {
+        let mut t = vt(4, 3);
+        t.set_cursor_visible(false);
+        t.feed(b"\x1b[2;2H\x1b[32mL");
+        let (green, black) = (PALETTE[2], PALETTE[0]);
+        assert_eq!(t.pixel(8, 8), green, "the glyph's own (0, 0) is ink");
+        assert_eq!(t.pixel(9, 8), green);
+        assert_eq!(t.pixel(12, 8), black, "and its fifth column is not");
+    }
+
+    /// A column past the last one is off the grid, not the next row's first cell. The rows of the
+    /// grid are contiguous, so an out-of-range column that is not rejected reads a real cell.
+    #[test]
+    fn a_column_past_the_margin_is_not_the_next_rows_first_cell() {
+        let mut t = vt(4, 2);
+        t.feed(b"\x1b[2;1Hab");
+        assert_eq!(t.cell(4, 0), Cell::default());
+    }
+
+    /// **Tabs stop every eight columns and never past the last one.** Nothing else feeds a tab, and
+    /// a line discipline does not emit one, but a program's output does.
+    #[test]
+    fn a_tab_advances_to_the_next_stop_and_stops_at_the_margin() {
+        let mut t = vt(20, 2);
+        t.feed(b"\t");
+        assert_eq!(t.cursor(), (8, 0));
+        t.feed(b"\t");
+        assert_eq!(t.cursor(), (16, 0), "the stop is measured from where it is");
+        t.feed(b"\t");
+        assert_eq!(
+            t.cursor(),
+            (19, 0),
+            "a tab at the right margin stops there rather than wrapping"
+        );
+    }
+
+    /// Four parameters is the limit and the limit is **legal**: `CSI 1;2;3;4 m` acts, and only a
+    /// fifth is dropped. Every other test here uses two or three, so the limit itself was never
+    /// judged from the inside.
+    #[test]
+    fn the_fourth_parameter_is_legal_and_the_fifth_is_not() {
+        let mut t = vt(8, 1);
+        t.feed(b"\x1b[0;1;32;7ma");
+        assert_eq!(t.cell(0, 0).attr, Attr::new(10, DEFAULT_BG, true));
+        t.feed(b"\x1b[0;1;2;3;31mb");
+        assert_eq!(
+            t.cell(1, 0).attr,
+            Attr::new(10, DEFAULT_BG, true),
+            "a sequence with too many parameters is swallowed, not half-applied"
+        );
+    }
+
+    /// `CSI n J` from a cursor that is **not on the first row**, in the mode that erases backwards.
+    /// Both directions read `row * cols + col`, and at row 0 that arithmetic cannot be wrong.
+    #[test]
+    fn erase_in_display_starts_from_where_the_cursor_actually_is() {
+        let mut t = vt(4, 3);
+        t.feed(b"abcd\r\nefgh\r\nijkl\x1b[2;3H\x1b[J");
+        assert_eq!(rows(&t), ["abcd", "ef  ", "    "]);
+
+        let mut t = vt(4, 3);
+        t.set_cursor_visible(false);
+        t.feed(b"abcd\r\nefgh\r\nijkl");
+        t.take_damage();
+        t.feed(b"\x1b[2;3H\x1b[1J");
+        assert_eq!(
+            rows(&t),
+            ["    ", "   h", "ijkl"],
+            "mode 1 erases through the cursor's own cell and no further"
+        );
+        assert!(t.damage().is_some(), "erasing the screen is damage");
+    }
+
+    /// The rest of SGR: the bright foregrounds as their own sequences, and the three switches that
+    /// turn something *off*. A terminal that only ever set attributes would pass every other test
+    /// here and leave a line reversed forever.
+    #[test]
+    fn sgr_has_bright_colours_and_switches_that_turn_things_off() {
+        let mut t = vt(8, 1);
+        t.feed(b"\x1b[92ma");
+        assert_eq!(t.cell(0, 0).attr, Attr::new(10, DEFAULT_BG, false));
+        t.feed(b"\x1b[1mb");
+        assert_eq!(
+            t.cell(1, 0).attr.fg(),
+            10,
+            "bold on an already-bright colour is idempotent, not a toggle"
+        );
+        t.feed(b"\x1b[7;41mc\x1b[27md\x1b[39me\x1b[49mf");
+        assert_eq!(t.cell(2, 0).attr, Attr::new(10, 1, true));
+        assert_eq!(t.cell(3, 0).attr, Attr::new(10, 1, false), "SGR 27");
+        assert_eq!(t.cell(4, 0).attr, Attr::new(DEFAULT_FG, 1, false), "SGR 39");
+        assert_eq!(
+            t.cell(5, 0).attr,
+            Attr::new(DEFAULT_FG, DEFAULT_BG, false),
+            "SGR 49"
+        );
+    }
+
     /// Text lands in the grid, `CR` returns to column 0, and `LF` goes down without returning.
     /// The `\r\n` pair is what `line_editor::expand_output` produces from a Unix `\n`, so a terminal
     /// that treated `LF` as `CRLF` would look right on that stream and wrong on every other.
@@ -871,6 +1027,27 @@ mod tests {
                 rows: 3
             }),
         );
+
+        // The same claim with nothing else in the frame. Above, the printing and the cursor
+        // between them already dirty the whole grid, so a scroll that reported no damage at all
+        // would still add up to the right rectangle. A bare LF on the bottom row moves every row
+        // and writes no cell, which is the only shape that can tell the two apart.
+        let mut t = vt(4, 3);
+        t.set_cursor_visible(false);
+        t.feed(b"ab\r\ncd\r\nef");
+        t.take_damage();
+        t.feed(b"\r\n");
+        assert_eq!(rows(&t), ["cd  ", "ef  ", "    "]);
+        assert_eq!(
+            t.take_damage(),
+            Some(CellRect {
+                col: 0,
+                row: 0,
+                cols: 4,
+                rows: 3
+            }),
+            "a scroll moves every row, so the whole grid is damage",
+        );
     }
 
     /// Cursor sequences, with the parameter defaults ANSI specifies: an absent or zero parameter is
@@ -892,6 +1069,12 @@ mod tests {
         assert_eq!(t.cursor(), (7, 0));
         t.feed(b"\x1b[H");
         assert_eq!(t.cursor(), (0, 0), "CSI H with no parameters is home");
+        // The far edges. A clamp that is one too generous parks the cursor off the grid, where
+        // every subsequent write is silently discarded by `put`.
+        t.feed(b"\x1b[99B");
+        assert_eq!(t.cursor(), (0, 3), "downward motion clamps to the last row");
+        t.feed(b"\x1b[99;99H");
+        assert_eq!(t.cursor(), (7, 3), "CUP clamps on both axes");
     }
 
     /// Erasing, in all three modes of both verbs, and the property that makes `CSI K` useful to a
@@ -982,6 +1165,26 @@ mod tests {
         t.feed(b"[2");
         t.feed(b"Cy");
         assert_eq!(rows(&t)[0], "x  y    ");
+
+        // A string sequence ends at ST (`ESC \`) as well as at BEL, and an ESC inside it that is
+        // not ST is part of the string. Only the BEL terminator is exercised above, so the whole
+        // ESC-in-a-string state was reachable but never distinguished from Ground.
+        let mut t = vt(8, 1);
+        t.feed(b"a\x1b]0;title\x1b\\b");
+        assert_eq!(rows(&t)[0], "ab      ");
+        let mut t = vt(8, 1);
+        t.feed(b"a\x1b]x\x1bZy\x1b\\b");
+        assert_eq!(
+            rows(&t)[0],
+            "ab      ",
+            "an ESC that is not ST stays in the string"
+        );
+
+        // Control codes with no meaning here are consumed. Drawn instead, they are the font's
+        // blanks or its missing-glyph box, in the middle of a line that was otherwise fine.
+        let mut t = vt(8, 1);
+        t.feed(b"a\x01\x02\x1f\x7fb");
+        assert_eq!(rows(&t)[0], "ab      ");
     }
 
     /// The cursor is part of the picture, so moving it is damage; and a hidden cursor is not.

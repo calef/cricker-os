@@ -1,0 +1,63 @@
+/dts-v1/;
+
+/*
+ * A hand-written device tree, NOT a dump from any board.
+ *
+ * The other two fixtures happen to declare their narrowest hart first, so "narrowest wins" would
+ * pass with a loop that never replaces a value it already holds. This tree puts the wide hart
+ * first and the narrow one after it, which is the order that makes the replacement comparison do
+ * work:
+ *
+ *   cpu@0  rv64, sv48: the wide hart, seen first, and the wrong answer if narrowing fails
+ *   cpu@1  rv32, sv32: the narrow hart, which must win from second place
+ *   cpu@2  `riscv,isa-extensions` with no base at all, seen last, which must not erase the
+ *          base the earlier harts declared
+ *
+ * The failure each hart guards is a wrong-accept: a kernel that keeps rv64/sv48 here boots on a
+ * machine whose other core is rv32 with an Sv32 MMU, and faults far from the cause.
+ *
+ * Regenerate with:
+ *
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/wide-hart-first.dtb \
+ *                          crates/isa/tests/fixtures/wide-hart-first.dts
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "cricker,isa-test";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <4000000>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa-base = "rv64i";
+			riscv,isa-extensions = "i", "m", "a", "c";
+			mmu-type = "riscv,sv48";
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			reg = <1>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv32imac";
+			mmu-type = "riscv,sv32";
+		};
+
+		cpu@2 {
+			device_type = "cpu";
+			reg = <2>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa-extensions = "i", "m", "a", "c";
+			mmu-type = "riscv,sv57";
+		};
+	};
+};

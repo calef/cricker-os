@@ -136,6 +136,24 @@ mod tests {
         }
     }
 
+    /// **A writable leaf is pre-dirtied, and a read-only one has nothing to dirty.** D is set for
+    /// the same reason as A: hardware that has to set it itself takes a store fault on the first
+    /// write to every page. Neither bit reaches the portable [`Flags`], so the round-trip test below
+    /// cannot see D go missing.
+    #[test]
+    fn a_writable_leaf_is_pre_dirtied() {
+        assert_ne!(
+            Sv39::leaf_entry(0x8020_0000, Flags::kernel_data()) & D,
+            0,
+            "a writable leaf faults on its first store to set D",
+        );
+        assert_eq!(
+            Sv39::leaf_entry(0x8020_0000, Flags::kernel_code()) & D,
+            0,
+            "a read-only page cannot be dirtied",
+        );
+    }
+
     /// **A table-pointer entry has R=W=X=0** (that is what distinguishes it from a leaf) and V=1.
     #[test]
     fn a_table_entry_is_a_pointer_not_a_leaf() {

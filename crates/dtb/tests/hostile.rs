@@ -84,11 +84,18 @@ impl Blob {
     }
 
     fn finish(&mut self) -> Vec<u8> {
+        self.finish_with_reservations(&[])
+    }
+
+    /// Like [`finish`](Self::finish), with real `/memreserve/` entries ahead of the terminating
+    /// all-zero pair. The fixtures' reservation blocks are empty, so this is the only way a test
+    /// gets a non-trivial one.
+    fn finish_with_reservations(&mut self, rsv: &[(u64, u64)]) -> Vec<u8> {
         self.token(9); // FDT_END
 
         const HEADER: usize = 40;
         let off_rsvmap = HEADER;
-        let off_struct = off_rsvmap + 16; // one all-zero reservation entry terminates the list
+        let off_struct = off_rsvmap + 16 * (rsv.len() + 1); // the all-zero entry terminates the list
         let off_strings = off_struct + self.structure.len();
         let total = off_strings + self.strings.len();
 
@@ -106,6 +113,10 @@ impl Blob {
             self.structure.len() as u32,
         ] {
             b.extend_from_slice(&word.to_be_bytes());
+        }
+        for &(start, size) in rsv {
+            b.extend_from_slice(&start.to_be_bytes());
+            b.extend_from_slice(&size.to_be_bytes());
         }
         b.extend_from_slice(&[0u8; 16]);
         b.extend_from_slice(&self.structure);
@@ -239,4 +250,553 @@ fn region_end_saturates_rather_than_wrapping() {
         .end(),
         0x4800_0000
     );
+}
+
+// ================================================================================================
+// Milestone 85: what the mutation run proved this file was not yet checking. Every test below
+// kills named survivors from the baseline run; the clusters and the two mutants judged equivalent
+// are recorded in notes/mutation-testing.md. The recurring finding: the suite parsed only trees
+// with the DEFAULT cell widths (2/2 declared explicitly), so every walker's #address-cells
+// handling, inheritance, and parent-vs-own-cells arithmetic was unexercised, and the header's
+// boundary comparisons had never been met exactly.
+// ================================================================================================
+
+/// A copy of `blob` with one big-endian u32 overwritten at `off`.
+fn patched(blob: &[u8], off: usize, val: u32) -> Vec<u8> {
+    let mut b = blob.to_vec();
+    b[off..off + 4].copy_from_slice(&val.to_be_bytes());
+    b
+}
+
+/// One big-endian u32 cell, for `#address-cells = 1` layouts.
+fn cell32(v: u32) -> Vec<u8> {
+    v.to_be_bytes().to_vec()
+}
+
+fn minimal_tree() -> Vec<u8> {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    b.end_node();
+    b.finish()
+}
+
+/// The header comparisons, met exactly. The run showed `bytes.len() < total` could become `<=` or
+/// `==` and `last_comp_version > 17` could become `>=` or `==`, because no test had ever handed
+/// the parser a buffer of exactly `total` bytes, a buffer with slack, or a blob whose
+/// `last_comp_version` was exactly 17; and each offset bound in the `||` chain had never been the
+/// one that fired.
+#[test]
+fn the_header_boundaries_are_exact() {
+    let blob = minimal_tree();
+    let total = blob.len();
+
+    // A buffer of exactly totalsize parses; slack after it is fine; one byte short is not.
+    assert!(Dtb::from_bytes(&blob).is_ok());
+    let mut slack = blob.clone();
+    slack.extend_from_slice(&[0u8; 8]);
+    let dt = Dtb::from_bytes(&slack).unwrap();
+    assert_eq!(
+        dt.total_size(),
+        total,
+        "the blob ends where its header says"
+    );
+    assert_eq!(
+        Dtb::from_bytes(&blob[..total - 1]).err(),
+        Some(Error::Truncated),
+        "one byte short of totalsize"
+    );
+
+    // last_comp_version 17 is the newest we accept, and 18 is refused as itself.
+    assert!(Dtb::from_bytes(&patched(&blob, 24, 17)).is_ok());
+    assert_eq!(
+        Dtb::from_bytes(&patched(&blob, 24, 18)).err(),
+        Some(Error::UnsupportedVersion(18)),
+    );
+
+    // Each block offset alone can be the thing that is out of bounds.
+    let t = total as u32;
+    assert_eq!(
+        Dtb::from_bytes(&patched(&blob, 8, t)).err(),
+        Some(Error::Truncated)
+    );
+    assert_eq!(
+        Dtb::from_bytes(&patched(&blob, 12, t)).err(),
+        Some(Error::Truncated)
+    );
+    assert_eq!(
+        Dtb::from_bytes(&patched(&blob, 16, t)).err(),
+        Some(Error::Truncated)
+    );
+}
+
+/// The reservation block, with entries in it. The fixtures' is empty, so `reserved_regions` could
+/// return `Ok(0)` unconditionally, mis-stride the walk, or treat "starts at zero" as the
+/// terminator (the `&&` in the all-zero check becoming `||`), and a reservation AT address zero
+/// is exactly the entry firmware writes for its own vector table.
+#[test]
+fn reservations_are_read_entry_by_entry() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    // One prop, so the strings block is non-empty: an empty strings block puts off_strings at
+    // exactly totalsize, which from_bytes rightly refuses.
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.end_node();
+    let blob = b.finish_with_reservations(&[(0, 0x1000), (0x8000_0000, 0x2000)]);
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.reserved_regions(&mut out), Ok(2));
+    assert_eq!((out[0].start, out[0].size), (0, 0x1000));
+    assert_eq!((out[1].start, out[1].size), (0x8000_0000, 0x2000));
+}
+
+/// `/memory` on a 32-bit-style board: `#address-cells = 1`, two reg entries. Deleting the
+/// `#address-cells` match arm leaves the walker decoding with the 2-cell default, which misreads
+/// every value; and the second entry is what catches a pair stride that multiplied where it
+/// should have added.
+#[test]
+fn memory_with_one_address_cell() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"memory@40000000");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x4000_0000));
+    reg.extend(cell32(0x0100_0000));
+    reg.extend(cell32(0x9000_0000));
+    reg.extend(cell32(0x0010_0000));
+    b.prop(b"device_type", b"memory\0");
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.memory_regions(&mut out), Ok(2));
+    assert_eq!((out[0].start, out[0].size), (0x4000_0000, 0x0100_0000));
+    assert_eq!((out[1].start, out[1].size), (0x9000_0000, 0x0010_0000));
+}
+
+/// Cell widths flow DOWN the tree and a node's own declaration applies to its CHILDREN, not to
+/// its own `reg`. Three generations pin both rules: the bus inherits the root's 1/1 without
+/// declaring anything (kills the inherit index becoming `depth / 1`), and the device declares
+/// 2/2 for children it does not have, which must NOT apply to its own reg (kills the decode
+/// index becoming `depth` instead of `depth - 1`).
+#[test]
+fn cell_widths_are_inherited_and_a_reg_uses_its_parents() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"bus");
+    b.begin_node(b"dev@10");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x1000_0000));
+    reg.extend(cell32(0x100));
+    reg.extend(cell32(0x2000_0000));
+    reg.extend(cell32(0x200));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.node_reg(b"dev@", &mut out), Ok(2));
+    assert_eq!((out[0].start, out[0].size), (0x1000_0000, 0x100));
+    assert_eq!((out[1].start, out[1].size), (0x2000_0000, 0x200));
+}
+
+/// Only a name match may set the target: with `||` in the match condition, the first depth-2 node
+/// of any name is taken, and the spi node's reg comes back for a uart query.
+#[test]
+fn a_prefix_finds_its_node_not_the_first_node() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    b.begin_node(b"spi@0");
+    b.prop(b"reg", &reg64(0x111, 0x10));
+    b.end_node();
+    b.begin_node(b"uart@9000000");
+    b.prop(b"reg", &reg64(0x900_0000, 0x1000));
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg(b"uart@", &mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x900_0000, 0x1000));
+}
+
+/// A matched node stays matched across its children: the `END_NODE` bookkeeping compares depths
+/// with `==`, and `!=` clears the target at the first `CHILD`'s close. The spec puts props before
+/// children, but this parser accepts either order, and a reg after a child is the blob that
+/// tells the two apart. That is this file's charter: blobs dtc would refuse.
+#[test]
+fn a_matched_node_survives_its_children_closing() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    b.begin_node(b"m@1");
+    b.begin_node(b"child");
+    b.end_node();
+    b.prop(b"reg", &reg64(0xAB00, 0x40));
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg(b"m@", &mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0xAB00, 0x40));
+}
+
+/// The cell stack is 16 deep and the guard is `depth < 16`: at depth exactly 16 a declared
+/// `#address-cells` must be ignored, not recorded, because recording it indexes one past the
+/// stack. `<=` here is an out-of-bounds panic in the parser the kernel runs on firmware bytes.
+#[test]
+fn a_declaration_at_the_stacks_edge_is_ignored_not_indexed() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    for _ in 0..15 {
+        b.begin_node(b"bus");
+    }
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    for _ in 0..16 {
+        b.end_node();
+    }
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 1];
+    assert_eq!(dt.node_reg(b"absent@", &mut out), Ok(0));
+}
+
+/// The compatible walker's own copies of the same rules: the root cannot be a device (its match
+/// guard requires depth >= 2, and `true` there hands back the root's reg), the cell widths
+/// inherit, and a matching child's reg decodes with its parent's widths.
+#[test]
+fn compatible_respects_the_root_and_the_cell_widths() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.prop(b"compatible", b"root,thing\0");
+    b.prop(b"reg", &cell32(0xDEAD));
+    b.begin_node(b"rtc@101000");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x0010_1000));
+    reg.extend(cell32(0x1000));
+    b.prop(b"reg", &reg);
+    b.prop(b"compatible", b"google,goldfish-rtc\0");
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(
+        dt.node_reg_compatible(b"root,thing", &mut out),
+        Ok(0),
+        "the root is not a device"
+    );
+    assert_eq!(
+        dt.node_reg_compatible(b"google,goldfish-rtc", &mut out),
+        Ok(1)
+    );
+    assert_eq!((out[0].start, out[0].size), (0x0010_1000, 0x1000));
+}
+
+/// Property lookup is by name, not position, and the walk has to stride over values whose
+/// lengths are not multiples of four. Three props of awkward lengths, queried out of order, with
+/// exact bytes; a name the node does not have is None, and a node that does not exist is None.
+#[test]
+fn props_are_found_by_name_not_position() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"chosen");
+    b.prop(b"alpha", b"AAAAA");
+    b.prop(b"bootargs", b"console=ttyAMA0\0");
+    b.prop(b"beta", &0xDDCC_BBAA_9988_7766u64.to_be_bytes());
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    assert_eq!(
+        dt.node_prop(b"chosen", b"bootargs"),
+        Ok(Some(&b"console=ttyAMA0\0"[..]))
+    );
+    assert_eq!(dt.node_prop(b"chosen", b"alpha"), Ok(Some(&b"AAAAA"[..])));
+    assert_eq!(
+        dt.node_prop(b"chosen", b"beta"),
+        Ok(Some(&0xDDCC_BBAA_9988_7766u64.to_be_bytes()[..]))
+    );
+    assert_eq!(dt.node_prop(b"chosen", b"gamma"), Ok(None));
+    assert_eq!(dt.node_prop(b"absent", b"alpha"), Ok(None));
+}
+
+/// `node_props` answers for every matching node, and "has no such property" is a different
+/// answer from "is not there": two cpu@ nodes, one of which does not describe itself.
+#[test]
+fn node_props_tells_missing_prop_from_missing_node() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"cpu@0");
+    b.prop(b"riscv,isa", b"rv64gc\0");
+    b.end_node();
+    b.begin_node(b"cpu@1");
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [None; 4];
+    assert_eq!(dt.node_props(b"cpu@", b"riscv,isa", &mut out), Ok(2));
+    assert_eq!(out[0], Some(&b"rv64gc\0"[..]));
+    assert_eq!(out[1], None);
+}
+
+/// The initrd contract, boundary by boundary: 4-byte ints (the 32-bit platform shape, and the
+/// deleted-match-arm survivor), an exclusive end so start == end is "no initrd", and the chosen
+/// node found by NAME at depth 2, so a depth-2 node of another name carrying the same props is
+/// not an initrd.
+#[test]
+fn initrd_reads_widths_and_refuses_the_empty_and_the_misnamed() {
+    let build = |name: &[u8], start: u32, end: u32| {
+        let mut b = Blob::new();
+        b.begin_node(b"");
+        b.begin_node(name);
+        b.prop(b"linux,initrd-start", &start.to_be_bytes());
+        b.prop(b"linux,initrd-end", &end.to_be_bytes());
+        b.end_node();
+        b.end_node();
+        b.finish()
+    };
+
+    let blob = build(b"chosen", 0x4800_0000, 0x4800_8000);
+    let dt = Dtb::from_bytes(&blob).unwrap();
+    let r = dt.initrd().unwrap().expect("a real initrd range");
+    assert_eq!((r.start, r.size), (0x4800_0000, 0x8000));
+
+    let blob = build(b"chosen", 0x4800_0000, 0x4800_0000);
+    let dt = Dtb::from_bytes(&blob).unwrap();
+    assert_eq!(dt.initrd(), Ok(None), "start == end is an empty initrd");
+
+    let blob = build(b"notchosen", 0x4800_0000, 0x4800_8000);
+    let dt = Dtb::from_bytes(&blob).unwrap();
+    assert_eq!(
+        dt.initrd(),
+        Ok(None),
+        "the props only mean initrd inside /chosen"
+    );
+}
+
+// The tests above came from the baseline run's survivor list; the ones below close the gaps that
+// list still had after them. Several survivors dodge the earlier tests by coincidence of shape
+// (a device that is a direct child of the root never reads the inherited cell slots; a matched
+// node that is the first child never meets a foreign END_NODE), so each test here names the shape
+// that was still missing.
+
+/// `totalsize` against the header's own length, met exactly. A claim smaller than the header
+/// cannot hold the header that makes it, and is refused even with a big buffer and in-range
+/// offsets, so nothing else can be the reason. A claim of exactly `HEADER_LEN` is the smallest
+/// self-consistent one: the header checks pass and the walkers report their own truncation.
+#[test]
+fn totalsize_meets_the_header_length_exactly() {
+    let blob = minimal_tree();
+
+    let mut short = patched(&blob, 4, 39);
+    for off in [8, 12, 16] {
+        short = patched(&short, off, 0);
+    }
+    assert_eq!(Dtb::from_bytes(&short).err(), Some(Error::Truncated));
+
+    let mut bare = patched(&blob, 4, 40);
+    for off in [8, 12, 16] {
+        bare = patched(&bare, off, 8);
+    }
+    assert!(Dtb::from_bytes(&bare).is_ok());
+}
+
+/// The root cannot be a device for the name walker either (`compatible_respects_the_root...`
+/// pins the other walker): a `reg` on the root must not come back for a name the tree does not
+/// contain. The last `&&` of the match condition becoming `||` targets the root, whose empty
+/// name matches nothing, the moment the walk begins.
+#[test]
+fn a_roots_reg_is_never_a_named_devices() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    let mut reg = Vec::new();
+    reg.extend(cell32(0));
+    reg.extend(cell32(0xBEEF));
+    reg.extend(cell32(0x10));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg(b"absent@", &mut out), Ok(0));
+}
+
+/// The compatible walker inherits cell widths through a silent intermediary, the same
+/// three-generation rule `cell_widths_are_inherited...` pins for the name walker; the earlier
+/// compatible test's device sits directly under the root, so the inherited slots were never the
+/// ones read. The size's high cell is nonzero, so a decode with anything but the inherited 1/2
+/// finds no pair at all or reports a size of 1.
+#[test]
+fn compatible_inherits_cell_widths_through_a_silent_bus() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    b.begin_node(b"bus");
+    b.begin_node(b"dev@2000");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x2000));
+    reg.extend(cell32(0x1));
+    reg.extend(cell32(0x2000));
+    b.prop(b"reg", &reg);
+    b.prop(b"compatible", b"cricker,testdev\0");
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg_compatible(b"cricker,testdev", &mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x2000, 0x1_0000_2000));
+}
+
+/// A `reg` before any node has no parent to decode against, and the `depth >= 2` guard on the
+/// compatible walker's `reg` arm is what separates "walk past it" from indexing the cell stack
+/// at depth minus one, which underflows at zero. Nothing writes such a blob; this parser reads
+/// blobs nothing should have written.
+#[test]
+fn a_reg_before_the_root_is_walked_past() {
+    let mut b = Blob::new();
+    b.prop(b"reg", &reg64(0x1000, 0x100));
+    b.begin_node(b"");
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg_compatible(b"absent", &mut out), Ok(0));
+}
+
+/// The prop walker's target may only be a matched node: not the root, which is what `||` in the
+/// match condition produces (the root's target check is the first that can pass), and not
+/// nothing, which is what an inverted `END_NODE` comparison produces (the first sibling to close
+/// would end the search). The root and a decoy sibling carry the same property name with
+/// different values so either wrong answer is visible, not just a wrong count.
+#[test]
+fn node_prop_ignores_the_root_and_survives_a_closing_sibling() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"status", b"root\0");
+    b.begin_node(b"decoy");
+    b.prop(b"status", b"decoy\0");
+    b.end_node();
+    b.begin_node(b"uart@100");
+    b.prop(b"status", b"okay\0");
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    assert_eq!(dt.node_prop(b"uart@", b"status"), Ok(Some(&b"okay\0"[..])));
+}
+
+/// `/reserved-memory` children default to the ROOT's cell widths, read at depth 1 and nowhere
+/// else. The riscv fixture's root declares 2/2, which the defaults already are, so the depth-1
+/// gate and both of its match arms were deletable invisibly; a 1/1 root is the tree that
+/// notices.
+#[test]
+fn reserved_memory_defaults_to_the_roots_cell_widths() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"reserved-memory");
+    b.begin_node(b"fw@80000000");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x8000_0000));
+    reg.extend(cell32(0x4_0000));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.reserved_memory_regions(&mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x8000_0000, 0x4_0000));
+}
+
+/// And `/reserved-memory` may override those widths for its own children, which the fixture
+/// never does. The child's `compatible` sits before its `reg` because the decode condition
+/// requires child depth AND the name `reg`: with `||` the compatible string's sixteen bytes
+/// decode as two plausible extra regions, and the count says so.
+#[test]
+fn reserved_memory_honours_its_own_declared_widths() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"reserved-memory");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"pool@1000");
+    b.prop(b"compatible", b"shared-dma-pool\0");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x1000));
+    reg.extend(cell32(0x2000));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.reserved_memory_regions(&mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x1000, 0x2000));
+}
+
+/// `/chosen` stops meaning chosen when it closes: with the `END_NODE` comparison inverted the
+/// walker keeps attributing properties to it, and a later sibling's `linux,initrd-end`
+/// overwrites the real one, returning an initrd of the wrong size.
+#[test]
+fn initrd_properties_after_chosen_closes_do_not_count() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"chosen");
+    b.prop(b"linux,initrd-start", &0x4800_0000u64.to_be_bytes());
+    b.prop(b"linux,initrd-end", &0x4802_0000u64.to_be_bytes());
+    b.end_node();
+    b.begin_node(b"leftover");
+    b.prop(b"linux,initrd-end", &0x4BAD_0000u64.to_be_bytes());
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let r = dt.initrd().unwrap().expect("the real range from /chosen");
+    assert_eq!((r.start, r.size), (0x4800_0000, 0x2_0000));
 }

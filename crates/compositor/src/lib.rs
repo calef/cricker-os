@@ -841,6 +841,14 @@ mod tests {
                 .any(|w| w.rect().intersect(&Rect::screen()) != w.rect()),
             "every window fits on screen: clipping is untested",
         );
+        // And off the LEFT edge specifically. The scene's doc promises a negative origin,
+        // which is the case this crate's signed `Rect` exists to represent; a scene whose
+        // windows all start on screen would still pass the check above by clipping at the
+        // bottom, leaving the negative-origin path exercised only by synthetic rectangles.
+        assert!(
+            SCENE.iter().any(|w| w.origin_x < 0),
+            "no window hangs off the left edge: the live scene never clips a negative origin",
+        );
         // And every surface must fit the frames the kernel grants it.
         for (i, win) in SCENE.iter().enumerate() {
             assert!(
@@ -1160,6 +1168,115 @@ mod tests {
             // A blank surface must not match, which is the failure a client that never painted has.
             let blank = surface_checksum(win.w, win.h, |_| 0);
             assert_ne!(d, blank);
+        }
+    }
+
+    /// A rectangle with one zero extent is empty, whatever the other extent says. `is_empty` is
+    /// the guard on every clip and union in this crate, and "zero width OR zero height" is the
+    /// half of it the canonical [`EMPTY`] (which zeroes both) can never witness.
+    #[test]
+    fn a_degenerate_rectangle_is_empty() {
+        assert!(Rect::new(7, 9, 0, 5).is_empty(), "zero width is empty");
+        assert!(Rect::new(7, 9, 5, 0).is_empty(), "zero height is empty");
+        // The consequence a caller sees: a degenerate rect contributes nothing to the frame's
+        // damage union. Were it treated as real, its far-away origin would smear the bounding
+        // box and every frame would flush pixels nothing touched.
+        let a = Rect::new(1, 2, 3, 4);
+        assert_eq!(Rect::new(100, 100, 0, 5).union(&a), a);
+        assert_eq!(a.union(&Rect::new(100, 100, 5, 0)), a);
+        assert_eq!(Rect::new(3, 4, 0, 5).as_flush_rect(), None);
+    }
+
+    /// The geometry the compositor publishes is exact: stride is width times four with no
+    /// padding, and [`MAX_SURFACE_BYTES`] is the scene's largest surface, byte for byte. These
+    /// numbers cross a control page into another process, which paints by them; an
+    /// off-by-anything here is a fault in the client's own address space.
+    #[test]
+    fn stride_and_max_surface_bytes_are_exact() {
+        assert_eq!(Window::new(8, 8, 64, 32).stride(), 256);
+        assert_eq!(
+            Window::new(0, 0, 1, 1).stride(),
+            4,
+            "one pixel is four bytes"
+        );
+        // 64*32*4 = 8192, 48*24*4 = 4608, 40*40*4 = 6400: the first window is the largest.
+        assert_eq!(MAX_SURFACE_BYTES, 8192);
+        assert_eq!(
+            MAX_SURFACE_BYTES,
+            SCENE.iter().map(|w| w.w * w.h * 4).max().unwrap(),
+            "the const loop and the iterator must find the same maximum",
+        );
+    }
+
+    /// **Exact pixel values, hand-computed from the definitions.** The property tests prove
+    /// the patterns are distinct and asymmetric, but a flipped mask, shift, or bit-op can keep
+    /// every property while changing every pixel, and the guest writes these exact words into
+    /// shared memory. Inputs are chosen so `&`, `|`, `^` and both shift directions each give a
+    /// different answer; the arithmetic for each constant is shown where it is asserted.
+    #[test]
+    fn known_pixels_pin_the_pattern_arithmetic() {
+        // window_pixel(2, 5, 3): k = 2*53 + 11 = 117;
+        //   r = ((5*3 + 117) | 1) & 0xff           = 133 = 0x85
+        //   g = (3*7 + (5 >> 1) + 2*29) & 0xff     = 21 + 2 + 58 = 81 = 0x51
+        //   b = ((5 ^ (3 << 1)) * (2*2 + 13) + 2*7) & 0xff = 3*17 + 14 = 65 = 0x41
+        // x=5 against y<<1=6 pins the xor: 5^6 = 3, 5|6 = 7, 5&6 = 4, all different.
+        assert_eq!(window_pixel(2, 5, 3), 0x0085_5141);
+        // window_pixel(0, 7, 4): k = 11;
+        //   r = ((21 + 11) | 1) & 0xff = 33 = 0x21
+        //   g = (28 + 3 + 0) & 0xff    = 31 = 0x1f
+        //   b = ((7 ^ 8) * 13 + 0) & 0xff = 195 = 0xc3
+        assert_eq!(window_pixel(0, 7, 4), 0x0021_1fc3);
+
+        // background_pixel walks 8x8 blocks; (x>>3, y>>3) of (1,0), (1,1), (2,0) pin the xor
+        // and the &1 in turn (block parities 1, 0, and 0-from-an-even-2).
+        // (8, 0):  block 1^0 = 1 -> r = 0x30; g = 0x10 + 0 = 0x10; b = 0x08 + 2 = 0x0a.
+        assert_eq!(background_pixel(8, 0), 0x0030_100a);
+        // (8, 8):  block 1^1 = 0 -> r = 0; g = 0x10 + 4 = 0x14; b = 0x0a.
+        assert_eq!(background_pixel(8, 8), 0x0000_140a);
+        // (16, 0): block (2^0)&1 = 0 -> r = 0; g = 0x10; b = 0x08 + 4 = 0x0c.
+        assert_eq!(background_pixel(16, 0), 0x0000_100c);
+    }
+
+    /// **The digest is FNV-1a 64 over exactly `w * h` pixels, in index order**, pinned against
+    /// a value computed with an independent FNV-1a implementation. Every other checksum test in
+    /// this crate compares the function to itself, so a digest that iterated one pixel short,
+    /// or or-ed where it should xor, would agree with itself everywhere and never be seen.
+    #[test]
+    fn the_surface_checksum_is_fnv1a_over_every_pixel() {
+        // Six pixels with asymmetric bytes, as a 2x3 surface. FNV-1a 64: start at the offset
+        // basis 0xcbf2_9ce4_8422_2325; per little-endian byte, h ^= b, then h *= 0x100_0000_01b3.
+        let px: [u32; 6] = [
+            0x12b7_45d9,
+            0x00e1_073c,
+            0x8a5f_3b16,
+            0x47c2_d801,
+            0x3e99_a47f,
+            0x6d18_c5b2,
+        ];
+        assert_eq!(surface_checksum(2, 3, |i| px[i]), 0x23f8_e2f3_afb0_3cb0);
+        // And the pixel count really is w * h, stated directly rather than inferred from the
+        // digest: a 2x3 surface is read six times, not five (w + h) and not zero (w / h).
+        let mut reads = 0;
+        surface_checksum(2, 3, |_| {
+            reads += 1;
+            0
+        });
+        assert_eq!(reads, 6);
+    }
+
+    /// A window's expected digest unfolds pixel `i` as `(i % w, i / w)`, row-major. Checked
+    /// against the same surface built by the nested loops the clients actually paint with, so a
+    /// transposed or misfolded index cannot agree with it.
+    #[test]
+    fn a_window_digest_reads_the_surface_row_major() {
+        let surfaces = painted_scene();
+        for (id, win) in SCENE.iter().enumerate() {
+            let s = &surfaces[id];
+            assert_eq!(
+                expected_window_checksum(id),
+                surface_checksum(win.w, win.h, |i| s[i]),
+                "window {id}'s digest does not match its painted surface",
+            );
         }
     }
 
