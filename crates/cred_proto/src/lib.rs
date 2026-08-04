@@ -46,6 +46,13 @@
 //! would also be a small lie: it would imply the service distinguishes a forbidden opcode from an
 //! unknown one, and that distinction is exactly what this design does not have and does not want.
 //!
+//! **Milestone 65 demonstrated this rather than only asserting it.** Adding [`verify::NTLM_PROOF`]
+//! at 2 collided with [`provision::SEAL`], and the kernel test that had asserted "a `SEAL` on the
+//! verify endpoint is MALFORMED" started failing: a `SEAL` is now read as a proof for a resource
+//! nobody provisioned, and the honest answer to that is no. Growing one endpoint's opcode space
+//! silently changed what a word means on the other, and nothing broke, because a word arriving at
+//! a serve loop never carried authority in the first place.
+//!
 //! # The reply carries a verdict, and exactly one derived value
 //!
 //! Every reply here is **one word, and the second word is always zero** ([`NO_DATA`]). That was

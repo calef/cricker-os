@@ -282,7 +282,9 @@ fn attacker() -> ! {
         IMPOSTOR_SECRET,
         proto::provision::PUT,
     ));
-    // Re-seal it, in case a service that had not sealed would accept one.
+    // Re-seal it, in case a service that had not sealed would accept one. Since milestone 65 this
+    // is `NTLM_PROOF`'s number on this endpoint, so the answer is MISMATCH rather than MALFORMED:
+    // what the attacker sent is a proof for a resource nobody provisioned. See the kernel test.
     codes.push(request(
         PAGE_VA,
         IMPOSTOR,

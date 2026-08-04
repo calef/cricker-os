@@ -210,8 +210,24 @@ fn the_same_endowment_cannot_write_the_store() {
         "a PUT on the verify endpoint is a verify of an identity nobody provisioned, so the \
          answer must be MISMATCH; codes {codes:#018x}",
     );
+    // **And `SEAL` now gets MISMATCH too, which the machine corrected a second time.** This
+    // assertion expected MALFORMED and had been right for as long as the verify endpoint served
+    // one opcode. Milestone 65 gave it a second, `NTLM_PROOF`, at number 2, which is
+    // `provision::SEAL`'s number: so an attacker's `SEAL` is now read as an NTLM proof for a
+    // resource nobody provisioned, and the honest answer to that is no.
+    //
+    // Worth recording rather than renumbering, for the reason above and for one more. The opcode
+    // spaces colliding is not a coincidence to be tidied away, it is what "the endpoint gives a
+    // number its meaning" *looks like* when a space grows: adding an opcode on one endpoint
+    // silently changed what a word means on the other, and nothing broke, because a word arriving
+    // at a serve loop never carried authority in the first place.
+    assert_eq!(
+        cs::nth(codes, 1),
+        cred_proto::MISMATCH,
+        "a SEAL on the verify endpoint is an NTLM_PROOF for a resource nobody provisioned, so \
+         the answer must be MISMATCH; codes {codes:#018x}",
+    );
     for (k, what) in [
-        (1, "SEAL"),
         (2, "an undefined opcode"),
         (3, "a request with lengths outside the contract"),
         (4, "PUT_NTLM"),
