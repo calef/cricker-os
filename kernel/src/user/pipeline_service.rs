@@ -97,6 +97,21 @@ pub fn start_redirecting(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
 /// The shell's redirection role (`user/src/swish.rs`).
 const ROLE_REDIRECT: u64 = 4;
 
+/// **The same shell again, typing quoted and sequenced lines** (milestone 67,
+/// notes/swish-language.md): [`start_redirecting`]'s wiring exactly, because both halves of that
+/// milestone need something real to name.
+///
+/// It is a second role rather than more lines on the redirection script for the reason every
+/// witness here is its own: a transcript is read by slicing at the prompt it followed, so a script
+/// that grows past its buffer truncates the assertions that come last, silently. Same ELF, same
+/// slots, different script.
+pub fn start_language(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
+    start_with(ROLE_LANGUAGE, rights, Some(dir), None)
+}
+
+/// The shell's language role (`user/src/swish.rs`).
+const ROLE_LANGUAGE: u64 = 6;
+
 /// Where an FS client maps the page it shares with the FS server (`fs_service`'s
 /// `FILE_VA_CLIENT`, and `user/src/swish.rs`'s `FS_VA`).
 const FS_VA: u64 = 0x0000_0000_0060_0000;

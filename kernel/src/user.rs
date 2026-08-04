@@ -2122,6 +2122,22 @@ mod redirection_tests;
 #[cfg(test)]
 mod time_tests;
 
+/// **Quoting, sequencing and `$?` at a real prompt** (milestone 67, notes/swish-language.md).
+///
+/// [`redirection_tests`]'s shell, slot for slot, typing a different script. The two halves both
+/// need a filesystem: a quoted name is only worth anything if it reaches one, and a `&&` needs a
+/// command that can succeed.
+///
+/// The assertions are pairs, which is [`redirection_tests`]'s shape and for the same reason. `echo
+/// "*.txt"` against `echo *.txt` is one line quoted and one not; `worker 3 && echo yes` against
+/// `worker && echo yes` is one connector against a refused left-hand side. A single line proving
+/// "it printed something" would pass on a shell that ignored quoting entirely.
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+#[cfg(test)]
+mod language_tests;
+
 /// **The sink contract, and the one behaviour it changed** (milestone 50, notes/sink-protocol.md).
 ///
 /// Two claims, one per test, and they need each other. The first is that a program cannot tell what

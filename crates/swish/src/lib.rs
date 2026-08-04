@@ -168,6 +168,17 @@ impl Status {
         }
     }
 
+    /// Read a status back out of [`code`](Status::code). The shell keeps it in an atomic cell,
+    /// because every printer in the program can reach it and none of them holds a `&mut` to
+    /// anything shared.
+    pub fn from_code(code: u64) -> Status {
+        match code {
+            0 => Status::Ran,
+            1 => Status::Failed,
+            _ => Status::Refused,
+        }
+    }
+
     /// The number as bytes, which is `'static` because there are three of them.
     ///
     /// That is not a micro-optimisation, it is what makes `$?` expressible at all in a shell with

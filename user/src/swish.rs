@@ -68,7 +68,8 @@ use grant_plan::{
     Action, Command, Endowment, Escalation, Refusal, RunSpec, Streams, jobframe, spawnproto,
 };
 use line_editor::proto;
-use swish::{Route, Say, Untimed};
+use swish::sequence;
+use swish::{Route, Say, Status, Untimed};
 use user_rt::{call, cap_delete, exit, invoke, monotonic_nanos, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
@@ -225,17 +226,52 @@ struct Batching {
     names: u64,
 }
 
-/// **This batch did not run as planned, so the sweep stops here.**
+/// **What the command now running has done so far** (milestone 67), as a [`Status`] code.
 ///
 /// A global for the reason [`DIAG_EP`] is one: the refusal and outcome printers are free functions
-/// reached from every command path, and threading a `&mut Nav` through all of them to carry one bit
-/// would be a wide diff for a narrow fact. Single-threaded EL0, so `Relaxed` is the whole ordering
-/// story.
-static TROUBLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// reached from every command path, and threading a `&mut Nav` through all of them to carry one
+/// small fact would be a wide diff. Single-threaded EL0, so `Relaxed` is the whole ordering story.
+///
+/// This was an `AtomicBool` called `TROUBLE` until milestone 67, set by whichever printer had bad
+/// news, and read by `xargs` to stop a sweep. Widening it from a bit to a status is the whole of
+/// what `$?` needed: the shell already knew that something had gone wrong, and what it did not
+/// record was **which kind**.
+static CURRENT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Record that whatever just printed was a refusal or a failure rather than an answer.
-fn trouble() {
-    TROUBLE.store(true, core::sync::atomic::Ordering::Relaxed);
+/// **What the command before this one did**, which is what `$?` reports and what `&&` reads.
+///
+/// Two cells rather than one, because a segment has to be able to read the previous segment's
+/// answer *while* accumulating its own: `false || echo $?` prints the status of the thing that
+/// failed, which is exactly the case one cell could not serve.
+static LAST: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Record what just happened, **first one wins**: the first thing that went wrong is what stopped
+/// the line, and a later printer describing a consequence should not overwrite the cause.
+fn record(s: Status) {
+    if CURRENT.load(core::sync::atomic::Ordering::Relaxed) == Status::Ran.code() {
+        CURRENT.store(s.code(), core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// **This shell declined to run it**, decided from what this shell holds with nothing spawned.
+fn refused() {
+    record(Status::Refused);
+}
+
+/// **Something was attempted and did not work**: a filesystem errno, a spawn init could not back,
+/// a job torn down. See [`Status`] for why this is a different number from [`refused`].
+fn failed() {
+    record(Status::Failed);
+}
+
+/// What the command now running has done so far.
+fn current() -> Status {
+    Status::from_code(CURRENT.load(core::sync::atomic::Ordering::Relaxed))
+}
+
+/// What the command before this one did.
+fn last() -> Status {
+    Status::from_code(LAST.load(core::sync::atomic::Ordering::Relaxed))
 }
 
 /// A resolved path lead: the directory handle it designates, plus the temporary capabilities opened
@@ -599,8 +635,10 @@ fn expansion(nav: &mut Nav, spec: &RunSpec) -> Result<grant_plan::expand::Expans
 }
 
 /// [`swish::echo`], against the directory this shell holds.
+/// `$?` reads [`LAST`], which is the segment *before* this one: during `false || echo $?` the
+/// shell is running the second segment and the first one's answer is what the word is about.
 fn echo(nav: &mut Nav, text: &[u8], out: &mut dyn FnMut(&[u8])) -> Say {
-    swish::echo(text, &mut |token| nav.expand(token), out)
+    swish::echo(text, last(), &mut |token| nav.expand(token), out)
 }
 
 /// The local buffer one `READDIR` round is decoded from. The shared page is sixteen times larger, so
@@ -690,6 +728,10 @@ const ROLE_REDIRECT: u64 = 4;
 /// the prompt uses, and the same script is run three times against three clock states, which is what
 /// makes the refusals assertions rather than unreachable branches. See [`timing`].
 const ROLE_TIMING: u64 = 5;
+/// **The language witness** (milestone 67): [`ROLE_REDIRECT`]'s wiring, because a quoted name has to
+/// reach a real filesystem to be worth anything. It types a fixed script through the same
+/// [`dispatch_line`] the prompt uses. See [`language`].
+const ROLE_LANGUAGE: u64 = 6;
 
 /// **What `arg1` carries into every role that holds a directory**: the `fs_proto::dir` rights that
 /// capability was granted, with 0 meaning "you were granted no directory at all".
@@ -712,6 +754,7 @@ pub extern "C" fn _start(role: u64, arg: u64, clock: u64) -> ! {
         ROLE_PIPELINE => piping(),
         ROLE_REDIRECT => redirecting(arg),
         ROLE_TIMING => timing(),
+        ROLE_LANGUAGE => language(arg),
         _ => interactive(arg),
     }
 }
@@ -746,7 +789,7 @@ fn piping() -> ! {
         print(b"$ ");
         print(line);
         print(b"\n");
-        dispatch(&mut nav, line);
+        dispatch_line(&mut nav, line);
     }
     print(PIPELINE_DONE);
     exit();
@@ -811,7 +854,7 @@ fn redirecting(rights: u64) -> ! {
         print(b"$ ");
         print(line);
         print(b"\n");
-        dispatch(&mut nav, line);
+        dispatch_line(&mut nav, line);
     }
     print(REDIRECT_DONE);
     exit();
@@ -850,7 +893,7 @@ fn timing() -> ! {
         print(b"$ ");
         print(line);
         print(b"\n");
-        dispatch(&mut nav, line);
+        dispatch_line(&mut nav, line);
     }
     print(TIMING_DONE);
     exit();
@@ -859,12 +902,76 @@ fn timing() -> ! {
 /// [`PIPELINE_DONE`]'s twin for [`timing`]. Must match `kernel::user::time_tests`.
 const TIMING_DONE: &[u8] = b"== timings done\n";
 
+/// **A scripted shell that quotes and sequences** (milestone 67, notes/swish-language.md).
+///
+/// [`redirecting`]'s wiring, because both halves of this milestone need something real to name: a
+/// quoted name has to reach a filesystem to be worth anything, and `&&` has to have a command that
+/// can succeed and a command that is refused.
+///
+/// The lines check each other rather than constants, which is [`redirecting`]'s shape:
+///
+/// - `echo hello world > "my notes.txt"` then `wc < "my notes.txt"`. **The file could not have been
+///   written before this milestone**, because its name has a space in it and a name you cannot say
+///   is a resource you cannot grant. The counts come from the `echo` above them.
+/// - `wc "my notes.txt"` is the same designation with the operator left out, so it has to agree.
+///   That is milestone 31's headline, asked of a name only quoting can express.
+/// - `echo "*.txt"` and `echo *.txt` are **the same four characters, quoted and not**, and the two
+///   answers are each other's control: one is a name and one is the set it matches.
+/// - The `&&` and `||` pair run the same two commands with the connector changed, so what the
+///   connector did is measured against what the other one did rather than against a constant.
+/// - `echo $?` after a refusal and after a success, which is the fork this milestone settled: the
+///   number after a refusal is **2**, not 1, because nothing ran.
+fn language(rights: u64) -> ! {
+    let mut nav = Nav::rooted_at(DIR_TERMINAL, rights);
+    for line in [
+        // The correctness gap, closed: a name with a space in it, written and read back.
+        &b"echo hello world > \"my notes.txt\""[..],
+        b"wc < \"my notes.txt\"",
+        // The same designation with the operator left out. It has to answer what the line above it
+        // answered, or one of the two opened something else.
+        b"wc \"my notes.txt\"",
+        // Quoted and unquoted, side by side: one name against the set it matches.
+        b"echo \"*.txt\"",
+        b"echo *.txt",
+        // A quoted operator is text, so this line has no redirection on it and writes no file.
+        b"echo 'a > b'",
+        // Sequencing. `worker 3` succeeds and `worker` alone is refused at the prompt, so these
+        // four lines cover every arm of the condition table with real commands.
+        b"worker 3 && echo yes",
+        b"worker && echo yes",
+        b"worker 3 || echo no",
+        b"worker || echo no",
+        // `;` runs the second whatever the first did, which is the arm the two above cannot show.
+        b"worker && echo yes ; echo always",
+        // The status, after a command that ran and after one this shell refused. The second is the
+        // decision: a refusal is 2 rather than 1, because nothing ran.
+        b"worker 3",
+        b"echo $?",
+        b"worker",
+        b"echo $?",
+        // And the refusals the grammar itself makes, which run nothing at all.
+        b"echo 'unclosed",
+        b"date &&",
+    ] {
+        print(b"$ ");
+        print(line);
+        print(b"\n");
+        dispatch_line(&mut nav, line);
+    }
+    print(LANGUAGE_DONE);
+    exit();
+}
+
+/// [`PIPELINE_DONE`]'s twin for [`language`]. Must match `kernel::user::language_tests`.
+const LANGUAGE_DONE: &[u8] = b"== language done\n";
+
 /// The interactive prompt. `rights` is the [`_start`] convention: the `fs_proto::dir` rights of the
 /// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
 fn interactive(rights: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], time <command>, xargs <command>,\n");
     print(b"          cd, pwd, ls, mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
+    print(b"          'quote a whole word'   and   ;  &&  ||   with  echo $?  for the status\n");
 
     // Whether the navigation builtins and the redirection operators have anything to name is
     // decided here, by one capability. A boot that wired no FS service starts this program with
@@ -888,7 +995,7 @@ fn interactive(rights: u64) -> ! {
             print(b"  (end of input; this shell has nowhere to exit to)\n");
             continue;
         }
-        dispatch(&mut nav, &line[..n]);
+        dispatch_line(&mut nav, &line[..n]);
     }
 }
 
@@ -920,6 +1027,54 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
 /// The routing itself is [`swish::route`], host-tested there, including the one ordering with a bug
 /// behind it: `caps` is answered **before** the line is split, or `caps date | wc` would lose the
 /// pipe. What is left here is which capability each answer reaches for.
+/// **Read one typed line and run the commands on it** (milestone 67, notes/swish-language.md).
+///
+/// This is the outermost thing the prompt calls. It cuts the line on `;`, `&&` and `||` and hands
+/// each segment to [`dispatch`], which is the function every path in this file already went
+/// through, so **a segment is a whole command line and nothing under here learned a new grammar**.
+///
+/// # A connector carries one bit and no capability
+///
+/// Each segment is planned from scratch against what this shell holds, exactly as if it had been
+/// typed alone. That is not a restriction adopted here, it is what the shell already was, and
+/// sequencing is the first construct that could have broken it. The concrete hazard is the pipeline
+/// region: a line splits one off this shell's budget, mints its endpoints in it, and `DESTROY`s it
+/// when the line is over, and that destroy is what turns a stalled writer's next `SEND` into
+/// `abi::Error::Gone` (notes/pipes.md). Reusing one region across a chain would keep every earlier
+/// segment's endpoints alive for the whole chain. It does not, because the split is **here**, above
+/// [`pipeline`], rather than inside it.
+///
+/// # A skipped segment leaves `$?` alone
+///
+/// [`LAST`] is written only by a segment that ran, which is bash's rule: `false && echo hi` leaves
+/// `$?` at the status of `false`. There is no "skipped" status, because nothing happened.
+fn dispatch_line(nav: &mut Nav, cmd: &[u8]) {
+    let seq = match sequence::split(cmd) {
+        Ok(s) => s,
+        Err(r) => {
+            // A line that cannot be cut runs nothing, so it is one refusal and one status.
+            CURRENT.store(Status::Ran.code(), core::sync::atomic::Ordering::Relaxed);
+            say(Say::Cannot(r));
+            LAST.store(
+                CURRENT.load(core::sync::atomic::Ordering::Relaxed),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            return;
+        }
+    };
+    for &(joint, segment) in seq.segments() {
+        if !joint.runs_after(last()) {
+            continue;
+        }
+        CURRENT.store(Status::Ran.code(), core::sync::atomic::Ordering::Relaxed);
+        dispatch(nav, segment);
+        LAST.store(
+            CURRENT.load(core::sync::atomic::Ordering::Relaxed),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
 fn dispatch(nav: &mut Nav, cmd: &[u8]) {
     match swish::route(cmd) {
         Route::Caps(tail) => caps(nav, tail),
@@ -964,16 +1119,19 @@ fn time_command(nav: &mut Nav, tail: &[u8]) {
         tail = grant_plan::trim(inner);
     }
     if tail.is_empty() {
+        refused();
         return swish::write_untimed(Untimed::NothingToTime, &mut print);
     }
     // **The refusals come before the command runs**, because `time` is a request to measure and
     // running the line unmeasured would be the silent degradation DECISIONS §42 forbids, one axis
     // over. The two sentences are `date`'s: the same two causes, and the same two fixes.
     let Some(page) = clock_page() else {
+        refused();
         return swish::write_untimed(Untimed::NoClock, &mut print);
     };
     let before = page.read();
     if !state::known(before.state) {
+        refused();
         return swish::write_untimed(Untimed::UnknownClock, &mut print);
     }
     let start = clock_proto::wall_nanos(before.offset_nanos, monotonic_nanos());
@@ -1037,6 +1195,7 @@ fn xargs(nav: &mut Nav, tail: &[u8]) {
         tail = grant_plan::trim(inner);
     }
     if tail.is_empty() {
+        refused();
         print(b"  xargs: name a command to batch\n");
         return;
     }
@@ -1049,11 +1208,15 @@ fn xargs(nav: &mut Nav, tail: &[u8]) {
             next: None,
             names: 0,
         };
-        TROUBLE.store(false, core::sync::atomic::Ordering::Relaxed);
+        // Each batch is its own command as far as the status is concerned, and the sweep stops at
+        // the first one that did not run. That is the same reading `&&` takes (see [`Status`]): a
+        // refusal and a failure are both a no, and which it was stays in the status the sweep
+        // leaves behind for `$?`.
+        CURRENT.store(Status::Ran.code(), core::sync::atomic::Ordering::Relaxed);
         dispatch(nav, tail);
         let batching = nav.batching;
         nav.batching = Batching::default();
-        if TROUBLE.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        if !current().ok() {
             sweep.stop();
             break;
         }
@@ -1117,9 +1280,14 @@ fn print_pwd(nav: &Nav) {
 /// about a policy, and the wording is [`swish::write_say`]'s so a host test can hold it: this shell
 /// does not get to invent a friendlier word for a refusal.
 fn say(s: Say) {
-    // Anything but silence is a refusal or a failure, and under `xargs` that ends the sweep.
-    if s != Say::Nothing {
-        trouble();
+    // **Which kind of no it was** (milestone 67). The filesystem answering with an errno is
+    // something that was attempted and did not work; everything else here is this shell declining
+    // from what it holds, with nothing sent and nothing spawned. Under `xargs` either ends the
+    // sweep, which is what the old single bit recorded.
+    match s {
+        Say::Nothing => {}
+        Say::Failed(_) => failed(),
+        _ => refused(),
     }
     swish::write_say(s, &mut print);
 }
@@ -1170,7 +1338,7 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
 /// Print a refusal in the capability model's voice, which is [`swish::write_refusal`]'s job: the
 /// fixed half is `grant_plan`'s and the program name is supplied where one helps.
 fn refuse(spec: RunSpec, refusal: Refusal) {
-    trouble();
+    refused();
     swish::write_refusal(&spec, refusal, &mut print);
 }
 
@@ -1183,7 +1351,7 @@ fn spawn(e: Endowment) {
     // prompt says nothing. Authority the user thought they granted must never quietly evaporate,
     // which is the same rule that makes an unexpected token a refusal instead of a shrug.
     if e.file.is_some() {
-        trouble();
+        refused();
         print(
             b"  a file grant needs init to build the caretaker; this shell cannot deliver one yet\n",
         );
@@ -1197,7 +1365,7 @@ fn spawn(e: Endowment) {
     // ungranted `rm` would be the worst possible failure of this model: a program told to destroy
     // something, holding nothing, saying nothing.
     if e.dir.is_some() {
-        trouble();
+        refused();
         print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
         return;
     }
@@ -1207,7 +1375,8 @@ fn spawn(e: Endowment) {
         match untyped_split(e.mem_pages) {
             Some(slot) => Some(slot),
             None => {
-                print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+                failed();
+        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
                 return;
             }
         }
@@ -1358,7 +1527,7 @@ fn outcome(e: Endowment, answer: u64) {
     // is honest about its reach: there is no exit status on this path, so a child that ran and did
     // the wrong thing looks to a sweep exactly like one that succeeded. See notes/glob-grant.md.
     if answer == spawnproto::SPAWN_FAILED {
-        trouble();
+        failed();
     }
     swish::write_outcome(&e, answer, &mut print);
 }
@@ -1583,6 +1752,8 @@ fn run_pipeline(
     // One region for the whole pipeline, so a line costs one SPLIT and one DESTROY however many
     // stages it has. Each joint's endpoint is a page retyped out of it.
     let Some(region) = untyped_split(PIPE_REGION_PAGES) else {
+        failed();
+        failed();
         print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
         return;
     };
@@ -1602,6 +1773,7 @@ fn run_pipeline(
                 minted += 1;
             }
             None => {
+                failed();
                 print(b"  could not mint a pipe from this shell's budget\n");
                 release_pipeline(region, &pipes[..minted]);
                 return;
@@ -1947,6 +2119,7 @@ impl FileOut {
         if self.failed != 0 {
             say(Say::Failed(self.failed));
         } else if self.short {
+            failed();
             print(b"  the filesystem took fewer bytes than were written; that file is short\n");
         }
     }
@@ -2017,7 +2190,8 @@ fn drain_into(f: &mut FileOut) {
     for _ in 0..MAX_FILE_CHUNKS {
         let (w0, w1, w2) = recv(RESULT);
         if w0 == spawnproto::SPAWN_FAILED {
-            print(b"  could not spawn (init is out of memory)\n");
+            failed();
+        print(b"  could not spawn (init is out of memory)\n");
             return;
         }
         let mut buf = [0u8; sink_proto::INLINE_MAX];
@@ -2061,7 +2235,8 @@ fn spawn_stage(
         match untyped_split(e.mem_pages) {
             Some(slot) => Some(slot),
             None => {
-                print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+                failed();
+        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
                 return false;
             }
         }
@@ -2097,6 +2272,7 @@ fn spawn_stage(
     // it a failed spawn would be invisible and the pipeline would wait on a producer that does not
     // exist.
     if wiring.sink && recv(RESULT).0 != spawnproto::SPAWN_OK {
+        failed();
         print(b"  could not spawn (init is out of memory)\n");
         return false;
     }
@@ -2161,11 +2337,13 @@ fn spawn_interruptible(e: Endowment) {
     // Mint the job's resources. RETYPE the shared frame first, then SPLIT the construction budget,
     // so the budget is the top of our watermark and DESTROY returns its pages cleanly (LIFO).
     let Some(job_fr) = retype_frame() else {
+        failed();
         print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
         return;
     };
     let Some(job_ut) = untyped_split(JOB_UNTYPED_PAGES) else {
         cap_delete(job_fr);
+        failed();
         print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
         return;
     };
@@ -2175,6 +2353,7 @@ fn spawn_interruptible(e: Endowment) {
     if !map_frame(job_fr, va) {
         cap_delete(job_fr);
         cap_delete(job_ut);
+        failed();
         print(b"  could not map the job frame\n");
         return;
     }
@@ -2207,6 +2386,7 @@ fn spawn_interruptible(e: Endowment) {
 
     // init acks once the child is running: that is the shell's go-ahead to start watching.
     if recv(RESULT).0 != spawnproto::SPAWN_OK {
+        failed();
         print(b"  could not spawn (init is out of memory)\n");
         cap_delete(job_fr);
         cap_delete(job_ut);
@@ -2275,6 +2455,10 @@ fn watch(va: u64, job_ut: u64) {
 /// Report a job that stopped on its own.
 fn report_finished(status: u64, beats: u64) {
     if status == jobframe::STATUS_INTERRUPTED {
+        // Interrupted is a job that did not finish what it was asked to do, so `&&` must not carry
+        // on past it. It is [`failed`] rather than [`refused`] because it ran: the shell agreed to
+        // it, spawned it, and a person stopped it.
+        failed();
         print(b"  the job caught the interrupt and stopped cleanly after ");
         print_num(beats);
         print(b" work units.\n");
@@ -2289,6 +2473,7 @@ fn report_finished(status: u64, beats: u64) {
 /// untyped the child was built from, so this reclaims its every object. Once the §16 amendment lands
 /// (DESTROY force-kills a live resident thread), this ends even a runaway that ignored the first ^C.
 fn forcible(job_ut: u64) {
+    failed();
     print(b"  ^C again: tearing the job down.\n");
     if reclaim(job_ut) {
         print(b"  the job's process was torn down and its memory reclaimed.\n");
