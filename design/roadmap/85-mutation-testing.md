@@ -2,6 +2,10 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
 
+**Gate: NONE.** One time-boxed run over the host crates, triage of every survivor, a recorded
+baseline, then a weekly workflow. A report rather than a gate, which is what keeps it from blocking
+anything.
+
 The coverage job answers "did this line run under a test"; it cannot answer "would any test notice
 if this line were wrong", and the second question is the one a test suite exists for. cargo-mutants
 answers it by mutating the code and re-running the tests, and the survivors, mutations no test

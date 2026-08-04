@@ -3,6 +3,10 @@
 **Status: NOT-STARTED.** Raised 2026-08-01, from a question about MD4 and MD5 that turned out to be
 asking something else.
 
+**Gate: NONE.** Deliberately decoupled from milestone 49's identity model, because a secret is
+keyed by what it authenticates to rather than by who holds it. Persistence, and the secrets-at-rest
+question under it, is named as the real open question rather than as a blocker.
+
 ## The observation that reframes it
 
 **NTLMv2 does not verify a presented secret.** The client never sends the password. The server takes

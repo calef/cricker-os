@@ -2,6 +2,11 @@
 
 **Status: NOT-STARTED.**
 
+**Gate: DECISION, MILESTONE 47.** Phase one is sequenced after 47, because it wants `jobs`
+alongside the other builtins on the same shell surface. Phase two is `Tcb::SUSPEND`/`RESUME`, which
+DECISIONS §24 deferred, so it is a kernel-surface fork for Chris; the block asks for it to be
+designed as one surface with the fault endpoint and for all three of §24's triggers at once.
+
 **In brief.** Shell job control, in two phases split by whether they need a new kernel primitive.
 **Phase one needs none**; phase two is `Tcb::SUSPEND`/`RESUME`, which DECISIONS §24 deferred and whose
 own trigger list names "real job control (`fg`/`bg`, a stopped-process state) in the shell" as trigger

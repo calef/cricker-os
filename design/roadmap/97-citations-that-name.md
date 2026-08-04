@@ -4,6 +4,10 @@
 name, and then measured: **23 sites across the tree cite "milestone 24" when they mean DECISIONS
 §24.**
 
+**Gate: NONE.** The only design work is the name-matching lint's tolerance rule. The other half is
+a 23-site sweep read by content, which the block asks to sequence after any in-flight branch
+touching the four shell files it names.
+
 **What happened, established from history rather than guessed.** DECISIONS §24 is "Interrupting the
 foreground process: two-tier, shell-held, no new kernel surface". Milestone 24 is "A second aarch64
 board: Virtualization.framework". Twenty-three comments across `user/`, `crates/`, `kernel/` and

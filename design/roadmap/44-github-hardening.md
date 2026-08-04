@@ -2,6 +2,11 @@
 
 **Status: PARTIAL.**
 
+**Gate: DECISION.** The committable half is built; what is left is settings only Chris can change,
+private vulnerability reporting and the `main` ruleset with its required checks. See
+design/open-decisions.md, which carries the exact steps and the check names that moved. Signed
+commits are the fifth item and sequence after the ruleset.
+
 **The committable half is built 2026-07-30 (DECISIONS §36); the settings half is written down and
 waiting on an admin (notes/repo-hardening.md).** `SECURITY.md` states the scope at confinement, with
 the distinction that carries the weight: a missing feature on this roadmap is a roadmap item, a

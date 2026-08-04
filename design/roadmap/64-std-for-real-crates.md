@@ -3,6 +3,11 @@
 **Status: NOT-STARTED.** Raised 2026-08-01, from a question with a number behind it: does milestone
 27 mean ordinary Rust programs run here?
 
+**Gate: NONE.** The block's own sequencing is to run the measurement phase first and independently:
+pick the probe crates, build them, and let the failures name the work. The `File::open` resolution
+question is a design fork inside it, to be raised before code and answered jointly with milestone
+47's namespace half rather than twice.
+
 ## What 27 actually delivered, and where it stops
 
 `std` on the native ABI is **BUILT**, and the proof program is real: `println!`, `Vec`, `String`,

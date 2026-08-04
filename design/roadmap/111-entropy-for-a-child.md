@@ -4,6 +4,10 @@
 with no design problem in it". The smallest entry in this sweep, and the block should say so rather
 than dress it up.
 
+**Gate: DECISION.** Whether this is a lane at all: the block recommends folding it into milestone
+65 or milestone 31's phase two rather than running it alone, and what would decide it is whether
+anything typed at the prompt needs entropy before either of those runs. Today nothing does.
+
 **The finding.** Milestone 56 built the entropy service and the grant that reaches it. Nothing at
 the prompt can pass that grant on. The note, under BUGS:
 

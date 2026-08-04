@@ -3,6 +3,11 @@
 **Status: NOT-STARTED**, and deliberately **waiting for a trigger**. Split out of milestone 73 on
 2026-08-03 once it stopped being a rename.
 
+**Gate: MILESTONE 24.** Deliberately waiting for a trigger rather than for a lane: the second
+aarch64 page-table configuration is what names the axis, and the block refuses to guess between a
+granule change and a VA-width change. Milestone 24's Virtualization.framework board is the named
+candidate (Apple Silicon's 16 KiB granule); milestone 88's server shapes could supply it instead.
+
 ## What is wrong, stated precisely
 
 `crates/paging` exports two implementations of one `PageFormat` trait:

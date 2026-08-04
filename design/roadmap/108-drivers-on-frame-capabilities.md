@@ -4,6 +4,10 @@
 migration it deliberately did not do: "This note builds the object and proves it; migrating the
 existing users to it is separate work."
 
+**Gate: NONE.** The `Frame` object and its proof are done and this is the migration the note
+deliberately left. Disk and display first, and the console last as its own argument, because a
+bootstrap that needs a capability service to print cannot report its own failure.
+
 **The finding.** There are two mechanisms for sharing a page between a driver and its client, and
 the older one is still in use everywhere.
 

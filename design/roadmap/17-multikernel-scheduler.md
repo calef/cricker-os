@@ -2,6 +2,10 @@
 
 **Status: OPTIONAL.**
 
+**Gate: MILESTONE 80, MILESTONE 88.** Stated in the block's own sequencing: 88 provides the first
+machine with enough harts for the `smp_throughput` curve to bend, and 80 provides the method,
+because a design that replaces the lock with messages wants its protocol born loom-checked.
+
 **In brief.** Partition the shared thread table and endpoints
 
 **Why it matters.** optional; not on the thesis path

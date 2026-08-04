@@ -51,6 +51,46 @@ whatever `git log` gives it, and a maintainer typing "today" means their own mid
 commit in California is already tomorrow in UTC, which is how milestone 22's row came to read a day
 ahead of the commit that flipped it and looked like a defect. One zone, stated here, and the
 disagreement stops being a puzzle.
+
+**Readiness vocabulary: the `Gate:` line, and why it is not a column here.** The status says where we
+stand; it does not say **what stops a lane from starting**, and that second question was answered in
+conversation until 2026-08-04, which made the person who can see the whole tree the bottleneck for
+every launch. Every milestone that is not `BUILT` now carries a `Gate:` line in its own file, in the
+paragraph directly under its status, and `script/roadmap` fails on a file that does not.
+
+| Token | Means |
+|---|---|
+| `NONE` | A lane could start today. No decision is owed and no dependency is missing. |
+| `DECISION` | Waits on Chris. The prose says which decision, and cites `design/open-decisions.md` where an entry exists. |
+| `HARDWARE` | Waits on a machine: the VisionFive 2 (~2026-08-21), the milestone 87 x86 box, a rented instance, a real PMU. |
+| `MILESTONE <n>` | Waits on work this roadmap already tracks, named by number. |
+
+Four rules make it mechanical rather than decorative. A gate may name **more than one** token
+(`**Gate: MILESTONE 75, HARDWARE.**`), because milestone 74 genuinely waits on both. `NONE` stands
+alone, since it is a claim that nothing stands in the way. Every gate owes **prose after the token**
+saying what and why, which is what stops `DECISION` from becoming a shrug. And a `MILESTONE <n>` gate
+must resolve to a row that is **not `BUILT`**, so the day a milestone lands, every gate still pointing
+at it fails the build rather than quietly going stale; that is the same drift the status check exists
+to catch, one level out.
+
+**It lives in the file, not in this table, on purpose.** A gate is an argument (which fork, whose
+machine, which milestone and why), so it wants the paragraph the block gives it, and the roadmap split
+already argued that a fact kept beside the work does not drift away from it. The index stays the place
+for what is true in one word.
+
+**Reading it.** `script/roadmap --ready` prints only what a lane could pick up now: gate `NONE`, and a
+status of `NOT-STARTED` or `PARTIAL`, because `IN-PROGRESS` has somebody on it and `OPTIONAL` and
+`RECORDED` are deliberately off the work list. The full report (`script/roadmap`, no arguments) groups
+every non-built milestone under its gate, which also answers the other direction: what a milestone
+unblocks when it lands.
+
+**One honest limit, and it is the same shape as the citation checks' blind spot.** The gate says what
+stops the milestone's **headline** deliverable, and several milestones have a startable piece behind a
+gated headline: milestone 88's stage 1 boots UEFI locally with no cloud account, and milestone 102's
+overflow-bit fix needs no decision. Where that is true the prose says so, and no gate can check that
+the prose is right.
+
+**The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status.
 It sits last on purpose: `script/roadmap`'s row parser anchors on the first three columns, so a column
 appended at the end cannot break it, where one inserted in the middle would. A milestone that landed in
 phases carries the date of the **last** phase, because that is when it became `BUILT` rather than
@@ -186,7 +226,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 83 | BUILT | [A mechanical rule-1 lint](83-rule-1-lint.md) | CLAUDE.md's first rule (architecture-specific code lives under `arch/`) is enforced by nothing, and one violation exists today: `user/tests.rs` reads `SPSel` by raw `asm!`. `script/lint` learns the grep; the violation moves | | 2026-08-03 |
 | 84 | BUILT | [Stack high-water: measure kernel stack depth](84-stack-high-water.md) | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes | | 2026-08-03 |
 | 85 | NOT-STARTED | [Mutation testing over the host crates](85-mutation-testing.md) | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate | |
-| 86 | NOT-STARTED | [`time`: the shell times a command](86-time-command.md) | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning | |
+| 86 | BUILT | [`time`: the shell times a command](86-time-command.md) | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question was whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and what shipped | 2026-08-04 |
 | 87 | NOT-STARTED | [The x86_64 bare-metal machine](87-x86-machine.md) | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats | |
 | 88 | NOT-STARTED | [cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU](88-rented-silicon.md) | "Here is the image, rerun it on your own free account" is a credibility claim no desk machine can make, at $0 recurring. OCI's A1 VMs are KVM with virtio, which this tree already drives; the PMU stage stays Graviton `.metal` by the hour, unblocking milestone 25's deferred `sel4bench`. Costs a UEFI boot path and an ACPI front door, both shared with optional milestone 24 | |
 | 89 | NOT-STARTED | [Scaleway EM-RV1: a second RISC-V implementation, rented](89-scaleway-em-rv1.md) | Real riscv64 silicon (T-Head TH1520, C910 cores) at EUR 0.042/hour, the vendor-quirk cousin of the cpu matrix's `thead-c906` model. A second implementation's answers to the questions QEMU cannot vary (the `satp.ASID` probe above all), independent of the VisionFive 2's arrival. Whether a custom kernel can boot there at all is the first fact to establish | |

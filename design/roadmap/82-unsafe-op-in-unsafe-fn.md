@@ -2,6 +2,9 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
 
+**Gate: NONE.** A bounded burn-down of 33 `unsafe fn`s: the fixes are the milestone and the
+one-line `[workspace.lints.rust]` addition lands last.
+
 An `unsafe fn` body is one implicit unsafe block, so a function with three distinct unsafe
 operations carries three distinct invariants under a single signature, and milestone 68's
 `undocumented_unsafe_blocks` lint cannot see any of them: it fires on blocks, and there are no
