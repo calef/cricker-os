@@ -273,7 +273,10 @@ mod tests {
             assert!(grant_allows(g, p), "port {p} inside the range was refused");
         }
         assert!(!grant_allows(g, 7781), "one above the range was allowed");
-        assert!(!grant_allows(g, 80), "a well-known port outside was allowed");
+        assert!(
+            !grant_allows(g, 80),
+            "a well-known port outside was allowed"
+        );
 
         // A single-port grant is the common case (one server, one port) and the tightest one.
         let one = listen_grant(80, 80);
@@ -306,7 +309,12 @@ mod tests {
     /// pack it wrong.
     #[test]
     fn a_grant_survives_the_word_it_is_spawned_with() {
-        for (lo, hi) in [(1u16, 65535u16), (49152, 65535), (65535, 65535), (7778, 7778)] {
+        for (lo, hi) in [
+            (1u16, 65535u16),
+            (49152, 65535),
+            (65535, 65535),
+            (7778, 7778),
+        ] {
             let g = listen_grant(lo, hi);
             assert!(grant_allows(g, lo), "the low end was lost for {lo}..={hi}");
             assert!(grant_allows(g, hi), "the high end was lost for {lo}..={hi}");

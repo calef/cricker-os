@@ -120,6 +120,15 @@ const NET_TEST_TCP_REOPEN: u64 = 3;
 #[cfg(target_arch = "aarch64")]
 const NET_TEST_UDP_TFTP: u64 = 4;
 #[cfg(target_arch = "aarch64")]
+const NET_TEST_TCP_ACCEPT: u64 = 5;
+#[cfg(target_arch = "aarch64")]
+const NET_TEST_TCP_LISTEN_GRANT: u64 = 6;
+/// The one port the inbound tests are granted (milestone 107). The runners forward a host port to
+/// exactly this one, and the client asks for 8080 as well to prove the grant refuses. Named here
+/// because the *spawn service* is what grants it, which is the point.
+#[cfg(target_arch = "aarch64")]
+const NET_LISTEN_PORT: u16 = 7778;
+#[cfg(target_arch = "aarch64")]
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
@@ -1209,8 +1218,12 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_TFTP,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1229,8 +1242,12 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_TFTP,
+        true,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -1255,8 +1272,12 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_DNS,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1286,8 +1307,12 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ECHO,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1306,8 +1331,12 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ECHO,
+        true,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -1330,9 +1359,12 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_reopened_socket_id_connects_again_over_tcp() {
-    let Some(report) =
-        virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_REOPEN,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1341,6 +1373,74 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
         verdict, NET_CLIENT_OK,
         "reopening a socket id and connecting again failed (client code {verdict:#x}): the \
          ephemeral local port is not independent of the socket id",
+    );
+}
+
+/// **The guest is connected TO** (milestone 107). Every network exchange this project had proved
+/// was outbound: the TCP gate connects to a slirp `guestfwd` peer, the UDP gate is a request, the
+/// DHCP bring-up is a client. cricker-os could reach the network and could not be reached.
+///
+/// Here a **host process** opens a TCP connection to a port QEMU forwards into the guest
+/// (`hostfwd`, the mirror of the `guestfwd` the outbound gate uses), sends a payload, and reads
+/// back an answer the guest *composed*. The guest holds only a `Stack` endpoint and a shared frame,
+/// listens on the one port its spawn granted, accepts, reads, answers, and does the whole thing
+/// again on the same listener, which is what proves the listener re-arms rather than serving one
+/// connection and going deaf. The host side is xtask's inbound prober, running beside the suite the
+/// way the scanout referee does.
+///
+/// The client reports OK only if both connections completed with the exact bytes, so a stage code
+/// here names which round and which step.
+// RISC-V twin: `riscv_virtio_tests::a_host_process_connects_to_the_guest_and_is_answered`.
+#[cfg(target_arch = "aarch64")]
+#[test_case]
+fn a_host_process_connects_to_the_guest_and_is_answered() {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ACCEPT,
+        false,
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+    let verdict = sched::ipc_recv(report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the guest did not serve an inbound connection (client code {verdict:#x}). A code of \
+         0xE060 or 0xE070 means nobody ever connected, which is the host side: is the runner \
+         adding a hostfwd (CRICKER_HOSTFWD_PORT) and is xtask's inbound prober running beside \
+         this suite?",
+    );
+}
+
+/// **A listening port is granted, not taken** (milestone 107). The design question underneath
+/// `LISTEN` is who decides which port a program may bind, and the answer here is not POSIX's: a
+/// port is an exclusive name in a shared namespace, so it is authority, and the *spawn service*
+/// hands a net server the range its clients may use. This one is granted exactly 7778.
+///
+/// The client asks for 8080 and must be refused **as a matter of authority** (a distinct reply from
+/// "in use", because the two call for opposite responses), then binds 7778, then proves the port is
+/// exclusive by asking for it a second time on another socket id. It attaches no shared frame at
+/// all, which is the contract's other claim made visible: a listener carries no bytes, so there is
+/// nothing for it to be granted.
+// RISC-V twin: `riscv_virtio_tests::a_listen_port_is_granted_rather_than_taken`.
+#[cfg(target_arch = "aarch64")]
+#[test_case]
+fn a_listen_port_is_granted_rather_than_taken() {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_LISTEN_GRANT,
+        false,
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+    let verdict = sched::ipc_recv(report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the listen grant did not hold (client code {verdict:#x}); 0xE080 means a port outside \
+         the grant was bound anyway",
     );
 }
 

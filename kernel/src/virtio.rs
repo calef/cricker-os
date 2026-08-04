@@ -492,7 +492,19 @@ struct Device {
 /// because re-driving a live device breaks the first driver. That is a lifetime decision about a
 /// kernel object, which DECISIONS §16 says is a design fork rather than a task, so a lane that was
 /// asked to partition a disk should not settle it in passing. Seventh receipt.
-const MAX_DEVICES: usize = 31;
+///
+/// **33 for milestone 107's inbound half**, whose two gates each spawn a `net_stack` over the mmio
+/// NIC: one for the guest being connected to, one for the listen grant. Eighth receipt, and the
+/// count is now 33 because 31 was **exactly** the ceiling this boot was already at, which is the
+/// clearest evidence yet that the number tracks "how many devices has this boot ever wired" and not
+/// "how many exist": there are five virtio devices on the aarch64 machine.
+///
+/// This lane did consider spending one slot instead of two, by folding the grant checks into the
+/// accept exchange, and refused: the two prove different claims (that a host can reach the guest,
+/// and that a port is authority), and a failure in one should not be reported under the other's
+/// name. Merging tests to fit a table is the table deciding what gets proved. The fix remains the
+/// unregister-on-death that six of these eight notes have now asked for.
+const MAX_DEVICES: usize = 33;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

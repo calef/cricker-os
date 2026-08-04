@@ -166,9 +166,26 @@ TFTPDIR="$(dirname "$0")/../target/tftp"
 mkdir -p "$TFTPDIR"
 printf 'cricker-tftp!' > "$TFTPDIR/cricker"
 
+# hostfwd is guestfwd's mirror and the inbound gate's whole mechanism (milestone 107): QEMU listens
+# on a HOST port and forwards connections to the guest's 10.0.2.15:7778, so a host process can
+# connect INTO the guest. Everything this project had proved over the network was the guest as a
+# client; this is the other direction.
+#
+# Only on the mmio NIC, and only when CRICKER_HOSTFWD_PORT names a port. Both restrictions are
+# deliberate. This is the one QEMU flag here that **binds a port on the developer's machine**, so it
+# does not belong on a plain `cargo xtask run` or on the benchmark boot, both of which share this
+# runner; and the port is chosen by xtask (a free one, asked of the OS) rather than fixed here,
+# because two lanes running the suite at once on one machine would otherwise collide and the loser
+# would fail to start QEMU at all. The guest address is spelled out rather than defaulted so the
+# line says which guest it means.
+HOSTFWD=""
+if [ -n "$CRICKER_HOSTFWD_PORT" ]; then
+    HOSTFWD=",hostfwd=tcp:127.0.0.1:$CRICKER_HOSTFWD_PORT-10.0.2.15:7778"
+fi
+
 NET=""
 if [ -n "$CRICKER_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # Attach a virtio-gpu when CRICKER_GPU is set (milestone 29, the display ladder's rung one).
