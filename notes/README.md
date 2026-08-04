@@ -393,6 +393,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   then failed to rediscover it in ten minutes. The CI budget and why fuzzing cannot be a gate anyone
   waits on, the corpus discipline (seeds committed, working corpus not, crashes become host tests),
   and a BUGS section that says what a green run does not mean.
+- [Miri over the host crates](miri.md): milestone 79, the third leg of the analysis surface. What
+  Miri checks that Kani, the fuzzers, and clippy cannot (aliasing, provenance, uninitialized reads,
+  leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
+  clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
+  sampled paths, never the exhaustive claims. Run by `script/miri`, weekly in CI plus on demand.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
