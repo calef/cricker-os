@@ -18,7 +18,7 @@ leaves the work here.
 **What this milestone is.** A way for a holder to give up a mapping it made: an unmap method on
 the address-space object, symmetric with the map that created the window. That is a syscall
 surface addition, so it is **a design fork for Chris before it is a task** (CLAUDE.md: a new
-method is fine within the model, but its semantics are recorded in `DECISIONS.md`, and a brand-new
+method is fine within the model, but its semantics are recorded in `design/decisions/`, and a brand-new
 syscall number is a fork). The questions the fork has to answer: whether unmap is a method on the
 address space or on the frame capability; what it does to a mapping some other holder also has
 (§13 already decides revoke's answer, and this must not contradict it); and whether unmapping is

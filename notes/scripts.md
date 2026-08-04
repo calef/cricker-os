@@ -13,7 +13,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/bootstrap` | Install every dependency: the pinned Rust toolchain (via rustup, from `rust-toolchain.toml`) and QEMU. Idempotent: it checks first and installs only what is missing. |
 | `script/setup` | First run after a clone: `bootstrap`, then build. |
 | `script/update` | After pulling new code: `bootstrap` (the pinned toolchain can change), then rebuild. |
-| `script/decisions` | Index DECISIONS.md; `--check` enforces unique section numbers and that every `§N` cited anywhere in the tree resolves. Gated in `script/lint`. |
+| `script/decisions` | Index `design/decisions/`; `--check` enforces the numbering, the status vocabulary, that each decision's Status line agrees with its index row, and that every `§N` cited anywhere in the tree resolves. Gated in `script/lint`. |
 | `script/test` | Host-logic crates, then the kernel under QEMU on **both** ISAs. The gate. |
 | `script/verify` | The machine-checked proofs (Kani) over the pure-logic crates. Not in `bootstrap`: Kani pulls its own toolchain and a CBMC backend, so it is installed only where it is used. |
 | `script/bench` | icount microbenchmarks; `--check` fails on >10% drift from `bench/baseline-aarch64.txt`, `--save` rewrites it, `--real` runs under HVF for magnitudes. |

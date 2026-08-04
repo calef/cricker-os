@@ -1,5 +1,5 @@
 # Spell checking for the prose (milestone 68). The documentation is a deliverable here, not a
-# by-product, so a typo in DECISIONS.md or a note is a defect in the thing being shipped.
+# by-product, so a typo in a decision or a note is a defect in the thing being shipped.
 #
 # The honest result of turning it on, because it argues against overselling this gate: of 213
 # findings outside vendor/, exactly ONE was a real misspelling (`livecycle` for `lifecycle`, in a

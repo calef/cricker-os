@@ -38,7 +38,7 @@ memory-mapped I/O on ARM or behind x86's separate port-I/O instruction space. On
 radically different buses.
 
 That second one is our "a driver never reaches into a kernel global" rule
-([DECISIONS.md](../DECISIONS.md) §4), generalized and taken seriously. Remember it when we
+([DECISIONS](../design/decisions/04-kernel-shape.md) §4), generalized and taken seriously. Remember it when we
 write the UART driver.
 
 ## The thing that cannot be abstracted: the memory model

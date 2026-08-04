@@ -11,7 +11,7 @@ shown raw, searchable on the local machine, and installed *by the package that o
 component brings its documentation with it.
 
 **Why this belongs on a demonstrator's roadmap rather than being a nicety.** The project's own
-argument is written in markdown: `DECISIONS.md`, thirty-plus notes, this roadmap. A cricker-os that
+argument is written in markdown: `design/decisions/`, thirty-plus notes, this roadmap. A cricker-os that
 serves its own design notes, on itself, through a capability-confined viewer, is a better
 demonstration of milestone 23's component story than another synthetic test, and it costs the
 documentation nothing because it already exists. It is also the first *application* on the display

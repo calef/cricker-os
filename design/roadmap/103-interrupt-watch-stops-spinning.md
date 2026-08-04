@@ -10,7 +10,7 @@ line.
 through and marked DONE when they landed. Item 1, `^C`, was never struck, and it still reads
 "(§24 decided, not built) ... Ready to schedule". The evidence that it shipped is not subtle:
 
-- `DECISIONS.md` §24 carries a section headed **"Implementation amendment (built): two primitives
+- `DECISIONS` §24 carries a section headed **"Implementation amendment (built): two primitives
   forced the shape"**, describing both tiers as running on both ISAs.
 - `crates/line_editor` implements `OP_INTRCOUNT`; `crates/grant_plan` holds `jobframe` (the per-job
   shared interrupt frame) and `Escalation` (the host-tested escalation policy); `interruptible` is a

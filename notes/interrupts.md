@@ -4,7 +4,7 @@ Milestone 5. The kernel is now **preemptible**: a timer interrupt can land betwe
 instructions.
 
 Which means every piece of the locking discipline we wrote in
-[DECISIONS.md](../DECISIONS.md) §9 stops being a hypothesis.
+[DECISIONS](../design/decisions/09-irq-safe-locking.md) §9 stops being a hypothesis.
 
 ## The GIC: the multiplexer in front of the CPU
 

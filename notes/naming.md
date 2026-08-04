@@ -3,7 +3,7 @@
 What the tree's names mean, which conventions are rules, and which of those a machine checks.
 
 Written at milestone 46, alongside the rename that made four of the names honest. The headline rule
-and its argument are [DECISIONS §39](../DECISIONS.md); this note is the working reference and covers
+and its argument are [DECISIONS §39](../design/decisions/39-component-names.md); this note is the working reference and covers
 the parts §39 does not: crates, scripts, where a document goes, and the two numbering schemes that
 look alike and are not.
 

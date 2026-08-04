@@ -195,7 +195,7 @@ bootloader.
 ## The parser is a HOST crate, and that is the whole trick
 
 `crates/elf` is pure logic and compiles for the laptop, so its tests run in **milliseconds with
-no emulator** ([DECISIONS §7](../DECISIONS.md)).
+no emulator** ([DECISIONS §7](../design/decisions/07-testing-harness.md)).
 
 Which means **forging a malicious binary is eleven lines**:
 
@@ -279,7 +279,7 @@ constructors, no widening:
 
 ## The program has no syscalls, and says so in the only two words it has
 
-There is no ABI yet ([DECISIONS §10](../DECISIONS.md): the syscall surface gets designed at 7d,
+There is no ABI yet ([DECISIONS §10](../design/decisions/10-capability-microkernel.md): the syscall surface gets designed at 7d,
 against a capability table). So the test binary cannot **tell** the kernel anything.
 
 Instead it **checks its own image** and speaks with:

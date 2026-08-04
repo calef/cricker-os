@@ -64,7 +64,7 @@ what the capability is**, not a filter over a wider one.
 
 ## The rename
 
-`warden` is a synonym we invented for a pattern that has a name. `DECISIONS.md` §31 already cites
+`warden` is a synonym we invented for a pattern that has a name. `DECISIONS` §31 already cites
 the right one, **caretaker** (Mark Miller's term), while the code says warden; §50 settled that
 using the existing name claims "this is that", and inventing a synonym asserts novelty where there
 is none.
@@ -88,7 +88,7 @@ current name distinguishes nothing.
 - **The family noun is `caretaker`.** Settled when Chris chose `wait_for_caretaker` over
   `await_warden`: a helper cannot be named for a pattern its callees are not. §50's rule is the
   reason (use the name the literature already has; a synonym asserts novelty where there is none),
-  and `DECISIONS.md` §31 has cited Miller's term correctly since milestone 31 while the code said
+  and `DECISIONS` §31 has cited Miller's term correctly since milestone 31 while the code said
   warden.
 - **The `await_*` helpers become `wait_for_*`.** `await` reads as async/await, which this project
   rejected at a design fork, and there is no async here. Four of them travel together
