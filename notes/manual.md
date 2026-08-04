@@ -121,16 +121,19 @@ for free.
 
 | bundle | pages | terms | postings | markdown | index | probes |
 |---|---|---|---|---|---|---|
-| `manual` | 1 | 3 | 3 | 26 | 16384 | 2 |
+| `manual` | 1 | 690 | 690 | 12541 | 36864 | 4 |
 | `swish` | 2 | 1596 | 1900 | 73187 | 69632 | 5 |
 | `kernel` | 2 | 958 | 1137 | 20764 | 49152 | 4 |
 | `glob` | 1 | 845 | 845 | 19712 | 40960 | 4 |
 
-**113,689 bytes of markdown produce 176,128 bytes of index**, which is 1.55x, and that is the number
+**126,204 bytes of markdown produce 196,608 bytes of index**, which is 1.56x, and that is the number
 worth arguing with rather than the pleasant ones. Two things pay for it. A term record stores its
 term **inline** in 24 bytes so a probe is one page read rather than two, which is most of the bulk.
-And page alignment puts a four-page floor (16 KiB) under every bundle however small, which is why
-the one-page `manual` bundle costs 16 KiB to index 26 bytes.
+And page alignment puts a four-page floor (16 KiB) under every bundle however small, so a bundle of
+one short page still costs 16 KiB to index.
+
+The `manual` row indexes **this page**, so editing it moves its own numbers. Rerun
+`cargo xtask manual` for current ones; the ratio is what is stable.
 
 The number that justifies the layout is the last column: **a lookup is at most five page reads**,
 20 KiB of IO, with no allocation and a 4 KiB working set.
