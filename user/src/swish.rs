@@ -20,9 +20,16 @@
 //! one literal tells you a process's whole authority" interactively true.
 //!
 //! **The clock is the one authority in a preview that no token designates** (milestone 51's wiring).
-//! `date` declares it in its manifest and *init* endows it, read-only; this shell holds no clock and
-//! could not hand one over. `caps date` prints it anyway, because a preview that showed only what the
-//! line designates would be off by exactly one capability.
+//! `date` declares it in its manifest and *init* endows it, read-only; `caps date` prints it anyway,
+//! because a preview that showed only what the line designates would be off by exactly one
+//! capability.
+//!
+//! **Since milestone 86 this shell holds a clock of its own**, at the slot init names in `x2`, and it
+//! is `READ` **without** `GRANT`. That one bit is the whole design of `time <command>`: the shell can
+//! read the wall clock to measure a command, and it cannot hand a clock to anything it spawns, so the
+//! set of processes that can read the time is still decided by the manifests init reads (DECISIONS
+//! §43). Timing is something an observer does with its own authority; the thing being timed needs
+//! nothing and is not told. See notes/time-command.md.
 //!
 //! # The grammar lost two words in milestone 47
 //!
@@ -43,10 +50,16 @@
 //!
 //! and two pages shared with the terminal: `OUT_VA` (we write text and prompts) and `LINE_VA`
 //! (completed lines arrive). No role selector; the syscall runtime comes from `user_rt`.
+//!
+//! Two more slots are **wiring-dependent** and their numbers are therefore not constants here: the
+//! directory ([`DIR_TERMINAL`], slot 4, when this boot has a filesystem) and the clock page, whose
+//! slot arrives in `x2` because it sits after the filesystem pair and a boot with no disk has one
+//! fewer capability under it. See [`CLOCK_SLOT`].
 
 #![no_std]
 #![no_main]
 
+use clock_proto::{ClockPage, state};
 use fs_proto::{dirent, fs};
 use grant_plan::expand::{Expander, NameSet};
 use grant_plan::line::{self, Line, Source};
@@ -55,8 +68,8 @@ use grant_plan::{
     Action, Command, Endowment, Escalation, Refusal, RunSpec, Streams, jobframe, spawnproto,
 };
 use line_editor::proto;
-use swish::{Route, Say};
-use user_rt::{call, cap_delete, exit, invoke, recv, send, yield_now};
+use swish::{Route, Say, Untimed};
+use user_rt::{call, cap_delete, exit, invoke, monotonic_nanos, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
 //
@@ -77,6 +90,54 @@ const BUDGET: u64 = 3; // our own untyped; SPLIT a grant off it for `--mem`
 /// The budget init granted us at boot (must match `system_initializer` / hello `init_boot`'s `SH_BUDGET_PAGES`).
 /// We cannot query how much remains (there is no such syscall), so `caps` prints the initial grant.
 const SH_BUDGET_PAGES: u64 = 128;
+
+// ---- the shell's own clock (milestone 86, notes/time-command.md) ----
+
+/// **Where this shell's read-only clock page is mapped**, in the wiring that granted one. Must match
+/// `system_initializer`'s and hello `init_boot`'s `SH_CLOCK_VA`, and `pipeline_service`'s.
+///
+/// Not [`OUT_VA`]'s `0x00c0_0000`, which is where a *child* maps its clock (`date`'s `CLOCK_VA`) and
+/// where this shell already maps the terminal's output frame. Two programs in different address
+/// spaces may share an address; one program may not.
+const SH_CLOCK_VA: u64 = 0x0000_0000_00d0_0000;
+
+/// **The slot holding the clock page**, or [`NO_CLOCK`] when this wiring granted none. Told to us in
+/// `x2` at [`_start`] rather than fixed, because the clock is granted after the filesystem pair and a
+/// boot with no disk attached has one fewer capability under it.
+///
+/// Being *told* is the same shape as `arg1` carrying the directory's rights, and for the same reason
+/// recorded there: nothing in this system reports what a process holds, so a shell that guessed would
+/// be guessing about its own cspace. A wrong guess here is worse than the directory's, because
+/// probing the wrong slot would find some *other* object and map a page that is not a clock.
+static CLOCK_SLOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(NO_CLOCK);
+
+/// The `x2` value meaning "this shell was granted no clock". Zero rather than a sentinel, because
+/// slot 0 is the terminal in every wiring, so no clock can ever legitimately be there.
+const NO_CLOCK: u64 = 0;
+
+/// The clock page this shell reads to time a command, or `None` when it holds none.
+///
+/// **The presence check cannot read the page**, which is `date`'s finding and applies unchanged: a
+/// process granted no clock has nothing mapped at [`SH_CLOCK_VA`], so a probe that read it would
+/// fault instead of answering. So it invokes the capability with a method number no object type
+/// defines: an empty slot answers `NoSuchSlot`, a real `Frame` answers `BadMethod`, and a refusal
+/// from an object is proof one is there.
+fn clock_page() -> Option<ClockPage> {
+    let slot = CLOCK_SLOT.load(core::sync::atomic::Ordering::Relaxed);
+    if slot == NO_CLOCK {
+        return None;
+    }
+    /// A method number no object type defines, so the invocation can only ever be refused.
+    const NO_SUCH_METHOD: u64 = 0xffff;
+    // SAFETY: a syscall that cannot succeed; the kernel validates the slot before the method.
+    let r = unsafe { invoke(slot, NO_SUCH_METHOD, 0, 0, 0) };
+    if r == abi::Error::NoSuchSlot as i64 {
+        return None;
+    }
+    // SAFETY: the wiring maps the clock page read-only at SH_CLOCK_VA alongside the capability the
+    // probe just found, and nothing unmaps it. Without the capability we never build the pointer.
+    Some(unsafe { ClockPage::new(SH_CLOCK_VA) })
+}
 
 /// **What this shell holds, which is what decides whether a named file can be backed.**
 ///
@@ -564,6 +625,11 @@ const ROLE_PIPELINE: u64 = 3;
 /// interactive boot grants. It types a fixed script through the same [`dispatch`] the prompt uses.
 /// See [`redirecting`].
 const ROLE_REDIRECT: u64 = 4;
+/// **The timing witness** (milestone 86): [`ROLE_PIPELINE`]'s wiring plus, in the wiring that has
+/// one, a clock page at the slot `x2` names. It types a fixed script through the same [`dispatch`]
+/// the prompt uses, and the same script is run three times against three clock states, which is what
+/// makes the refusals assertions rather than unreachable branches. See [`timing`].
+const ROLE_TIMING: u64 = 5;
 
 /// **What `arg1` carries into every role that holds a directory**: the `fs_proto::dir` rights that
 /// capability was granted, with 0 meaning "you were granted no directory at all".
@@ -572,13 +638,20 @@ const ROLE_REDIRECT: u64 = 4;
 /// nothing on that wire reports what a handle carries, and `OPENDIR` refuses a request wider than
 /// the parent instead of narrowing it, so a shell that guessed `dir::ALL` from a narrower capability
 /// could not `cd` at all. See notes/shell-navigation.md.
+///
+/// **`x2` carries the clock slot** (milestone 86), or [`NO_CLOCK`] for a wiring that granted none.
+/// Told for the same reason and a sharper one: the slot moves with what else the boot granted, and a
+/// shell that probed the wrong number would find some other object and map a page that is not a
+/// clock. See [`CLOCK_SLOT`].
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(role: u64, arg: u64, _x2: u64) -> ! {
+pub extern "C" fn _start(role: u64, arg: u64, clock: u64) -> ! {
+    CLOCK_SLOT.store(clock, core::sync::atomic::Ordering::Relaxed);
     match role {
         ROLE_NAVIGATE => navigate(arg),
         ROLE_GLOB => globbing(arg),
         ROLE_PIPELINE => piping(),
         ROLE_REDIRECT => redirecting(arg),
+        ROLE_TIMING => timing(),
         _ => interactive(arg),
     }
 }
@@ -687,12 +760,51 @@ fn redirecting(rights: u64) -> ! {
 /// [`PIPELINE_DONE`]'s twin for [`redirecting`]. Must match `kernel::user::redirection_tests`.
 const REDIRECT_DONE: &[u8] = b"== redirections done\n";
 
+/// **A scripted shell that times what it runs** (milestone 86).
+///
+/// [`piping`]'s wiring plus at most one capability, and that one capability is the whole difference
+/// between a `time` that reports a duration and a `time` that refuses. The same script runs against
+/// three clock states (a published page, a blank page, no page at all), so the refusals are reached
+/// by changing a cspace rather than by a branch anybody wrote for the test.
+///
+/// The lines check each other rather than constants, which is [`redirecting`]'s shape:
+///
+/// - `worker 3` and `time worker 3` are the same command run twice, so the answer has to be the same
+///   both times. That is the "what you time is what you run" claim, made where it can fail.
+/// - `time echo hello` times a **builtin**, which spawns nothing: the duration is real and there is
+///   no process anywhere in it.
+/// - `time` alone names the third refusal, which is about the line and not about a clock.
+fn timing() -> ! {
+    let mut nav = Nav::empty();
+    for line in [
+        // The control: the untimed command, so the timed one below has something to agree with.
+        &b"worker 3"[..],
+        // A timed spawn. `worker` declares no clock and is handed none, which is the whole point of
+        // the milestone: the thing being timed needs no authority to be timed.
+        b"time worker 3",
+        // A timed builtin. No process, no spawn, no grant, and still a duration.
+        b"time echo hello",
+        // And the prefix with nothing after it.
+        b"time",
+    ] {
+        print(b"$ ");
+        print(line);
+        print(b"\n");
+        dispatch(&mut nav, line);
+    }
+    print(TIMING_DONE);
+    exit();
+}
+
+/// [`PIPELINE_DONE`]'s twin for [`timing`]. Must match `kernel::user::time_tests`.
+const TIMING_DONE: &[u8] = b"== timings done\n";
+
 /// The interactive prompt. `rights` is the [`_start`] convention: the `fs_proto::dir` rights of the
 /// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
 fn interactive(rights: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
-    print(b"commands: help, echo <text>, caps [command], cd, pwd, ls, mkdir, rm, wc,\n");
-    print(b"          <prog> [--mem N] [arg]   and the operators  >  >>  <  |\n");
+    print(b"commands: help, echo <text>, caps [command], time <command>, cd, pwd, ls,\n");
+    print(b"          mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
 
     // Whether the navigation builtins and the redirection operators have anything to name is
     // decided here, by one capability. A boot that wired no FS service starts this program with
@@ -751,10 +863,73 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
 fn dispatch(nav: &mut Nav, cmd: &[u8]) {
     match swish::route(cmd) {
         Route::Caps(tail) => caps(nav, tail),
+        Route::Time(tail) => time_command(nav, tail),
         Route::One(stage) => dispatch_one(nav, stage),
         Route::Pipeline(l) => pipeline(nav, l),
         Route::Cannot(r) => say(Say::Cannot(r)),
     }
+}
+
+/// **Run a command and say how long it took** (milestone 86, notes/time-command.md).
+///
+/// The tail goes back through [`dispatch`], which is the function the prompt calls, so `time` adds no
+/// second way to run anything: a pipeline is timed as a pipeline, a builtin as a builtin, and a
+/// refusal is refused exactly as it would have been. That is what makes "what you time is what you
+/// run" a property of this code rather than a claim about it.
+///
+/// **The clock is this shell's, and the command is told nothing.** `time wc report.txt` times a
+/// program whose whole endowment is one endpoint and no clock at all, which is the Unix behaviour and
+/// the capability-model answer at the same time: a duration is observable to anyone who can watch a
+/// thing start and stop, so measuring it needs the observer's authority and not the subject's.
+/// Delegating a clock to the child instead would change what the child can do, and that is a
+/// different tool.
+///
+/// # What the number is, and what it is not
+///
+/// Wall clock, between this shell deciding to run the line and the line being over. Not CPU time:
+/// nothing in this kernel is asked what a thread spent, so there is no `user` or `sys` row to print
+/// and inventing one would be worse than the gap. If that arrives it is another row here.
+///
+/// The two readings are taken **around** the dispatch and nothing else is between them, so what is
+/// measured includes this shell's own planning, spawning and draining. For a spawned program that is
+/// the honest number: the shell is the thing that started it and the thing that noticed it finish,
+/// and there is no other vantage point from which the question has an answer.
+fn time_command(nav: &mut Nav, tail: &[u8]) {
+    // Collapse a nested prefix rather than recursing through [`dispatch`]. `time time date` is a line
+    // a person can type, and each level of recursion here costs a `dispatch` frame on a stack that
+    // has run out four times already (notes/pipes.md). Timing something twice measures nothing twice.
+    let mut tail = grant_plan::trim(tail);
+    while let Command::Time(inner) = grant_plan::parse(tail) {
+        tail = grant_plan::trim(inner);
+    }
+    if tail.is_empty() {
+        return swish::write_untimed(Untimed::NothingToTime, &mut print);
+    }
+    // **The refusals come before the command runs**, because `time` is a request to measure and
+    // running the line unmeasured would be the silent degradation DECISIONS §42 forbids, one axis
+    // over. The two sentences are `date`'s: the same two causes, and the same two fixes.
+    let Some(page) = clock_page() else {
+        return swish::write_untimed(Untimed::NoClock, &mut print);
+    };
+    let before = page.read();
+    if !state::known(before.state) {
+        return swish::write_untimed(Untimed::UnknownClock, &mut print);
+    }
+    let start = clock_proto::wall_nanos(before.offset_nanos, monotonic_nanos());
+
+    dispatch(nav, tail);
+
+    let after = page.read();
+    let end = clock_proto::wall_nanos(after.offset_nanos, monotonic_nanos());
+    // **Saturating, and the generation is why.** A wall clock can be *stepped* while a command runs,
+    // by an authority this shell does not hold, and a backwards step would make the subtraction wrap
+    // to something enormous. The generation counts publishes, so the shell can see that it happened
+    // and say so rather than print a number it cannot stand behind.
+    swish::write_timing(
+        end.saturating_sub(start),
+        after.generation != before.generation,
+        &mut print,
+    );
 }
 
 /// Parse one line with `grant_plan` and act on it. All parsing and the manifest check are the host-tested
@@ -781,11 +956,12 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
             Say::Nothing => print(b"\n"),
             said => say(said),
         },
-        // Unreachable through [`dispatch`], which answers `caps` before it splits the line so the
-        // preview can see the operators. Kept so this function is complete on its own: it is the
-        // whole of "what one command means", and a reader should not have to know about the
+        // Unreachable through [`dispatch`], which answers the two prefix words before it splits the
+        // line so they can see the operators. Kept so this function is complete on its own: it is
+        // the whole of "what one command means", and a reader should not have to know about the
         // interception to find every arm.
         Command::Caps(tail) => caps(nav, tail),
+        Command::Time(tail) => time_command(nav, tail),
         Command::Pwd => print_pwd(nav),
         Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
@@ -1048,10 +1224,18 @@ fn outcome(e: Endowment, answer: u64) {
 /// read a pattern needs and the terminal to print to.
 fn caps(nav: &mut Nav, tail: &[u8]) {
     let holdings = holdings(nav);
+    // The clock row is a *slot number*, and it comes from what this shell was told rather than from
+    // a constant, for [`CLOCK_SLOT`]'s reason: printing a number this shell did not get would make
+    // the one table that claims to be a complete reading into a story.
+    let clock = match CLOCK_SLOT.load(core::sync::atomic::Ordering::Relaxed) {
+        NO_CLOCK => None,
+        slot => Some(slot),
+    };
     swish::write_caps(
         tail,
         SH_BUDGET_PAGES,
         holdings,
+        clock,
         &mut |token| nav.expand(token),
         &mut print,
     );

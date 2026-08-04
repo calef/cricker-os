@@ -135,12 +135,17 @@ Named here rather than in a tracker, next to the feature.
   register selectors are not reachable from there: `ArgSpec` is `Required`/`Forbidden` with no
   position or arity, and growing it is deferred until a program wants both an argument and a file.
   See notes/program-manifest.md.
-- **The clock is init's to endow, and the shell still holds none.** The interactive boot starts the
+- **The clock is init's to endow, and the shell cannot hand one on.** The interactive boot starts the
   clock service and hands *init* the page read-only, so `date` at the prompt prints a real time; but
   the grant comes from `Prog::Date`'s manifest rather than from the command line, because there is no
   token a person could type that designates a clock. `caps date` prints the row anyway (a preview
   showing only what the line designates would be off by one capability), and that is the honest shape
-  rather than a gap: a shell that held the page could hand it to anything it spawns.
+  rather than a gap.
+
+  Since milestone 86 the shell holds a clock **of its own**, which it reads to time a command, and it
+  holds it with `READ` and no `GRANT`. So the sentence that matters is unchanged: the shell cannot
+  put a clock in a child's hands, and which processes can read the time is still decided by manifests
+  init reads. See notes/time-command.md.
 - **The clock service is parked in its startup announcement for the whole interactive boot.** It
   publishes the RTC reading and *then* announces, with a blocking send, so the page is right before
   anybody could read it; the boot spawns one thread whose only job is to take that message, which

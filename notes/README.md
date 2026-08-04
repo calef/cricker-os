@@ -283,6 +283,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   unknown clock is a sentence rather than a panic or a 1970; why the "have I got a clock" probe must
   not touch the page; and the guest test that closes DECISIONS §43's "the unknown-clock path is not
   proven in the guest", because a frame nobody published to *is* that machine.
+- [`time`](time-command.md): milestone 86: the shell's second prefix word, and the one design
+  question it had. The clock is **the shell's**, so a command that holds no clock at all is timed
+  anyway, which is the Unix behaviour and the capability-model answer at once: a duration is
+  observable to whoever can watch a thing start and stop, and delegating a clock to the child would
+  have changed what the child can do. The shell holds the page `READ` without `GRANT`, so it can
+  measure and cannot pass a clock on. Also what the number is not (CPU time, a benchmark, a promise
+  the clock stood still), the stepped-clock line that reads the page's generation to say so, the two
+  refusals borrowed from `date`, and an honest `BUGS` entry recording that a duration could have been
+  computed from the ambient counter with no capability at all.
 - [Entropy](entropy.md): milestone 56's first half: `std::random` stops being splitmix64 seeded
   from boot-relative time. One process holds a virtio-rng device; everything else holds an endpoint
   that means "you may obtain randomness" and names no device, which is the fourth appearance of

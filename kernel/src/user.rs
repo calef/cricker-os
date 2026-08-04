@@ -2106,6 +2106,22 @@ mod pipeline_tests;
 #[cfg(test)]
 mod redirection_tests;
 
+/// **`time <command>` at a real prompt** (milestone 86, notes/time-command.md).
+///
+/// [`pipeline_tests`]'s shell with at most one more capability: a read-only clock page. The claim
+/// under test is that **the timed command needs no authority to be timed**, so the timing is the
+/// shell's own reading and the child is spawned with exactly the endowment its command line names.
+///
+/// The three clock states are three cspaces rather than three branches, which is the shape
+/// [`redirection_tests`] uses for the directory: a published page, a page nobody published to, and
+/// no capability at all. Two of those refusals are `date`'s sentences one milestone later, and the
+/// only reason they are reachable is that the wiring changed.
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+#[cfg(test)]
+mod time_tests;
+
 /// **The sink contract, and the one behaviour it changed** (milestone 50, notes/sink-protocol.md).
 ///
 /// Two claims, one per test, and they need each other. The first is that a program cannot tell what

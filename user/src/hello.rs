@@ -403,6 +403,10 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     /// Where a child that declares a clock maps it, read-only. Must match `user/src/date.rs`'s
     /// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
     const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
+    /// Where the **shell** maps its own read-only clock (milestone 86). Must match swish.rs's
+    /// `SH_CLOCK_VA`. A different address from `CHILD_CLOCK_VA` because the shell already maps the
+    /// terminal's output frame there; two address spaces may agree on an address, one may not.
+    const SH_CLOCK_VA: u64 = 0x00d0_0000;
     /// Where the shell maps the page it shares with the FS server (swish.rs `FS_VA`).
     const SH_FS_VA: u64 = 0x0060_0000;
     // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
@@ -571,32 +575,54 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // (milestone 50, notes/pipes.md): the shell resolves a redirection against it and writes the
     // file itself. Narrowed to WRITE, which on an endpoint is the right to CALL; the shell can no
     // more delegate it than any other program can delegate what it was not given GRANT on.
-    let all_sh_caps: [(u64, u64); 5] = [
+    //
+    // **And a read-only clock last** (milestone 86), which is what `time <command>` measures with.
+    // `READ` and no `GRANT`, deliberately: the shell can read the wall clock and cannot hand one to
+    // anything it spawns, so which processes can read the time is still decided by the manifests
+    // this init reads (DECISIONS §43) rather than by anything typed at a prompt. A clock the shell
+    // could delegate would widen that set by every child it starts.
+    //
+    // Last, so a boot with no filesystem takes exactly the path it took before this existed. Its
+    // slot therefore moves (4 without a disk, 5 with one), which is why the shell is *told* the
+    // number in `x2` instead of assuming one; see swish.rs's `CLOCK_SLOT`.
+    let all_sh_caps: [(u64, u64); 6] = [
         (term_ep, abi::rights::WRITE),
         (spawn_ep, abi::rights::WRITE),
         (result_ep, abi::rights::READ),
         (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
         (FS_EP, abi::rights::WRITE),
+        (CLOCK_PAGE, abi::rights::READ),
     ];
-    let all_sh_maps: [(u64, u64, u64); 3] = [
+    let all_sh_maps: [(u64, u64, u64); 4] = [
         (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
         (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
         (SH_FS_VA, FS_PAGE, abi::aspace::MAP_RW),   // and its half of the FS contract
+        (SH_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO), // and the clock it times with
     ];
     let with_fs = fs_rights != 0;
-    let sh_caps: &[(u64, u64)] = if with_fs {
-        &all_sh_caps
-    } else {
-        &all_sh_caps[..4]
-    };
-    let sh_maps: &[(u64, u64, u64)] = if with_fs {
-        &all_sh_maps
-    } else {
-        &all_sh_maps[..2]
-    };
+    // A boot with no disk gets the same list with the FS pair taken out of the middle, which is a
+    // second array rather than a slice: the clock has to be granted either way, and "the last entry
+    // stays" is not something a range can say.
+    let no_fs_caps: [(u64, u64); 5] = [
+        all_sh_caps[0],
+        all_sh_caps[1],
+        all_sh_caps[2],
+        all_sh_caps[3],
+        all_sh_caps[5],
+    ];
+    let no_fs_maps: [(u64, u64, u64); 3] = [all_sh_maps[0], all_sh_maps[1], all_sh_maps[3]];
+    // Which slot the clock landed in, for the shell's `x2`. It is the count of what went before it,
+    // which is the same arithmetic `build_child` does when it fills the cspace from zero.
+    let sh_clock_slot: u64 = if with_fs { 5 } else { 4 };
     // **Built but not started**, because the drop below is announced through the shell's own output
     // page and a running shell would be printing its banner into the same page.
-    let Ok(shell) = build_child(UNTYPED, UNTYPED, &sh_elf, sh_caps, sh_maps) else {
+    let Ok(shell) = build_child(
+        UNTYPED,
+        UNTYPED,
+        &sh_elf,
+        if with_fs { &all_sh_caps } else { &no_fs_caps },
+        if with_fs { &all_sh_maps } else { &no_fs_maps },
+    ) else {
         halt_forever()
     };
     cap_delete(sh_budget); // our copy; the shell holds its own now
@@ -708,8 +734,10 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     cap_delete(reaper);
 
     // Role 0 (the prompt), and `arg1` is the rights its directory capability carries. A shell told 0
-    // holds no directory and says so at every verb that would need one.
-    check(tcb_start(shell, 0, fs_rights, 0) == 0);
+    // holds no directory and says so at every verb that would need one. `arg2` is the clock slot
+    // (milestone 86), which moves with whether this boot had a disk, so it is told rather than
+    // assumed.
+    check(tcb_start(shell, 0, fs_rights, sh_clock_slot) == 0);
     cap_delete(shell);
 
     // The programs the shell can spawn (milestone 31), parsed once from the archive; every spawn

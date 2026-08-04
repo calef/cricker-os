@@ -19,9 +19,14 @@
 //! ```text
 //! <prog> [-abc] [--mem N] [token ...]
 //! caps [command]
+//! time <command>
 //! help
 //! echo <text>
 //! ```
+//!
+//! `caps` and `time` are **prefix words**: their operand is a whole command line, operators
+//! included, which is why neither is a program (a program takes tokens) and why both keep the tail
+//! unsplit for the shell to act on.
 //!
 //! Short options arrived with `rm` (milestone 47's rmdir lane), and they are checked against the
 //! program's [`Manifest`] at the prompt rather than passed along unread, because one of them can
@@ -135,8 +140,8 @@ pub const PROG_COUNT: usize = 7;
 impl Prog {
     /// Resolve a program by the name typed on the command line.
     ///
-    /// Builtins are matched first by [`parse`], so a program named `help`, `echo` or `caps` would
-    /// be unreachable. The program namespace must not contain those three names.
+    /// Builtins are matched first by [`parse`], so a program named `help`, `echo`, `caps` or `time`
+    /// would be unreachable. The program namespace must not contain any of those names.
     pub fn from_name(name: &[u8]) -> Option<Prog> {
         match name {
             b"worker" => Some(Prog::Worker),
@@ -597,6 +602,18 @@ pub enum Command<'a> {
     /// you would have typed, unprefixed, which is the whole point of the spelling: what you inspect
     /// and what you run cannot drift apart.
     Caps(&'a [u8]),
+    /// `time <command>`: run that command exactly as typed and say how long it took.
+    ///
+    /// **The second prefix word, and it carries a whole command line for [`Caps`](Command::Caps)'s
+    /// reason**: `time date | wc` must time the pipeline, so the tail keeps its operators and the
+    /// shell re-dispatches it down the path it would have taken untimed. What you time is what you
+    /// run, the same way `caps` inspects what you would run.
+    ///
+    /// **It grants nothing.** The tail's endowment is the tail's; the *timing* is done with the
+    /// shell's own clock, so a child holding no clock at all can still be timed and no authority
+    /// moves because the word is on the line. That is what makes it a prefix word rather than a
+    /// program: a `time` program would have to be handed the thing it timed.
+    Time(&'a [u8]),
     /// `cd [path]`: rebind the shell's position inside the directory capability it already holds.
     /// **A builtin, in the same category as `caps`**: it spawns nothing, grants nothing, and confers
     /// no new authority, because a working directory *is* a capability the shell holds used as the
@@ -1076,14 +1093,17 @@ pub fn tokenize<'a, 'b>(line: &'a [u8], out: &'b mut [&'a [u8]]) -> &'b [&'a [u8
 
 /// Parse a whole command line into a [`Command`]. Pure and allocation-free.
 ///
-/// The grammar is small: the first token selects the command, and a first token that is not one of
-/// the three builtins is a **program name**, because milestone 47 deleted the `run` verb. `echo`
-/// keeps the rest of the line verbatim (so `echo   two  spaces` prints its spaces); everything else
-/// works on tokens.
+/// The grammar is small: the first token selects the command, and a first token that is not a
+/// builtin is a **program name**, because milestone 47 deleted the `run` verb. `echo` keeps the
+/// rest of the line verbatim (so `echo   two  spaces` prints its spaces); everything else works on
+/// tokens.
 ///
 /// Builtins win over programs, which is why [`Prog::from_name`] must never learn a name that is
-/// also a builtin. Three reserved words is the whole cost of a shell where every command is typed
-/// the same way.
+/// also a builtin. A handful of reserved words is the whole cost of a shell where every command is
+/// typed the same way.
+///
+/// **Two of them are prefix words**, `caps` and `time`, and they are the ones that keep the rest of
+/// the line intact instead of tokenizing it: what they operate on is a command line, not an operand.
 pub fn parse(line: &[u8]) -> Command<'_> {
     let trimmed = trim(line);
     if trimmed.is_empty() {
@@ -1094,6 +1114,9 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         b"help" => Command::Help,
         b"echo" => Command::Echo(rest),
         b"caps" => Command::Caps(rest),
+        // The second prefix word (milestone 86). Like `caps`, its operand is a whole command line
+        // rather than a token, so `rest` is kept unsplit and the shell re-dispatches it.
+        b"time" => Command::Time(rest),
         // The navigation builtins (milestone 47). They take a path operand rather than tokens,
         // because a path is one designation however many slashes it has, and `trim` is all the
         // classification they need.
@@ -1865,6 +1888,7 @@ mod tests {
             &b"help"[..],
             b"echo",
             b"caps",
+            b"time",
             b"cd",
             b"pwd",
             b"ls",
@@ -2789,6 +2813,40 @@ mod tests {
             plan(&typed, Holdings::default()),
             "the preview must plan the identical endowment to the command itself",
         );
+    }
+
+    /// **`time` runs the command you typed, so its tail has to parse back to that command**
+    /// (milestone 86).
+    ///
+    /// The same property `caps` has, and asserted the same way, because it is the same claim: the
+    /// tail is the line with the prefix word taken off, so what is timed and what would have run
+    /// plan the identical endowment. A prefix word that rewrote its tail (dropping an option,
+    /// re-tokenizing, inserting a grant) would make "what you time is what you run" a slogan.
+    #[test]
+    fn time_runs_the_command_you_would_have_typed() {
+        assert_eq!(parse(b"time"), Command::Time(b""));
+        assert_eq!(
+            parse(b"time budgeter --mem 16"),
+            Command::Time(b"budgeter --mem 16")
+        );
+        let Command::Time(tail) = parse(b"time budgeter --mem 16") else {
+            panic!()
+        };
+        let (Command::Run(timed), Command::Run(typed)) = (parse(tail), parse(b"budgeter --mem 16"))
+        else {
+            panic!()
+        };
+        assert_eq!(
+            plan(&timed, Holdings::default()),
+            plan(&typed, Holdings::default()),
+            "timing a command must not change what it is granted",
+        );
+
+        // **The operators survive the prefix**, which is the reason the tail is a whole line rather
+        // than a token list. `time date | wc` is a timed *pipeline*; a `time` that took the first
+        // word would time `date` and silently drop the rest, which is the bug `caps` already has a
+        // test for one layer up (`swish::route`).
+        assert_eq!(parse(b"time date | wc"), Command::Time(b"date | wc"));
     }
 
     #[test]
