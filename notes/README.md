@@ -419,6 +419,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   calibration verdict on the exhaustive crates (`ntp_proto`, `gpt`), the three-way triage rule
   (write the test, record the exclusion, or defer on the record), and why the weekly `mutation
   testing` workflow is a report rather than a gate.
+- [Where an unsafe obligation is written, and where it is only implied](unsafe-obligations.md):
+  milestone 82, and the two lints that are meant to compose into "every unsafe operation sits next
+  to the written invariant that makes it sound". The survey found **zero violations before anything
+  was changed**, because every package we own is edition 2024, where `unsafe_op_in_unsafe_fn` is
+  warn-by-default, and `script/lint` runs `-D warnings`; the rule had been a hard gate with nobody
+  writing it down. What the lint pair still cannot reach is the useful half: eleven of the tree's 33
+  `unsafe fn`s contain **no unsafe operation at all**, so their rustdoc `# Safety` section is the
+  only enforcement there is; four safe fns carry a SAFETY comment that discharges an obligation onto
+  "the caller" that the signature imposes on nobody (one of them an aarch64/riscv64 asymmetry over
+  the same register write); and `#[cfg(kani)]` code is invisible to both lints, which is where
+  eleven undocumented unsafe blocks are sitting today.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
