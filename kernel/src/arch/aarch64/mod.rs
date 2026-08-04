@@ -10,6 +10,8 @@ use core::arch::global_asm;
 use aarch64_cpu::registers::TPIDR_EL1;
 use tock_registers::interfaces::{Readable, Writeable};
 
+use crate::println;
+
 pub mod context;
 pub mod exceptions;
 pub mod interrupts;
@@ -69,43 +71,107 @@ pub fn percpu_matches_hart() -> bool {
     true
 }
 
-/// PSCI `CPU_ON`: start a secondary core. Returns 0 on success, a negative PSCI error otherwise.
+/// One PSCI call, on the conduit the machine stated. The instruction has to be a literal in `asm!`,
+/// and the two forms differ in nothing else, so the body is written once here rather than twice.
 ///
-/// PSCI (Power State Coordination Interface) is the firmware call standard for turning ARM cores
-/// on and off. On QEMU `virt` the conduit is `hvc` (the `/psci` node's `method`), so we trap to
-/// the emulated firmware with `hvc #0`. Arguments follow the SMC calling convention: the function
-/// id in x0, then the target core's MPIDR, the PHYSICAL entry address it begins at (MMU off), and
-/// a context word that arrives in the new core's x0. `0xC400_0003` is `PSCI_CPU_ON` (64-bit).
+/// Per SMCCC, x0-x3 are results and x4-x17 are scratch, so all are marked clobbered; x18-x30 are
+/// preserved by the callee (the firmware).
+macro_rules! psci_call {
+    ($conduit:literal, $func:expr, $a1:expr, $a2:expr, $a3:expr) => {{
+        let ret: i64;
+        // SAFETY: a defined firmware call on the conduit `/psci` named. It starts the target core
+        // and returns a status in x0; it does not touch our memory.
+        unsafe {
+            core::arch::asm!(
+                $conduit,
+                inout("x0") $func => ret,
+                inout("x1") $a1 => _,
+                inout("x2") $a2 => _,
+                inout("x3") $a3 => _,
+                lateout("x4") _, lateout("x5") _, lateout("x6") _, lateout("x7") _,
+                lateout("x8") _, lateout("x9") _, lateout("x10") _, lateout("x11") _,
+                lateout("x12") _, lateout("x13") _, lateout("x14") _, lateout("x15") _,
+                lateout("x16") _, lateout("x17") _,
+                options(nostack),
+            );
+        }
+        ret
+    }};
+}
+
+/// What [`psci_cpu_on`] returns when the machine never told us how to make the call. Not a PSCI
+/// error code: PSCI's own space runs from -1 to -9, and inventing a tenth would be a lie about who
+/// answered. Nothing reaches this in the normal path, because `smp::bring_up_secondaries` asks
+/// [`can_start_secondaries`] first.
+pub const PSCI_NOT_DISCOVERED: i64 = i64::MIN;
+
+/// PSCI `CPU_ON`: start a secondary core. Returns 0 on success, a negative error otherwise.
 ///
-/// **BUGS: this is QEMU `virt`'s machine, hardcoded, and it is the one place the kernel assumes a
-/// board instead of reading it.** The conduit (`hvc` vs `smc`), the function id, and the CPU list
-/// all live in the device tree (`/psci`, `/cpus`); we read neither, so a second aarch64 board whose
-/// firmware answers on `smc`, or which presents a different set of cores, gets a silent no-op
-/// secondary bring-up rather than an error. Everywhere else in this tree the machine describes
-/// itself (milestone 60, `crates/dtb`), which is what makes this an outlier worth naming here.
-/// `smp::start_secondaries` carries the other half of the same assumption. See notes/device-tree.md
-/// and DECISIONS.md §11.
+/// PSCI (Power State Coordination Interface) is the firmware call standard for turning ARM cores on
+/// and off. Arguments follow the SMC calling convention: the function id in x0, then the target
+/// core's `MPIDR_EL1[39:0]` affinity value, the PHYSICAL entry address it begins at (MMU off), and a
+/// context word that arrives in the new core's x0.
+///
+/// **The conduit and the function id are read from the machine** (milestone 100). They used to be
+/// `hvc #0` and `0xC400_0003`, compiled in, which was QEMU `virt`'s answer and nothing else's. The
+/// `/psci` node states both: `method` says whether the firmware listens at EL2 (`hvc`) or EL3
+/// (`smc`), and `cpu_on` publishes the id, which PSCI 0.1 machines had to because the standard id
+/// space did not exist yet. `isa::init` parses the node; this reads what it recorded.
+///
+/// # BUGS
+///
+/// - **The `smc` path has never executed.** `crates/isa`'s host tests decode a real QEMU dump that
+///   states `smc` (`virt,virtualization=on`), so the *reading* is exercised on a genuine tree; that
+///   configuration enters the kernel at EL2 and this kernel expects EL1, so nothing here boots it.
+///   The `hvc` path is exercised on every test run. Choosing the wrong one of the two is an
+///   undefined-instruction trap rather than an error code, which is why it is read rather than
+///   defaulted, and why this note is here rather than in a tracker.
 pub fn psci_cpu_on(target_mpidr: u64, entry: u64, context: u64) -> i64 {
-    const PSCI_CPU_ON: u64 = 0xC400_0003;
-    let ret: i64;
-    // SAFETY: a defined firmware call. It starts the target core and returns a status in x0; it
-    // does not touch our memory. Per SMCCC, x0-x3 are results and x4-x17 are scratch, so all are
-    // marked clobbered; x18-x30 are preserved.
-    unsafe {
-        core::arch::asm!(
-            "hvc #0",
-            inout("x0") PSCI_CPU_ON => ret,
-            inout("x1") target_mpidr => _,
-            inout("x2") entry => _,
-            inout("x3") context => _,
-            lateout("x4") _, lateout("x5") _, lateout("x6") _, lateout("x7") _,
-            lateout("x8") _, lateout("x9") _, lateout("x10") _, lateout("x11") _,
-            lateout("x12") _, lateout("x13") _, lateout("x14") _, lateout("x15") _,
-            lateout("x16") _, lateout("x17") _,
-            options(nostack),
-        );
+    let Some((conduit, func)) = isa::psci() else {
+        return PSCI_NOT_DISCOVERED;
+    };
+    let func = func as u64;
+    match conduit {
+        ::isa::aarch64::Conduit::Hvc => psci_call!("hvc #0", func, target_mpidr, entry, context),
+        ::isa::aarch64::Conduit::Smc => psci_call!("smc #0", func, target_mpidr, entry, context),
     }
-    ret
+}
+
+/// Can this machine start a secondary core at all? Asked once by `smp::bring_up_secondaries`.
+///
+/// False on a machine whose device tree has no `/psci` node, or one whose node did not say enough
+/// to make the call. Both are real: a uniprocessor board has no reason to carry the node, and a
+/// board whose cores are released from a spin-table carries a different mechanism instead.
+pub fn can_start_secondaries() -> bool {
+    isa::psci().is_some()
+}
+
+/// Print how this machine starts a core, or why it cannot. One line, on every boot, beside the SMP
+/// count; the same discipline milestone 60's ISA summary set.
+pub fn print_bring_up_mechanism() {
+    let Some(psci) = isa::psci_record() else {
+        println!("  smp: the device tree has no /psci node, so no core can be started here");
+        return;
+    };
+    match (psci.conduit, psci.cpu_on) {
+        (Some(conduit), Some(cpu_on)) => println!(
+            "  smp: psci over {}, CPU_ON {cpu_on:#010x} ({}, from the device tree)",
+            conduit.name(),
+            if psci.cpu_on_from_property {
+                "the node's own id"
+            } else {
+                "the standard id"
+            },
+        ),
+        (None, _) => {
+            println!(
+                "  smp: /psci states no usable `method`, and hvc-versus-smc cannot be guessed"
+            );
+        }
+        (_, None) => {
+            println!("  smp: /psci is 0.1 and published no CPU_ON id, so there is no call to make");
+        }
+    }
 }
 
 /// Bring the CPU into a state where the kernel can safely run.

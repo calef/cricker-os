@@ -101,21 +101,27 @@ compact it. That's how the test fixture in `crates/dtb/tests/fixtures/` was made
 
 ## What we read, and what we ignore
 
-Today we read exactly two things: the `/memory` nodes (where RAM is) and the reservation
-block (what not to touch). That's all milestone 3 needs.
+Milestone 3 read exactly two things: the `/memory` nodes (where RAM is) and the reservation block
+(what not to touch). The list has grown as each subsystem stopped assuming its board:
 
-Everything else is still hardcoded, including the UART. **That is correct and should stay
-that way for now**, and the reason is a nice chicken-and-egg: the parser is the thing most
-likely to have a bug, and `println!` is how you'd debug it. So the console has to come up
-*before* the device tree is parsed, which means the console cannot depend on it.
+| Node | Who reads it | Since |
+|---|---|---|
+| `/memory`, the reservation block, `/reserved-memory` | `kernel/src/memory.rs` | milestone 3 |
+| `intc@`, `plic@` | the interrupt controllers | milestone 5 |
+| `virtio_mmio@`, the PCIe `reg` and `interrupt-map` | the transports | milestone 8 and the PCIe port |
+| `smmuv3@` | the IOMMU | milestone 16b |
+| `cpu@`'s `riscv,isa-extensions` and `mmu-type` | `crates/isa` | milestone 60 |
+| `/psci`, and `cpu@`'s `reg` / `status` / `enable-method` | SMP bring-up | milestone 100 |
+| `/cpus/timebase-frequency` | the RISC-V timer | milestone 100 |
+| `/chosen`'s initrd range | the loader | milestone 12 |
 
-Later milestones read more:
+**The UART is still hardcoded, and that is correct**, for a nice chicken-and-egg reason: the parser
+is the thing most likely to have a bug, and `println!` is how you would debug it. So the console has
+to come up *before* the device tree is parsed, which means the console cannot depend on it. What it
+can do is be checked against the tree afterwards, which
+`crates/dtb/tests/qemu_aarch64_virt.rs` does.
 
-| Milestone | Wants |
-|---|---|
-| 5 | `intc`, where the GIC is, and which interrupt the timer uses |
-| 8 | `virtio_mmio`, where the block device is |
-| Pi port | all of it, because none of the addresses will match |
+The Pi port wants all of it, because none of the addresses will match.
 
 ## BUGS
 
