@@ -629,6 +629,12 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         } else {
             None
         };
+        // The declared second stream (DECISIONS §67), in protocol order.
+        let diagnostics = if wiring.diagnostics {
+            opt(recv_cap(spawn_ep).1)
+        } else {
+            None
+        };
         let budget = if mem_pages > 0 {
             opt(recv_cap(spawn_ep).1)
         } else {
@@ -696,9 +702,25 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
                 caps[n] = (b, abi::rights::WRITE);
                 n += 1;
             }
+            // **The declared second stream, at the slot the manifest names** (DECISIONS §67).
+            // Read from the program's own declaration for the same reason the clock is, and placed
+            // at a **named** slot rather than the next free one: how many low slots this child gets
+            // depends on what else the line granted, and a program that probes one number needs
+            // that number not to move. See `system_initializer`, which does this identically.
+            let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
+            let placed_buf = match (diagnostics, diag_slot) {
+                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
+                // Either half missing means no second stream reaches the child, and it then says
+                // what it has to say in-band, which is what every program did before §67.
+                _ => None,
+            };
+            let placed: &[(u64, u64, u64)] = match &placed_buf {
+                Some(pl) => pl,
+                None => &[],
+            };
             let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
             let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
-            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], maps).ok());
+            let built = elf.and_then(|e| build_child_at(UNTYPED, e, &caps[..n], placed, maps).ok());
             let ok = match built {
                 Some(tcb) => {
                     // x0 unused (standalone binary); the argument is in x1.
@@ -720,13 +742,23 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
             } else if !ok {
                 send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+            // **A child that was never built cannot end its own second stream**, and the shell
+            // drains that stream to `OP_EOF` before it reads anything else, so nothing would ever
+            // come back. init closes it on the child's behalf: the same hole `SPAWN_OK` closed for
+            // the output side, one stream over.
+            if !ok && let Some(ep) = diagnostics {
+                send(ep, sink_proto::eof(), 0, 0);
+            }
         }
 
         // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
         // mapped, the budget and the streams inserted), and the shell holds the originals it kept
         // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
         // filling across a long session.
-        for s in [job_ut, job_fr, sink, source, budget].into_iter().flatten() {
+        for s in [job_ut, job_fr, sink, source, diagnostics, budget]
+            .into_iter()
+            .flatten()
+        {
             cap_delete(s);
         }
     }
@@ -1005,6 +1037,22 @@ fn build_child(
     caps: &[(u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
+    build_child_at(untyped, elf, caps, &[], maps)
+}
+
+/// [`build_child`] with capabilities that go in a **named** slot rather than the next free one.
+///
+/// `placed` is `(child_slot, init_slot, rights)`, inserted after `caps` through
+/// `abi::tcb::CAP_INSERT`'s explicit target. One caller: a declared diagnostic stream (DECISIONS
+/// §67). `system_initializer` carries the same pair, because this system has two inits and they
+/// serve the same protocol; see notes/pipes.md on that duplication.
+fn build_child_at(
+    untyped: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    placed: &[(u64, u64, u64)],
+    maps: &[(u64, u64, u64)],
+) -> Result<u64, ()> {
     const PAGE: u64 = 4096;
     const CHILD_STACK_VA: u64 = 0x0050_0000;
 
@@ -1064,13 +1112,13 @@ fn build_child(
     // Mapped growing down from CHILD_STACK_TOP; each page is its own retyped frame.
     /// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
     ///
-    /// **Eight rather than four since milestone 50**, and it is a measured number rather than a round
-    /// one: the shell's redirection path carries a parsed line, an array of planned endowments, a
-    /// listing buffer and a file buffer all by value, and four pages overflowed at the first
-    /// `ls > out.txt` (a data abort one word below the lowest stack page). The kernel's own scripted
-    /// wiring had already found the same floor and maps seven. The cost is 16 KiB per child, which is
-    /// nothing next to a page table.
-    const CHILD_STACK_PAGES: u64 = 8;
+    /// **Twelve since DECISIONS §67**, and every step of that number was measured. Four overflowed
+    /// at the first `ls > out.txt`; eight held until `2>` put a second `FileOut` on the shell's
+    /// `run_pipeline` frame, each carrying a 256-byte staging buffer by value. Must stay level with
+    /// `system_initializer`'s constant of the same name and with `pipeline_service`'s
+    /// `SHELL_EXTRA_STACK`: a wiring with less headroom than its siblings finds faults they do not
+    /// have, which is a bug in the wiring rather than a signal (notes/pipes.md).
+    const CHILD_STACK_PAGES: u64 = 12;
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame(untyped)?;
         let va = CHILD_STACK_VA - k * PAGE;
@@ -1104,6 +1152,14 @@ fn build_child(
     for &(init_slot, rights) in caps {
         // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    for &(child_slot, init_slot, rights) in placed {
+        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
+        // behaviour this call exists to avoid.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, child_slot + 1) } < 0 {
             return Err(());
         }
     }

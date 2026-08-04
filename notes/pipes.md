@@ -12,9 +12,11 @@ and it is the most reusable thing in this note. `>>` came last and is the cheape
 which is that finding paying out: the shell already holds the file, so append is one bit about how
 it opens one.
 
-`2>` is **not** built, and the reason is the interesting half of this note's second half: this
-system has no ambient anything, so there is no second stream for a `2` to name. See
-["`2>`: an open fork"](#2-an-open-fork-and-the-question-is-not-the-operator).
+`2>` came last of all, on 2026-08-03, and it is the one operator that is not a spelling for
+something the system already had: it needed a second stream to exist first. It exists **per program,
+by declaration** (DECISIONS §67), which is what makes the digit a familiar spelling rather than a
+number everybody has to agree on. See ["`2>`: built as a
+declaration"](#2-built-as-a-declaration-decisions-67).
 
 ## What this lane had to add, which was less than it looks
 
@@ -346,6 +348,27 @@ $ wc gate.txt 2> err.txt
 Nothing was denied. `wc` writes one stream, its diagnostics ride it, and the operator has nothing to
 bind to. That is `Refusal::NoSuchProgram`'s shape applied to a stream, and it is the sentence §67
 asked for.
+
+### A correction: there are two inits, and this note said there was one
+
+The section below on `script/shell-check` says it "is the only thing in the tree that runs the real
+`system_initializer`". **That is wrong about which program it runs on aarch64**, and building `2>`
+found it the hard way: the shell delegated a diagnostic endpoint, nobody received it, and the prompt
+hung on the first `date` with no fault and no message.
+
+`kernel/src/main.rs` hands off to `user::initrd()`, which loads the program named **`init`**, and on
+aarch64 that is `user/src/hello.rs`'s `init_boot` role. `user/src/system_initializer.rs` is riscv64's.
+Both serve `grant_plan::spawnproto`, and **the serving loop is written twice**, once in each file,
+about a hundred and forty near-identical lines: the same delegation order, the same slot ordering,
+the same clock rule, now the same `build_child_at`.
+
+That duplication is a rule-7 problem wearing a different hat. What two binaries must agree on is a
+crate, and these two agree on far more than a constant; a change to the protocol that lands in one
+of them is a boot that hangs on the ISA nobody tested. It is not fixed here, because merging two
+inits is its own lane, but it is now written down where the next person will meet it.
+
+What the gate proves is unchanged and is the reason it caught this: `script/shell-check` boots
+**both** ISAs, so it runs both inits, which is exactly what a single-ISA gate would have missed.
 
 ### The one rule a declaring program has to keep, and why it is not free
 
@@ -820,10 +843,24 @@ Two things came out of it, and the second is the one to keep:
   64 KB pipe buffer lets a producer run ahead; this does not, and nothing here has been benchmarked
   against a Unix pipeline. If buffering earns its place it arrives as a component that speaks the
   sink contract on both sides and is inserted into the chain.
-- **No `2>`, and it is an open fork rather than a missing feature.** A program holds one output
-  endpoint and its diagnostics ride it in-band, so `date > when.txt` on a clockless machine writes
-  the complaint into the file. The section above weighs the two shapes an answer could take and says
-  why neither is a lane's to pick.
+- **`2>` works only on a program that declares a second stream, and one does** (`date`). That is
+  DECISIONS §67's cost, stated where a person meets it: `wc gate.txt 2> err.txt` is refused, and the
+  fix is `wc` declaring a second output rather than anything about the operator.
+- **A declaring program must say everything before it produces anything.** The shell drains the
+  diagnostic stream to end-of-stream *before* the output, because there is no receive-on-a-set and
+  any other order deadlocks a pipeline (the section above has the chain). So a program with running
+  commentary, a `rm -rv` that hits one unremovable name halfway through a thousand, cannot declare a
+  second stream as things stand: it would have to buffer its complaints or block. `date` keeps the
+  rule for free because every complaint it has is a reason it has no answer. **The rule is the
+  shell's, not the contract's**, and it goes away the day something other than the shell reads that
+  endpoint, which is what the terminal's sink adapter would be.
+- **A `2>` on a builtin is refused as "declares no second output".** True (a builtin has no manifest
+  and no second stream) and a slightly odd sentence about `ls`, which is not a program at all. The
+  wording gap is the same shape as `<<`'s below.
+- **The shell's diagnostic endpoint is never destroyed**, so a writer parked on it after the shell
+  stopped reading would stay parked rather than getting `Gone`. It cannot happen today (the shell
+  always drains to end-of-stream before it reads anything else) and it is a real asymmetry with the
+  pipeline region, which is split and destroyed per line precisely to produce that `Gone`.
 - **No here-document, and `<<` says the wrong thing about why.** It is refused as "a redirection
   needs a name", because the second `<` is read as the operator it is. The refusal is right and the
   sentence is about the wrong thing.

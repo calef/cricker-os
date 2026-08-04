@@ -66,6 +66,27 @@ pub mod proto {
     /// signal: there is no non-blocking receive, so a busy-poll with `yield` is how the shell watches
     /// two things (the job and `^C`) at once until the blocking notification primitive arrives.
     pub const OP_INTRCOUNT: u64 = 4;
+    /// Adapter → terminal: print `len` (1..=16) bytes carried **in registers**, packed
+    /// little-endian in the second and third words, low word first. Replied when the bytes are on
+    /// the wire: r0 = bytes consumed, exactly as [`OP_WRITE`] answers.
+    ///
+    /// # Why this exists when `OP_WRITE` already prints
+    ///
+    /// [`OP_WRITE`] reads from **the client's output page**, and there is one of those: init maps a
+    /// single frame into the terminal read-only and into the shell read/write. A second printing
+    /// client would need a second frame, and the terminal would have to be told which one a request
+    /// meant, which is a protocol change with a page-index in it. `fs_proto` has the same shape and
+    /// the same problem (DECISIONS §55: two client processes staging into one page do not compose,
+    /// and that is why the file behind a `>` is the shell itself).
+    ///
+    /// Register-only sidesteps it entirely, and the sixteen bytes are not a compromise: they are the
+    /// three-word fastpath and the exact payload of a `sink_proto` message, so an adapter that turns
+    /// the sink contract into terminal output is one unpack and one `CALL` with **no page at all**.
+    /// [`OP_BYTES`] already proved the shape in the other direction, for the input driver.
+    ///
+    /// So the terminal gets a second *writer* without a second page and without a second client
+    /// convention, which is what a sink adapter needed (notes/sink-protocol.md).
+    pub const OP_PRINT: u64 = 5;
 
     /// Pack a request's first word from an opcode and a length/count.
     pub const fn req(op: u64, len: u64) -> u64 {

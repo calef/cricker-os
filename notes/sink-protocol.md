@@ -200,6 +200,8 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
 - **stdin.** `Stdin::read` still returns honest EOF. Both `< file` and a pipe's read end need an
   input-slot convention that does not exist, and this lane did not invent one: the sink contract is
   one-directional by construction and a source contract is its own design.
+  *(Answered by the operators lane the same day: a source is the sink contract received rather than
+  sent. See notes/pipes.md.)*
 - **The terminal is not converted, and the reason is a capability argument, not a scheduling one.**
   The obvious cheap move is to have the `line_editor` component serve the sink contract on the endpoint
   it already has: a `SEND` arrives there with no reply capability, so it is trivially
@@ -215,9 +217,17 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It
   announces no end of stream, because nothing yet reads its output as a stream; when `|` lands, it
   will need to.
-- **No buffering.** A pipe built from this contract is full lockstep, where Unix's 64 KB buffer lets
-  a producer run ahead. If buffering earns its place it arrives as a component that speaks the sink
-  contract on both sides and is inserted into the chain, not as a redesign.
+- **No buffering, and it is now measured rather than argued.** A pipe built from this contract is
+  full lockstep, where Unix's 64 KB buffer lets a producer run ahead. `bench: sink_throughput`
+  (`kernel/src/bench.rs`, two EL0 processes over one endpoint) and
+  `bench/host/pipe_throughput.rs` are the two halves of the comparison; the numbers and what they
+  decided are in notes/pipes.md.
+
+- **A second stream is a declaration** (DECISIONS §67, 2026-08-03). A program that has diagnostics
+  declares a second output in its manifest and gets a second endpoint speaking **this same
+  contract**; `2>` names where those bytes go. Nothing about the framing changed, which is the
+  measure of whether the contract was right: a diagnostic is bytes, and the only thing that makes
+  one a diagnostic is which endpoint it is on. See notes/pipes.md.
 - **`>>`.** Append is a property of `ROLE_FILE`'s wiring (it starts at the file's current size)
   rather than a mode a client can ask for, because a client of a sink cannot ask for anything.
   Whether append is a mode on open or a property of the sink is milestone 50's later question.
