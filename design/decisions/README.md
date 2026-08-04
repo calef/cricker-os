@@ -130,6 +130,9 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
 | 73 | PROPOSED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
+| 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
+| 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
+| 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

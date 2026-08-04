@@ -131,7 +131,7 @@ a `Call` syscall).
 
 Following the advice that the reply path is *endpoint semantics, not a separate feature*, it is
 designed here rather than left implicit. But building a kernel `Call`/`Reply` primitive now would
-violate DECISIONS.md §4 (the syscall surface stays narrow; no abstraction before the requirement):
+violate DECISIONS.md §4 (the syscall surface stays narrow and explicit):
 every server we have has a static client topology and the two-endpoint pattern serves it.
 
 **Two triggers to build it.** *Functional:* the first server that must answer clients it was not

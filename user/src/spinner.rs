@@ -1,4 +1,4 @@
-//! The spinner: a runaway that ignores the interrupt entirely (milestone 24).
+//! The spinner: a runaway that ignores the interrupt entirely (DECISIONS §24).
 //!
 //! A tight loop that touches nothing and checks nothing. It is the case the cooperative tier cannot
 //! reach: the shell can set the interrupt flag all it likes, and the spinner never reads it. Only

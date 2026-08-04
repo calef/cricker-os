@@ -29,7 +29,7 @@
 //! It also cannot reap a **hung** job: a live thread is refused on purpose (§32), and nothing here
 //! escalates. That is §32's recorded watchdog case and it belongs to milestone 23, not here. At the
 //! prompt the forcible tier already exists for the case a person can see: `^C` twice tears the job's
-//! region down through the shell (milestone 24), and those jobs are built from the shell's own
+//! region down through the shell (DECISIONS §24), and those jobs are built from the shell's own
 //! untyped rather than init's, so they never reach this program at all.
 
 #![no_std]

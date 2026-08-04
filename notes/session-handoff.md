@@ -14,7 +14,7 @@ available. Re-point new agents at it.
 
 ## What landed this push (all on main, green both ISAs)
 
-- **Milestone 32 (RedoxFS FS service):** capability-shaped contract, open-by-path only inside
+- **Milestone 32 (RedoxFS behind a capability FS server):** capability-shaped contract, open-by-path only inside
   the server against a granted directory cap. DECISIONS §27, notes/fs-server.md. Read path
   proven; the interrupt-driven completion path is fixed (see IRQ below). **The write path was
   confirmed end to end on 2026-07-29** through `std::fs`, so the old allocator-commit blocker is
@@ -42,8 +42,8 @@ available. Re-point new agents at it.
 
 ## Decision trail (this session)
 
-DECISIONS §24 (two-tier `^C`, shell-held; `Tcb::SUSPEND` deferred with triggers), §25 (socket
-ids now, minted endpoints tracked), §26 (fault endpoint, five sub-decisions), §27 (FS
+DECISIONS §24 (two-tier, shell-held), with `Tcb::SUSPEND` deferred and its triggers
+recorded; §25 (socket identity); §26 (the fault endpoint) and its five sub-decisions, §27 (FS
 service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inheritance). Milestone
 35 added. Read those sections for the reasoning; each records the fork and why.
 
@@ -64,7 +64,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
    region that `job_undertaker` returns when the job ends, so a bounded budget is affordable. Proven by a
    control-and-claim pair in `kernel/src/user/job_undertaker_tests.rs` and by `script/shell-check`, which
    reads init's own dropped-authority sentence and runs thirteen jobs through a six-job pool. Both
-   design forks recorded here were since closed by DECISIONS §32 (`Endpoint::REAP`). This work also
+   design forks recorded here were since closed by DECISIONS §32 (a supervisor may collect a corpse). This work also
    found and fixed a real pre-existing race in the exception-return path on both ISAs
    (notes/exceptions.md).
 3. ~~**Milestone 27 phase 2 completion:** std::fs binding to the FS server.~~ **DONE 2026-07-29**

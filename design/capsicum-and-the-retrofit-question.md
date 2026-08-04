@@ -92,7 +92,7 @@ compared with a Capsicum-sandboxed daemon on its merits rather than on architect
 
 ## See also
 
-- DECISIONS §14 (this is a demonstration OS) for why adoption is not the goal.
+- DECISIONS §14 (the project's direction) for why adoption is not the goal.
 - DECISIONS §31 (the foreign-language seam) and the `fs_file_caretaker` / `c_confiner` sources for
   the caretaker pattern `libcasper` independently arrived at.
 - Milestone 47's `PATH` and absolute-paths sections, where the "no global namespace to search" result

@@ -1,12 +1,13 @@
 # 97. Citations that name what they cite
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/97-citations`. Raised 2026-08-04, from a miscitation found while ratifying a program
-name, and then measured: **23 sites across the tree cite "milestone 24" when they mean DECISIONS
-§24.**
+**Status: BUILT.** Raised 2026-08-04, from a miscitation found while ratifying a program name, and
+then measured. Built the same day as `script/citations`, gated in `script/lint`, documented in
+notes/citations.md.
 
-**Gate: NONE.** The only design work is the name-matching lint's tolerance rule. The other half is
-a 23-site sweep read by content, which the block asks to sequence after any in-flight branch
-touching the four shell files it names.
+**The count was 23 and is 28.** The original survey matched single-line citations; several are
+wrapped across two lines in doc comments, which is the same class of undercount CLAUDE.md already
+records for the `#[path]` module survey. Counted from the merged tree with a pattern checked against
+the real shapes.
 
 **What happened, established from history rather than guessed.** DECISIONS §24 is "Interrupting the
 foreground process: two-tier, shell-held, no new kernel surface". Milestone 24 is "A second aarch64

@@ -407,7 +407,7 @@ is not an obstacle. Recommended here, not built here.
 
 ## See also
 
-- design/roadmap.md milestone 78 (the spec and the day's evidence)
+- design/roadmap/78-load-sensitive-assertions.md: milestone 78's spec and the day's evidence
 - notes/cpu-models.md BUGS (the load-sensitivity evidence, including the control model failing)
 - notes/live-replacement.md BUGS (the completed frame-hygiene analysis, the template)
 - notes/riscv-parity-scope.md (the shape named: a wait written against something wider than the
