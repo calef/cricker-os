@@ -2038,6 +2038,38 @@ pub mod fixture {
         /// into a word-splitter. Its two consecutive spaces are the whole point.
         pub const GLOB_PLAIN: &[u8] = b"two  spaces";
 
+        /// **Milestone 109's batching tree**: a directory holding more matching names than one
+        /// grant can carry, so `xargs` has something at the prompt to be about.
+        ///
+        /// A sibling of [`GLOBSET`] rather than an extension of it, deliberately: the globbing
+        /// lane's tests assert that `gl-*.txt` matches exactly two names, and adding files there to
+        /// make this one's point would make that one's point by accident.
+        pub const GLOBMANY: &str = "globmany";
+        /// The pattern, matching every one of [`MANY_NAMES`] and not [`MANY_MISS`]. Pinned against
+        /// the matcher by a host test, the way [`GLOB_PATTERN`] is.
+        pub const MANY_PATTERN: &[u8] = b"m-*.txt";
+        /// **Eleven names: one full batch and a short one.** Eleven rather than sixteen because the
+        /// second batch has to be *short*, or a sweep that always ran full batches would pass. They
+        /// are zero-padded so their byte order is their numeric order, which makes the batch
+        /// boundary something a reader can check by eye.
+        pub const MANY_NAMES: [&str; 11] = [
+            "m-00.txt", "m-01.txt", "m-02.txt", "m-03.txt", "m-04.txt", "m-05.txt", "m-06.txt",
+            "m-07.txt", "m-08.txt", "m-09.txt", "m-10.txt",
+        ];
+        /// **The first batch, as the prompt prints it**: the eight smallest matches, space
+        /// separated. Spelled out rather than derived, because a gate that computes its own expected
+        /// answer from the same rule it is testing checks nothing.
+        pub const MANY_FIRST_BATCH: &str =
+            "m-00.txt m-01.txt m-02.txt m-03.txt m-04.txt m-05.txt m-06.txt m-07.txt";
+        /// **The second batch**, which is the short one, and which the first batch's watermark
+        /// decides. A sweep resuming from a directory *cursor* rather than from a name would print
+        /// something else here the moment anything in the directory moved.
+        pub const MANY_SECOND_BATCH: &str = "m-08.txt m-09.txt m-10.txt";
+        /// A file in the same directory the pattern does not match, so "the batches are the match"
+        /// is a claim about *which* names rather than about how many.
+        pub const MANY_MISS: &str = "m-keep.log";
+        pub const MANY_BODY: &[u8] = b"CRK109-XARGS: a name in a match too large to hand over\n";
+
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
         /// in-guest verdict could have reported it. A capability granted on [`SUB`] can remove
@@ -2048,7 +2080,8 @@ pub mod fixture {
         /// `made-by-std` in it), so an exact comparison would couple this milestone's gate to what
         /// unrelated tests happen to write. The upward-escape half is checked against [`MADE`] and
         /// [`MADE_DIR`] instead, which are names only the attacker writes.
-        pub const ROOT_ENTRIES: [&str; 7] = [
+        pub const ROOT_ENTRIES: [&str; 8] = [
+            GLOBMANY,
             GLOBSET,
             super::MOTD_NAME,
             OTHER,
@@ -3252,6 +3285,46 @@ mod tests {
         ] {
             assert!(grant::fits(name.as_bytes()), "{name} does not fit a grant");
         }
+    }
+
+    /// **The batching fixture is over the bound, and the two batches printed in the gate are the
+    /// ones the rule produces** (milestone 109).
+    ///
+    /// `script/shell-check` asserts two literal strings at a real prompt, and a literal is only
+    /// worth asserting if it is the answer rather than a second opinion about it. So this pins all
+    /// three halves: the pattern matches every name and not the control, there are more names than
+    /// one grant can carry, and the batch boundary falls where [`fixture::tree::MANY_FIRST_BATCH`]
+    /// says it does.
+    #[test]
+    fn the_batching_fixture_is_over_the_bound_and_splits_where_the_gate_says() {
+        use fixture::tree;
+        let p = tree::MANY_PATTERN;
+        for name in tree::MANY_NAMES {
+            assert!(
+                glob::matches(p, name.as_bytes()),
+                "{name} is staged for the sweep and the pattern does not match it",
+            );
+            assert!(grant::fits(name.as_bytes()), "{name} does not fit a grant");
+        }
+        assert!(
+            !glob::matches(p, tree::MANY_MISS.as_bytes()),
+            "the control matches, so 'the batches are the match' proves nothing",
+        );
+        assert!(
+            tree::MANY_NAMES.len() > nameset::MAX_NAMES,
+            "the fixture fits in one grant, so nothing here is batched",
+        );
+        // The names are staged in sorted order, which is what lets the two batches below be read off
+        // the array rather than sorted at the assertion.
+        assert!(tree::MANY_NAMES.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(
+            tree::MANY_FIRST_BATCH,
+            tree::MANY_NAMES[..nameset::MAX_NAMES].join(" "),
+        );
+        assert_eq!(
+            tree::MANY_SECOND_BATCH,
+            tree::MANY_NAMES[nameset::MAX_NAMES..].join(" "),
+        );
     }
 
     /// The set encoding round-trips, carries the type bit, and **refuses rather than truncates**.

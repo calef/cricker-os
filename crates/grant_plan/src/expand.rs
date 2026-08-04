@@ -218,7 +218,12 @@ impl NameSet {
         (self.n > 0).then(|| self.names[self.n - 1].as_bytes())
     }
 
-    /// `(name, is_dir)` per name, in the order the directory yielded them.
+    /// `(name, is_dir)` per name, in the order the directory yielded them, or in **byte order** for
+    /// a set [`Expander::batch`] selected.
+    ///
+    /// The two differ because a batch's last name is its successor's boundary, so batching needs a
+    /// total order and one expansion needs none. Sorting the unbatched case too would be a change to
+    /// what `echo *.txt` prints, bought for nothing.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], bool)> {
         (0..self.n).map(|i| (self.names[i].as_bytes(), self.dirs[i]))
     }

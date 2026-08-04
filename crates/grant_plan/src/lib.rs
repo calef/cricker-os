@@ -614,6 +614,22 @@ pub enum Command<'a> {
     /// moves because the word is on the line. That is what makes it a prefix word rather than a
     /// program: a `time` program would have to be handed the thing it timed.
     Time(&'a [u8]),
+    /// `xargs <command>`: run that command once per **batch** of what its pattern matched
+    /// (milestone 109). The name is provisional.
+    ///
+    /// **The third prefix word, and it is a prefix word for the same reason the other two are**: its
+    /// operand is a whole command line, and what it changes is how the shell *runs* the line rather
+    /// than anything any program does. It grants nothing itself, which is the test [`Command::Time`] states:
+    /// a batching *program* would have to be handed the union of every batch, and there is no
+    /// carrier for that union. That is the premise of the whole milestone, so a program in the
+    /// middle could only hold the **directory**, which is milestone 47's rejected
+    /// "directory plus a name list" answer wearing a different hat.
+    ///
+    /// Unix can make `xargs` a program precisely because its `xargs` holds *nothing*: names in a
+    /// pipe are text, and `rm`'s authority comes from its uid. Here a name in a pipe is still text,
+    /// so a `find | xargs rm` analogue would spawn an `rm` holding no authority at all. The pipe
+    /// cannot carry the thing that has to be batched.
+    Xargs(&'a [u8]),
     /// `cd [path]`: rebind the shell's position inside the directory capability it already holds.
     /// **A builtin, in the same category as `caps`**: it spawns nothing, grants nothing, and confers
     /// no new authority, because a working directory *is* a capability the shell holds used as the
@@ -1117,6 +1133,9 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         // The second prefix word (milestone 86). Like `caps`, its operand is a whole command line
         // rather than a token, so `rest` is kept unsplit and the shell re-dispatches it.
         b"time" => Command::Time(rest),
+        // The third (milestone 109), and the same shape for the same reason: batching is about how
+        // the shell hands a designation over, so its operand is the line it batches.
+        b"xargs" => Command::Xargs(rest),
         // The navigation builtins (milestone 47). They take a path operand rather than tokens,
         // because a path is one designation however many slashes it has, and `trim` is all the
         // classification they need.

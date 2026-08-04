@@ -1859,10 +1859,21 @@ fn stage_subtree() -> Option<String> {
     // not, in one directory, so "the grant is what matched" is a claim about *which* names.
     let globset = root.join(tree::GLOBSET);
     let globdir = globset.join(tree::GLOB_DIR);
+    // Milestone 109's batching tree, a sibling of the globbing one: eleven names one pattern
+    // matches, which is more than a single grant can carry, so `xargs` has a real directory to
+    // sweep at a real prompt. Its own directory rather than more files in `globset`, because the
+    // globbing lane asserts that `gl-*.txt` matches exactly two names.
+    let globmany = root.join(tree::GLOBMANY);
     // Milestone 50's redirection tree, a sibling of all of them: the witness shell writes files into
     // its root, and it needs somewhere those writes cannot be confused with another test's.
     let redir = root.join(tree::REDIR);
-    let ok = std::fs::create_dir_all(&deeper).is_ok()
+    let mut ok = std::fs::create_dir_all(&globmany).is_ok()
+        && std::fs::write(globmany.join(tree::MANY_MISS), tree::MANY_BODY).is_ok();
+    for name in tree::MANY_NAMES {
+        ok = ok && std::fs::write(globmany.join(name), tree::MANY_BODY).is_ok();
+    }
+    let ok = ok
+        && std::fs::create_dir_all(&deeper).is_ok()
         && std::fs::create_dir_all(&other).is_ok()
         && std::fs::create_dir_all(&nested).is_ok()
         && std::fs::create_dir_all(&globdir).is_ok()
@@ -2903,7 +2914,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 24] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 27] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -2974,6 +2985,34 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 24] = [
     (
         "caps",
         Some("frame     clock      READ only, NOT delegable"),
+    ),
+    // **`xargs`, at the one interface a human touches** (milestone 109). `globmany` holds eleven
+    // names one pattern matches, which is more than the eight a single grant can carry.
+    //
+    // The negative control first, and it is the state of the world this milestone answers: unbatched,
+    // a match over the bound is a **refusal at the prompt with nothing spawned**, which is milestone
+    // 47's answer at the bound and the reason `xargs` was raised. It still is the answer, because
+    // batching is opt-in: a line that silently ran N times would make `caps rm *.txt`'s single
+    // printed grant a lie.
+    (
+        "echo globmany/m-*.txt",
+        Some("matched more names than one grant can carry"),
+    ),
+    // And batched, the same pattern is swept. **Asserting the second batch is what pins the resume
+    // rule**: `m-08.txt` first means batch one ended at `m-07.txt` and the watermark carried, so
+    // this one line rules out an off-by-one at the boundary, a batch that restarted from the top,
+    // and a batch that took the first eight the directory happened to yield.
+    (
+        "xargs echo globmany/m-*.txt",
+        Some("batch 2: m-08.txt m-09.txt m-10.txt"),
+    ),
+    // **And the authority per batch is exactly that batch**, which is the claim the milestone rests
+    // on and the one only `caps` can make before the delegation chain exists. The preview prints
+    // what `rm` would be handed, and what it would be handed in the second invocation is the three
+    // remaining names: not the eleven the pattern matched, and not the directory they live in.
+    (
+        "xargs caps rm globmany/m-*.txt",
+        Some("the directory holding m-08.txt m-09.txt m-10.txt"),
     ),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
@@ -3211,8 +3250,10 @@ fn shell_check_leg(riscv: bool) -> bool {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
              file to a reader, read the clock, timed a command with a clock of its own, kept \
-             a declared second stream off the redirection, and ran fifteen jobs through \
-             init's six-job pool after init gave its construction budget away"
+             a declared second stream off the redirection, swept a match too large to hand \
+             over in batches whose authority is exactly what each was designated, and ran \
+             fifteen jobs through init's six-job pool after init gave its construction budget \
+             away"
         );
         return true;
     }
