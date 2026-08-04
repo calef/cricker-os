@@ -2,6 +2,11 @@
 
 **Status: NOT-STARTED.**
 
+**Gate: DECISION, MILESTONE 47.** Sequenced after 47, because login hands out exactly the per-shell
+root 47 defines. The fork to settle first is whether attribution is a property of a capability (an
+invocation carrying a stamped origin) or of a channel (a server logging which endpoint a request
+arrived on); the block warns that the wrong answer quietly reintroduces ambient identity.
+
 **In brief.** Unix's uid does four different jobs at once. Three of them are already answered here,
 structurally and without anyone having declared it; the fourth has no mechanism whatsoever. This
 milestone writes down the first three, builds a login service that produces capabilities instead of

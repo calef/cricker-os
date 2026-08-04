@@ -3,6 +3,11 @@
 **Status: OPTIONAL.** Modernized 2026-08-03 to the current block standard, with the two design
 forks named that the original one-liner left implicit; the substance is unchanged.
 
+**Gate: DECISION.** Fork two, the host-side runner: a Swift runner in this tree or a dependency on
+an existing CLI such as vfkit, and the block says whoever picks this up brings the choice to Chris
+first. Sequencing is a separate question and not a blocker, since the default EFI path follows
+milestone 88's stage 1 while the Linux-boot-protocol path needs neither.
+
 **In brief.** Boot under Apple's Virtualization.framework, not QEMU's `virt`: a different machine
 of the *same* ISA, with no PL011, its own device discovery, and its own boot handoff.
 

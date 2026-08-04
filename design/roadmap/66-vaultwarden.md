@@ -4,6 +4,11 @@
 target rather than a plan, and its value today is that it converts "runs real workloads" from a claim
 into a checklist.
 
+**Gate: DECISION, MILESTONE 64, MILESTONE 107.** 64 is named as the prerequisite and this is its
+extreme case; 107 owns the listen and accept that head the gap table. The decision is the block's
+own: which subset counts as running Vaultwarden has to be settled before the work starts, or the
+goalposts move to wherever the effort lands.
+
 ## Why this application
 
 Vaultwarden is a Bitwarden-compatible server written in Rust: self-hosted, widely deployed, and the

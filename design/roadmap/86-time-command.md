@@ -1,7 +1,13 @@
 # 86. `time`: the shell times a command
 
-**Status: NOT-STARTED.** Raised 2026-08-03, prompted by timing a forty-minute proof run on the host
-and noticing this OS has no way to ask the same question.
+**Status: BUILT.** Raised 2026-08-03, prompted by timing a forty-minute proof run on the
+host and noticing this OS has no way to ask the same question. It shipped the same day it was
+written up (`crates/swish`, `user/src/swish.rs`, `kernel/src/user/time_tests.rs`,
+notes/time-command.md), reading the shell's clock as the block below leans, and proven at a real
+prompt on both ISAs through `script/shell-check`. **The status row was left behind by that merge and
+is corrected here**, which is the drift milestone 93 exists to catch: the work landed, the roadmap
+kept saying it had not started. One question the lane raised against its own block, whether a
+duration needs a clock capability at all, is open and does not unbuild anything.
 
 `time wc log.txt` runs the command exactly as typed and reports how long it took. The name is the
 standard term and stays: `time`, `nice` and `env` are the prefix-word idiom `caps <command>` already

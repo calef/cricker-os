@@ -674,7 +674,9 @@ mod verification {
         // The lower queue's ring area ends at or before the higher queue's block begins: disjoint.
         assert!(queue_block(q1) + RING_END <= queue_block(q2));
         // And each queue's ring area fits within its own block, so the blocks fully contain them.
-        assert!(RING_END <= RING_BLOCK);
+        // A `const` assertion, because both operands are constants: this is a fact about the layout
+        // and not about `q1`/`q2`, so it is worth failing the build rather than a proof run.
+        const { assert!(RING_END <= RING_BLOCK) };
         // The descriptor table a walk writes (`16 * qsize` bytes from `DESC_OFF`) ends at or before
         // the available ring begins. This is what makes the walk's own `off < 16 * qsize` write bound
         // (asserted in `ChainMem::write64`) add up to block isolation: a shadow write stays inside

@@ -5,6 +5,10 @@ acronyms is the hardest part of understanding these docs. That is the naming ten
 one level down; CLAUDE.md says names are what make this OS legible to humans and to LLMs, and an
 acronym is a name whose claim is hidden until the reader already knows it.
 
+**Gate: DECISION.** The glossary's own name and location are provisional and Chris's to settle. The
+block adds a scheduling constraint of its own: this touches nearly every documentation file, so it
+should start only when no lane holds unmerged notes/ edits.
+
 **Measured, so the size is a number:** the markdown tree (notes/, design/, the root files)
 carries ~835 distinct all-caps tokens. The top of the list is the real problem: IPC appears 251
 times, DMA 231, EL0 181, IOMMU 180, TCB 123, none of them expanded anywhere a reader can reach

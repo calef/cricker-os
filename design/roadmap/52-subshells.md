@@ -2,6 +2,10 @@
 
 **Status: RECORDED.**
 
+**Gate: DECISION, MILESTONE 50.** Recorded and deliberately not designed: Chris asked to design
+this one together, and the block says not to build from it without that conversation. It is also
+sequenced after 50, which removes most of the requirement and changes what is left.
+
 **STATUS: RECORDED, NOT DESIGNED.** Chris asked for this to be captured as a milestone *and*
 explicitly asked to design it together. This block lays out the problem, the options and the
 constraints; **it deliberately does not choose.** Do not build from it without that conversation.

@@ -16,14 +16,20 @@
 //!
 //! Three programs make up the tree that shrinks init's authority (`root_supervisor`, `spawner`, `sub_server_supervisor`,
 //! plus the `flaky` sub-server they manage), and this is what they share: the protocol words they
-//! speak, and the userspace ELF loader they build children with. Compiled into each binary with
-//! `#[path = "suptree.rs"] mod suptree;`, the same way `blk` and `hello` share the `virtio` module.
+//! speak, and the userspace ELF loader they build children with.
 //!
-//! The loader is a generalization of `system_initializer`'s `build_child`: it takes the builder's own budget and
-//! the budget the child is built *from* as separate arguments (they are the same for a server building
-//! out of its own memory, and different for a spawner building each child in its own reclaimable
-//! region), it can place a capability in the reserved fault slot so the child is born supervised, and
-//! it can copy a **blob** into the child. That last one is what lets a construction sub-server hold
+//! **The loader here is the tree's only one** (milestone 96). It began as a generalization of
+//! `system_initializer`'s `build_child` while the two inits kept copies of their own, which meant
+//! the same hundred and thirty lines existed three times with a fault slot each. Milestone 22's
+//! lane recorded that and declined to unify it mid-flight, because a boot failure would then have
+//! been ambiguous between two changes; `system_initializer` calls this one now, and nothing else builds
+//! a process in userspace.
+//!
+//! What it takes: the builder's own budget and the budget the child is built *from* as separate
+//! arguments (they are the same for a server building out of its own memory, and different for a
+//! spawner building each child in its own reclaimable region), a capability for the reserved fault
+//! slot so the child is born supervised, capabilities for **named** slots the caller picks, and
+//! **blobs** to copy into the child. That last one is what lets a construction sub-server hold
 //! exactly the one program image it is allowed to build, instead of the whole initrd.
 
 use user_rt::{cap_delete, invoke};
@@ -71,9 +77,18 @@ pub const REP_FAILED: u64 = 3;
 
 pub const PAGE: u64 = 4096;
 
-/// Where a child's stack top sits, and how many pages it gets. Four pages because a child that runs
-/// an ELF loader has a deep call chain; the flaky sub-server would be fine with one.
+/// Where a child's stack top sits. One address for every process this system builds, which is what
+/// lets [`configure_child`] compute the entry `sp` without being told.
 pub const CHILD_STACK_VA: u64 = 0x0050_0000;
+
+/// The stack a child gets when its builder does not say otherwise ([`Endow::new`]). Four pages,
+/// which is enough for the supervision tree's programs; the flaky sub-server would be fine with one.
+///
+/// **A child at the interactive prompt gets three times this** (`system_initializer::CHILD_STACK_PAGES`),
+/// and the difference is deliberate rather than drift: the prompt's children run the shell's
+/// redirection path, whose frames grew twice under measurement. The number is a field on [`Endow`]
+/// so a caller states it, because a builder that silently inherits somebody else's stack size finds
+/// faults that builder does not have (notes/pipes.md).
 pub const CHILD_STACK_PAGES: u64 = 4;
 
 /// An ever-advancing scratch window: where we temporarily map each child frame to fill it. Never
@@ -87,6 +102,15 @@ static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
 pub struct Endow<'a> {
     /// Capabilities to insert, `(our_slot, rights)`, landing in the child's slots 0, 1, 2, ...
     pub caps: &'a [(u64, u64)],
+    /// Capabilities to insert at a slot the caller **names**, `(child_slot, our_slot, rights)`,
+    /// after [`caps`](Endow::caps). One caller today: a declared diagnostic stream (DECISIONS §67),
+    /// which cannot take the next free slot because how many low slots a child gets depends on what
+    /// else the command line granted it, and a program that probes one slot number needs that
+    /// number not to move.
+    ///
+    /// It cannot collide with [`fault`](Endow::fault): that one lands in the last slot of the
+    /// cspace, and a manifest's diagnostics slot is one the program reads at startup, far below it.
+    pub placed: &'a [(u64, u64, u64)],
     /// Pages of ours to map into the child, `(child_va, our_slot, mode)`.
     pub maps: &'a [(u64, u64, u64)],
     /// Bytes to copy into fresh pages in the child, at consecutive VAs from `va`. This is how a
@@ -96,15 +120,23 @@ pub struct Endow<'a> {
     /// `FAULT_EP_SLOT`, where `START` reads it and clears it, so the child is born supervised and
     /// cannot forge messages on its own death channel.
     pub fault: Option<u64>,
+    /// Stack pages, mapped down from [`CHILD_STACK_VA`]. See [`CHILD_STACK_PAGES`] for why this is
+    /// a field a caller sets rather than one number for the whole tree.
+    pub stack_pages: u64,
 }
 
 impl<'a> Endow<'a> {
+    /// An endowment of nothing: no capabilities, no mappings, no supervision, and the default
+    /// stack. Every field is public, so the intended use is `..Endow::new()` at the end of a struct
+    /// literal, which is also what keeps a later field from being a change to every caller.
     pub const fn new() -> Self {
         Self {
             caps: &[],
+            placed: &[],
             maps: &[],
             blobs: &[],
             fault: None,
+            stack_pages: CHILD_STACK_PAGES,
         }
     }
 }
@@ -167,7 +199,7 @@ pub fn build_child_space(
         }
     }
 
-    for k in 0..CHILD_STACK_PAGES {
+    for k in 0..endow.stack_pages {
         let stack_frame = retype_frame_from(build_ut)?;
         let va = CHILD_STACK_VA - k * PAGE;
         // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
@@ -218,6 +250,14 @@ pub fn build_child_space(
     for &(our_slot, rights) in endow.caps {
         // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    for &(child_slot, our_slot, rights) in endow.placed {
+        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
+        // behaviour this call exists to avoid.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, child_slot + 1) } < 0 {
             return Err(());
         }
     }

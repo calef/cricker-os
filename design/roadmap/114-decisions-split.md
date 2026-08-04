@@ -3,6 +3,7 @@
 **Status: BUILT (2026-08-04, the day after it was raised; the postscript records what the numbers turned out to be).** Raised 2026-08-04 by Chris, asking whether decisions should be managed the
 way milestones now are: a directory, an index, one document each, and a status.
 
+
 **Measured against the case that justified milestone 76**, because the argument is the same argument
 and the numbers should have to carry it:
 

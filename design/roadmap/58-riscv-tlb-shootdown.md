@@ -2,6 +2,11 @@
 
 **Status: NOT-STARTED.**
 
+**Gate: NONE.** The precondition landed 2026-07-31: `mmu::asid_bits()` probes the hardware width
+and a test fails loudly below 8, which is what removing the flush has to be gated on. The order is
+per-ASID flush, then the IPI shootdown with its acknowledgement, then the removal, then a
+re-baselined `ctx_switch`.
+
 **In brief.** `write_satp` follows every `csrw satp` with a bare `sfence.vma`, so **every RISC-V
 context switch throws away the entire TLB** while carrying an ASID it then gets no benefit from. The
 fix is not deleting the instruction; it is building what has to exist first.

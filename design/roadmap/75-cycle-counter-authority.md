@@ -4,6 +4,11 @@
 is a decision rather than a driver and it should not be settled inside a benchmarking milestone by a
 bullet point.
 
+**Gate: DECISION.** The milestone is the decision: whether to open `PMCCNTR_EL0` (and
+`scounteren`'s cycle bit) to EL0 at ~160x the resolution of the counter DECISIONS §10 already
+excepted, or to make the read a capability. It was carved out of 74 at Chris's direction for
+exactly this reason.
+
 ## The question
 
 Milestone 74 needs EL0 to read a cycle counter. On aarch64 the mechanism is `PMUSERENR_EL0`, and

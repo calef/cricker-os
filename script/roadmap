@@ -27,6 +27,14 @@
 #     (the filed-under-an-essay class, and the appended-past-the-closer class);
 #   - two files claiming one milestone number is fatal, for the reason script/decisions records: as
 #     two files it would merge clean and silently where one file makes it a visible text conflict;
+#   - the **readiness classification**, which is the `Gate:` line every non-BUILT milestone file
+#     carries directly under its status. It answers "what stops a lane from starting this", the
+#     question that used to be answered by asking Chris, and it lives in the milestone's own file so
+#     it cannot drift away from the work the way a separate list would. `NONE` means a lane could
+#     start today; `DECISION`, `HARDWARE` and `MILESTONE N` name what it waits on, and a gate may
+#     name more than one. A `MILESTONE N` gate must resolve to a row and must not be BUILT, so the
+#     day a milestone lands, every gate still pointing at it fails the build instead of quietly
+#     staying stale. A BUILT file may not carry a gate at all, for the same reason;
 #   - every `milestone N` citation TREE-WIDE resolves to an index row (vendor/ and patches/ excluded:
 #     other people's text). The old gate checked only the roadmap's own prose, so ~1,988 citations in
 #     code comments were validated by nothing. A citation to a milestone that never existed is drift,
@@ -40,8 +48,11 @@
 # Lettered milestones (20a) are addenda: the file needs its base row to exist, but carries no row of
 # its own and therefore no status line to compare.
 #
-# With no arguments it prints the normalized status report. `--check` validates and exits non-zero on
-# a problem, which is what a gate wants. See design/roadmap/README.md's status vocabulary.
+# With no arguments it prints the normalized status report, statuses first and gates after it.
+# `--ready` prints only the milestones a lane could start today (gate `NONE`, status `NOT-STARTED` or
+# `PARTIAL`), which is the query the maintainer actually makes. `--check` validates and exits
+# non-zero on a problem, which is what a gate wants. See design/roadmap/README.md for both
+# vocabularies.
 
 set -e
 
@@ -58,6 +69,14 @@ d = os.path.join(root, "design", "roadmap")
 index_path = os.path.join(d, "README.md")
 
 VOCAB = ["BUILT", "PARTIAL", "IN-PROGRESS", "NOT-STARTED", "OPTIONAL", "RECORDED"]
+
+# The readiness vocabulary. `NONE` is a claim that nothing stands in the way, so it stands alone;
+# the others name a gate and may be combined (milestone 74 waits on a decision AND on silicon).
+GATE_VOCAB = ["NONE", "DECISION", "HARDWARE", "MILESTONE"]
+# A milestone a lane may pick up: nothing gates it, and the status does not already say to leave it
+# alone (BUILT is done, IN-PROGRESS has somebody on it, OPTIONAL and RECORDED are deliberately off
+# the work list).
+STARTABLE = ["NOT-STARTED", "PARTIAL"]
 
 problems = []
 
@@ -96,6 +115,7 @@ if not rows:
 # ---- the files ---------------------------------------------------------------
 FNAME = re.compile(r"(\d+)([a-z]?)-[a-z0-9][a-z0-9-]*\.md")
 ids = {}
+gates = {}
 for fname in sorted(os.listdir(d)):
     if fname == "README.md":
         continue
@@ -144,6 +164,67 @@ for fname in sorted(os.listdir(d)):
             problems.append(f"milestone {num}: file says {sm.group(1)}, index says {rows[num][0]} "
                             f"(the defect the 2026-08-03 split exists to catch)")
 
+    # ---- the gate line -------------------------------------------------------
+    # It sits in the paragraph directly under the status, so a reader meets "where do we stand" and
+    # "what stops a start" together, and a new milestone cannot be filed without answering both.
+    stray = [n for n, l in enumerate(lines, start=1) if l.startswith("**Gate:")]
+    if letter or num not in rows:
+        continue
+    if rows[num][0] == "BUILT":
+        for n in stray:
+            problems.append(f"{fname}:{n}: a BUILT milestone carries a gate, which can only be "
+                            f"stale: nothing gates work that is finished")
+        continue
+
+    # Paragraph 1 is the title, paragraph 2 the status, paragraph 3 the gate.
+    paras, cur = [], []
+    for l in lines:
+        if l.strip():
+            cur.append(l)
+        elif cur:
+            paras.append(cur)
+            cur = []
+    if cur:
+        paras.append(cur)
+    gate_para = " ".join(paras[2]) if len(paras) > 2 else ""
+    gm = re.match(r"\*\*Gate: ([A-Z0-9, ]+)\.\*\* (\S)", gate_para)
+    if not gm:
+        problems.append(f"{fname}: the paragraph under the status must be "
+                        f"'**Gate: <spec>.** <why>', where <spec> is NONE, or DECISION, HARDWARE "
+                        f"and MILESTONE <n> in any combination (found {gate_para[:48]!r})")
+        continue
+    if len(stray) > 1:
+        problems.append(f"{fname}: {len(stray)} gate lines; one milestone has one gate, and a "
+                        f"second one is the copy that stops being updated")
+
+    spec = gm.group(1).split(", ")
+    seen = []
+    for token in spec:
+        kind = token.split(" ")[0]
+        if kind not in GATE_VOCAB:
+            problems.append(f"milestone {num}: gate {token!r} is not in the vocabulary "
+                            f"({', '.join(GATE_VOCAB)})")
+            continue
+        if token in seen:
+            problems.append(f"milestone {num}: gate {token!r} is named twice")
+        seen.append(token)
+        if kind == "NONE" and len(spec) > 1:
+            problems.append(f"milestone {num}: gate NONE says nothing stands in the way, so it "
+                            f"cannot sit beside {', '.join(t for t in spec if t != 'NONE')}")
+        if kind == "MILESTONE":
+            mn = re.fullmatch(r"MILESTONE (\d+)", token)
+            if not mn:
+                problems.append(f"milestone {num}: gate {token!r} must name a number "
+                                f"(MILESTONE 64), because a gate nobody can look up is prose")
+            elif int(mn.group(1)) not in rows:
+                problems.append(f"milestone {num}: gate {token!r} names no milestone in the index")
+            elif int(mn.group(1)) == num:
+                problems.append(f"milestone {num}: gate {token!r} names itself")
+            elif rows[int(mn.group(1))][0] == "BUILT":
+                problems.append(f"milestone {num}: gate {token!r} is stale, because milestone "
+                                f"{mn.group(1)} is BUILT and no longer gates anything")
+    gates[num] = seen
+
 # A row whose file is missing is already reported by the row's link check above.
 
 # ---- citations, tree-wide ----------------------------------------------------
@@ -163,6 +244,8 @@ for line in grep.stdout.splitlines():
             problems.append(f"{loc}: cites milestone {n}, which has no index row")
 
 # ---- report ------------------------------------------------------------------
+ready = sorted(n for n, g in gates.items() if g == ["NONE"] and rows[n][0] in STARTABLE)
+
 if mode == "--check":
     for p in sorted(set(problems)):
         print(f"roadmap: {p}", file=sys.stderr)
@@ -171,9 +254,23 @@ if mode == "--check":
     lettered = sorted(i for i in ids if not i.isdigit())
     print(f"roadmap: {len(rows)} milestones, {len(ids)} files, status vocabulary clean, "
           f"index and files agree, every tree-wide citation resolves")
+    print(f"roadmap: {len(gates)} of them classified by gate, {len(ready)} ready to start "
+          f"(script/roadmap --ready)")
     if lettered:
         print(f"roadmap: lettered addenda: {', '.join(lettered)}")
     sys.exit(0)
+
+if mode == "--ready":
+    # The maintainer's question, answered from the files rather than from a conversation: nothing
+    # gates these and nobody is on them.
+    for n in ready:
+        print(f"  {n:>3}  {rows[n][0]:<11}  {rows[n][1][:66]}")
+    print(f"\n{len(ready)} ready of {len(gates)} not built")
+    sys.exit(0)
+
+if mode:
+    print(f"roadmap: unknown argument {mode!r} (no argument, --ready, or --check)", file=sys.stderr)
+    sys.exit(2)
 
 by_status = {}
 for n, (status, title, _) in rows.items():
@@ -187,7 +284,25 @@ for status in VOCAB:
     for n, title in items:
         print(f"  {n:>3}  {title[:76]}")
 
-print(f"\ntotal: {len(rows)} milestones")
+by_gate = {}
+for n, g in gates.items():
+    for token in g:
+        by_gate.setdefault(token, []).append(n)
+
+
+def gate_order(token):
+    # NONE first, then the two standing gates, then the milestone gates in numeric order, because
+    # "MILESTONE 106" sorts before "MILESTONE 16" as text and that reads as a mistake.
+    kind, _, n = token.partition(" ")
+    return (kind == "MILESTONE", 0 if kind == "NONE" else 1, kind, int(n) if n else 0)
+
+
+print(f"\nGATES (what stops the {len(gates)} milestones that are not built)")
+for token in sorted(by_gate, key=gate_order):
+    label = "NONE (ready to start)" if token == "NONE" else token
+    print(f"  {label:<22} {', '.join(str(n) for n in sorted(by_gate[token]))}")
+
+print(f"\ntotal: {len(rows)} milestones, {len(ready)} ready to start")
 for p in sorted(set(problems)):
     print(f"PROBLEM: {p}")
 PY

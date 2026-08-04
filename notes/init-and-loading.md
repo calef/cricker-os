@@ -1,7 +1,9 @@
 # init, and loading a program from userspace
 
-*(Milestone 19d. `kernel/src/user.rs` `spawn_init`, and the `init`/`child` roles and `build_child`
-loader in `user/src/hello.rs`.)*
+*(Milestone 19d. `kernel/src/user.rs` `spawn_init`, and the `init`/`child` roles in
+`user/src/hello.rs`. The loader described here lived in that file until milestone 96 gave the tree
+one of them; it is `crates/supervision_proto`'s `build_child` now, and every caller reaches it there.
+What the loader does is unchanged, and the steps below are still the steps.)*
 
 ## The one thing 19d moves, and why it matters
 

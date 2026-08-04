@@ -211,9 +211,8 @@ mod verification {
     #[kani::proof]
     fn a_removed_name_never_resolves_again() {
         let mut t: Table<u8, 2> = Table::new();
-        let name = match t.insert_with(|_| kani::any()) {
-            Some(n) => n,
-            None => return,
+        let Some(name) = t.insert_with(|_| kani::any()) else {
+            return;
         };
         t.remove(name);
 

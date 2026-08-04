@@ -1,11 +1,10 @@
 # 115. The names that were ratified, and the ones that were refused
 
-**Status: NOT-STARTED.**
-**Gate: NONE.** Nothing blocks a start; the table can be written from git history and the tenet
-already exists.
+**Status: NOT-STARTED.** Raised 2026-08-04 by Chris, asking whether anything tracks the names he
+has ratified. Nothing does, and the same day produced the evidence for why it should.
 
-Raised 2026-08-04 by Chris, asking whether anything tracks the names he has ratified. Nothing does,
-and the same day produced the evidence for why it should.
+**Gate: NONE.** Nothing blocks a start: the backfill is mechanical, the worklist it produces is the
+deliverable, and the tenet it records already exists.
 
 **The incident.** A lane proposed `system_builder` for the crate milestone 96 extracted; the
 maintainer endorsed it; Chris overruled it to `system_initializer`. Only afterwards did the

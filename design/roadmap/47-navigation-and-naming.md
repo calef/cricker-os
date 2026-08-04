@@ -2,6 +2,11 @@
 
 **Status: IN-PROGRESS.**
 
+**Gate: MILESTONE 64.** The navigation half is built. The namespace half (absolute paths,
+environment, `PATH`, and `bind`) has no forcing use case from the shell, and the block's own
+sequencing is to let 64 measure first, so a real crate's demands size the remaining scope. The glob
+caretaker in the same list is not gated by that.
+
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
 say why each divergence is earned. **The keystone is built** (the directory capability and its

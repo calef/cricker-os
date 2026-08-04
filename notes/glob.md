@@ -283,5 +283,7 @@ The unit tests exist for these. Every one is a place a real glob implementation 
   expanded set rather than the pattern, and `ARG_MAX` as a capability limit are milestone 47's
   globbing lane, built on top of this crate and written up in [glob-grant.md](glob-grant.md). This
   crate is the part with no authority in it, which is why it could be finished and proved on its own,
-  and it did not change by one line when the granting arrived. (`xargs`, for the case where the bound
-  is exceeded, is still not built: the answer today is a refusal at the prompt.)
+  and it did not change by one line when the granting arrived. It did not change by one line when
+  **batching** arrived either (milestone 109, `xargs`), which is the same claim made a second time:
+  what a pattern designates is decided here, and how much of it one invocation is handed is decided
+  three layers up.

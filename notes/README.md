@@ -440,8 +440,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `unsafe fn`s contain **no unsafe operation at all**, so their rustdoc `# Safety` section is the
   only enforcement there is; four safe fns carry a SAFETY comment that discharges an obligation onto
   "the caller" that the signature imposes on nobody (one of them an aarch64/riscv64 asymmetry over
-  the same register write); and `#[cfg(kani)]` code is invisible to both lints, which is where
-  eleven undocumented unsafe blocks are sitting today.
+  the same register write). The `#[cfg(kani)]` blind spot is **closed** by milestone 113: a
+  fourteenth clippy configuration compiles the proof harnesses against a five-item shim, because the
+  other candidate (`-D warnings` on `script/verify`) finds **none** of what is there, `cargo kani`
+  driving a rustc where no `clippy::` lint exists. It found 26 warnings in 9 crates, 13 of them
+  undocumented `unsafe` (the hand count of 11 had missed two `unsafe impl`s) and 13 with nothing to
+  do with unsafe at all.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
@@ -670,6 +674,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   suite against `sifive-u54`, the RVA profiles and `thead-c906` (211 tests, all five green), the
   preflight that proves `-cpu` is enforced rather than merely advertised, what the narrow models
   would have caught, and the one test written for the board that no CPU model can exercise.
+- [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts. Five
+  assertions failed pull requests that changed no executable code; the direction of a failure is
+  the diagnosis (a slow machine produces a deficit, never a surplus), so the three that fired on
+  negative counts were measuring their neighbours, not their subject. What each was rescoped to,
+  the one left alone and why, and the honest cost of the `<=` trade.
+- [The HVF leg](hvf-leg.md): the aarch64 suite on the physical Apple Silicon core, added to
+  `script/gates` as its final step (and skipped loudly where HVF does not exist, so a Linux CI
+  transcript cannot be misread as silicon coverage). What `--hvf` does and does not re-run, the
+  measured cost against TCG, the exact behaviour of a semihosting trap nobody answers, the SMMU
+  belief the machine overruled, and the two yield-count assertions a *fast* machine found for the
+  same reason a slow one finds them.
 - [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts, in two
   rounds. Eight assertions failed pull requests that changed no executable code. Round one sorted
   them by the **direction** of the failure (a slow machine produces a deficit, never a surplus), so

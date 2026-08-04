@@ -6,6 +6,10 @@ but the one whose success statement is unanswerable. **A capability microkernel 
 own source history is a machine that does real work**, and the demo needs no explanation to any
 audience that has ever used a computer.
 
+**Gate: MILESTONE 64.** The first fork is decided (gitoxide, Chris, 2026-08-04), and the block
+sequences the work after 64 measures what a real crate needs, because 64's probe crates are the
+cheap version of this milestone's first week.
+
 **Why this is a better *first* real workload than Vaultwarden**, which the roadmap already calls
 the largest single item on it. Local git needs **no network, no threads, no async runtime, and no
 SQLite**: `init`, `add`, `commit`, `log`, `status`, `diff` are a filesystem, a hash, a compressor,

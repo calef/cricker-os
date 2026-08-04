@@ -2,6 +2,10 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
 
+**Gate: NONE.** The infrastructure exists (`CRICKER_ACCEL=hvf`), the delivery vehicle is decided (a
+`script/gates` leg that skips loudly where HVF is absent), and the silicon is the machine this is
+developed on.
+
 The infrastructure exists and is used one-sidedly: `CRICKER_ACCEL=hvf` runs the kernel on the
 physical Apple Silicon core, `script/bench --real` and `script/server --hvf` use it, and `script/test`
 has never run there as a habit. That leaves the suite's only execution environments emulated ones,

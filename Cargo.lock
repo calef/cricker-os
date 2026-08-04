@@ -481,6 +481,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "system_initializer"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "crickerfs",
+ "elf",
+ "grant_plan",
+ "line_editor",
+ "sink_proto",
+ "supervision_proto",
+ "user_rt",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -547,6 +561,7 @@ dependencies = [
  "supervision_proto",
  "swap_proto",
  "swish",
+ "system_initializer",
  "user_rt",
  "video_terminal",
  "virtio",

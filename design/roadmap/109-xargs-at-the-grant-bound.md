@@ -3,6 +3,10 @@
 **Status: NOT-STARTED.** Raised 2026-08-04. Milestone 47 (navigation and naming) names this twice in
 its own block and will close without it, and both glob notes end on the same sentence.
 
+**Gate: NONE.** The bound stays at eight, which is measured rather than chosen, so this is a
+program rather than a constant edit. The name `xargs` is provisional like every program name here,
+and it is the standard term milestone 47 and both notes already use.
+
 **The finding, with the number.** A glob expansion grants at most **eight names**.
 `grant_plan::expand::MAX_NAMES` is 8 and `fs_proto::nameset::MAX_NAMES` matches it, pinned by a host
 test. A directory with nine matching files cannot be globbed at all: the answer is

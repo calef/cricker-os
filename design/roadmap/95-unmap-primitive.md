@@ -3,6 +3,11 @@
 **Status: NOT-STARTED.** Raised 2026-08-04 from milestone 22's closing lane, which named it as the
 largest residual left standing after the interactive boot gave away its authority.
 
+**Gate: DECISION.** An unmap method is a syscall-surface addition, which the block calls a design
+fork for Chris before it is a task: whether unmap belongs on the address space or on the frame,
+what it does to a mapping another holder also has, and whether restructuring the loader to map one
+page at a time avoids the new method entirely.
+
 **The finding.** `build_child` maps each page it lays down for a child into init's own address
 space to write it, and **never unmaps it**, because nothing in the ABI can: there is no unmap.
 Reaping a job hides the problem for jobs, since §13's revoke takes mappings with the region, but

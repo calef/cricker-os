@@ -115,10 +115,17 @@ an object is proof one is there.
 
 ## The wiring, and the slot that moves
 
-Both inits grant the shell the clock **last**, after the filesystem pair, so a boot with no disk
+The init grants the shell the clock **last**, after the filesystem pair, so a boot with no disk
 attached takes exactly the path it took before this existed. That means the slot is **4 on a boot
 with no filesystem and 5 on a boot with one**, and the shell is *told* the number in `x2` at
 `_start` rather than assuming it.
+
+This was written twice when milestone 86 landed, once in each of the two inits, because milestone 96
+had not merged yet. It is written once now, in `crates/system_initializer`, and the frame it hands
+over is `BootEndowment::clock_page`: the same capability the kernel granted init, handed on with
+`READ` and no `GRANT`. There is deliberately no second endowment field for the shell's copy, because
+the shell's clock is not a separate kernel grant, and a field would ask each board to state the same
+slot number twice with nothing checking that the two agree.
 
 Being told is the same shape as `arg1` carrying the directory's rights (notes/shell-navigation.md),
 and here the argument is sharper: nothing in this system reports what a process holds, and a shell

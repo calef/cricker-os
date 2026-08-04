@@ -4,6 +4,11 @@
 nobody. This is the clearest instance of the shape: three separate documents defer to "a
 fault-handling milestone" that has never existed.
 
+**Gate: DECISION.** What a production kernel does when a confined device faults is a fork with
+three answers and different politics (print and continue, fault the driver process, disable the
+device), and the block argues for the second without taking it. The small half, clearing the
+overflow bit on drain, needs no decision and has a witness in milestone 29's flood.
+
 **The finding.** An IOMMU stops a device that reaches outside its grant and records the attempt in a
 fault queue. Milestone 16b built both drivers and proved the stop happens on both ISAs. Nothing
 reads the queue in a real boot. `crate::iommu::take_fault` has five call sites and every one is a

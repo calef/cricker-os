@@ -26,6 +26,9 @@ doc-valid-idents = [
     "OpenSBI",
     "VisionFive",
     "CodeQL",
+    # SAT solvers, named in the proof harnesses' own comments about why a bound is where it is.
+    # Only reachable by the `--cfg kani` clippy pass (milestone 113).
+    "CaDiCaL",
     "RustCrypto",
     "AppleDouble",
     "PrimeCell",

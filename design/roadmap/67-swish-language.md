@@ -2,6 +2,11 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-02, from measuring `swish` against a minimal POSIX shell.
 
+**Gate: NONE.** Quoting is the correctness gap (a filename with a space is currently unnameable),
+it needs no decision, and the block says it has to settle before the parser is written twice. The
+fork inside the milestone is what an exit status means when the thing that failed was a refusal
+rather than an error.
+
 ## Where `swish` actually stands
 
 It has `help`, `echo`, `caps` (the whole endowment, and a **preview** of what a command would grant),

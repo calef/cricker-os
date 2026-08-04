@@ -4,6 +4,10 @@
 claims true; this one finds the work the tree has already identified but never gave a home, and
 then changes the working conventions so the category stops refilling.
 
+**Gate: NONE.** Deliverable one, the sweep, needs nothing: 11 TODO-class markers and 29 notes with
+deferral phrasing are the measured floor. Deliverable two is proposed text only, because a lane
+does not edit CLAUDE.md; Chris lands the conventions and places their numbers.
+
 **The failure mode, with today's near-miss as the exhibit.** Work gets identified in places that
 evaporate: a lane's final report ("worth a fix lane someday"), a pull-request comment, a commit
 message, a "follow-up, not built" aside in a decision block. Milestone 90 exists only because

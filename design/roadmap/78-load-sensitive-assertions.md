@@ -4,6 +4,9 @@
 pull requests that changed no executable code, two of them documentation only. Milestone 72 fixed the
 one that was a real bug. What is left is a family, and it is not one problem.
 
+**Gate: NONE.** The three assertions that report a negative discrepancy are diagnosed in the block,
+and what it asks for is three small changes with three arguments, decided per assertion.
+
 ## The day's evidence
 
 | assertion | site | what it reported |

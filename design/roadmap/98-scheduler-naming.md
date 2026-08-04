@@ -4,6 +4,10 @@
 `scheduler`?), and rewritten the same hour when the question "what does `sched` schedule?" turned up
 a better answer: **increasingly, nothing.**
 
+**Gate: DECISION.** The naming question is explicitly Chris's: the type and the static hold a
+thread table and an endpoint registry, and the block rejects `ObjectRegistry` and `Objects` without
+picking a replacement. The module keeps `sched`, which really does schedule.
+
 **The finding, in the struct's own words.** `Scheduler`'s comment says it outright: "Neither the run
 queue nor `current` live here any more: both moved to per-CPU storage (`cpu::PerCpu`, §11 steps 3a
 and 3b)... What stays is genuinely whole-machine: **the thread table and the endpoints**." The

@@ -5,6 +5,11 @@ that is not what the tree says. **The benchmark exists and has been published fo
 milestone survives because the comparison built on it did not follow, and the corrected comparison
 is considerably worse for us than the one on the page.
 
+**Gate: NONE.** The paragraph that overstates the L4 comparison by a factor of three can be
+corrected today, and the block says it should not wait for a board. Reading cycles from a PMU
+rather than estimating them rides milestone 16's silicon, and folding the whole thing into
+milestone 25 is the alternative the block names.
+
 **What the source actually says.** notes/benchmarks.md:66 names a true EL0-to-EL0 benchmark as "the
 right follow-up" and says it "needs one `CNTKCTL_EL1` bit so EL0 can read the counter". Both halves
 are stale. The bit was opened by milestone 19e (`kernel/src/arch/aarch64/timer.rs:134`, with the
