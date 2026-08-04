@@ -451,8 +451,8 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // initrd built without it still boots, and a program that declares a second stream then finds an
     // empty slot and says what it has to say in-band. A missing component should cost a feature, not
     // a prompt.
-    let sink_elf =
-        program(initrd_len, "terminal_sink").and_then(|bytes| elf::Elf::parse(bytes).ok());
+    let sink_elf = program(initrd_len, "terminal_sink_caretaker")
+        .and_then(|bytes| elf::Elf::parse(bytes).ok());
     // The undertaker (milestone 22, the interactive increment): one endpoint capability and
     // nothing else, so a finished job's region comes back to init's pool. Required rather than
     // optional, unlike the adapter above: without it a bounded job pool fills and the prompt stops

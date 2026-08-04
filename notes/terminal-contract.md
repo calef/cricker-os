@@ -86,7 +86,7 @@ terminal writes, it reads).
   every request. That is `fs_proto`'s one-page-two-clients problem (DECISIONS §55) arriving in a
   second contract.
 
-  Register-only sidesteps it: `user/src/terminal_sink.rs` turns the sink contract into terminal
+  Register-only sidesteps it: `user/src/terminal_sink_caretaker.rs` turns the sink contract into terminal
   output with **no page at all**, which is what let the terminal become a destination a program's
   output slot can hold. Eight bytes rather than sixteen is this contract's request shape, not a
   choice: a served request arrives through `recv_cap` with the reply capability and two data words,

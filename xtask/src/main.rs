@@ -1092,7 +1092,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "line_editor",
             "--bin",
-            "terminal_sink",
+            "terminal_sink_caretaker",
             "--bin",
             "blk",
             "--bin",
@@ -1209,7 +1209,7 @@ fn initrd_riscv() -> bool {
         ("input", "input"),
         ("swish", "swish"),
         ("line_editor", "line_editor"),
-        ("terminal_sink", "terminal_sink"),
+        ("terminal_sink_caretaker", "terminal_sink_caretaker"),
         ("blk", "blk"),
         ("allocator_exerciser", "allocator_exerciser"),
         ("net_stack", "net_stack"),
@@ -1427,10 +1427,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let terminal_sink = match read_stripped(&bin_elf("terminal_sink")) {
+    let terminal_sink_caretaker = match read_stripped(&bin_elf("terminal_sink_caretaker")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("terminal_sink"));
+            eprintln!(
+                "mkinitrd: cannot read {}: {e}",
+                bin_elf("terminal_sink_caretaker")
+            );
             return false;
         }
     };
@@ -1583,7 +1586,7 @@ fn mkinitrd() -> bool {
         ("input", &input),
         ("swish", &swish),
         ("line_editor", &line_editor),
-        ("terminal_sink", &terminal_sink),
+        ("terminal_sink_caretaker", &terminal_sink_caretaker),
         ("coremark", &coremark),
         ("os_primitives_benchmarker", &os_primitives_benchmarker),
         ("allocator_exerciser", &allocator_exerciser),
