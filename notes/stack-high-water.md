@@ -26,11 +26,11 @@ already existed for the canary.
 | Stack | Where declared | Size | Guarded? | Painted |
 |---|---|---|---|---|
 | Boot stack (boot core) | `link-aarch64.ld` / `link-riscv64.ld`, `__stack_bottom`..`__stack_top` | 64 KiB | guard page below | at `stack::init` time, canary to a margin below live `sp` |
-| Secondary stacks (per core) | `SECONDARY_STACKS` in `kernel/src/smp.rs`, `.secondary_stacks` | 64 KiB x MAX_CPUS | guard page below (milestone 90) | whole slot, before `CPU_ON` |
+| Secondary stacks (per core) | `SECONDARY_STACKS` in `kernel/src/smp.rs`, `.secondary_stacks` | 64 KiB x MAX_CPUS | guard page below (milestone 90) | whole stack, before `CPU_ON` |
 | Kernel thread stacks | `KernelStack` in `kernel/src/thread.rs` | 16 KiB (4 pages) | guard page below | whole stack, at allocation |
 
-The secondary row said `.bss` and **no guard page** when this note was written, and that asymmetry is what
-milestone 90 closed; the section below records how, and the numbers it did not change.
+The secondary row said `.bss` and **no guard page** when this note was written, and that asymmetry
+is what milestone 90 closed; the section below records how, and the numbers it did not change.
 
 There are no separate interrupt or exception stacks on either ISA, verified in the arch code rather
 than assumed: aarch64's `vectors.s` builds its 272-byte frame on `SP_EL1`, which is whatever kernel
