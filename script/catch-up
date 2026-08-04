@@ -154,6 +154,13 @@ print(f"          to   {head_sha[:9]} on {head_branch}: {head_subject[:56]}")
 # `| N | STATUS | [title](file) | why | built |`; its predecessor design/roadmap.md carried the same
 # first three columns without the link, and before 2026-07-30 carried no status column at all. All
 # three are recognised, and the third is reported as a gap rather than as an empty result.
+#
+# **The pre-column status is deliberately not reconstructed from the prose**, though the prose is
+# right there in the detail cell and says "Built" often enough to tempt a grep. That grep is the
+# thing the status column exists to retire: on 2026-07-30 a status sweep read those cells and
+# mis-reported EIGHT milestones, because no two of them said "done" the same way ("Built 2026-07-28",
+# "DONE", "Phase 1 built", "Largely done"). Reproducing that here would put wrong transitions in a
+# report whose whole value is being trusted, so the window says it cannot see back that far instead.
 
 def split_cells(line):
     # `\|` inside a cell is an escaped pipe, not a separator: milestone titles use it.
