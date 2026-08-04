@@ -32,6 +32,7 @@ members = [
     "crates/regions",
     "crates/c_seam",
     "crates/supervision_proto",
+    "crates/system_builder",
     "crates/swap_proto",
     "crates/socket_proto",
     "crates/sink_proto",
