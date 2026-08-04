@@ -216,10 +216,30 @@ impl Heap {
     /// The range is exclusively owned, 16-aligned, a multiple of 16 long, and overlaps nothing
     /// the heap already tracks.
     unsafe fn insert_free(&mut self, start: *mut u8, size: usize) {
-        let addr = start.addr();
+        // `expose_provenance`, not `addr`, and it is load-bearing (Miri, milestone 79). This
+        // allocator's arithmetic is integer arithmetic: `alloc` minting a tail block at
+        // `aligned + size` and the predecessor recovery below both conjure pointers from plain
+        // numbers, and a coalesced block can span two donations, so no single donated pointer
+        // could carry provenance for it anyway. Rust's rule for that shape is expose-and-reclaim:
+        // exposing each incoming range here is what entitles every later integer-minted pointer
+        // into it, and with `addr()` (which deliberately does not expose) the first `alloc` that
+        // carved a coalesced block was UB, caught by Miri as a write with no exposed tag. At
+        // runtime the two are the same instruction; the difference is whether the optimizer is
+        // told the escape exists. Strict provenance (`-Zmiri-strict-provenance`) is therefore
+        // off the table for this crate, and honestly so: see notes/miri.md.
+        let addr = start.expose_provenance();
         self.free += size;
 
-        let mut link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        // Taken ONCE, and the predecessor check below compares against this same pointer rather
+        // than taking `&mut self.head` again. The original wrote `&mut self.head` a second time
+        // at that comparison, and a fresh `&mut` is a fresh unique borrow: it invalidated the
+        // tag `link` still carried, so the head-insertion store through `link` at the bottom
+        // was a write through a dead borrow. Every compiler we ran emitted the store anyway,
+        // which is why it survived 60 native tests; it was still UB, licensed to break on any
+        // toolchain bump. Miri's aliasing check is the only gate in the tree that sees this
+        // class, and this was the first thing it found (milestone 79, notes/miri.md).
+        let head_link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        let mut link = head_link;
         // Find the first block above `addr`; `link` ends up at the insertion point.
         // SAFETY: `link` always points at `self.head` or a live node's `next` field.
         while let Some(block) = unsafe { *link } {
@@ -246,8 +266,8 @@ impl Heap {
         }
 
         // Is the *predecessor* adjacent? `link` points into it if there is one: recover the node
-        // address from the link address, except when `link` is `&self.head` itself.
-        let head_link: *mut Option<NonNull<FreeBlock>> = &mut self.head;
+        // address from the link address, except when `link` is the head link itself (compared
+        // against the pointer taken at the top; see the comment there for why not `&mut` again).
         if link != head_link {
             // `link` is `&(*prev).next`, so `prev` starts `offset_of!(next)` bytes before it.
             let prev = (link as usize - core::mem::offset_of!(FreeBlock, next)) as *mut FreeBlock;

@@ -383,6 +383,31 @@ mod tests {
         static PHYS: RefCell<Vec<(u64, u64)>> = const { RefCell::new(Vec::new()) };
     }
 
+    /// Frees the pool's host frames when a test ends. Each test that allocates frames holds one.
+    ///
+    /// The frames used to be simply leaked, on the theory that the test process exits anyway,
+    /// which was true and still let a real gate rot: Miri's leak check (milestone 79) reports
+    /// every one of them, sixteen reports drowning out whatever it might otherwise say about
+    /// this crate. A `Drop` guard is also what a test should have done all along; the leak was
+    /// a shortcut, not a decision (notes/miri.md).
+    struct PoolGuard;
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            PHYS.with(|m| {
+                for (_, host) in m.borrow_mut().drain(..) {
+                    // SAFETY: `host` came from `frame_at`'s alloc_zeroed with this exact layout,
+                    // registered exactly once, and the drain removes it so nothing frees it twice.
+                    unsafe {
+                        std::alloc::dealloc(
+                            host as *mut u8,
+                            Layout::from_size_align(4096, 4096).unwrap(),
+                        );
+                    }
+                }
+            });
+        }
+    }
+
     /// Back the synthetic physical address `pa` with a real zeroed host frame.
     fn frame_at(pa: u64) -> u64 {
         assert!(
@@ -463,11 +488,13 @@ mod tests {
 
     #[test]
     fn aarch64_domain_confines_a_region() {
+        let _pool = PoolGuard;
         one_region_confines::<Aarch64>();
     }
 
     #[test]
     fn sv39_domain_confines_a_region() {
+        let _pool = PoolGuard;
         one_region_confines::<Sv39>();
     }
 
@@ -475,6 +502,7 @@ mod tests {
     /// both map, and the gap between them does not: the domain is exactly the allow-list, no more.
     #[test]
     fn two_disjoint_regions_map_and_the_gap_does_not() {
+        let _pool = PoolGuard;
         let mut frames: Vec<u64> = Vec::new();
         let root = frame();
         // Far apart on purpose: the point of this test is the GAP between them, and adjacent regions

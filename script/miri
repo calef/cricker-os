@@ -1,0 +1,28 @@
+#!/bin/sh
+# script/miri: the host-logic tests again, under Miri's interpreter (milestone 79). Miri checks
+# the rules no other gate here checks: aliasing (tree borrows), pointer provenance, uninitialized
+# reads, and leaks. Kani proves the properties it is asked about, the fuzzers see crashes, clippy
+# sees shapes; none of them sees a `&mut` that aliases. See notes/miri.md.
+#
+# **"Miri-clean" means the sampled paths.** The interpreter is roughly a thousand times slower
+# than native, so the exhaustive suites gate themselves down under `cfg(miri)`: ntp_proto strides
+# its 10^9-value sweep, gpt skips its 460k-parse corruption sweeps. Each site says so next to the
+# test, and the note carries the full exclusion list. The exhaustive claims stay native-only.
+#
+# Not in script/test or script/gates, on purpose: the sampled run is minutes where the host tests
+# are milliseconds, and the class of bug it catches moves at the pace of `unsafe` blocks, not of
+# commits. Cadence is the weekly miri workflow plus on demand, here. Extra args go to
+# `cargo miri test`, so `script/miri -p gpt` narrows the run.
+
+set -e
+cd "$(dirname "$0")/.."
+
+# The component rides the pinned toolchain (script/bootstrap adds it), but a machine bootstrapped
+# before milestone 79 will not have it; adding it here too makes the script work everywhere the
+# pin does, the same self-provisioning script/coverage and script/fuzz do for their tools.
+if ! rustup component list --installed 2>/dev/null | grep -q '^miri'; then
+    echo "==> Adding the miri component to the pinned toolchain"
+    rustup component add miri
+fi
+
+cargo xtask miri "$@"

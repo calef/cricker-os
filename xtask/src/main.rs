@@ -122,6 +122,7 @@ fn main() -> ExitCode {
         "std-exerciser" => std_exerciser(),
         "shell-check" => shell_check(),
         "test" => test(),
+        "miri" => miri(),
         "bench" => bench(),
         "gdb" => gdb(),
         "objdump" => objdump(),
@@ -131,9 +132,10 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|miri|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
+            eprintln!("       cargo xtask miri [extra cargo-miri-test args, e.g. -p <crate>]");
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
@@ -2758,6 +2760,53 @@ fn test() -> bool {
     // crash test's own disk (milestone 37), and milestone 57's blank disk, where the guest wrote
     // both the partition table and the filesystem inside it.
     redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
+}
+
+/// **The host tests again, under Miri's interpreter** (milestone 79, notes/miri.md).
+///
+/// Miri checks the rules nothing else in the tree checks: aliasing (tree borrows), pointer
+/// provenance, uninitialized reads, leaks. Kani proves the properties it is asked about and the
+/// fuzzers see crashes; neither sees a `&mut` that aliases. The crate selection is `test()`'s,
+/// verbatim and for the same reason it is `--workspace --exclude` there rather than a list: a
+/// hand-maintained list drifted twice, and this way a new crate is covered the moment it joins
+/// the workspace. The exclusions are the three bare-metal crates that do not compile for the
+/// host, plus one that does:
+///
+/// **`xtask` is excluded like it is from `script/coverage`, and for cost, not principle.** It is
+/// the build tool, not a host-logic crate; its three tests are the scanout referees, safe pixel
+/// arithmetic with no `unsafe` on any path, and under the interpreter they cost around seven
+/// minutes for nothing the type system has not already said. They were run once under Miri during
+/// milestone 79's first full sweep and were clean; the recurring run leaves them out.
+///
+/// **"Miri-clean" means the sampled paths.** An interpreter runs roughly a thousand times slower
+/// than the silicon, so the exhaustive suites gate themselves down under `cfg(miri)`: `ntp_proto`
+/// strides its 10^9-value sweep, `gpt` skips its 460k-parse corruption sweeps, `calendar` and
+/// `glob` shrink their strides and scales, `cred` derives at Argon2's floor (each site says so,
+/// next to the test). What Miri certifies is every path the sampled suite executes, not the
+/// exhaustive claims; those remain native-only.
+///
+/// The two out-of-workspace test surfaces stay out deliberately: `tools/redoxfs_host` and
+/// `fs_server` spend their runtime inside the vendored RedoxFS engine, and a finding in vendored
+/// code lands in the vendor pin, not in a crate this tree can fix (vendor/README.md). Extra args
+/// are forwarded to `cargo miri test`, so `cargo xtask miri -p gpt` narrows the run.
+fn miri() -> bool {
+    eprintln!("--- host tests under Miri (aliasing, provenance, uninitialized reads) ---");
+    let mut args = vec![
+        "miri",
+        "test",
+        "--workspace",
+        "--exclude",
+        "kernel",
+        "--exclude",
+        "user",
+        "--exclude",
+        "user_rt",
+        "--exclude",
+        "xtask",
+    ];
+    let extra: Vec<String> = std::env::args().skip(2).collect();
+    args.extend(extra.iter().map(String::as_str));
+    run("cargo", &args)
 }
 
 /// **Boot the `--features shell` system and type at it** (milestone 50, notes/pipes.md).

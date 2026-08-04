@@ -775,9 +775,14 @@ mod tests {
         let mut checked = 0u64;
         let mut hits = 0u64;
 
+        // Under Miri, every 61st pattern instead of every pattern: 61 is prime and not a power of
+        // the 9-byte alphabet, so the sample still lands on every length and every syntactic role,
+        // ~44,000 comparisons instead of 2,657,200. The complete enumeration, which is the claim
+        // this test is named for, is native-only; "Miri-clean" means the sample (notes/miri.md).
+        let stride: u64 = if cfg!(miri) { 61 } else { 1 };
         for plen in 0..=5usize {
             let combos = (PAT.len() as u64).pow(plen as u32);
-            for pc in 0..combos {
+            for pc in (0..combos).step_by(stride as usize) {
                 let mut v = pc;
                 for slot in pattern.iter_mut().take(plen) {
                     *slot = PAT[(v % PAT.len() as u64) as usize];
@@ -802,11 +807,20 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 2_657_200);
+        // The completeness pin: the enumeration (or, under Miri, the stride's exact sample of it)
+        // actually ran. The Miri number is the same arithmetic at stride 61:
+        // (1 + 1 + 2 + 12 + 108 + 969) patterns x 40 names.
+        assert_eq!(checked, if cfg!(miri) { 43_720 } else { 2_657_200 });
         // Not vacuous in either direction: an agreement test between two matchers that both said
         // "no" to everything would pass, and most random patterns do not match most random names,
-        // so the positive side is the one worth pinning. 15,956 of the pairs match.
-        assert!(hits > 10_000 && hits < checked - 10_000, "{hits} matches");
+        // so the positive side is the one worth pinning. 15,956 of the pairs match natively; the
+        // Miri sample keeps only the both-sides check, since its hit count is an accident of the
+        // stride.
+        if cfg!(miri) {
+            assert!(hits > 0 && hits < checked, "{hits} matches");
+        } else {
+            assert!(hits > 10_000 && hits < checked - 10_000, "{hits} matches");
+        }
     }
 
     /// **The worst case over the proof's own domain, measured rather than guessed.**
@@ -821,7 +835,17 @@ mod tests {
     /// alphabet is nine bytes rather than all 256, and that is sound for this purpose because the
     /// step count depends on a byte's syntactic *role* rather than its value, and the alphabet holds
     /// one of each.
+    /// Skipped under Miri rather than sampled, because sampling would be wrong here, not merely
+    /// weaker: the assertions pin the exact argmax over the domain (`at_three == 10`), and a
+    /// strided sample that misses the maximizing input fails the test against correct code. The
+    /// enumeration is ~1.8M `match_steps` runs, an hour of interpreter for a property about the
+    /// unwind-bound formula, not about memory; every path it walks is walked by the tests above.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "asserts the exact worst case over 1.8M runs; a sample would miss the argmax and \
+                  fail against correct code"
+    )]
     fn the_worst_case_over_the_proof_domain_is_what_the_unwind_bounds_are_set_from() {
         const PAT: &[u8] = b"ab*?[]!-\\";
         const NAME: &[u8] = b"ab-";
@@ -873,7 +897,12 @@ mod tests {
     /// [`cost_bound`] computed from the two lengths **before the match ran**.
     #[test]
     fn the_pathological_pattern_stays_inside_its_bound() {
-        const NAME_LEN: usize = 100_000;
+        // 100,000 bytes native; 2,000 under Miri. The linearity claim needs the scale (at 2,000 a
+        // quadratic matcher would still look plausible); the interpreter cannot afford the scale
+        // (the walk is ~4M matcher steps, most of an hour under Miri). Both assertions still run
+        // at both sizes, so Miri checks the memory rules on the same paths and the native run
+        // keeps the scale that settles the question. See notes/miri.md.
+        const NAME_LEN: usize = if cfg!(miri) { 2_000 } else { 100_000 };
         let name = [b'a'; NAME_LEN];
         let pattern = b"a*a*a*a*a*a*a*a*a*a*b";
         let (hit, steps) = match_steps(pattern, &name[..], Dot::Ordinary);
@@ -893,11 +922,14 @@ mod tests {
     /// This one genuinely is quadratic, and the test pins that it is quadratic rather than worse.
     #[test]
     fn a_star_followed_by_a_long_tail_stays_polynomial() {
-        const NAME_LEN: usize = 2_000;
+        // Shrunk under Miri like the test above: this one is genuinely quadratic, so its native
+        // 2,000 x 512 is ~1M matcher steps, minutes under an interpreter that add no new paths.
+        const NAME_LEN: usize = if cfg!(miri) { 200 } else { 2_000 };
+        const PATTERN_LEN: usize = if cfg!(miri) { 64 } else { 512 };
         let name = [b'a'; NAME_LEN];
-        let mut pattern = [b'?'; 512];
+        let mut pattern = [b'?'; PATTERN_LEN];
         pattern[0] = b'*';
-        pattern[511] = b'b';
+        pattern[PATTERN_LEN - 1] = b'b';
 
         let (hit, steps) = match_steps(&pattern[..], &name[..], Dot::Ordinary);
         assert!(!hit);

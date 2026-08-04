@@ -535,8 +535,18 @@ mod tests {
 
     /// A cost cheap enough to run a hundred times in a unit test, and the one the reference
     /// vectors below use. Nothing ships at this cost; see [`Cost::DEFAULT`].
+    ///
+    /// Under Miri it drops to Argon2's floor (8 KiB, one pass): a memory-hard function is
+    /// deliberately expensive per derivation, an interpreter multiplies that by about a thousand,
+    /// and the store tests derive dozens of times. The paths are identical at any cost, only the
+    /// block count shrinks. The known-answer vector tests do NOT use this helper; their costs are
+    /// pinned by the published answers and stay as published (notes/miri.md).
     fn cheap() -> Cost {
-        Cost::new(256, 2, 1).unwrap()
+        if cfg!(miri) {
+            Cost::new(8, 1, 1).unwrap()
+        } else {
+            Cost::new(256, 2, 1).unwrap()
+        }
     }
 
     fn scratch(cost: Cost) -> Vec<Block> {
@@ -926,6 +936,11 @@ mod tests {
     /// skips the whole KDF, which is a ratio near zero, not near one. If this ever fails at, say,
     /// 0.6, suspect the machine before suspecting the code, and re-run it quiet.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "a wall-clock ratio measures the interpreter, not the KDF; the constant-cost \
+                  property is about silicon time"
+    )]
     fn an_unknown_identity_costs_what_a_known_one_costs() {
         use std::time::Instant;
         let (s, mut mem) = store3();

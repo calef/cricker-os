@@ -24,7 +24,7 @@ channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
 
 echo "==> Ensuring Rust toolchain '$channel' (components + bare-metal targets)"
 rustup toolchain install "$channel" --profile minimal
-rustup component add --toolchain "$channel" rust-src llvm-tools rustfmt clippy
+rustup component add --toolchain "$channel" rust-src llvm-tools rustfmt clippy miri
 rustup target add --toolchain "$channel" aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
 
 # --- QEMU ---------------------------------------------------------------------------------

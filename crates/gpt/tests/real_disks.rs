@@ -273,7 +273,18 @@ fn creating_the_same_table_from_scratch_matches_sgdisk_byte_for_byte() {
 /// What makes it non-trivial is that a byte's rejection can come from four different places
 /// depending on where it is: the signature, the revision, the reserved fields, or the CRC. The
 /// point of doing all of them is that no byte falls through every check.
+///
+/// Skipped under Miri, and the reason is arithmetic: each of the 130,560 parses re-CRCs the 16 KiB
+/// entry array, and an interpreter runs that polynomial around a thousand times slower than the
+/// silicon does, so the sweep that takes four seconds native would take most of a day. Miri checks
+/// memory rules, not CRC completeness, and every code path this sweep walks is walked by the
+/// clean-fixture tests above, which Miri does run. "Miri-clean" for this crate means those paths.
+/// See notes/miri.md.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "130,560 16 KiB CRCs; the clean-fixture tests cover these paths"
+)]
 fn every_single_byte_corruption_of_the_header_is_caught() {
     let (header_block, array) = primary(SGDISK_HEAD);
     Gpt::parse(header_block, array).expect("the clean fixture parses");
@@ -312,7 +323,14 @@ fn every_single_byte_corruption_of_the_header_is_caught() {
 /// version is kept below as `#[ignore]` and this is what the gate runs.
 ///
 /// The header sweep can afford every value because its CRC covers 92 bytes rather than 16,384.
+///
+/// Skipped under Miri for the same reason as the header sweep above: 131,072 more 16 KiB CRCs,
+/// with no code path the clean-fixture tests do not already put under the interpreter.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "131,072 16 KiB CRCs; the clean-fixture tests cover these paths"
+)]
 fn every_single_bit_corruption_of_the_entry_array_is_caught() {
     let (header_block, array) = primary(SGDISK_HEAD);
     let clean = Gpt::parse(header_block, array).unwrap();
