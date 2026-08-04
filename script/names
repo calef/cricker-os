@@ -1,0 +1,271 @@
+#!/bin/sh
+#
+# script/names: who named this, when, and what was refused (milestone 115).
+#
+# PROVISIONAL NAME. This script is one day old and its own name has not been ratified; see the
+# `Name:` block at the end of this comment.
+#
+# Why this exists. A lane proposed `system_builder` for the crate milestone 96 extracted, the
+# maintainer endorsed it, and Chris overruled it to `system_initializer`. Only afterwards did anyone
+# find that milestone 63 had **already refused `system_builder`**, and for a reason nobody had
+# located: `user/src/builder.rs` calls itself "a minimal init: the system builder", so two programs
+# would claim one phrase. The refusal existed, in one table cell inside one milestone block,
+# invisible at the moment it was needed. A blind rename then swept the old name out of that very
+# row, and the record of the refusal was nearly destroyed by the rename it should have prevented.
+#
+# **The refusals are the valuable half.** A ratified name is visible in the tree, because it is the
+# name; a refused one is visible nowhere, and the person who most needs it is the person about to
+# propose it again.
+#
+# Why a query and not a table. The first draft of milestone 115 proposed one ratified-names table in
+# notes/naming.md. Chris rejected it on 2026-08-04 for scaling the way the original DECISIONS.md and
+# design/roadmap.md scaled, and size is the smaller half of that: every lane that adds a name would
+# edit **one file**, which is exactly what produced three section-number collisions in a day. So the
+# provenance lives **at the name**, in the header of the crate, program or script it belongs to,
+# where adding a name touches one file and two lanes naming two things cannot collide. This script
+# derives the table. Same family as script/roadmap, script/decisions and script/catch-up: a computed
+# report over the tree, which therefore cannot drift from it.
+#
+# What carries a provenance block, and where:
+#
+#   crates/<name>/src/lib.rs   the crate's module doc  (`//! Name: ...`)
+#   user/src/<name>.rs         the program's module doc (`//! Name: ...`)
+#   script/<name>              the entry point's comment block (`# Name: ...`)
+#
+# The form, which is all that is checked:
+#
+#   Name: ratified <YYYY-MM-DD> (<who>, <where>). Refused `x` (why), `y` (why).
+#   Name: unrecorded. <what the history does and does not say>
+#
+# A block runs from its `Name:` line to the next empty comment line, so it may wrap. `Refused` is
+# optional and every refused name is in backticks, which is what makes `script/names <name>` able to
+# answer "has this been proposed before" from the refusals as well as from the tree.
+#
+# **`unrecorded` is a first-class answer and must stay one.** Most of this tree's vocabulary arrived
+# before anyone was writing naming decisions down, and inventing a ratification to fill a row would
+# put a false claim in the one record whose entire job is saying who claimed what. Where the history
+# does not say, the entry says it does not say, and cites the commit that introduced the name so the
+# next reader starts where this one stopped.
+#
+#   script/names              the table, by kind
+#   script/names --refused    every refused name, and what holds the refusal
+#   script/names --unrecorded the names nobody wrote a reason for
+#   script/names <name>       one name: its provenance, or the entry that refused it
+#   script/names --check      every surface carries a block; non-zero on a problem (script/lint)
+#
+# BUGS. It checks that a name carries provenance and that the provenance parses. It cannot check
+# that the recorded reason is **still true**, that a date is right, or that an `unrecorded` entry is
+# honest rather than lazy. That is the same limit script/decisions records for `§N` citations, and
+# it is not closeable by a script: a reason is prose, and prose is checked by reading.
+#
+# Name: unrecorded. Provisional, minted by milestone 115's lane on 2026-08-04 and not yet put to
+# Chris, who names things. `provenance` was considered and set aside as naming the mechanism rather
+# than the subject; `ratifications` names half the record and drops the refusals, which are the half
+# that pays.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import os
+import re
+import sys
+
+root, mode = sys.argv[1], sys.argv[2]
+
+# The three surfaces, each with the file that holds its header. Anything else in the tree (kernel,
+# xtask, fs_server, tools/, scripts/) is out of scope on purpose; see notes/naming.md's BUGS.
+SURFACES = [
+    ("crate", os.path.join(root, "crates"),
+     lambda name: os.path.join(root, "crates", name, "src", "lib.rs"), "//!"),
+    ("program", os.path.join(root, "user", "src"),
+     lambda name: os.path.join(root, "user", "src", name + ".rs"), "//!"),
+    ("script", os.path.join(root, "script"),
+     lambda name: os.path.join(root, "script", name), "#"),
+]
+
+problems = []
+
+
+def items():
+    """Every crate, program and script/ entry point, with the file that must carry its block."""
+    out = []
+    for kind, directory, path_of, prefix in SURFACES:
+        for entry in sorted(os.listdir(directory)):
+            if kind == "crate":
+                if not os.path.isdir(os.path.join(directory, entry)):
+                    continue
+                name = entry
+            elif kind == "program":
+                if not entry.endswith(".rs"):
+                    continue
+                name = entry[:-3]
+            else:
+                if os.path.isdir(os.path.join(directory, entry)):
+                    continue
+                name = entry
+            out.append((kind, name, path_of(name), prefix))
+    return out
+
+
+def block(path, prefix):
+    """The provenance block: the `Name:` line and its continuations, joined into one string.
+
+    A continuation is the next comment line at the same prefix; an EMPTY comment line ends the
+    block. That is why the convention puts the block in a paragraph of its own: it is the only
+    terminator a header can carry without inventing punctuation nobody would remember.
+    """
+    try:
+        lines = open(path, errors="replace").read().split("\n")
+    except FileNotFoundError:
+        return None, f"{os.path.relpath(path, root)} does not exist"
+
+    head = re.compile(rf"^{re.escape(prefix)} ?Name:\s*(.*)$")
+    cont = re.compile(rf"^{re.escape(prefix)} (\S.*)$")
+    empty = re.compile(rf"^{re.escape(prefix)}\s*$")
+
+    for i, line in enumerate(lines):
+        m = head.match(line)
+        if not m:
+            continue
+        parts = [m.group(1).strip()]
+        for later in lines[i + 1:]:
+            if empty.match(later):
+                break
+            c = cont.match(later)
+            if not c:
+                break
+            parts.append(c.group(1).strip())
+        return " ".join(p for p in parts if p), None
+    return None, None
+
+
+REFUSED = re.compile(r"`([^`]+)`")
+
+
+def parse(text):
+    """(status, date, [refused names]). Form only: this cannot judge a reason."""
+    m = re.match(r"(ratified|unrecorded)\b", text)
+    status = m.group(1) if m else None
+    date = None
+    if status == "ratified":
+        d = re.match(r"ratified (\d{4}-\d{2}-\d{2})\b", text)
+        date = d.group(1) if d else None
+    refused = []
+    for chunk in re.split(r"\bRefused\b", text)[1:]:
+        refused.extend(REFUSED.findall(chunk))
+    return status, date, refused
+
+
+records = []
+for kind, name, path, prefix in items():
+    text, err = block(path, prefix)
+    if err:
+        problems.append(err)
+        continue
+    if text is None:
+        problems.append(f"{kind} {name}: no `Name:` block in {os.path.relpath(path, root)}")
+        continue
+    status, date, refused = parse(text)
+    if status is None:
+        problems.append(f"{kind} {name}: the block must start `ratified <date>` or `unrecorded` "
+                        f"(found {text[:48]!r})")
+        continue
+    if status == "ratified" and date is None:
+        problems.append(f"{kind} {name}: `ratified` must carry a date (ratified 2026-08-04), "
+                        f"because a ratification nobody can place is prose")
+        continue
+    records.append({"kind": kind, "name": name, "path": os.path.relpath(path, root),
+                    "status": status, "date": date, "refused": refused, "text": text})
+
+by_kind = {}
+for r in records:
+    by_kind.setdefault(r["kind"], []).append(r)
+
+ratified = [r for r in records if r["status"] == "ratified"]
+unrecorded = [r for r in records if r["status"] == "unrecorded"]
+refusals = [(bad, r) for r in records for bad in r["refused"]]
+
+# A refused name that something in the tree still USES is a contradiction worth seeing: either the
+# refusal was reversed and nobody said so, or a name came back. Reported, never fatal, because a
+# refused word can legitimately survive as ordinary English (`brief`, `measure`) and a gate that
+# fires on prose is a gate people learn to skip.
+live = {r["name"] for r in records}
+contradictions = sorted({bad for bad, _ in refusals if bad in live})
+
+# ---- report ------------------------------------------------------------------
+if mode == "--check":
+    for p in sorted(set(problems)):
+        print(f"names: {p}", file=sys.stderr)
+    if problems:
+        print("", file=sys.stderr)
+        print("Every crate, program and script/ entry point carries a provenance block in its own "
+              "header:", file=sys.stderr)
+        print("  Name: ratified 2026-08-04 (Chris, milestone 63). Refused `x` (why).",
+              file=sys.stderr)
+        print("  Name: unrecorded. <what the history does and does not say>", file=sys.stderr)
+        print("See notes/naming.md. `unrecorded` is a real answer; a ratification you cannot cite "
+              "is not.", file=sys.stderr)
+        sys.exit(1)
+    print(f"names: {len(records)} names carry provenance "
+          f"({len(by_kind.get('crate', []))} crates, {len(by_kind.get('program', []))} programs, "
+          f"{len(by_kind.get('script', []))} scripts)")
+    print(f"names: {len(ratified)} ratified, {len(unrecorded)} unrecorded, "
+          f"{len(refusals)} refusals recorded beside them")
+    for bad in contradictions:
+        print(f"names: NOTE {bad!r} is recorded as refused and is also a live name", file=sys.stderr)
+    sys.exit(0)
+
+if mode == "--refused":
+    if not refusals:
+        print("no refusals recorded")
+        sys.exit(0)
+    print(f"REFUSED ({len(refusals)}), and what holds each refusal\n")
+    for bad, r in sorted(refusals, key=lambda t: t[0].lower()):
+        print(f"  {bad:<28} {r['kind']} {r['name']}")
+    print("\nscript/names <name> prints the reason.")
+    sys.exit(0)
+
+if mode == "--unrecorded":
+    print(f"UNRECORDED ({len(unrecorded)} of {len(records)}): no ratification is on record\n")
+    for r in sorted(unrecorded, key=lambda r: (r["kind"], r["name"])):
+        print(f"  {r['kind']:<8} {r['name']}")
+    print(f"\n{len(unrecorded)} of {len(records)} names arrived without a recorded decision.")
+    sys.exit(0)
+
+if mode and not mode.startswith("-"):
+    hits = [r for r in records if r["name"] == mode]
+    refused_hits = [(bad, r) for bad, r in refusals if bad == mode]
+    if not hits and not refused_hits:
+        print(f"names: {mode!r} is neither a name in the tree nor a recorded refusal")
+        sys.exit(1)
+    for r in hits:
+        print(f"{r['kind']} {r['name']}  ({r['path']})")
+        print(f"  {r['text']}\n")
+    for bad, r in refused_hits:
+        print(f"REFUSED for {r['kind']} {r['name']}  ({r['path']})")
+        print(f"  {r['text']}\n")
+    sys.exit(0)
+
+if mode:
+    print(f"names: unknown argument {mode!r} (no argument, --refused, --unrecorded, --check, "
+          f"or a name)", file=sys.stderr)
+    sys.exit(2)
+
+for kind in ["crate", "program", "script"]:
+    group = sorted(by_kind.get(kind, []), key=lambda r: r["name"])
+    got = sum(1 for r in group if r["status"] == "ratified")
+    print(f"\n{kind.upper()}S ({len(group)}: {got} ratified, {len(group) - got} unrecorded)")
+    for r in group:
+        when = r["date"] if r["status"] == "ratified" else "unrecorded"
+        tail = f"  refused {len(r['refused'])}" if r["refused"] else ""
+        print(f"  {r['name']:<28} {when:<12}{tail}")
+
+print(f"\ntotal: {len(records)} names, {len(ratified)} ratified, {len(unrecorded)} unrecorded, "
+      f"{len(refusals)} refusals")
+if contradictions:
+    print(f"refused but live: {', '.join(contradictions)}")
+for p in sorted(set(problems)):
+    print(f"PROBLEM: {p}")
+PY
