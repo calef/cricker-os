@@ -187,7 +187,15 @@ static MISSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_C
 /// This core's missed ticks.
 #[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn missed_ticks() -> u64 {
-    MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
+    missed_ticks_on(cpu::id())
+}
+
+/// A named core's missed ticks. The [`ticks_on`] argument, applied to the miss count: a test that
+/// reads it either side of a wait must name the core, or a migration compares two unrelated
+/// counters.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn missed_ticks_on(core: usize) -> u64 {
+    MISSED_TICKS[core].load(Ordering::Relaxed)
 }
 
 /// This core's next armed deadline: `CNTV_CVAL_EL0`, the grid cell [`rearm`] advances from.
@@ -260,7 +268,19 @@ pub fn tick() {
 /// This core's ticks since it started.
 #[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn ticks() -> u64 {
-    TICKS[cpu::id()].load(Ordering::Relaxed)
+    ticks_on(cpu::id())
+}
+
+/// Ticks since boot on a **named** core, which is what a test needs when the thread doing the
+/// measuring can move between the two reads.
+///
+/// [`TICKS`] is per core, so `ticks()` before a wait and `ticks()` after it are the same counter
+/// only if nothing migrated the caller in between; a kernel thread on a run queue can be stolen by
+/// an idle core at any preemption point (DECISIONS §28.3). Reading by index makes the pair name one
+/// core on purpose. See notes/load-sensitive-assertions.md.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn ticks_on(core: usize) -> u64 {
+    TICKS[core].load(Ordering::Relaxed)
 }
 
 /// The raw counter. Monotonic, never wraps in any timescale that matters, and **keeps counting
@@ -322,9 +342,12 @@ mod tests {
     fn the_timer_is_ticking() {
         use crate::arch::timer;
 
-        let before = timer::ticks();
+        // Name the core. `ticks()` reads a per-core counter and this thread can be migrated by a
+        // steal at any preemption point, which would compare two unrelated counters (`ticks_on`).
+        let core = crate::cpu::id();
+        let before = timer::ticks_on(core);
         timer::spin_for(timer::interval() * 3);
-        let after = timer::ticks();
+        let after = timer::ticks_on(core);
 
         assert!(
             after > before,
@@ -424,9 +447,15 @@ mod tests {
     fn the_handler_keeps_up_when_no_lock_is_held() {
         use crate::arch::timer;
 
-        let before = timer::missed_ticks();
+        // Core-scoped, for `ticks_on`'s reason: a migration between the two reads compares two
+        // cores' miss counts. That removes one of this test's two confounds. **The other is not
+        // fixed here and cannot be**: with no `-icount`, a deschedule long enough to pass a
+        // deadline is counted as a miss and the guest cannot tell it from a slow handler, which is
+        // what the numbers below are for. See notes/load-sensitive-assertions.md.
+        let core = crate::cpu::id();
+        let before = timer::missed_ticks_on(core);
         timer::spin_for(timer::interval() * 5);
-        let after = timer::missed_ticks();
+        let after = timer::missed_ticks_on(core);
 
         // The numbers, not just the fact. `now - next` is how late the re-arm was: a few hundred
         // counter ticks is a slow handler and is our bug; a whole `interval` or more is the
@@ -471,20 +500,25 @@ mod tests {
 
         static M: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
 
-        let before = timer::missed_ticks();
-
-        {
+        // `before` is read **inside** the critical section, and it names its core. Interrupts are
+        // masked in there, so this thread can neither be preempted nor migrated and the measured
+        // window is exactly the window under test. Read outside, it straddled a preemption point
+        // and compared per-core counters across a possible steal (see `ticks_on`).
+        let (core, before) = {
             let _guard = M.lock();
+            let core = crate::cpu::id();
+            let before = timer::missed_ticks_on(core);
             // Two whole tick periods with interrupts masked. At least one deadline passes while
             // we cannot service it.
             timer::spin_for(timer::interval() * 2 + timer::interval() / 2);
-        }
+            (core, before)
+        };
 
-        // Let the pending interrupt land.
-        timer::spin_for(timer::interval());
-
+        // Let the pending interrupt land and the miss be counted. Bounded rather than a fixed
+        // single period: the claim is that the miss *happens*, and a host that descheduled the
+        // emulator only makes the delivery later.
         assert!(
-            timer::missed_ticks() > before,
+            within_periods(20, || timer::missed_ticks_on(core) > before),
             "holding a lock across two tick periods did NOT lose a tick, which means \
              IrqSafeMutex is not masking interrupts and the deadlock is live"
         );
@@ -537,33 +571,68 @@ mod tests {
 
         assert!(interrupts::enabled(), "test setup: interrupts should be on");
 
-        // The timer is alive.
-        let t0 = timer::ticks();
+        // The timer is alive. Core-scoped, for `ticks_on`'s reason.
+        let alive_on = crate::cpu::id();
+        let t0 = timer::ticks_on(alive_on);
         timer::spin_for(timer::interval() * 2);
-        assert!(timer::ticks() > t0, "the timer is not ticking at all");
+        assert!(
+            timer::ticks_on(alive_on) > t0,
+            "the timer is not ticking at all"
+        );
 
-        let before = timer::ticks();
-
-        {
+        // **Both reads of the tick count happen inside the critical section**, and that is the
+        // fix milestone 78 made here. `before` used to be read before `M.lock()`, which makes the
+        // measured window wider than the property: a tick landing in the handful of instructions
+        // between the read and the mask is charged to the lock. A contended host puts a tick there
+        // almost by construction, because a descheduled vCPU resumes with its deadline already
+        // past and takes the interrupt at the first instruction it executes. The riscv64 twin
+        // failed CI that way on 2026-08-04 ("left: 41, right: 40", one surplus tick, on `rv64`,
+        // the control model). The same window also straddled a preemption point, and TICKS is per
+        // core, so a steal (§28.3) moving this thread compared two unrelated counters.
+        let (core, before) = {
             let _guard = M.lock();
+            // Interrupts are masked from here, so this core cannot switch threads: `cpu::id()` is
+            // fixed for the whole block and both reads below are of one counter.
+            let core = crate::cpu::id();
+            let before = timer::ticks_on(core);
 
             // Thirty milliseconds. Three ticks' worth. Not one of them may land.
             timer::spin_for(timer::interval() * 3);
 
             assert_eq!(
-                timer::ticks(),
+                timer::ticks_on(core),
                 before,
                 "A TIMER INTERRUPT FIRED WHILE A LOCK WAS HELD. IrqSafeMutex is not masking, \
                  and the deadlock in notes/locking.md is live: a handler that touched this lock \
                  would spin forever waiting for code that cannot run."
             );
-        }
+            (core, before)
+        };
 
-        // And the moment we let go, the pending interrupt is delivered.
-        timer::spin_for(timer::interval() * 2);
+        // And the moment we let go, the pending interrupt is delivered. Bounded rather than a
+        // fixed two periods, and read by core index because dropping the guard is a preemption
+        // point: this thread may be on another core by the next instruction, and the core we left
+        // keeps ticking either way.
         assert!(
-            timer::ticks() > before,
+            within_periods(20, || timer::ticks_on(core) > before),
             "interrupts did not resume after the lock was released: `restore` is broken"
         );
+    }
+
+    /// Wait for `cond`, bounded in **tick periods of the free-running counter**, checking once a
+    /// period.
+    ///
+    /// Every use is on the "has it happened yet" side of a property (a pending interrupt being
+    /// delivered, a miss being counted), which is the direction where a busy host produces a late
+    /// pass rather than a wrong answer. The fixed spins these replaced turned a late delivery into
+    /// a failure. See notes/load-sensitive-assertions.md.
+    fn within_periods(periods: u32, mut cond: impl FnMut() -> bool) -> bool {
+        for _ in 0..periods {
+            if cond() {
+                return true;
+            }
+            crate::arch::timer::spin_for(crate::arch::timer::interval());
+        }
+        cond()
     }
 }

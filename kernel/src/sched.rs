@@ -419,20 +419,23 @@ pub const RESCHED_SGI: u32 = 0;
 /// handler's tail runs `schedule()` and picks them up. IRQ context, so interrupts are masked, which
 /// is what `with_runq` needs; we hold nothing else, so taking the inbox is rank-safe (§11).
 pub fn drain_inbox() {
-    let mut moved = false;
+    let mut moved = 0u64;
     let mut inbox = cpu::current().inbox.lock();
     while let Some(thread) = inbox.pop_front() {
         // SAFETY: the sender pushed a live Ready thread; popping it here is the only removal
         // path, so it is on no other queue. Nothing is dereferenced: the handoff is pure
         // pointer movement, which is why this needs no scheduler lock.
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
-        moved = true;
+        moved += 1;
     }
     // The inbox is empty now; mirror that under the lock (DECISIONS §28). The threads moved into the
     // run queue, whose own mirror `with_runq` just updated, so the total load is unchanged.
     cpu::current().note_inbox_len(inbox.len());
+    // And count them: this is the only place a thread crosses from a remote core's hands into this
+    // core's queue, which makes it the one honest observation point for "the placement arrived".
+    cpu::current().note_adopted(moved);
     drop(inbox);
-    if moved {
+    if moved > 0 {
         cpu::current().need_resched.store(true, Ordering::Relaxed);
     }
 }
@@ -2375,6 +2378,47 @@ mod tests {
         cond()
     }
 
+    /// Wait for `cond` **without yielding**, budgeted in timer ticks delivered to this core rather
+    /// than in wall-clock time.
+    ///
+    /// For `a_thread_that_never_yields_is_preempted_anyway`, which must not yield (that is the
+    /// whole point of it) and is waiting for a *preemption*. A tick is when a preemption can
+    /// happen, so the number of preemption opportunities that went by is what the claim is about,
+    /// and it is the one budget a contended host cannot inflate: descheduling the emulator delivers
+    /// **fewer** ticks over a stretch of wall clock, where a `timer::now()` deadline keeps running
+    /// whether the guest executes an instruction or not. That difference is why the old one-second
+    /// deadline failed on loaded CI runners (notes/load-sensitive-assertions.md).
+    ///
+    /// The tick counter is per core and this thread can be migrated by a steal (§28.3), so a change
+    /// of core re-anchors the budget rather than comparing two counters. A migration means we were
+    /// preempted, which is the news this test is waiting for anyway. If ticks stop arriving
+    /// altogether this does not return, and the harness's 90 s per-test ceiling is the backstop: a
+    /// timer that is not delivering is the arch timer tests' failure to report, not this one's.
+    fn within_ticks(budget: u64, mut cond: impl FnMut() -> bool) -> bool {
+        // Read the core id and its tick count as a pair, re-reading if we moved between them.
+        let sample = || loop {
+            let core = crate::cpu::id();
+            let ticks = crate::arch::timer::ticks();
+            if crate::cpu::id() == core {
+                break (core, ticks);
+            }
+        };
+        let (mut core, mut start) = sample();
+        loop {
+            if cond() {
+                return true;
+            }
+            let (now_core, now_ticks) = sample();
+            if now_core != core {
+                core = now_core;
+                start = now_ticks;
+            } else if now_ticks - start >= budget {
+                return cond();
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Spin the scheduler until `cond`, bounded by wall-clock, returning whether it happened. Since
     /// DECISIONS §28, work a test spawns runs on *other* cores, so this core is often idle and a
     /// yield returns at once: a fixed count of yields elapses in almost no real time and times out
@@ -2718,10 +2762,11 @@ mod tests {
         crate::sched::reclaim_region(region)
             .expect("reclaim wakes the blocked waiter rather than refusing");
 
-        // Clock-bounded, not yield-counted, for the reason above.
+        // Clock-bounded, not yield-bounded: see `wait_for`. Since §28 the waiter is on another
+        // core, so this core's fifty yields can elapse before it has been scheduled at all.
         assert!(
             wait_for(|| WOKE.load(Ordering::SeqCst)),
-            "the revoked waiter never woke",
+            "the revoked waiter never woke"
         );
         assert!(
             ABORTED.load(Ordering::SeqCst),
@@ -2789,8 +2834,6 @@ mod tests {
         static STOP: AtomicBool = AtomicBool::new(false);
         static OTHER_RAN: AtomicBool = AtomicBool::new(false);
 
-        let preemptions_before = crate::sched::preemptions();
-
         // Pin both threads to THIS core, the one the test thread busy-waits on, so this stays a
         // *same-core* preemption test after DECISIONS §28 made the default `spawn` scatter work
         // across cores. The claim under test is that a never-yielding thread cannot monopolize the
@@ -2808,25 +2851,45 @@ mod tests {
         })
         .expect("spawn failed");
 
+        // **Wait for the hostile thread to reach a CPU before the polite one exists.**
+        //
+        // The order used to be: spawn both, wait for the polite thread, set STOP, and only then
+        // sample `SPINNING > 0`. That sample is a race the test creates for itself: if the polite
+        // thread gets its turn first, STOP is set before the spinner has ever been scheduled, the
+        // spinner exits its loop without incrementing anything, and the run goes red with "the
+        // spinner never ran at all" while the kernel did nothing wrong. It failed CI exactly that
+        // way on 2026-08-04 (`sifive-u54`), on a pull request that changed no kernel code.
+        //
+        // The spinner running is a **precondition** of the claim, not the claim, so it is waited
+        // on rather than sampled. Waiting for it here also strengthens what follows: the polite
+        // thread's turn can now only have come from preempting a thread that was genuinely running.
+        assert!(
+            within_ticks(200, || SPINNING.load(Ordering::Relaxed) > 0),
+            "the spinner never reached a CPU in 200 tick periods: it was placed on a run queue \
+             and never scheduled, which is a placement or wake failure rather than a preemption one"
+        );
+
+        // Counted from here, so the preemptions this test claims are the ones that gave the polite
+        // thread its turn, not the ones that started the spinner.
+        let preemptions_before = crate::sched::preemptions();
+
         // A well-behaved thread that just wants a turn.
         crate::sched::spawn_on(here, || {
             OTHER_RAN.store(true, Ordering::SeqCst);
         })
         .expect("spawn failed");
 
-        // And now we wait, WITHOUT yielding either. If preemption does not work, nobody moves
-        // and this hangs forever, which is its own kind of answer.
-        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency(); // 1 second
-        while !OTHER_RAN.load(Ordering::SeqCst) {
-            assert!(
-                crate::arch::timer::now() < deadline,
-                "ONE SECOND AND THE POLITE THREAD NEVER RAN. The spinner still owns the CPU, \
-                 which means preemption is not working and a single bad program can hang this \
-                 machine. This is precisely the failure DECISIONS.md §5 predicted for \
-                 cooperative scheduling."
-            );
-            core::hint::spin_loop();
-        }
+        // And now we wait, WITHOUT yielding either. If preemption does not work, nobody moves and
+        // the budget runs out. The budget is 200 *delivered ticks* rather than one second of wall
+        // clock: preemption opportunities are what this claim is counted in, and a host that
+        // deschedules the emulator produces fewer of them, never more. See `within_ticks`.
+        assert!(
+            within_ticks(200, || OTHER_RAN.load(Ordering::SeqCst)),
+            "TWO HUNDRED TICKS AND THE POLITE THREAD NEVER RAN. The spinner still owns the CPU, \
+             which means preemption is not working and a single bad program can hang this \
+             machine. This is precisely the failure DECISIONS.md §5 predicted for \
+             cooperative scheduling."
+        );
 
         // **And the spinner has to have actually spun before we stop it**, or the test is vacuous:
         // a polite thread running on a core nobody was monopolizing says nothing about preemption.
@@ -2847,10 +2910,6 @@ mod tests {
 
         STOP.store(true, Ordering::Relaxed);
 
-        assert!(
-            SPINNING.load(Ordering::Relaxed) > 0,
-            "the spinner never ran at all"
-        );
         assert!(
             crate::sched::preemptions() > preemptions_before,
             "the CPU was never taken away from anyone: no preemption happened"
@@ -2993,13 +3052,11 @@ mod tests {
         // Now send. This should hand the receiver its message and wake it.
         super::ipc_send(ep, [0xABCD, 0, 0]);
 
-        for _ in 0..50 {
-            if RECEIVED.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
-        assert!(RECEIVED.load(Ordering::SeqCst), "the receiver never woke");
+        // Clock-bounded, not yield-bounded: see `wait_for`.
+        assert!(
+            wait_for(|| RECEIVED.load(Ordering::SeqCst)),
+            "the receiver never woke"
+        );
         assert_eq!(
             GOT.load(Ordering::SeqCst),
             0xABCD,
@@ -3038,14 +3095,12 @@ mod tests {
             "wrong message received"
         );
 
-        for _ in 0..50 {
-            if SENT_RETURNED.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
+        // Clock-bounded, not yield-bounded: see `wait_for`. This one has evidence rather than a
+        // theory behind it: under eight spinning host processes it failed here on `rv64` on
+        // 2026-08-04, because fifty yields on an idle core are microseconds and the sender was on
+        // a vCPU the host had descheduled.
         assert!(
-            SENT_RETURNED.load(Ordering::SeqCst),
+            wait_for(|| SENT_RETURNED.load(Ordering::SeqCst)),
             "the sender never woke after its message was taken",
         );
     }
@@ -3285,15 +3340,10 @@ mod tests {
         })
         .expect("spawn failed");
 
-        // Wait for the property, on the clock, rather than counting a hundred yields. The count was
-        // the whole assertion's exposure: since DECISIONS §28 the worker is placed on another core,
-        // and on the physical core under HVF (milestone 81) a hundred yields here elapse in
-        // microseconds, before that core has run the worker even once. The failure read "a worker
-        // made no progress while another thread was blocked on IPC", which describes the scheduler
-        // rather than the test, and is exactly the milestone-78 shape.
-        //
-        // Nothing is weakened: if a blocked thread were requeued and starved the worker, `PROGRESS`
-        // stays 0 for the full two seconds and this fails with the same message it always did.
+        // Clock-bounded, not yield-bounded: see `wait_for`. It failed here on `sifive-u54` and
+        // `rva22s64` under eight spinning host processes on 2026-08-04, which is the same lesson
+        // `threads_round_robin` learned three tests up: a hundred yields is not a duration, and on
+        // a contended host this core burns them before the worker's vCPU has run at all.
         let progressed = wait_for(|| PROGRESS.load(Ordering::SeqCst) > 0);
         STOP.store(true, Ordering::SeqCst);
 
@@ -3410,6 +3460,14 @@ mod tests {
         // yields this used to spend are microseconds on the physical core, well before another
         // core has run the woken child to completion.
         super::ipc_send(ep, [0, 0, 0]);
+        // Clock-bounded, not yield-bounded: see `wait_for`. The slot comes back when the child is
+        // *reaped*, which happens on whichever core it ran on, so a yield count here measures this
+        // core's idleness rather than that child's teardown. Waiting on the budget itself is also
+        // the exact property: the assertion below is the confirmation, not the wait.
+        assert!(
+            wait_for(|| BUDGET.load(Ordering::Relaxed) > 0),
+            "a child exited but its quota slot was never returned to the budget",
+        );
 
         // A slot is free again.
         assert!(

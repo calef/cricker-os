@@ -170,9 +170,14 @@ through SBI, so it works on both.
   something would be a better result than these five passing.
 
 - **The matrix inherits the suite's load sensitivity, and multiplies its exposure by five.** Several
-  kernel tests assert against wall clock: `a_thread_that_never_yields_is_preempted_anyway` gives the
+  kernel tests assert against wall clock: `a_thread_that_never_yields_is_preempted_anyway` gave the
   polite thread one second, `the_handler_keeps_up_when_no_lock_is_held` counts missed ticks,
   `a_finished_thread_is_reaped_and_its_memory_returned` waits on the reaper. A busy host fails them.
+
+  *(Two of those three have since been re-aimed: the reaper test in milestone 78's first round and
+  the preemption test in its second, which replaced the one-second deadline with a budget of 200
+  delivered ticks. `the_handler_keeps_up_when_no_lock_is_held` is the one that stays, because it
+  cannot be re-aimed on this instrument; see notes/load-sensitive-assertions.md.)*
 
   Two runs in this milestone did exactly that, and both were worth chasing rather than shrugging at,
   because the whole point of the matrix is that a model-specific failure is real news. **Neither was
@@ -198,11 +203,27 @@ through SBI, so it works on both.
   where `test` does one, so it is five times the existing exposure to a noisy runner rather than a
   new kind of risk.
 
+  **The converse of that rule is a tool, and it went unused for a month.** "A green matrix under
+  load is conclusive" also means loading the host on purpose is the cheapest way to *find* a
+  load-sensitive assertion, which is a different question from finding a model-specific bug. The
+  recipe is in notes/load-sensitive-assertions.md; on its first use it turned up two assertions in
+  one run that a month of CI had not.
+
   An earlier version of this paragraph ended "the fix is those tests' timing budgets", and that was
   wrong for most of the family: several of these assertions failed with counts *below* their
   baselines, which no timing budget explains and no widening fixes. Milestone 78 rescoped them; the
   per-assertion verdicts and the deficit-versus-surplus diagnostic are in
   notes/load-sensitive-assertions.md. Dropping a model is still not the fix.
+
+  **This job then became a merge blocker, on 2026-08-04, and that is what finished the family.**
+  Three sites failed across four models in a handful of runs, on pull requests whose diffs could
+  not reach them (an `xargs` change failed a timer assertion): `arch/riscv64/timer.rs`'s masking
+  test on `rv64`, the control; `smp.rs`'s placement probe on `rva23s64` and `thead-c906`;
+  `sched.rs`'s preemption test on `sifive-u54`. None was a timing budget either. Each measured
+  across instructions outside the property, and contention widened the window until a race that had
+  never lost started losing. The second round's verdicts are in the same note. **One of them was not
+  load sensitivity at all**: the placement probe was waiting on a condition the scheduler could not
+  reach once every core was busy, so its 60 s budget was reporting a wedge as a timeout.
 
 ## Where it sits in CI
 

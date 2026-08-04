@@ -111,7 +111,12 @@ milestone report. Until then the residual gap is an implementation that maintain
 correctly but arms SBI with something else, which no wall-clock margin could distinguish from load
 either.
 
-### Placement probe (`smp.rs`, `work_can_be_placed_on_every_core`): left alone
+### Placement probe (`smp.rs`, `work_can_be_placed_on_every_core`): left alone, and that was wrong
+
+***Superseded on 2026-08-04. The argument below is kept because it is the argument that failed, and
+because the way it failed is the useful part. The verdict that replaced it is "the second round"
+below.***
+
 
 Checked against the same question and it already passes. The wait (`wait_for(done)`, 60 s,
 subordinate to the 90 s watchdog) is on exactly the property under test, not a proxy: `done` is
@@ -156,6 +161,196 @@ The timer verdicts came through untouched, which is the stronger result: none of
 assertions failed on a machine where guest time *is* host time and there is no icount instrument.
 Aiming a test at the re-arm law instead of at elapsed wall clock made it accelerator-independent,
 which is a property this note could not have claimed the day it was written.
+## The second round, 2026-08-04: three more, and a diagnostic the first round did not have
+
+The `cpu matrix` job became a merge blocker. Three sites failed across four models in a handful of
+runs, on pull requests whose diffs could not reach them (an `xargs` change failed a timer
+assertion), and one of the three was the probe the first round had deliberately left alone.
+
+| site | model | what it said |
+|---|---|---|
+| `arch/riscv64/timer.rs`, `holding_a_lock_masks_the_timer` | `rv64`, the control | `left: 41, right: 40` |
+| `smp.rs`, `work_can_be_placed_on_every_core` | `rva23s64`, `thead-c906` | "work placed on a core never ran there" |
+| `sched.rs`, `a_thread_that_never_yields_is_preempted_anyway` | `sifive-u54` | "the spinner never ran at all" |
+
+**The diagnostic that sorts this round is the window, not the direction.** The first round sorted
+the family by the sign of the discrepancy, which found three assertions written against something
+wider than the property. These three are all "positive" failures and the sign says nothing useful
+about them. What they have in common is that each **measures across instructions that are not part
+of the thing being measured**: a tick counted between the read and the mask, a probe's execution
+that placement never promised, a spinner sampled before it was ever given a turn. Host contention
+does not cause any of them. It **stretches the window in wall-clock terms**, which is what turns a
+race that never lost on a quiet machine into one that loses on a shared runner.
+
+### `holding_a_lock_masks_the_timer` (both ISAs): the window moved inside the lock
+
+The claim is "no timer interrupt lands while an `IrqSafeMutex` is held". The measurement was
+`before = ticks()` **outside** the critical section, then `ticks()` inside it, so the window
+included the handful of instructions between the read and `M.lock()`. A tick landing there is
+charged to the lock and the run goes red with a message accusing `IrqSafeMutex` of not masking.
+
+That window is where a descheduled vCPU resumes, and a resuming vCPU has a deadline already in the
+past, so it takes the interrupt at the first instruction it executes. Hence "left: 41, right: 40",
+one surplus tick, on the control model. The same window also straddled a preemption point, and
+`TICKS` is per core (DECISIONS §11): a steal (§28.3) moving the thread between the two reads
+compares two unrelated counters, which on a machine whose cores started within a tick of each other
+also looks like an off-by-one.
+
+Both reads now happen **inside** the critical section, where interrupts are masked and the thread
+can neither switch nor migrate, so `cpu::id()` is fixed across the block and the window is exactly
+the property. Nothing about the assertion was weakened: a real masking failure lands a tick inside
+that window and still fails, and it now fails without a competing explanation.
+
+The post-release half ("and the moment we let go, the pending interrupt is delivered") kept its
+claim and lost its fixed two-period spin: it waits, bounded in tick periods, and reads the counter
+of the core it *was* on, by index. Dropping the guard is a preemption point.
+
+**A new accessor per ISA, and it is the general form of half this note**: `ticks_on(core)` and
+`missed_ticks_on(core)` beside `ticks()` and `missed_ticks()`. A per-core counter read either side
+of a wait must **name its core**, or a migration silently changes the subject. `ticks_arrive_at_the_configured_rate`
+had already discovered this in the first round and solved it locally by bracketing the hart id into
+its snapshot; the accessor makes it available to the other four tests in those files, all of which
+had the same hole (`the_timer_is_ticking`, `the_handler_keeps_up_when_no_lock_is_held`,
+`a_long_critical_section_costs_a_tick`, and the masking test itself).
+
+### `work_can_be_placed_on_every_core` (`smp.rs`): the first round's verdict was wrong
+
+The first round left it alone on the argument that its wait is on the property itself and can only
+fail in the "not yet" direction. **The premise is false, and the machine said so.** The failure is
+not slow, it is wedged, and no budget fixes it:
+
+1. the probe for core A is placed on A's run queue while the test thread runs on A;
+2. an idle core B, which has no probe of its own yet, steals it (a *queued* thread is fair game);
+3. the rest of the probes are placed, every core is now busy, and nothing is idle;
+4. A holds only the test thread, which never yields into idleness (`schedule()`: "a thread yielding
+   into an empty run queue simply carries on"), so A never asks for work back.
+
+Stealing is pull-based from an idle core (§28.3). Once no core is idle, nothing rebalances, so
+`SPREAD[A]` stays zero for the full 60 s and then reports a timeout. The one-persistent-probe-per-core
+trick was supposed to prevent exactly this by keeping every core busy with its own, and it has a
+hole: it only holds if every probe is placed before any core starts stealing. A contended host
+stretches the placement loop across a tick, which is all it takes.
+
+**This is the third time §28 has invalidated a placement assumption in this one file.** The comment
+in `secondary_main` step 6 is the second, and it is the one that stated the rule this verdict rests
+on: *a deadline cannot fix an unreachable condition*. That comment also records that widening the
+wait from 10 s to 60 s changed nothing, which is what finally separated the two cases there. The
+first round read the same file and reached the opposite conclusion about the test next door.
+
+So the test now asserts what `spawn_on` actually promises: **arrival at the named core**. A new
+per-core counter, `PerCpu::adopted`, counts threads this core has taken out of its own inbox, which
+is the one point where a thread crosses from a remote core's hands into this core's queue.
+`inbox_len` cannot serve, because it is a depth: a push and a drain between two reads leave it
+where it was. Placements are made one at a time and each is followed to a reap, so the adoption the
+counter shows can only be the thread the test just placed.
+
+What is deliberately no longer asserted is that the target then **ran** it. That is not a property
+`spawn_on` has: it is a placement hint, not a pin, and a steal moving the thread first is correct
+behaviour. The claim is not lost, it is decomposed and each half is now stable:
+`every_secondary_runs_scheduled_work` proves every core runs what is on its own queue, and
+`a_batch_of_cpu_bound_work_reaches_every_core` proves placement plus stealing fills the machine.
+Delivery here, execution there.
+
+The test also got a case it never had: **this core as a target**. `place_on` puts a local target
+straight onto our own run queue, with no inbox and no IPI, so the old loop's `target == here`
+iteration was not exercising the cross-core path at all. A placer thread on another core now makes
+that placement, which is sound because a thread changes core only by a steal and only an idle core
+steals: the core running the test thread never goes idle, so the placer cannot land on it.
+
+### `a_thread_that_never_yields_is_preempted_anyway` (`sched.rs`): a race the test built for itself
+
+`assert!(SPINNING > 0, "the spinner never ran at all")` is a **sample**, taken after `STOP` is set.
+The order was: spawn the spinner, spawn the polite thread, wait for the polite thread, set `STOP`,
+then check that the spinner had run. If the polite thread got its turn first, `STOP` was already
+true when the spinner was finally scheduled, so it left its loop without incrementing anything and
+the run went red while the kernel did nothing wrong.
+
+The spinner running is a **precondition** of the claim, not the claim, so it is waited on rather
+than sampled. Waiting for it before the polite thread exists also makes the rest stronger: the
+polite thread's turn can then only have come from preempting a thread that was genuinely running,
+and `preemptions()` is baselined after that point, so the preemptions the test claims are the ones
+that gave the polite thread its turn.
+
+**The one-second deadline went with it, and its replacement is the interesting part.** The budget is
+now 200 **delivered ticks** on this core, not a wall-clock interval. A tick is when a preemption can
+happen, so preemption opportunities are the unit the claim is counted in; and it is the one budget a
+contended host cannot inflate, because descheduling the emulator delivers *fewer* ticks over a
+stretch of wall clock while a `timer::now()` deadline keeps running whether the guest executes an
+instruction or not. This is the same move the first round made on the drift twins (assert the law,
+not the rate), in the scheduler instead of the timer.
+
+The helper (`within_ticks`) does not yield, because this test must not, and it re-anchors its budget
+if the thread changes core: the tick counter is per core, and a migration means we were preempted,
+which is the news the test is waiting for anyway. If ticks stop entirely it does not return, and the
+harness's 90 s per-test ceiling is the backstop. A timer that is not delivering at all is the arch
+timer tests' failure to report, not this one's.
+
+### The instrument that was missing: run the matrix under deliberate load
+
+Both rounds so far have worked from CI failures, which means waiting for the family to bite someone
+else's pull request and then reasoning backwards. There is a cheaper way, and it should be the first
+thing anyone reaches for here:
+
+```sh
+# one spinner per host core, then the matrix
+n=$(sysctl -n hw.ncpu); i=0
+while [ "$i" -lt "$n" ]; do ( while :; do :; done ) & i=$(( i + 1 )); done
+script/cpu-matrix; kill %1 %2 %3 %4 %5 %6 %7 %8
+```
+
+On an eight-core machine that takes the load average to ~22 and reproduces this family in one run.
+The first time it was tried (2026-08-04, immediately after the three fixes above) it failed **three
+models at two sites that had never been seen before**, and neither was one of the three just fixed:
+
+| site | model | what it said |
+|---|---|---|
+| `sched.rs`, `a_sender_blocks_until_a_receiver_arrives` | `rv64` | "the sender never woke after its message was taken" |
+| `sched.rs`, `other_threads_run_while_one_is_blocked` | `sifive-u54`, `rva22s64` | "a worker made no progress while another thread was blocked on IPC" |
+
+Both are **a yield count used as a duration**, which is the defect `wait_for`'s own doc comment
+describes and which round one had already fixed once, in `threads_round_robin`. Since §28 scattered
+work across cores, fifty yields on a core with an empty run queue are microseconds; they elapse
+before the thread being waited on has been scheduled at all. Five such waits were converted to
+`wait_for`; five other yield loops in the same file were left, because a cleanup drain asserts
+nothing and a negative assertion ("it must NOT have woken *yet*") only gets safer when the machine
+is slow.
+
+Every matrix run this round produced, in order, because reporting the best one would be the exact
+dishonesty this milestone exists to remove:
+
+| run | conditions (peak 1-minute load average) | result |
+|---|---|---|
+| 1 | shared dev machine, no induced load (LA ~3) | 5/5 pass |
+| 2 | same (LA ~3) | 5/5 pass |
+| 3 | 8 spinners on 8 cores (LA 22.8) | **3 fail**: `rv64`, `sifive-u54`, `rva22s64`, at the two yield-count sites above |
+| 4 | 8 spinners, after converting those waits (LA 15.5) | 5/5 pass |
+| 5 | 8 spinners (LA 36.5, the heaviest of the five) | 5/5 pass |
+
+Runs 1 and 2 are what a green CI run would have said, and they said it before the yield-count sites
+were touched: **two clean matrices in a row proved nothing about them.** That is the argument for
+the recipe in one line.
+
+**The lesson is about method, not about those two tests.** This family is reproducible on demand,
+and it has been diagnosed from CI logs three times instead. A red matrix under load proves nothing
+about a *model* (notes/cpu-models.md is emphatic about that, and it is right), but it is the best
+available prover of an *assertion*: it is the condition under which a wait that measures the wrong
+thing gives the wrong answer.
+
+### The handler-latency twins: still not fixable with a wall clock, and now said plainly
+
+`the_handler_keeps_up_when_no_lock_is_held` on both ISAs got the `missed_ticks_on` core-scoping and
+nothing else, because the rest of it cannot be re-aimed on this instrument. A miss means a whole
+tick period elapsed before the handler re-armed, and **from inside the guest a 30 ms handler and a
+30 ms deschedule are the same observation**. `miss_detail` (aarch64) reports how late the re-arm was,
+which distinguishes them for a human reading the panic, but "excuse the misses whose lateness has
+the deschedule signature" is a weaker claim, not a re-aimed one: a handler slow by more than two
+periods would be excused by it.
+
+The honest alternative is the instrument, not the assertion. Under `-icount shift=0,sleep=off`
+virtual time is a function of instructions executed, so a deschedule cannot advance it and "the
+handler took fewer than N instructions" is a claim a contended runner cannot falsify. Unlike the
+placement probe, this one has no reason to need more than one core, so the icount bench's `-smp 1`
+is not an obstacle. Recommended here, not built here.
 
 ## BUGS
 
@@ -178,10 +373,37 @@ which is a property this note could not have claimed the day it was written.
   a miss, and the guest cannot tell that miss from a slow handler; `miss_detail` (added to the
   aarch64 timer for milestone 78) records how *late* the re-arm was, which is the discriminator a
   fix would build on, since a few hundred cycles late is a slow handler and a whole period late
-  is the emulator.
+  is the emulator. *(Second round, 2026-08-04: they are core-scoped now, so a migration is no
+  longer one of the ways they can lie, and the verdict on the rest is written above: the fix is
+  the icount instrument, and excusing deschedule-shaped misses would be a weaker claim rather than
+  a re-aimed one.)*
 - **Scope was five sites, not 39.** The roadmap's scope note counts 39 sites in 7 files matching
   the shape (`wait_for`, or assertions against `free_frames`, `thread_count`, `used()`). The
   other 34 were not audited here; the diagnostic above is the checklist for reading any of them.
+- **`work_can_be_placed_on_every_core` no longer proves that a *specific* core executed a
+  *specific* thread**, and nothing else does either. That is the second round's honest cost.
+  Delivery to the named core is asserted exactly; execution is asserted for every core, but over
+  the population of threads rather than per placement. Closing it needs a pin, which DECISIONS §28
+  deliberately deferred: while placement is a hint, "this thread ran on that core" is not a
+  property the scheduler has, and a test asserting it is asserting a coincidence.
+- **The adoption counter can in principle be moved by something other than the placement under
+  test.** Serving a steal pushes into the requester's inbox, so a target that stole from a third
+  core in the same window would also increment. The test closes that by construction (one
+  placement in flight at a time, each followed to a reap, so nothing else is runnable to steal),
+  not by the counter being unambiguous. A version that placed several at once would have to reason
+  about this again.
+- **Two siblings were checked against the same question and left alone**, which is what the
+  milestone's scope note asks for.
+  - `user/tests.rs`, `a_user_program_that_never_yields_is_preempted_anyway` spins a tenth of a
+    second of counter time and then asserts `preemptions()` rose: a wall-clock window with no
+    wait, so it is the family's shape. It survives because falsifying it needs the emulator
+    descheduled across *all four* cores for the whole window, where the `sched.rs` twin needed
+    only an unlucky order on one. Nothing has ever been recorded against it.
+  - `smp.rs`, `every_secondary_runs_scheduled_work` indexes `RAN_ON` by the core a probe ran on,
+    the indexing the placement probe had to abandon. It survives because each secondary's probe is
+    spawned onto its own queue as that core's first act and exits at once, so the window in which
+    an idle neighbour could steal it is a few instructions rather than a whole placement loop. If
+    it ever does fail, suspect this first; the fix is the placement probe's.
 
 ## See also
 

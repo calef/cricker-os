@@ -101,8 +101,13 @@ pub fn online_harts_mask() -> usize {
 static RAN_ON: [core::sync::atomic::AtomicBool; MAX_CPUS] =
     [const { core::sync::atomic::AtomicBool::new(false) }; MAX_CPUS];
 
-/// Set by a probe placed on a specific core via `spawn_on`, indexed by the core it ran on. Proof
-/// that cross-core placement (the inbox + reschedule SGI) actually delivers work to a chosen core.
+/// Set by a probe placed on a specific core via `spawn_on`: indexed by the core it was **placed
+/// on**, holding the core it actually **ran on**, plus one (so zero means "has not run yet").
+///
+/// Both halves matter, and they used to be conflated: the index was the core it ran on, which made
+/// the array a record of which cores had been busy rather than of which placements arrived. Since
+/// DECISIONS §28.3 an idle core may steal a placed thread before its target runs it, so the two are
+/// genuinely different questions. See `work_can_be_placed_on_every_core`.
 #[cfg(test)]
 static SPREAD: [core::sync::atomic::AtomicU32; MAX_CPUS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_CPUS];
@@ -655,38 +660,112 @@ mod tests {
         }
     }
 
-    /// **Work can be placed on any core from another core** (SMP step 3c, delivery mechanism). Core 0
-    /// uses `spawn_on` to put one probe on each online core; a remote target is reached through its
-    /// inbox and a reschedule SGI. Each probe marks the core it runs on, and every core must be hit.
+    /// **Work can be placed on any core from another core** (SMP step 3c, the delivery mechanism):
+    /// `spawn_on(target, ..)` pushes the thread into `target`'s inbox and pokes it with a reschedule
+    /// SGI, and `target` itself takes it out onto its own run queue.
     ///
-    /// The probes are **persistent** (they spin until released) and there is exactly **one per core**,
-    /// on purpose: DECISIONS §28 added work stealing, so a short probe placed on a core can be stolen
-    /// away before that core runs it, and `spawn_on` is a placement hint, not a pin (an explicit pin
-    /// is a deferred §28 trigger). One persistent probe per core keeps every core busy with its own,
-    /// so no core goes idle and nothing is stolen, which is what lets this stay a clean test of the
-    /// delivery path reaching each target. The batch-spread test above covers the stealing case.
+    /// One placement is in flight at a time and each is followed all the way to a reap, so the
+    /// adoption this counts on the target can only be the thread this test just placed there.
+    ///
+    /// # What this asserts, and what it deliberately does not (milestone 78)
+    ///
+    /// It asserts **arrival at the named core**, read from that core's own adoption counter
+    /// (`PerCpu::adopted`). It does **not** assert that the target then ran the thread, and the
+    /// difference is the whole fix.
+    ///
+    /// The old version placed one persistent spinning probe per core and waited, up to 60 s, for
+    /// every core to have run one. That is a load-balancing outcome rather than a delivery one, and
+    /// the scheduler does not promise it: stealing is **pull-based from an idle core** (§28.3), and
+    /// a core that is not idle neither steals nor pushes. So this sequence, which a contended host
+    /// makes ordinary, wedges permanently:
+    ///
+    ///   1. the probe for core A is placed on A's run queue while the test thread runs on A;
+    ///   2. an idle core B, which has no probe yet, steals it (a queued thread, so it is fair game);
+    ///   3. the remaining probes are placed and every core is now busy, so nothing is idle;
+    ///   4. A holds only the test thread, which never yields into idleness (`schedule()`: a thread
+    ///      yielding into an empty run queue simply carries on), so A never steals a probe back.
+    ///
+    /// Nothing rebalances after that, and `SPREAD[A]` stays zero forever. The failure was therefore
+    /// **not** "not yet, give it longer", which is what the old 60 s budget assumed and what
+    /// milestone 78's first pass argued when it left this test alone; it was a condition that could
+    /// not become true, reported as a timeout. It blocked merges on `rva23s64` and `thead-c906` on
+    /// 2026-08-04, on pull requests that changed no kernel code.
+    ///
+    /// This is the **third** time §28 has invalidated a placement assumption in a test in this file;
+    /// the comment in `secondary_main` step 6 is the second, and it is the one that named the rule a
+    /// deadline cannot fix an unreachable condition.
+    ///
+    /// The claim that was lost is covered where it belongs: `every_secondary_runs_scheduled_work`
+    /// proves each core runs what is on its own queue, and `a_batch_of_cpu_bound_work_reaches_every_core`
+    /// proves placement plus stealing fills the whole machine. Delivery here, execution there.
     #[test_case]
     fn work_can_be_placed_on_every_core() {
-        static RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
         for s in &SPREAD {
             s.store(0, Ordering::Relaxed);
         }
-        RELEASE.store(false, Ordering::Relaxed);
 
         let n = online_count();
-        for target in 0..n {
-            crate::sched::spawn_on(target, move || {
-                while !RELEASE.load(Ordering::Relaxed) {
-                    SPREAD[cpu::id()].store(1, Ordering::Relaxed);
-                    core::hint::spin_loop();
-                }
-            })
-            .expect("spawn_on failed");
+        let here = cpu::id();
+        assert!(
+            n >= 2,
+            "a cross-core placement test needs at least two online cores (runner passes -smp {MAX_CPUS})",
+        );
+
+        // Every core but this one, placed from here: the remote path, inbox plus SGI.
+        for target in (0..n).filter(|&c| c != here) {
+            place_one_probe_on(target);
         }
 
-        let done = || (0..n).all(|c| SPREAD[c].load(Ordering::Relaxed) != 0);
-        assert!(wait_for(done), "work placed on a core never ran there");
-        RELEASE.store(true, Ordering::Relaxed); // let the probes finish and be reaped
+        // **And this core as a target**, which needs the placement to come from somewhere else, or
+        // it is not the cross-core path at all (`place_on` puts a local target straight onto our own
+        // queue, with no inbox and no SGI). The placer cannot itself end up here: a thread changes
+        // core only by a steal, a steal is initiated only by an idle core, and this core is running
+        // the test thread, which never goes idle.
+        let other = (0..n).find(|&c| c != here).expect("n >= 2 checked above");
+        let placer = crate::sched::spawn_on(other, move || place_one_probe_on(here))
+            .expect("spawn_on of the placer failed");
+        assert!(
+            wait_for(|| SPREAD[here].load(Ordering::Relaxed) != 0),
+            "core {here} never received a placement made from core {other}",
+        );
+        assert!(
+            wait_for(|| !crate::sched::thread_present(placer)),
+            "the placer thread on core {other} was never reaped",
+        );
+    }
+
+    /// Place one probe on `target` and follow it to a reap: the target must take it out of its own
+    /// inbox (or, for a local target, off its own queue), the probe must run, and it must be reaped.
+    ///
+    /// Where it ran is recorded but not asserted, for the reason in the caller: a steal may move it
+    /// first, and `spawn_on` is a placement hint rather than a pin (an explicit pin is a deferred
+    /// §28 trigger).
+    fn place_one_probe_on(target: usize) {
+        let local = target == cpu::id();
+        let adopted_before = cpu::of(target).adopted();
+
+        let tid = crate::sched::spawn_on(target, move || {
+            SPREAD[target].store(cpu::id() as u32 + 1, Ordering::Relaxed);
+        })
+        .expect("spawn_on failed");
+
+        if !local {
+            assert!(
+                wait_for(|| cpu::of(target).adopted() > adopted_before),
+                "core {target} never took the thread placed on it out of its inbox: the \
+                 reschedule IPI is not reaching that core, or its drain is not running",
+            );
+        }
+
+        assert!(
+            wait_for(|| SPREAD[target].load(Ordering::Relaxed) != 0),
+            "the probe placed on core {target} was delivered but never ran anywhere",
+        );
+        // Leave nothing behind for a later test's thread or frame accounting to find in flight.
+        assert!(
+            wait_for(|| !crate::sched::thread_present(tid)),
+            "the probe placed on core {target} was never reaped",
+        );
     }
 
     /// **A batch of cpu-bound work fills the whole machine** (SMP load balancing; DECISIONS §28).

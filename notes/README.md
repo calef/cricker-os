@@ -685,6 +685,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   measured cost against TCG, the exact behaviour of a semihosting trap nobody answers, the SMMU
   belief the machine overruled, and the two yield-count assertions a *fast* machine found for the
   same reason a slow one finds them.
+- [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts, in two
+  rounds. Eight assertions failed pull requests that changed no executable code. Round one sorted
+  them by the **direction** of the failure (a slow machine produces a deficit, never a surplus), so
+  the three that fired on negative counts were measuring their neighbours rather than their subject.
+  Round two sorted three more by their **window**: a tick counted outside the lock it was charged
+  to, a probe's execution that placement never promised, a spinner sampled before it had had a turn.
+  It also reverses round one's "left alone" verdict on the placement probe, whose 60 s wait turns
+  out to be unreachable rather than merely late. What each was rescoped to, the two siblings checked
+  and left, and the honest cost of the `<=` trade.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the
