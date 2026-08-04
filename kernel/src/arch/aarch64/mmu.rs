@@ -574,6 +574,7 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
 /// Read the ASID back out of a composed [`ttbr0_value`]. The inverse of the line above, and it
 /// exists so a portable test can ask "which tag is this space wearing?" without knowing that this
 /// ISA keeps it in bits 63:48 and RISC-V keeps it in `satp[59:44]`.
+#[cfg_attr(not(test), allow(dead_code))] // the tests are its only caller; the kernel composes, never decomposes
 pub fn asid_of(ttbr: u64) -> u16 {
     (ttbr >> 48) as u16
 }
