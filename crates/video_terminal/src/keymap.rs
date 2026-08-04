@@ -216,6 +216,15 @@ mod tests {
         );
         kb.event(EV_KEY, KEY_RIGHTSHIFT, 0);
         assert_eq!(kb.event(EV_KEY, 30, 1), Some(b'a'));
+
+        // Which hand is down is only ever read as the OR of the two, so a keyboard that filed the
+        // left key under the right one types identically and debugs as the wrong hand. The state
+        // dump is the only witness, and a driver being debugged is what it is for.
+        kb.event(EV_KEY, KEY_LEFTSHIFT, 1);
+        assert!(
+            std::format!("{kb:?}").contains("left: true, right: false"),
+            "the left shift key must be recorded as the left one",
+        );
     }
 
     /// A **release types nothing**, an auto-repeat types the same as a press, and a non-key event is
