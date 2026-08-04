@@ -419,20 +419,23 @@ pub const RESCHED_SGI: u32 = 0;
 /// handler's tail runs `schedule()` and picks them up. IRQ context, so interrupts are masked, which
 /// is what `with_runq` needs; we hold nothing else, so taking the inbox is rank-safe (§11).
 pub fn drain_inbox() {
-    let mut moved = false;
+    let mut moved = 0u64;
     let mut inbox = cpu::current().inbox.lock();
     while let Some(thread) = inbox.pop_front() {
         // SAFETY: the sender pushed a live Ready thread; popping it here is the only removal
         // path, so it is on no other queue. Nothing is dereferenced: the handoff is pure
         // pointer movement, which is why this needs no scheduler lock.
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
-        moved = true;
+        moved += 1;
     }
     // The inbox is empty now; mirror that under the lock (DECISIONS §28). The threads moved into the
     // run queue, whose own mirror `with_runq` just updated, so the total load is unchanged.
     cpu::current().note_inbox_len(inbox.len());
+    // And count them: this is the only place a thread crosses from a remote core's hands into this
+    // core's queue, which makes it the one honest observation point for "the placement arrived".
+    cpu::current().note_adopted(moved);
     drop(inbox);
-    if moved {
+    if moved > 0 {
         cpu::current().need_resched.store(true, Ordering::Relaxed);
     }
 }

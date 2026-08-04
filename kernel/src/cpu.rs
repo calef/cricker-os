@@ -120,6 +120,20 @@ pub struct PerCpu {
     /// (the CAS), so a thundering herd of idle cores collapses to one steal per victim per round.
     pub steal_request: AtomicU32,
 
+    /// **How many threads this core has adopted out of its own inbox**, monotonic since boot.
+    ///
+    /// The observable end of the cross-core placement path (§11 step 3c): a remote core pushes a
+    /// thread into this inbox and pokes this core, and this core's `drain_inbox` moves it onto its
+    /// own run queue. `inbox_len` cannot serve here because it is a depth, not a count: a push and
+    /// a drain that happen between two reads of it leave it exactly where it was.
+    ///
+    /// One relaxed increment per adopted thread, on a path that already takes a lock. It exists for
+    /// `smp::tests::work_can_be_placed_on_every_core`, which asserts delivery to the *named* core
+    /// and cannot ask "did that core end up running it": stealing (§28.3) may legitimately move the
+    /// thread first, so execution-on-the-target is not a property `spawn_on` promises. See
+    /// notes/load-sensitive-assertions.md.
+    adopted: AtomicU64,
+
     /// **This core's placement PRNG** (§28's power of two choices): xorshift32, seeded per boot per
     /// core in [`init_this_cpu`], advanced only by this core (spawn runs on the placing core, with
     /// interrupts masked), so a relaxed atomic is interior mutability, not synchronisation. A
@@ -147,6 +161,7 @@ impl PerCpu {
             runq_len: AtomicUsize::new(0),
             inbox_len: AtomicUsize::new(0),
             steal_request: AtomicU32::new(0),
+            adopted: AtomicU64::new(0),
             rng: AtomicU32::new(1), // reseeded per core in init_this_cpu; never left 0 (xorshift)
         }
     }
@@ -180,6 +195,21 @@ impl PerCpu {
     /// the remote core that pushed or by this core's drain, so the store is serialised by the lock.
     pub fn note_inbox_len(&self, len: usize) {
         self.inbox_len.store(len, Ordering::Relaxed);
+    }
+
+    /// Count `n` threads adopted from this core's inbox onto its run queue. Called by the owning
+    /// core's drain, under the inbox lock.
+    pub fn note_adopted(&self, n: u64) {
+        self.adopted.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// How many threads this core has taken out of its own inbox since boot. Monotonic, so a test
+    /// can read it either side of a placement and see the delivery even if the thread has already
+    /// moved on. Relaxed: the only writer is the owning core, and a reader wants "has it happened
+    /// yet", which is a question a stale read answers late rather than wrongly.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn adopted(&self) -> u64 {
+        self.adopted.load(Ordering::Relaxed)
     }
 
     /// This core's total load, for a **placement** decision (DECISIONS §28.1): queued threads plus
