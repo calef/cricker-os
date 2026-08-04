@@ -596,6 +596,7 @@ dependencies = [
  "crickerfs",
  "fs_proto",
  "gfx_proto",
+ "gpt",
  "measured_boot",
  "video_terminal",
 ]

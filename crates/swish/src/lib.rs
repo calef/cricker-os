@@ -411,7 +411,11 @@ pub fn write_holdings(budget_pages: u64, holdings: Holdings, out: &mut dyn FnMut
     } else {
         out(b"    (no directory capability: a name on the line has nothing to narrow)\n");
     }
-    out(b"    (no clock: 'date' spawned from here holds no clock capability, and says so)\n");
+    // The clock is deliberately absent from the list above, and the sentence says whose it is rather
+    // than that there is none. A shell that held the clock page could hand it to anything it spawns;
+    // init holds it and endows exactly the programs whose manifest declares one, which is one fewer
+    // process able to read the time and the reason this line is not a hole (DECISIONS §43).
+    out(b"    (no clock here: init endows 'date' a read-only clock page, this shell cannot)\n");
     out(b"  it can name no devices and no other process. authority is what it holds.\n");
 }
 
@@ -523,14 +527,14 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
             out(b"           ...and nothing under it: no -r, so it cannot even look\n");
         }
     }
-    // `date`'s authority is a read-only mapping of the clock page, and it is **init's to endow, not
-    // the shell's**: it is not designated on the line and no token could designate it. Saying so
-    // here is the point of `caps` being the sole visibility surface. The day the shell is granted a
-    // clock to delegate, this line becomes a cap row, and until then the preview must not let a
-    // reader believe the command line is the whole story.
-    if matches!(e.prog, Prog::Date) {
-        out(b"    (clock: this shell holds none to delegate, so it will report the time\n");
-        out(b"     as unknown. the clock is init's to endow; no token on the line can.)\n");
+    // **The clock, which no token on the line designates.** It is init's to endow rather than the
+    // shell's, and it is still part of this child's complete authority, so `caps` prints it: a
+    // reader who took the command line for the whole story would be wrong by exactly one capability.
+    // The row says *read-only* because that is the entire reason `date` cannot set the time
+    // (DECISIONS §43): there is no flag it could pass and no method it could call.
+    if e.prog.manifest().clock {
+        out(b"    cap 1  frame     clock    read-only. it can read the time and not set it,\n");
+        out(b"                              and no token on the line could have asked for more\n");
     }
     // **Where its output goes**, which is the demonstration milestone 50 owed: the destination is a
     // capability rather than an integer with a convention attached, so `caps` can name it. On Unix
@@ -985,12 +989,13 @@ mod tests {
     #[test]
     fn date_says_the_clock_is_not_on_the_line() {
         // The preview must not let a reader believe the command line is the whole story: `date`'s
-        // clock is init's to endow and no token could designate it.
+        // clock is init's to endow, no token could designate it, and it is still a capability the
+        // child holds. So it is printed, and it is printed as read-only, which is the whole of why
+        // there is no `date -s`.
         let s = shown(|o| write_preview(&endowment(Prog::Date), o));
-        assert!(
-            s.contains("clock: this shell holds none to delegate"),
-            "{s}"
-        );
+        assert!(s.contains("cap 1  frame     clock"), "{s}");
+        assert!(s.contains("read the time and not set it"), "{s}");
+        // And a program that declares no clock is not given a row that says it has one.
         assert!(!shown(|o| write_preview(&endowment(Prog::Wc), o)).contains("clock"));
     }
 

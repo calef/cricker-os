@@ -84,13 +84,29 @@ if [ -n "$CRICKER_DISK" ]; then
     # The GPT-partitioned image (milestone 57), the fourth mmio block device, at slot 3, and first on
     # the command line for the same reversal reason. The twin of the aarch64 runner's block; see it
     # for why the bytes come from the `sgdisk` fixture rather than from our own writer. `virt` here
-    # has eight mmio transports and this run uses six of them (four disks, a NIC, an RNG).
+    # has eight mmio transports and this run uses SEVEN of them (five disks, a NIC, an RNG), which
+    # is worth knowing before adding an eighth: QEMU silently drops a virtio-mmio device past the
+    # last transport, and the symptom is a test skipping because `find_block_device_n` came back
+    # empty rather than an error from the emulator.
     GPT_DISK_IMG="${CRICKER_DISK%.img}-gpt.img"
     GPT_MMIO=""
     if [ -f "$GPT_DISK_IMG" ]; then
         GPT_MMIO="-drive file=$GPT_DISK_IMG,if=none,format=raw,id=hd4 -device virtio-blk-device,drive=hd4"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The blank image (milestone 57's write half), the FIFTH mmio block device, at slot 4. It goes
+    # FIRST on the command line for the same reason as the others: slot assignment is the reverse of
+    # command-line order, so the five land at crickerfs=0, redoxfs=1, crash=2, gpt=3, blank=4, which
+    # is what `find_block_device_n` counts and what `disk_service::BLANK_DISK` asks for. This one
+    # arrives as 64 MiB of ZEROS: the guest writes the partition table and then the filesystem
+    # inside it, and the post-run host check reads both back. Its own disk, regenerated every run,
+    # because a test that partitions a disk must not touch an image another test reads. Soft, like
+    # the others: present only when the test flow built it.
+    BLANK_DISK_IMG="${CRICKER_DISK%.img}-blank.img"
+    BLANK_MMIO=""
+    if [ -f "$BLANK_DISK_IMG" ]; then
+        BLANK_MMIO="-drive file=$BLANK_DISK_IMG,if=none,format=raw,id=hd5 -device virtio-blk-device,drive=hd5"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $BLANK_MMIO $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone 30), the

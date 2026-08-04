@@ -259,7 +259,7 @@ Known limitations, next to the feature rather than only in a tracker.
 - **The interactive prompt still holds no directory**, so at a real keyboard `echo *.txt` says "this
   shell holds no directory capability; there is nothing here to name" and `rm *.txt` says "you hold
   no such capability". Both sentences are **true rather than placeholders** (the interactive boot
-  wires no FS service, §27's amendment), and they agree with each other, which is the property this
+  held no filesystem when this was written, §27's amendment), and they agree with each other, which is the property this
   lane cares about. What is missing is a boot that wires an FS service into the interactive system.
 - **The shell cannot build the caretaker either.** `spawn` refuses a directory grant with "this
   shell cannot yet", so the set grants that exist are wired by the kernel test. The mechanism is
@@ -334,4 +334,4 @@ cargo test -p fs_proto       # the set encoding, and the fixture pinned against 
 - [grant-expression.md](grant-expression.md): the command line as a grant expression, and
   `fs_file_caretaker`.
 - Milestone 47's "Globbing, which decides how every multi-file operation grants" in
-  `design/roadmap.md`.
+  `design/roadmap/47-navigation-and-naming.md`.

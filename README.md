@@ -61,7 +61,7 @@ laptop and on a runner.
 ## What it does
 
 This section is deliberately **not** status. Status lives in one place, with a gated status column and
-a checker: **[design/roadmap.md](design/roadmap.md)**. What follows is what the system *is*, and each
+a checker: **[design/roadmap/](design/roadmap/README.md)**. What follows is what the system *is*, and each
 claim points at the artifact that keeps it true rather than repeating a list that goes stale. The
 previous version of this section did repeat them, and drifted twice inside three days.
 
@@ -177,7 +177,7 @@ contact with month four. The short version:
 
 ## Milestones
 
-**Not repeated here.** They live in **[design/roadmap.md](design/roadmap.md)**, which has a status
+**Not repeated here.** They live in **[design/roadmap/](design/roadmap/README.md)**, which has a status
 column with a fixed vocabulary and a checker (`script/roadmap`) that fails the build if a milestone is
 cited in prose without a row, or carries a status outside the vocabulary. This file used to hold a
 second copy: fifty-two lines of tick-marks, a partial and out-of-order subset, and nothing checking

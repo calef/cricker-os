@@ -135,10 +135,21 @@ Named here rather than in a tracker, next to the feature.
   register selectors are not reachable from there: `ArgSpec` is `Required`/`Forbidden` with no
   position or arity, and growing it is deferred until a program wants both an argument and a file.
   See notes/program-manifest.md.
-- **The interactive shell can grant it no clock**, so `date` typed at the prompt prints "the time is
-  unknown: this process holds no clock capability" today. That boot starts no clock service and the
-  shell holds nothing to delegate; notes/grant-expression.md records the whole chain a clock grant
-  would need, and `caps date` says it in advance.
+- **The clock is init's to endow, and the shell still holds none.** The interactive boot starts the
+  clock service and hands *init* the page read-only, so `date` at the prompt prints a real time; but
+  the grant comes from `Prog::Date`'s manifest rather than from the command line, because there is no
+  token a person could type that designates a clock. `caps date` prints the row anyway (a preview
+  showing only what the line designates would be off by one capability), and that is the honest shape
+  rather than a gap: a shell that held the page could hand it to anything it spawns.
+- **The clock service is parked in its startup announcement for the whole interactive boot.** It
+  publishes the RTC reading and *then* announces, with a blocking send, so the page is right before
+  anybody could read it; the boot spawns one thread whose only job is to take that message, which
+  leaves the propose endpoint live. Nothing at the prompt proposes a time, so nothing exercises it,
+  and the first `date` after a boot with a broken RTC would read `UNKNOWN` rather than block.
+- **Nothing at the prompt can set or propose a time**, and `date -s` is still not a missing flag. The
+  boot grants init `READ` on the frame, so there is no writable mapping anywhere on the path from the
+  kernel to a spawned child. A setter would be a different program holding a different capability,
+  and init would have to be handed one to hand on.
 - **A fixed UTC offset is not a time zone.** See above, and notes/calendar.md.
 - **No `strftime`.** Five named formats. A format-string interpreter is a second parser with runtime
   errors in a program that has no allocator, for combinations nothing here asks for.

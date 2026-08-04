@@ -148,8 +148,8 @@ format, and it would be easy to grow it into a real one before knowing what it m
 
 ## See also
 
-- `design/roadmap.md`, milestone 39: repository structure, four options, no decision taken
+- `design/roadmap/39-repository-structure.md`: repository structure, four options, no decision taken
 - `design/haiku-bfs-and-packages.md`: `packagefs` activation as prior art, and its honest limit
-- `design/roadmap.md`, milestone 47: a program namespace is an endowment
+- `design/roadmap/47-navigation-and-naming.md`: a program namespace is an endowment
 - `notes/live-replacement.md`: swapping a running component, and how "the client did not notice" is proven
 - DECISIONS §10 (no ambient authority), §46 (taking a dependency is a decision)

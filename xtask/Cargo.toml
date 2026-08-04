@@ -11,6 +11,11 @@ workspace = true
 [dependencies]
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+# The partition table (milestone 57's write half): the post-run check reads the table the GUEST
+# wrote, from outside the guest, with the same parser the guest used and the same one whose host
+# tests run against tables `sgdisk` and macOS `diskutil` wrote. It also slices the data partition out
+# of the image so the host tool can open the filesystem inside it.
+gpt = { version = "0.1.0", path = "../crates/gpt" }
 # The measured-boot hash (milestone 22 phase B.1): the build and the kernel measure init through the
 # same implementation, so there is one definition of the digest.
 measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }

@@ -1,6 +1,6 @@
 # Where cricker-os could actually run
 
-> **Recast (2026-07-27):** milestone 16 is now RISC-V-first (design/roadmap.md §16): first
+> **Recast (2026-07-27):** milestone 16 is now RISC-V-first (design/roadmap/16-real-hardware-iommu.md): first
 > silicon is a VisionFive 2-class board, whose OpenSBI/NS16550/PLIC/Sv39 contract the kernel
 > already speaks exactly, and the IOMMU work targets QEMU's emulation of the ratified RISC-V
 > IOMMU before any silicon. This note's Pi-first analysis predates the riscv port reaching

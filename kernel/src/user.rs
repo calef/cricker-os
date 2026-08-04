@@ -636,6 +636,17 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         None
     };
 
+    // **The wall clock, for the boot role only** (milestone 51's wiring). Started here, before init
+    // exists, for the same reason the filesystem is: init is the one that hands it on, and a service
+    // spawned after its client would be a race. See [`boot_clock_page`] for why the grant does not
+    // depend on whether the machine turned out to have an RTC. The other roles are milestone 19d's
+    // tests, whose slot numbering must not move.
+    let clock_page = if role == INIT_BOOT_ROLE {
+        Some(boot_clock_page())
+    } else {
+        None
+    };
+
     crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
             Ok(e) => e,
@@ -713,7 +724,18 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant uart rx irq");
-        // The file service (slot 5) and the page its clients share with it (slot 6), when this boot
+        // The clock page (slot 5), read-only, before the filesystem pair so its slot number does not
+        // depend on whether a disk was attached. `READ` is the whole of DECISIONS §43's split at
+        // this boundary: init can hand a child a reader and has nothing that could set the time.
+        // `GRANT` so it can hand one on at all.
+        if let Some(phys) = clock_page {
+            crate::sched::grant(crate::cap::frame_cap(
+                phys,
+                crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
+            ))
+            .expect("grant the clock page");
+        }
+        // The file service (slot 6) and the page its clients share with it (slot 7), when this boot
         // has a filesystem. GRANT on both, because init's job with them is to delegate: it narrows
         // the endpoint into the shell and maps the frame into its address space. `a2` carries the
         // rights the endpoint holds, which is also how init is told there is one at all.
@@ -1141,10 +1163,12 @@ pub fn riscv_uart_driver_demo(
 
 /// **Boot the interactive shell system on RISC-V** (parity D). The riscv counterpart of aarch64's
 /// `spawn_init` + `init_boot`: load `system_initializer` (the portable system builder) as the boot process, map
-/// the whole initrd into it, and grant it three capabilities: a large untyped budget (slot 0), the
-/// NS16550's registers as a device cap (slot 1), and the UART receive interrupt as an `Irq` cap (slot
-/// 2). From those, `system_initializer` builds the console server, the input driver, and the shell out of its
-/// own budget and wires them together; the kernel touches none of it. Unlike the other demos this
+/// the whole initrd into it, and grant it a large untyped budget (slot 0), the NS16550's registers as
+/// a device cap (slot 1), the UART receive interrupt as an `Irq` cap (slot 2), the wall clock page
+/// read-only (slot 3, milestone 51's wiring), and the file service plus its shared page (slots 4 and
+/// 5) when a RedoxFS disk is attached. From those, `system_initializer` builds the console server,
+/// the input driver, and the shell out of its own budget and wires them together; the kernel touches
+/// none of it. Unlike the other demos this
 /// does not block: `system_initializer` and its children run on the scheduler while the boot thread parks.
 #[cfg(target_arch = "riscv64")]
 #[cfg_attr(not(feature = "shell"), allow(dead_code))] // the `shell` boot mode is the only caller
@@ -1225,7 +1249,17 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     )
     .expect("insert uart irq");
     assert_eq!(s2, 2);
-    // The file service (slot 3) and the page its clients share with it (slot 4), when this boot has
+    // The clock page (slot 3), read-only, ahead of the filesystem pair so its number is the same on
+    // every boot. `READ` is DECISIONS §43's split at this boundary: init can endow a reader and holds
+    // nothing that could set the time. See [`boot_clock_page`].
+    let s3 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::frame_cap(boot_clock_page(), Rights::READ.union(Rights::GRANT)),
+        None,
+    )
+    .expect("insert the clock page");
+    assert_eq!(s3, 3);
+    // The file service (slot 4) and the page its clients share with it (slot 5), when this boot has
     // a filesystem (milestone 50). GRANT on both, because init's job with them is to delegate: it
     // narrows the endpoint into the shell and maps the frame into its address space. `a2` carries
     // the rights the endpoint holds, which is also how init is told there is one at all. `None` is
@@ -1234,20 +1268,20 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
         .and_then(|fs_server| fs_service::root_directory(fs_service::blk_server_image(), fs_server))
     {
         Some((file_ep, file_shared)) => {
-            let s3 = crate::sched::tcb_insert_cap(
+            let s4 = crate::sched::tcb_insert_cap(
                 tid,
                 crate::cap::endpoint_cap(file_ep, Rights::WRITE.union(Rights::GRANT)),
                 None,
             )
             .expect("insert the file service");
-            assert_eq!(s3, 3);
-            let s4 = crate::sched::tcb_insert_cap(
+            assert_eq!(s4, 4);
+            let s5 = crate::sched::tcb_insert_cap(
                 tid,
                 crate::cap::frame_cap(file_shared, Rights::WRITE.union(Rights::GRANT)),
                 None,
             )
             .expect("insert the shared file page");
-            assert_eq!(s4, 4);
+            assert_eq!(s5, 5);
             fs_proto::dir::ALL
         }
         None => 0,
@@ -1454,8 +1488,52 @@ pub mod keyboard_service;
 /// Arch-neutral, like the display and compositor wiring: the component is one portable binary
 /// carrying both RTC drivers, and the *machine* says which one it has, so **both ISAs run literally
 /// the same test** (DECISIONS §19).
-#[cfg_attr(not(test), allow(dead_code))] // the tests are its only caller today
+// The interactive boot calls `start` on both ISAs since milestone 51's wiring lane; the rest of the
+// module (the propose helper, the kernel-side page reader) is still the tests' alone.
+#[cfg_attr(not(test), allow(dead_code))]
 pub mod clock_service;
+
+/// **The clock page the interactive boot hands init**, and the one place both ISAs agree on what a
+/// machine with no clock looks like (milestone 51's wiring; `spawn_init`, `riscv_shell_boot`).
+///
+/// The grant is **unconditional**, and that is the design rather than an oversight. A zeroed page
+/// reads as `clock_proto::state::UNKNOWN` (`a_zeroed_page_reads_as_unknown`), so a boot with no
+/// `clock` program in its initrd hands init a page that honestly says "the machine has no clock it
+/// believes" instead of no page at all. That keeps the slot numbering the same on every boot, which
+/// matters more than it sounds: init's cspace is read positionally, and a capability whose *slot*
+/// depends on what the machine turned out to have is a wiring nobody can check by reading.
+///
+/// It is also the DECISIONS §43 split, delivered: init gets `READ` on a frame. Nothing on this path
+/// can hand a child the writable mapping that would let it set the time, because init never had one.
+fn boot_clock_page() -> u64 {
+    match program("clock") {
+        Some(image) => {
+            let wiring = clock_service::start(image);
+            // The service publishes the RTC reading and *then* announces, with a blocking send. It
+            // does not need to be drained for the page to be right, but an undrained announcement
+            // parks the service inside it forever, so it would never serve a proposal. One thread
+            // whose whole life is that receive costs nothing and leaves the propose endpoint live.
+            let report = wiring.report;
+            let _ = crate::sched::spawn(move || {
+                crate::sched::ipc_recv(report);
+                crate::sched::exit();
+            });
+            wiring.page_phys
+        }
+        // No `clock` program packed: allocate the page anyway and leave it zeroed. This is the
+        // honest unknown clock, and it is the same state `date`'s test allocates deliberately.
+        None => {
+            let phys = crate::memory::alloc()
+                .expect("no frame for the clock page")
+                .addr();
+            // SAFETY: freshly allocated, reachable through the direct map, owned by nobody yet.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            };
+            phys
+        }
+    }
+}
 
 /// **Wall-clock time** (milestone 51 lane A, DECISIONS §43).
 ///
@@ -1763,6 +1841,25 @@ mod force_kill_tests;
 /// these two tests prove.
 #[cfg(test)]
 mod authority_tests;
+
+/// **The interactive boot's half of the same idea: a job's memory comes home** (milestone 22, the
+/// increment that migrated the hand-validated boot path).
+///
+/// The tree above proves an init that can hand its construction authority away entirely. The
+/// interactive init cannot: it stays the shell's spawn service, so it must keep *some* budget. What
+/// it can do instead is keep a **bounded** one and make it renewable, which is what these two tests
+/// are about. Every job the prompt spawns is built in a region split off that pool and born
+/// supervised, and `job_reaper` (one endpoint capability, no memory at all) collects the corpse
+/// through `Endpoint::REAP`, which returns the region to **init's** pool under §13 region ownership.
+///
+/// The pair is a control and a claim, in that order: three jobs exhaust the pool when nothing
+/// collects, and twelve go through the same pool when `job_reaper` does. Neither is a timing
+/// argument; the assertion in both is which budget the pages are in.
+///
+/// Cross-ISA, because every piece is portable: `job_reaper` is an ordinary program in both archives
+/// and the reap authorization reads two TCB fields.
+#[cfg(test)]
+mod job_reaper_tests;
 
 /// **A memory-unsafe C component, confined** (milestone 36, DECISIONS §31).
 ///

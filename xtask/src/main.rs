@@ -122,6 +122,7 @@ fn main() -> ExitCode {
         "std-exerciser" => std_exerciser(),
         "shell-check" => shell_check(),
         "test" => test(),
+        "miri" => miri(),
         "bench" => bench(),
         "gdb" => gdb(),
         "objdump" => objdump(),
@@ -131,9 +132,10 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|miri|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
+            eprintln!("       cargo xtask miri [extra cargo-miri-test args, e.g. -p <crate>]");
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
@@ -1116,6 +1118,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "flaky",
             "--bin",
+            "job_reaper",
+            "--bin",
             "display",
             "--bin",
             "painter",
@@ -1169,9 +1173,11 @@ fn initrd_riscv() -> bool {
             "credentialer",
             "--bin",
             "credentialer_test_client",
-            // The disk surveyor (milestone 57), portable like the rest.
+            // The disk surveyor (milestone 57), portable like the rest, and its write-half twin.
             "--bin",
             "disk_surveyor",
+            "--bin",
+            "disk_partitioner",
             "--target",
             RISCV_TARGET,
         ],
@@ -1216,6 +1222,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("sub_server_supervisor", "sub_server_supervisor"),
         ("flaky", "flaky"),
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): init
+        // endows every job it builds with one supervision endpoint and this collects the corpses, so
+        // a job's region comes back to init's budget. Portable, so both archives carry it.
+        ("job_reaper", "job_reaper"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
@@ -1254,6 +1264,9 @@ fn initrd_riscv() -> bool {
         // partition table of the one disk it holds. Portable, so both archives carry it and both
         // ISAs read literally the same table off literally the same image.
         ("disk_surveyor", "disk_surveyor"),
+        // The disk partitioner (milestone 57's write half): writes the table the surveyor reads,
+        // and refuses to without an entropy endpoint. Portable, so both archives carry it.
+        ("disk_partitioner", "disk_partitioner"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
@@ -1308,6 +1321,10 @@ fn initrd_riscv() -> bool {
     // present, exactly as std_exerciser does; `test` builds it first.
     if let Ok(bytes) = read_stripped(&fs_server_elf(RISCV_TARGET)) {
         blobs.push(("fs_server", bytes));
+    }
+    // And `fs_maker` (milestone 57's write half), on the same terms.
+    if let Ok(bytes) = read_stripped(&fs_maker_elf(RISCV_TARGET)) {
+        blobs.push(("fs_maker", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -1489,6 +1506,9 @@ fn mkinitrd() -> bool {
         "spawner",
         "sub_server_supervisor",
         "flaky",
+        // The interactive boot's corpse collector (milestone 22, the interactive increment): one
+        // endpoint capability and nothing else, so a job's region comes back to init's budget.
+        "job_reaper",
         "display",
         "painter",
         "c_confiner",
@@ -1511,6 +1531,10 @@ fn mkinitrd() -> bool {
         // one disk it holds. Portable, so both archives carry it and both ISAs read literally the
         // same table off literally the same image.
         "disk_surveyor",
+        // The disk partitioner (milestone 57's write half): the same disk authority pointed the
+        // other way, plus the entropy endpoint a unique GUID needs. Portable, so both archives
+        // carry it, and both ISAs write a table the other could read.
+        "disk_partitioner",
         // The nameset caretaker (milestone 47's globbing lane): a directory capability attenuated
         // to the names a pattern matched. Portable, so both archives carry it.
         "fs_nameset_caretaker",
@@ -1578,6 +1602,12 @@ fn mkinitrd() -> bool {
     let fs_server = read_stripped(&fs_server_elf(TARGET)).ok();
     if let Some(bytes) = &fs_server {
         files.push(("fs_server", bytes.as_slice()));
+    }
+    // `fs_maker` (milestone 57's write half) rides along on the same terms: the same package, the
+    // same build, and absent from an interactive boot that never built it.
+    let fs_maker = read_stripped(&fs_maker_elf(TARGET)).ok();
+    if let Some(bytes) = &fs_maker {
+        files.push(("fs_maker", bytes.as_slice()));
     }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -1692,8 +1722,12 @@ fn fs_server_build(triple: &str) -> bool {
             "build",
             "--manifest-path",
             "fs_server/Cargo.toml",
+            // Both binaries out of the one package: the server that opens an image and never
+            // creates, and `fs_maker` (milestone 57), which creates one and never serves.
             "--bin",
             "fs_server",
+            "--bin",
+            "fs_maker",
             "--no-default-features",
             "--features",
             "el0",
@@ -1708,6 +1742,14 @@ fn fs_server_build(triple: &str) -> bool {
 fn fs_server_elf(triple: &str) -> String {
     workspace_root()
         .join(format!("fs_server/target/{triple}/release/fs_server"))
+        .display()
+        .to_string()
+}
+
+/// The `fs_maker` ELF path for a target triple. Same package, same profile, same build.
+fn fs_maker_elf(triple: &str) -> String {
+    workspace_root()
+        .join(format!("fs_server/target/{triple}/release/fs_maker"))
         .display()
         .to_string()
 }
@@ -1913,6 +1955,155 @@ fn mkgptdisk() -> bool {
         return false;
     }
     true
+}
+
+/// Where the blank test disk is written. The runners derive exactly this name from `CRICKER_DISK`
+/// (`${CRICKER_DISK%.img}-blank.img`), so the two stay in lockstep.
+fn blank_disk_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-blank.img")
+        .display()
+        .to_string()
+}
+
+/// Build milestone 57's write-half disk: 64 MiB of **zeros**, and that is the whole point.
+///
+/// It carries no table, no filesystem and no fixture, because what the guest is going to do to it is
+/// write both. Regenerated every run and never shared, for milestone 37's reason (DECISIONS §27): a
+/// test that partitions a disk cannot be pointed at an image another test reads, and a test whose
+/// starting state is last run's damage is not reproducible on its own. `CRICKER_KEEP_REDOXFS` does
+/// not apply here for the same reason it does not apply to the crash image.
+fn mkblankdisk() -> bool {
+    let path = blank_disk_path();
+    let bytes = std::vec![0u8; (fs_proto::fixture::blank::DISK_BLOCKS * fs_proto::fixture::blank::LBA) as usize];
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        eprintln!("mkblankdisk: could not write {path}: {e}");
+        return false;
+    }
+    true
+}
+
+/// After a test run, read the blank disk back **from the host** and check what the guest put on it:
+/// the partition table with `crates/gpt`, and the filesystem inside the data partition with the
+/// pinned engine through `tools/redoxfs_host`.
+///
+/// This is the half a guest-side assertion cannot make. The in-guest check reads the filesystem
+/// through the same block server that wrote it, on the same machine, minutes later; this is a
+/// different program, on a different operating system, with a different engine build, opening the
+/// file the run left behind. If the two ever disagreed, the guest would be the one to doubt.
+///
+/// The partition is **sliced out** into its own file first, because `redoxfs_host` takes an image
+/// rather than a device plus an offset (a limitation notes/host-recovery.md records). Slicing is
+/// what a partition-aware tool would do internally, and doing it here keeps the claim about the
+/// guest's bytes rather than about a feature of the tool.
+fn blank_check_after_run() -> bool {
+    use fs_proto::fixture::blank;
+
+    let path = blank_disk_path();
+    let Ok(img) = std::fs::read(&path) else {
+        eprintln!("BLANK IMAGE CHECK FAILED: cannot read {path}");
+        return false;
+    };
+    let lba = blank::LBA as usize;
+    if img.len() < 34 * lba {
+        eprintln!("BLANK IMAGE CHECK FAILED: {path} is {} bytes", img.len());
+        return false;
+    }
+
+    // The table the guest wrote, judged by the parser the guest did not run: this process's own
+    // copy, on the host, against the bytes on disk.
+    if let Err(e) = gpt::mbr::validate(&img[..lba], blank::DISK_BLOCKS) {
+        eprintln!("BLANK IMAGE CHECK FAILED: the protective MBR the guest wrote is bad: {e:?}");
+        return false;
+    }
+    let table = match gpt::Gpt::parse(&img[lba..2 * lba], &img[2 * lba..34 * lba]) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: the guest's partition table does not parse: {e:?}"
+            );
+            return false;
+        }
+    };
+    let parts: Vec<_> = table.partitions().collect();
+    if parts.len() != blank::PARTITIONS {
+        eprintln!(
+            "BLANK IMAGE CHECK FAILED: the guest wrote {} partitions, expected {}",
+            parts.len(),
+            blank::PARTITIONS,
+        );
+        return false;
+    }
+    // Every unique GUID distinct and version 4. Two partitions with one id is the failure the
+    // entropy capability exists to prevent, and it is invisible to everything else here.
+    for (i, (_, part)) in parts.iter().enumerate() {
+        let text = part.unique_guid.to_ascii();
+        if text[14] != b'4' {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: partition {i}'s unique GUID is not version 4: {}",
+                String::from_utf8_lossy(&text),
+            );
+            return false;
+        }
+        for (j, (_, other)) in parts.iter().enumerate() {
+            if i != j && part.unique_guid == other.unique_guid {
+                eprintln!("BLANK IMAGE CHECK FAILED: partitions {i} and {j} share a unique GUID");
+                return false;
+            }
+        }
+    }
+    let Some((_, data)) = parts
+        .iter()
+        .find(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
+    else {
+        eprintln!("BLANK IMAGE CHECK FAILED: no cricker-os data partition on the guest's disk");
+        return false;
+    };
+
+    // The filesystem inside it, opened by the pinned engine on the host.
+    let at = data.first_lba as usize * lba;
+    let end = (data.last_lba as usize + 1) * lba;
+    if end > img.len() {
+        eprintln!("BLANK IMAGE CHECK FAILED: the data partition runs past the end of the image");
+        return false;
+    }
+    let sliced = workspace_root().join("target/crickerfs-blank-data.img");
+    if let Err(e) = std::fs::write(&sliced, &img[at..end]) {
+        eprintln!("BLANK IMAGE CHECK FAILED: could not slice the partition out: {e}");
+        return false;
+    }
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs_host/Cargo.toml",
+            "--",
+            "cat",
+            &sliced.display().to_string(),
+            blank::MADE_NAME,
+        ],
+    );
+    match out.as_deref() {
+        Some(s) if s.as_bytes() == blank::MADE_BODY => {
+            eprintln!(
+                "blank image: the guest partitioned it ({} partitions, distinct v4 GUIDs) and the \
+                 host engine reads `{}` out of the filesystem the guest created",
+                parts.len(),
+                blank::MADE_NAME,
+            );
+            true
+        }
+        other => {
+            eprintln!(
+                "BLANK IMAGE CHECK FAILED: the host tool did not read the guest's file back (got \
+                 {:?}). The table is fine, so this is the filesystem `fs_maker` made.",
+                other.unwrap_or("<host tool error: the partition did not even open>"),
+            );
+            false
+        }
+    }
 }
 
 /// After a test run, reopen the **crash** image with the host tool and confirm the property holds
@@ -2492,7 +2683,12 @@ fn test() -> bool {
         eprintln!("--- kernel tests, aarch64 (QEMU) ---");
         // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so
         // mkinitrd packs it; then the RedoxFS test images the runner attaches as extra mmio disks.
-        if !fs_server_build(TARGET) || !user() || !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk()
+        if !fs_server_build(TARGET)
+            || !user()
+            || !mkredoxfs()
+            || !mkredoxfs_crash()
+            || !mkgptdisk()
+            || !mkblankdisk()
         {
             return false;
         }
@@ -2535,7 +2731,7 @@ fn test() -> bool {
         // cross-boot write failure it separates out is real, and notes/fs-server.md carries it as a
         // tracked open item with the exact recipe to reproduce it (run one leg, then the other,
         // without regenerating in between).
-        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() {
+        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() || !mkblankdisk() {
             return false;
         }
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
@@ -2569,7 +2765,57 @@ fn test() -> bool {
     eprintln!("--- redoxfs image consistency after the run (host tool) ---");
     // Both images: the shared fixture (the write persisted, the filesystem still parses) and the
     // crash test's own disk (milestone 37: after a kill mid-transaction, `cut` is one payload whole).
-    redoxfs_check_after_run() && redoxfs_crash_check_after_run()
+    // Three images: the shared fixture (the write persisted and the filesystem still parses), the
+    // crash test's own disk (milestone 37), and milestone 57's blank disk, where the guest wrote
+    // both the partition table and the filesystem inside it.
+    redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
+}
+
+/// **The host tests again, under Miri's interpreter** (milestone 79, notes/miri.md).
+///
+/// Miri checks the rules nothing else in the tree checks: aliasing (tree borrows), pointer
+/// provenance, uninitialized reads, leaks. Kani proves the properties it is asked about and the
+/// fuzzers see crashes; neither sees a `&mut` that aliases. The crate selection is `test()`'s,
+/// verbatim and for the same reason it is `--workspace --exclude` there rather than a list: a
+/// hand-maintained list drifted twice, and this way a new crate is covered the moment it joins
+/// the workspace. The exclusions are the three bare-metal crates that do not compile for the
+/// host, plus one that does:
+///
+/// **`xtask` is excluded like it is from `script/coverage`, and for cost, not principle.** It is
+/// the build tool, not a host-logic crate; its three tests are the scanout referees, safe pixel
+/// arithmetic with no `unsafe` on any path, and under the interpreter they cost around seven
+/// minutes for nothing the type system has not already said. They were run once under Miri during
+/// milestone 79's first full sweep and were clean; the recurring run leaves them out.
+///
+/// **"Miri-clean" means the sampled paths.** An interpreter runs roughly a thousand times slower
+/// than the silicon, so the exhaustive suites gate themselves down under `cfg(miri)`: `ntp_proto`
+/// strides its 10^9-value sweep, `gpt` skips its 460k-parse corruption sweeps, `calendar` and
+/// `glob` shrink their strides and scales, `cred` derives at Argon2's floor (each site says so,
+/// next to the test). What Miri certifies is every path the sampled suite executes, not the
+/// exhaustive claims; those remain native-only.
+///
+/// The two out-of-workspace test surfaces stay out deliberately: `tools/redoxfs_host` and
+/// `fs_server` spend their runtime inside the vendored RedoxFS engine, and a finding in vendored
+/// code lands in the vendor pin, not in a crate this tree can fix (vendor/README.md). Extra args
+/// are forwarded to `cargo miri test`, so `cargo xtask miri -p gpt` narrows the run.
+fn miri() -> bool {
+    eprintln!("--- host tests under Miri (aliasing, provenance, uninitialized reads) ---");
+    let mut args = vec![
+        "miri",
+        "test",
+        "--workspace",
+        "--exclude",
+        "kernel",
+        "--exclude",
+        "user",
+        "--exclude",
+        "user_rt",
+        "--exclude",
+        "xtask",
+    ];
+    let extra: Vec<String> = std::env::args().skip(2).collect();
+    args.extend(extra.iter().map(String::as_str));
+    run("cargo", &args)
 }
 
 /// **Boot the `--features shell` system and type at it** (milestone 50, notes/pipes.md).
@@ -2599,6 +2845,11 @@ fn test() -> bool {
 /// wc < gate                  -> 1 2 12   ... and they are the same bytes
 /// echo hello world >> gate   -> nothing
 /// wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+/// wc gate                    -> 2 4 24   milestone 31: the name IS the grant, same bytes
+/// wc                         -> refused  ... and with no name there is nothing to read
+/// caps wc gate               -> input     ... and the preview says which file, and how
+/// date                       -> ...UTC   a real wall clock, wired through the real init
+/// caps date                  -> cap 1    ... and `caps` names the capability that made it real
 /// ```
 ///
 /// One line would meet the BUGS entry that asked for this. Five is still seconds, and it walks the
@@ -2636,12 +2887,52 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 6] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 17] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
     ("echo hello world >> gate.txt", None),
     ("wc < gate.txt", Some("2 4 24")),
+    // **Milestone 31's headline, at the one interface a human touches**: naming a resource in a
+    // command IS granting it. The answer has to be the same as the `<` above it, because it is the
+    // same designation with the operator left out, and the pair is what makes that a claim rather
+    // than an assertion: one line reaches the file through an operator and one through a name, so
+    // if they disagree, one of them opened something else.
+    ("wc gate.txt", Some("2 4 24")),
+    // The negative control the pair would be weaker without. `wc` alone is refused **at the
+    // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
+    // on Unix the same command is a shell that appears to hang. So the line above granted
+    // something, rather than falling back on a default.
+    ("wc", Some("name a file")),
+    // And `caps` says which file and how, which is the honest half: the shell reads it and streams
+    // it in, so what the child holds is an endpoint and not a capability naming the disk.
+    ("caps wc gate.txt", Some("input    gate.txt")),
+    // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
+    // the check is the one word that separates a real time from both ways of not having one:
+    // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
+    // has no clock it believes" / "this process holds no clock capability") contain no `UTC` at
+    // all. So this fails if the clock service did not run, if the kernel granted init no page, if
+    // init did not endow `date`, or if `date` was handed a page nobody published to.
+    ("date", Some("UTC")),
+    // And the visibility surface agrees with the wiring. `caps` is the only thing in this system
+    // that claims to print a process's whole authority, so a clock endowed and not printed would
+    // make that claim false. Its wording is host-tested; this proves the wording is about a
+    // capability the boot really moves.
+    ("caps date", Some("cap 1  frame     clock")),
+    // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
+    // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
+    // budget, and every job runs in a region of its own that `job_reaper` returns when the job ends.
+    // The five spawns above plus these six are eleven jobs through a six-job pool, so a boot where
+    // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
+    // rather than the arithmetic. Six distinct arguments rather than one repeated, because the
+    // transcript is walked with a moving cursor and six identical answers would let a missed line
+    // pass as its neighbour.
+    ("worker 3", Some("3*3 = 9")),
+    ("worker 4", Some("4*4 = 16")),
+    ("worker 5", Some("5*5 = 25")),
+    ("worker 6", Some("6*6 = 36")),
+    ("worker 7", Some("7*7 = 49")),
+    ("worker 8", Some("8*8 = 64")),
     ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
 ];
 
@@ -2784,6 +3075,25 @@ fn shell_check_leg(riscv: bool) -> bool {
              reached a shell"
         ));
     } else {
+        // **Init gave the construction budget away, and says so from the inside** (milestone 22,
+        // the interactive increment). Init prints this one line after deleting the root untyped and
+        // before starting the shell, and it prints it only when `RETYPE` and `RETYPE_OBJ` on that
+        // slot both answered `NoSuchSlot`: the capability is gone, not narrowed. The other branch
+        // says "NOT dropped", so a boot that kept its budget fails here rather than passing quietly.
+        // It is already in the transcript by now, because the banner comes from a shell init starts
+        // afterwards; there is nothing to wait for.
+        if !seen
+            .lock()
+            .expect("transcript lock")
+            .contains("construction budget dropped")
+        {
+            failed.push(
+                "init never reported dropping its construction budget: either it still holds the \
+                 kernel's root untyped, or the delete did not take (the slot answered something \
+                 other than NoSuchSlot)"
+                    .to_string(),
+            );
+        }
         for (line, _) in SHELL_CHECK_SCRIPT {
             if !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
                 failed.push(format!(
@@ -2839,7 +3149,11 @@ fn shell_check_leg(riscv: bool) -> bool {
     let _ = reader.join();
 
     if failed.is_empty() {
-        eprintln!("shell-check ({arch}): the prompt booted, piped, redirected and appended");
+        eprintln!(
+            "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
+             file to a reader, read the clock, and ran eleven jobs through init's six-job pool \
+             after init gave its construction budget away"
+        );
         return true;
     }
     eprintln!();
@@ -2878,7 +3192,7 @@ fn shell_check_answer<'a>(
     Some((&rest[..end], at + end))
 }
 
-/// The microbenchmarks (milestone 21; design/roadmap.md §21).
+/// The microbenchmarks (milestone 21; design/roadmap/21-benchmarks.md).
 ///
 /// Two instruments:
 /// - default: TCG with `-icount`, where virtual time is a deterministic function of instructions

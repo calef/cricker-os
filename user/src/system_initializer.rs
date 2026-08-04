@@ -2,9 +2,10 @@
 //!
 //! The portable counterpart of hello's `init_boot` role (which is aarch64-wired only by living inside
 //! the PL011-tied `hello`). The kernel loads this as the boot process, maps the initrd, and grants it
-//! a budget (slot 0), the UART's registers as a device cap (slot 1), and the UART receive interrupt
-//! as an `Irq` cap (slot 2). From those, and nothing else, it builds the
-//! whole interactive system out of its own budget:
+//! a budget (slot 0), the UART's registers as a device cap (slot 1), the UART receive interrupt as an
+//! `Irq` cap (slot 2), a read-only mapping of the wall clock (slot 3), and, when this boot attached a
+//! RedoxFS disk, the file service and its shared page (slots 4 and 5). From those, and nothing else,
+//! it builds the whole interactive system out of its own budget:
 //!
 //! 1. the **console** server (output): reads text from a shared page, writes it to the UART;
 //! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
@@ -17,12 +18,51 @@
 //! named (the result endpoint, and an untyped budget the shell delegates for `run --mem N`). Nothing
 //! here names an architecture: the console and input drivers hold the one device-specific fact (the
 //! UART register layout), and the kernel grants the right device.
+//!
+//! # What it gives away once the system is up (milestone 22, the interactive increment)
+//!
+//! It used to hold the kernel's whole construction budget for life, which made every process in the
+//! system one bug in init away from being built wrong. It no longer does. Once the four servers are
+//! built it carves two bounded budgets off that root and **deletes the root**:
+//!
+//! - [`INIT_OWN_PAGES`] for its own scratch page tables, which is all it spends on itself; and
+//! - [`JOBS_BUDGET_PAGES`] for the jobs the prompt asks for, one reclaimable region per job.
+//!
+//! It also gives up the UART device capability and the UART interrupt as soon as the drivers that
+//! need them are built, and the file service as soon as the shell holds it. The proof is a negative
+//! control taken from inside the process and printed at the prompt, exactly the shape
+//! `root_supervisor` uses: after the delete, `RETYPE` and `RETYPE_OBJ` on that slot must answer
+//! `NoSuchSlot` (there is nothing there) rather than `NotPermitted` (there is, and you may not).
+//!
+//! The job budget is **renewable**, which is what makes bounding it cheap. Every job is built in its
+//! own region split off [`JOBS_BUDGET_PAGES`] and is born supervised: `job_reaper`, a process holding
+//! one endpoint capability and nothing else, collects each corpse through `Endpoint::REAP` (DECISIONS
+//! §32) and the region's pages come back here (§13: a reclaimed region returns to its owner, which is
+//! whoever split it). Before that, a spawned job's memory was spent for the life of the boot.
+//!
+//! # BUGS
+//!
+//! The return of pages is **LIFO** (§16, `crates/regions`): a job region that is not at the top of
+//! the budget's watermark when it is reclaimed returns nothing, and its run is a hole until this
+//! process dies, which it never does. Sequential commands at a prompt are exactly LIFO and recover
+//! fully; two jobs alive at once (a pipeline stage that outlives its producer) permanently costs one
+//! region. A long enough session of concurrent pipelines still ends at "could not spawn".
+//!
+//! `build_child`'s scratch window is never unmapped, so this process keeps a **writable mapping of
+//! every page it ever laid down for a child**. Reaping a job undoes that (region reclaim revokes every
+//! mapping of the pages first, §13), but the four boot servers are never reclaimed, so init can still
+//! read and write the console's, the line editor's, the input driver's and the shell's memory. Giving
+//! the construction budget away does not reach that, and nothing in the ABI unmaps a page.
+//!
+//! Printing the negative control costs one more of those: the shell's output frame stays mapped here
+//! for life, because there is no unmap and `Frame::REVOKE` would take it from the shell too.
 
 #![no_std]
 #![no_main]
 
 use grant_plan::{Prog, spawnproto};
-use user_rt::{cap_delete, exit, invoke, recv, recv_cap, send};
+use line_editor::proto;
+use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;
@@ -35,8 +75,20 @@ const UART_IRQ: u64 = 2; // the UART receive interrupt, an Irq cap to delegate i
 /// the FS server before it starts us and grants the service endpoint plus the page its clients
 /// share with it. The rights that endpoint carries arrive in `a2`, and **0 means this boot attached
 /// no RedoxFS disk**, in which case these two slots hold nothing at all.
-const FS_EP: u64 = 3;
-const FS_PAGE: u64 = 4;
+const FS_EP: u64 = 4;
+const FS_PAGE: u64 = 5;
+/// **The wall clock** (milestone 51's wiring): a `Frame` capability with `READ` and nothing else.
+///
+/// Granted ahead of the filesystem pair so its slot is the same on every boot, whether or not a disk
+/// was attached, and granted **unconditionally**: a boot with no clock service hands us a zeroed
+/// page, which reads as `clock_proto::state::UNKNOWN` and is the honest answer for a machine that
+/// does not know the time. init hands it on only to a child whose manifest declares a clock, and
+/// hands on `READ`, so nothing spawned from this prompt can set the time (DECISIONS §43).
+const CLOCK_PAGE: u64 = 3;
+
+/// Where a child that declares a clock maps it, read-only. Must match `user/src/date.rs`'s
+/// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
+const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
 
 const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
@@ -59,6 +111,31 @@ const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 /// The shell shrinks this by N pages per grant; the pages a spawned child pins are not reclaimed in
 /// phase 1, so this is a session budget, not a renewable one.
 const SH_BUDGET_PAGES: u64 = 128;
+
+/// **What init keeps for itself after the boot servers are up** (milestone 22, the interactive
+/// increment). It pays for one thing: the page tables reaching `build_child`'s scratch window, which
+/// are init's own mappings and must never come out of a child's region (tearing that region down
+/// would free init's tables under a window it never unmaps). One L3 covers 512 scratch pages and a
+/// job maps at most a couple of dozen, so this is thousands of commands' worth.
+const INIT_OWN_PAGES: u64 = 128;
+
+/// **One job's region**: everything a spawned program is made of, so a single reclaim frees all of
+/// it. The biggest program the prompt can spawn is `date` at seven pages, plus
+/// [`CHILD_STACK_PAGES`], a TCB, an address-space root, the intermediate tables for the four windows
+/// a child touches, and the §13 mapping records. Forty is that with room to spare, and it is spent
+/// per *live* job rather than per job ever run.
+const JOB_REGION_PAGES: u64 = 40;
+
+/// **The job pool.** Six live jobs at once, which is far more than a prompt has ever needed and is
+/// deliberately small: the whole claim of this increment is that a *bounded* budget is enough once
+/// the regions come back, so a budget nobody could exhaust would prove nothing. `script/shell-check`
+/// runs eleven jobs through it, so widening this silently retires that gate.
+const JOBS_BUDGET_PAGES: u64 = JOB_REGION_PAGES * 6;
+
+/// Where init maps the shell's output frame in **its own** address space, to print the one line it
+/// ever prints (the dropped-authority negative control). Well clear of init's segments, its stack,
+/// and the scratch window at `0x1000_0000`.
+const INIT_OUT_VA: u64 = 0x0f00_0000;
 
 // The VAs each program hardcodes; they must match console.rs / input.rs / line_editor.rs / swish.rs.
 const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; line_editor writes it
@@ -92,6 +169,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     let Some(sh_elf) = fs.read("swish").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
+    // The corpse collector (milestone 22, the interactive increment). Read here with the rest,
+    // because the archive is only readable while we hold it and every failure below is one `fail`.
+    let Some(reaper_elf) = fs.read("job_reaper").and_then(|b| elf::Elf::parse(b).ok()) else {
+        fail()
+    };
 
     // The endpoints and shared pages we own and hand out, each retyped with full rights so we can
     // delegate narrowed views. `term_ep` is the terminal contract's one endpoint: the discipline
@@ -107,6 +189,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // 1. Console server: reads text from the shared page, writes it to the UART.
     let con = must(build_child(
         UNTYPED,
+        UNTYPED,
         &con_elf,
         &[(request, abi::rights::READ), (reply, abi::rights::WRITE)],
         &[
@@ -120,6 +203,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // 2. The line discipline: serves the terminal endpoint, prints through the console. It is
     // the console's only client; everyone else prints through it.
     let line_editor = must(build_child(
+        UNTYPED,
         UNTYPED,
         &td_elf,
         &[
@@ -139,6 +223,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let input = must(build_child(
         UNTYPED,
+        UNTYPED,
         &in_elf,
         &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)],
         &[(IN_UART_VA, UART_DEV, abi::aspace::MAP_RO)],
@@ -152,7 +237,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // retype an address space into and failed silently, which presented as a boot that brought up
     // the console and then printed nothing. Nothing below needs these: line_editor is the console's
     // only client and it already holds its narrowed copies.
-    for c in [request, reply, con_shared] {
+    //
+    // **The device and the interrupt go with them** (milestone 22, the interactive increment). Both
+    // drivers that need them exist and hold their own narrowed copies, and nothing below builds
+    // another driver, so an init that kept them would be keeping the authority to hand the UART to
+    // anything it later builds. Dropping them here is the same act as dropping the construction
+    // budget further down, one boot stage earlier.
+    for c in [request, reply, con_shared, UART_DEV, UART_IRQ] {
         cap_delete(c);
     }
 
@@ -161,6 +252,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // over. They are the shell's and the service's, so this is also where they belong.
     let spawn_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let result_ep = must(retype_obj(abi::objtype::ENDPOINT));
+    // **The supervision endpoint every job is born holding** (milestone 22, the interactive
+    // increment; DECISIONS §26's spawn-slot convention). We keep it for its `GRANT`, which is all we
+    // need it for: to place a `READ` view of it in each job's reserved fault slot. We never receive
+    // on it. `job_reaper` does, and collecting is the only thing that endpoint authorizes.
+    let deaths = must(retype_obj(abi::objtype::ENDPOINT));
 
     // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
     // its own untyped budget (slot 3) so `run --mem N` grants from memory that is genuinely the
@@ -185,24 +281,22 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
         (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
         (SH_FS_VA, FS_PAGE, abi::aspace::MAP_RW),   // and its half of the FS contract
     ];
+    // **Built but not started**, because the drop below has to happen while the shell's output page
+    // is still ours alone to write: the negative control is printed through it, and a running shell
+    // would be printing its banner into the same page.
     let shell = must(build_child(
+        UNTYPED,
         UNTYPED,
         &sh_elf,
         if with_fs { &sh_caps } else { &sh_caps[..4] },
         if with_fs { &sh_maps } else { &sh_maps[..2] },
     ));
-    // Role 0 (the prompt), and `arg1` is the rights its directory capability carries. A shell told 0
-    // holds no directory and says so at every verb that would need one.
-    must0(tcb_start(shell, 0, fs_rights, 0));
-    cap_delete(shell);
     cap_delete(sh_budget); // our copy; the shell holds its own now
 
     // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
     // build a supervised child (which holds a job untyped and a job frame while build_child retypes
     // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter.
-    for c in [term_ep, term_out, term_in] {
-        cap_delete(c);
-    }
+    cap_delete(term_in);
     // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
     // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
     // init keeps the endpoint instead, because building a `fs_subtree_caretaker` is its job and not
@@ -211,6 +305,63 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
         cap_delete(FS_EP);
         cap_delete(FS_PAGE);
     }
+
+    // **Give the construction budget away** (milestone 22, the interactive increment). Two bounded
+    // carves and then the root itself: after this line init can spend at most `INIT_OWN_PAGES` on
+    // itself and `JOBS_BUDGET_PAGES` on the prompt's jobs, and it can no longer reach the rest of the
+    // memory the kernel handed it or delegate the root to anything it builds.
+    //
+    // Two budgets rather than one, and the split is load-bearing rather than tidy: the job pool's
+    // watermark must move for **jobs only**, or the LIFO return-of-pages (§16) never fires. A scratch
+    // page table carved out of the same region between a job's split and its reap would sit above
+    // that job's run, so the reclaim would find it is not the top and give back nothing.
+    let own_ut = must(untyped_split(INIT_OWN_PAGES));
+    let jobs_ut = must(untyped_split(JOBS_BUDGET_PAGES));
+    // The shell's output page, in our own space, so we can say what just happened. This mapping is
+    // permanent (there is no unmap, and `Frame::REVOKE` would take the page from the shell too); see
+    // this module's BUGS.
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method before
+    // acting (user_rt's contract).
+    if unsafe { invoke(term_out, abi::frame::MAP, INIT_OUT_VA, 1, UNTYPED) } != 0 {
+        fail()
+    }
+    cap_delete(UNTYPED);
+
+    // And prove it from the inside, on the two primitives that build things, before anything else
+    // runs. `NoSuchSlot` (-1) rather than `NotPermitted` (-3) is the whole claim: the capability is
+    // *gone*, not narrowed, so there is nothing there to name. This is `root_supervisor`'s proof at
+    // the interactive prompt, and `script/shell-check` reads the sentence.
+    // SAFETY: as above: the kernel validates the capability and the method.
+    let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+    // SAFETY: as above: the kernel validates the capability and the method.
+    let object = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) };
+    announce(
+        term_ep,
+        if frame == -1 && object == -1 {
+            b"init: construction budget dropped; retype answers NoSuchSlot\n"
+        } else {
+            b"init: construction budget NOT dropped; it can still build\n"
+        },
+    );
+    cap_delete(term_ep);
+    cap_delete(term_out);
+
+    // The corpse collector, out of what is left of our own budget. One capability, `READ` on the
+    // supervision endpoint, and nothing else: it can free a job's memory and can never spend it.
+    let reaper = must(build_child(
+        own_ut,
+        own_ut,
+        &reaper_elf,
+        &[(deaths, abi::rights::READ)],
+        &[],
+    ));
+    must0(tcb_start(reaper, 0, 0, 0));
+    cap_delete(reaper);
+
+    // Role 0 (the prompt), and `arg1` is the rights its directory capability carries. A shell told 0
+    // holds no directory and says so at every verb that would need one.
+    must0(tcb_start(shell, 0, fs_rights, 0));
+    cap_delete(shell);
 
     // The spawn service (milestone 31's grant expression, wire half; grant_plan::spawnproto). The shell
     // resolved a command into a program, an argument, and a memory-grant page count, and it directs
@@ -225,8 +376,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     let date = fs.read("date").and_then(|b| elf::Elf::parse(b).ok());
     let wc = fs.read("wc").and_then(|b| elf::Elf::parse(b).ok());
     spawn_service(
-        spawn_ep,
-        result_ep,
+        Channels {
+            spawn_ep,
+            result_ep,
+            deaths,
+            own_ut,
+            jobs_ut,
+        },
         [
             worker.as_ref(),
             budgeter.as_ref(),
@@ -234,11 +390,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
             spinner.as_ref(),
             date.as_ref(),
             // `rm` (milestone 47) has a slot and **deliberately no ELF**: it is endowed a directory
-            // capability, and this boot wires no FS service, so there is nothing to narrow one from.
-            // The shell refuses the command before it reaches here ("you hold no such capability"),
-            // which is why an empty slot is honest rather than a hole: spawning `rm` with nothing to
-            // remove from would be the worst failure this model has, a program told to destroy
-            // something, holding nothing, saying nothing.
+            // capability, which means a `fs_subtree_caretaker` this init would have to build per
+            // invocation out of the FS endpoint it deletes above. Until it does, the shell refuses
+            // the command before it reaches here, which is why an empty slot is honest rather than a
+            // hole: spawning `rm` with nothing to remove from would be the worst failure this model
+            // has, a program told to destroy something, holding nothing, saying nothing.
             None,
             // `wc` (milestone 50). It needs no filesystem: everything it does is decided by what is
             // in its input slot, and the shell can fill that from a pipe out of its own budget.
@@ -257,23 +413,48 @@ fn opt_cap(slot: u64) -> Option<u64> {
     }
 }
 
+/// Everything the spawn service holds for its whole life, so the loop's signature says what init's
+/// remaining authority *is*: two channels, one supervision endpoint it only ever delegates from, and
+/// two bounded budgets. The root construction budget is deliberately not in here; it is gone.
+struct Channels {
+    /// READ: the shell's `run` requests arrive here.
+    spawn_ep: u64,
+    /// WRITE: a child's answer channel, and our own spawn-failed sentinel.
+    result_ep: u64,
+    /// GRANT: placed `READ` in every job's reserved fault slot, so `job_reaper` collects it.
+    deaths: u64,
+    /// Our own scratch budget: page tables for the loader's scratch window, and nothing else.
+    own_ut: u64,
+    /// The job pool. One region per job, split off here and returned here when the job is reaped.
+    jobs_ut: u64,
+}
+
 /// The spawn service loop: serve the shell's `run` requests forever. Init is the ELF loader the
 /// shell directs; it inserts only what the shell endows, so a spawned program can reach nothing the
 /// command line did not name.
 ///
 /// Two shapes (`grant_plan::spawnproto`). A **normal** job: the shell sends the request and, if `--mem`
-/// rode along, one delegated untyped; we build the child from our own budget, endow it the result
-/// endpoint (and the budget), and start it. A **supervised** (interruptible) job: the shell leads
-/// the delegation with a job untyped and a shared job frame; we build the whole child *from that
-/// untyped* (so the shell's region owns it and can `DESTROY` it to tear it down, milestone 24), map
-/// the job frame in, endow nothing else, start it, and send `SPAWN_OK` once as the shell's
-/// go-ahead. The `progs` array is indexed by [`Prog::id`], so it is [`grant_plan::PROG_COUNT`] long: a
-/// variant added to `grant_plan` without a slot here would be an out-of-bounds read in init.
-fn spawn_service(
-    spawn_ep: u64,
-    result_ep: u64,
-    progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT],
-) -> ! {
+/// rode along, one delegated untyped; we split a region off the job pool, build the child in it,
+/// endow it the result endpoint (and the budget) plus its supervision endpoint, and start it. A
+/// **supervised** (interruptible) job: the shell leads the delegation with a job untyped and a shared
+/// job frame; we build the whole child *from that untyped* (so the shell's region owns it and can
+/// `DESTROY` it to tear it down, milestone 24), map the job frame in, endow nothing else, start it,
+/// and send `SPAWN_OK` once as the shell's go-ahead. The `progs` array is indexed by [`Prog::id`], so
+/// it is [`grant_plan::PROG_COUNT`] long: a variant added to `grant_plan` without a slot here would
+/// be an out-of-bounds read in init.
+///
+/// **Only the normal shape is supervised**, and that is not an oversight. An interruptible job's
+/// region belongs to the shell, which tears it down itself on the second `^C` (milestone 24's
+/// forcible tier) and after a clean finish; endowing it a supervision endpoint here would put a
+/// second party in the teardown path for memory that is not ours, racing the shell's `DESTROY`.
+fn spawn_service(c: Channels, progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT]) -> ! {
+    let Channels {
+        spawn_ep,
+        result_ep,
+        deaths,
+        own_ut,
+        jobs_ut,
+    } = c;
     loop {
         let (w0, w1, w2) = recv(spawn_ep);
         let prog = Prog::from_id(spawnproto::prog_id(w0));
@@ -307,15 +488,23 @@ fn spawn_service(
         };
 
         let elf = prog.and_then(|p| progs[p.id() as usize]);
+        // Read from the program's own declaration, not from the request: a clock is not something
+        // the command line can designate, so there is no bit on the wire for it (`Manifest::clock`).
+        let wants_clock = prog.is_some_and(|p| p.manifest().clock);
 
         if interruptible {
             // Build the whole child from the shell's job untyped, mapping the shared job frame; no
             // capabilities in its cspace (it reports through the frame and exits). SPAWN_OK is the
             // go-ahead the shell waits for before it starts watching the frame.
             let built = match (elf, job_ut, job_fr) {
-                (Some(e), Some(ut), Some(fr)) => {
-                    build_child(ut, e, &[], &[(CHILD_JOBFRAME_VA, fr, abi::aspace::MAP_RW)]).ok()
-                }
+                (Some(e), Some(ut), Some(fr)) => build_child(
+                    own_ut,
+                    ut,
+                    e,
+                    &[],
+                    &[(CHILD_JOBFRAME_VA, fr, abi::aspace::MAP_RW)],
+                )
+                .ok(),
                 _ => None,
             };
             match built {
@@ -347,8 +536,18 @@ fn spawn_service(
             // is safe only because no manifest declares both today. `grant_plan` is where that stops
             // being true, and the order here is the contract; see notes/pipes.md's BUGS.
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
-            let mut caps = [out; 3];
+            let mut caps = [out; 4];
             let mut n = 1usize;
+            // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
+            // It comes from the manifest rather than from the request, because a person does not
+            // designate a clock: `date` declares that it reads one, and init is the only process
+            // here holding a page it could hand over. Before the source and the budget, so `date`'s
+            // clock is slot 1, which is unambiguous only because no manifest declares a clock *and*
+            // an input. That is the same ordered-slot debt notes/pipes.md's BUGS already records.
+            if wants_clock {
+                caps[n] = (CLOCK_PAGE, abi::rights::READ);
+                n += 1;
+            }
             if let Some(src) = source {
                 // READ only. A pipe's reader must not be able to write back up its own input, which
                 // would make a pipeline a two-way channel nobody asked for.
@@ -360,7 +559,25 @@ fn spawn_service(
                 caps[n] = (b, abi::rights::WRITE);
                 n += 1;
             }
-            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], &[]).ok());
+            let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
+            let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
+            // **A region of its own, so the job's memory can come home** (milestone 22, the
+            // interactive increment). Everything the child is made of comes out of this carve, and a
+            // single reclaim frees all of it; the alternative, building straight out of the pool,
+            // spends those pages for the life of the boot because a watermark only moves forward.
+            // An exhausted pool is the ordinary `SPAWN_FAILED` the shell already reports as "init is
+            // out of memory", which is the honest sentence for a bounded budget with jobs still in
+            // it. The clock frame is ours and is only *mapped* into the child, so it is untouched
+            // when the region goes.
+            let region = untyped_split_from(jobs_ut, JOB_REGION_PAGES).ok();
+            let built = match (elf, region) {
+                (Some(e), Some(r)) => {
+                    // Born supervised: `deaths` goes in the reserved fault slot, where `START` reads
+                    // it and clears it, so the job cannot forge messages on its own death channel.
+                    build_supervised_child(own_ut, r, e, &caps[..n], maps, deaths).ok()
+                }
+                _ => None,
+            };
             let ok = match built {
                 Some(tcb) => {
                     let started = tcb_start(tcb, 0, arg, 0) == 0;
@@ -369,6 +586,17 @@ fn spawn_service(
                 }
                 None => false,
             };
+            // Our capability to the job's region goes back now. It was only ever the means of
+            // building: since §32 the reap is a method on the supervision endpoint, so nothing in
+            // this system holds a capability to a *live* job's memory. A build or a start that
+            // failed leaves nothing running in the region, so we reclaim it here rather than wait
+            // for a death that will never come.
+            if let Some(r) = region {
+                if !ok {
+                    untyped_destroy(r);
+                }
+                cap_delete(r);
+            }
             // **A redirected child owes the shell no answer**, because its answer is going
             // somewhere else, so the shell has nothing to read and no way to find out that the
             // spawn failed. One ack closes that hole. An unredirected child is unchanged: the
@@ -404,21 +632,47 @@ fn spawn_service(
 static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0x1000_0000);
 
-/// Build a child from `elf` out of our budget: lay each segment W^X at the VA it names, map a stack,
-/// map `maps` (each `(child_va, our_slot, mode)`), retype a TCB, insert `caps` (each `(our_slot,
-/// rights)`) in order, configure at the entry. Returns the TCB slot, ready to start. The userspace
-/// ELF loader, driven entirely through the capability verbs.
+/// Build a child from `elf`: lay each segment W^X at the VA it names, map a stack, map `maps` (each
+/// `(child_va, our_slot, mode)`), retype a TCB, insert `caps` (each `(our_slot, rights)`) in order,
+/// configure at the entry. Returns the TCB slot, ready to start. The userspace ELF loader, driven
+/// entirely through the capability verbs. [`build_supervised_child`] is this plus a fault slot.
 fn build_child(
+    own_ut: u64,
     build_ut: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
-    // The child's aspace, code/data frames, stack, and TCB all come from `build_ut`. For a normal
-    // job that is our own budget (slot 0); for a supervised (interruptible) job it is the untyped
-    // the shell delegated, so the whole child lives in a region the shell holds and can `DESTROY`
-    // to tear it down (milestone 24). Our *scratch* mappings below stay on our own budget (UNTYPED):
-    // they are ours, and a child's region must not have our page tables freed under it on teardown.
+    build_supervised_child_inner(own_ut, build_ut, elf, caps, maps, None)
+}
+
+/// [`build_child`], with `fault` placed in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is
+/// born supervised (DECISIONS §26's spawn-slot convention): `START` records it as the thread's
+/// supervision endpoint and clears the slot, so the child cannot forge messages about its own death.
+/// This is what makes a job's region reclaimable by `job_reaper` after the job ends.
+fn build_supervised_child(
+    own_ut: u64,
+    build_ut: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    maps: &[(u64, u64, u64)],
+    fault: u64,
+) -> Result<u64, ()> {
+    build_supervised_child_inner(own_ut, build_ut, elf, caps, maps, Some(fault))
+}
+
+fn build_supervised_child_inner(
+    own_ut: u64,
+    build_ut: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    maps: &[(u64, u64, u64)],
+    fault: Option<u64>,
+) -> Result<u64, ()> {
+    // The child's aspace, code/data frames, stack, and TCB all come from `build_ut`: a region of its
+    // own for a job at the prompt, the untyped the shell delegated for a supervised (interruptible)
+    // one, our own budget for a boot server. Our *scratch* mappings below stay on `own_ut`: they are
+    // ours, and a child's region must not have our page tables freed under it when it is torn down.
     let aspace = retype_obj_from(build_ut, abi::objtype::ASPACE)?;
 
     for seg in elf.segments() {
@@ -437,7 +691,7 @@ fn build_child(
             // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
             // before acting (user_rt's contract). A caller cannot break an invariant by passing a
             // bad slot or method; it gets an error back.
-            if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, UNTYPED) } != 0 {
+            if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, own_ut) } != 0 {
                 return Err(());
             }
             // SAFETY: `scratch` is a page we just mapped read/write in our own space.
@@ -495,6 +749,24 @@ fn build_child(
             return Err(());
         }
     }
+    if let Some(ep) = fault {
+        // The spawn-slot convention: a target of `n + 1` means slot `n`, so the supervision endpoint
+        // lands in the reserved last slot rather than wherever first-free fell. `READ` is all it
+        // needs and all it gets; `START` clears the slot anyway.
+        // SAFETY: as above: the kernel validates the capability and the method.
+        if unsafe {
+            invoke(
+                tcb,
+                abi::tcb::CAP_INSERT,
+                ep,
+                abi::rights::READ,
+                abi::fault::FAULT_EP_SLOT + 1,
+            )
+        } < 0
+        {
+            return Err(());
+        }
+    }
     // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
@@ -534,9 +806,37 @@ fn retype_frame_from(ut: u64) -> Result<u64, ()> {
 /// Carve `pages` off our own untyped into a new child untyped we can delegate (milestone 31). The
 /// SPLIT grants us full rights on the child, including GRANT, so we can hand a memory budget on.
 fn untyped_split(pages: u64) -> Result<u64, ()> {
+    untyped_split_from(UNTYPED, pages)
+}
+
+/// [`untyped_split`] against a named budget: the job pool, once the root is gone.
+fn untyped_split_from(ut: u64, pages: u64) -> Result<u64, ()> {
     // SAFETY: as above: the kernel validates the capability and the method.
-    let r = unsafe { invoke(UNTYPED, abi::untyped::SPLIT, pages, 0, 0) };
+    let r = unsafe { invoke(ut, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Reclaim a region nothing is running in: the unwind path for a job whose build or start failed.
+/// Refused by the kernel while a live thread occupies it, which is what makes it safe to call on a
+/// half-built job and never on a running one.
+fn untyped_destroy(ut: u64) {
+    // SAFETY: as above: the kernel validates the capability and the method.
+    unsafe { invoke(ut, abi::untyped::DESTROY, 0, 0, 0) };
+}
+
+/// **Say one sentence at the terminal**, through the line discipline, the way the shell does: stage
+/// the bytes in the shell's output page (mapped here at [`INIT_OUT_VA`]) and `CALL` `OP_WRITE`.
+///
+/// The only thing this process ever prints, and it is called before the shell is started so nothing
+/// else is writing that page. It exists for the negative control: a claim about what init can no
+/// longer do is worth only as much as the check behind it, and only the holder can run that check.
+fn announce(term_ep: u64, text: &[u8]) {
+    let out = INIT_OUT_VA as *mut u8;
+    for (i, &b) in text.iter().enumerate() {
+        // SAFETY: the shell's output frame is mapped read/write here, and one line is far under a page.
+        unsafe { core::ptr::write_volatile(out.add(i), b) };
+    }
+    call(term_ep, proto::req(proto::OP_WRITE, text.len() as u64), 0);
 }
 
 fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> i64 {

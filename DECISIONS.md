@@ -693,8 +693,8 @@ is exactly what reclamation wants and is the memory-safety-critical half. The fu
 granularity, which nothing on the roadmap needs, so by §4 it waits for a driver. This is a considered
 terminal design, not a way-station: if subtree revoke is ever required, the machinery here
 (unmap-from-any-address-space, the revoke-before-reclaim discipline, `untyped::destroy`) is reused
-unchanged, and only the index (an object-to-holders list) is rebuilt as a tree. design/roadmap.md
-has the argument.
+unchanged, and only the index (an object-to-holders list) is rebuilt as a tree.
+design/roadmap/13-capability-revocation.md has the argument.
 
 ### The mechanism
 
@@ -784,7 +784,7 @@ are proved in `paging`. See notes/verification.md for what each proof says and w
 
 ### What this resolves and what it changes
 
-- **The verification-endgame fork (design/roadmap.md) is resolved: verification is the goal.** So
+- **The verification-endgame fork (design/roadmap/README.md) is resolved: verification is the goal.** So
   milestone 14 (remove the kernel heap) moves from optional purity to **prerequisite** on the
   critical path: a verifiable kernel cannot allocate dynamically.
 - **A verification track becomes first-class**, spreading proofs inward as above.
@@ -807,7 +807,7 @@ are proved in `paging`. See notes/verification.md for what each proof says and w
   confined unverified workloads" is honest about the *kernel*, but init (which builds every other
   process) is unverified and privileged. The kernel confines it and a compromised init cannot break
   the kernel or escape confinement; but init's bytes are loaded unsigned today and its authority is
-  broad. Milestone 22 (design/roadmap.md) is where this is closed: verify init before it runs, and
+  broad. Milestone 22 (design/roadmap/22-trusted-init.md) is where this is closed: verify init before it runs, and
   shrink what a broken one can do. Recorded here so the thesis is not read as claiming more than it
   proves.
 
@@ -817,7 +817,7 @@ are proved in `paging`. See notes/verification.md for what each proof says and w
 
 Not decisions yet. Proposals with real open questions, parked deliberately.
 
-The [post-v1 milestone roadmap](design/roadmap.md) sequences the buildable ones below into
+The [post-v1 milestone roadmap](design/roadmap/README.md) sequences the buildable ones below into
 proposed numbered milestones (12+) and names the two decisions they force (the verification
 endgame, and POSIX posture). The entries here remain the detailed source for each.
 
@@ -877,7 +877,7 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
   `untyped::destroy` now unmap a page from every holder and delete every capability to it, which is
   what met the precondition below and let reclamation land. The full capability-derivation tree (for
   subtree-granularity revoke) is deferred, not on the path to an inevitable rewrite; see §13 and
-  design/roadmap.md. The rest of this entry is the pre-§13 design record.
+  design/roadmap/13-capability-revocation.md. The rest of this entry is the pre-§13 design record.
 
   A granted
   capability cannot be retracted: no capability-derivation tree, no refcount, no `revoke`
@@ -953,7 +953,7 @@ process owns and delegates (notes/frames.md); SMP (§11); Call/Reply IPC, a one-
 (§12, milestone 12); and capability revocation with safe untyped reclamation, scoped to frames (§13,
 milestone 13).
 
-**The road past v1** is sketched in [design/roadmap.md](design/roadmap.md): proposed milestones
+**The road past v1** is sketched in [design/roadmap/](design/roadmap/README.md): proposed milestones
 12-17 and the two decisions they force. Milestone 12 (Call/Reply, §11's sibling in getting its own
 decision entry before code) is the first of them built; the rest stay proposals until started.
 
@@ -2455,7 +2455,7 @@ capabilities, the DMA validator, the IOMMU.
    be for a real API. Same sans-IO shape RedoxFS's `Disk` trait already uses (§27), across a language
    boundary instead of a trait boundary.
 3. **The libc is two symbols, `malloc` and `free`.** Tier two of the roadmap's three tiers
-   (freestanding / a handful of symbols / full POSIX; design/roadmap.md's milestone-36 block). The C object references five (`malloc`, `free`,
+   (freestanding / a handful of symbols / full POSIX; design/roadmap/36-foreign-component.md). The C object references five (`malloc`, `free`,
    `memcpy`, `memset`, `strlen`, identical on both ISAs at every optimization level, with no
    compiler-rt helper and no `__stack_chk_fail`), and the linker demands only two, because
    `compiler_builtins` already supplies the other three weakly for the bare targets. **Tier three is
@@ -3149,7 +3149,8 @@ A security policy for a demonstrator is mostly a scope argument. `SECURITY.md` d
 **confinement**: capability forgery or widening, MMU escape, DMA escape, IPC confusion, a syscall
 argument that panics or corrupts the kernel, TOCTOU across the shared pages every service contract
 uses, and the foreign-language and vendored seams (§27, §31). Out of scope: that a demonstrator under
-QEMU is not a production system, that a hardening feature on design/roadmap.md is missing, and
+QEMU is not a production system, that a hardening feature on the roadmap
+(design/roadmap/README.md) is missing, and
 anything that requires already being init, which §14 already names as the privileged unverified
 component.
 
@@ -5027,7 +5028,26 @@ from the table rather than present with a pile of `#[allow]`s underneath them.
 ### BUGS
 
 `script/decisions --check` cannot see a section in the WRONG PLACE, only a missing number. §61
-itself landed below the `## Reading` closer when it was written, so the headings ran §59, §60,
+itself landed below the `## 67. A program's second stream is a declaration, not a number
+
+**Decided 2026-08-03 (Chris), from notes/pipes.md's open fork.** `2>` gets built on option (c):
+a program that has diagnostics **declares a second output in its manifest** (`OutputSpec` grows
+the position), the shell plans a second endpoint only for programs that declare one, and `2>`
+binds to the declared output. Aimed at a program that declares none, it is a truthful refusal, the
+same statement `caps` already makes: the command line can only name what the manifest offers.
+
+The alternatives, refused with reasons. A **numbered-slot convention** (Unix's fd 2 transplanted)
+imports the ambient-agreement disease the note diagnoses: nothing here is ambient, and a number
+everyone must agree on forever is the mechanism this system exists to not need. A **second opcode
+on the one endpoint** (a diagnostic tag in the sink frames) is cheap but preserves "one channel,
+two kinds of thing" as a tag, sends diagnostics down a pipe into `wc` by default, and dissolves
+nothing.
+
+The consequence the choice buys: separation arrives per program, as each declares (`date` first,
+whose clockless complaint into a redirected file is the motivating loss). The consequence it
+costs: `2>` works only on declaring programs, which is this shell's grammar being itself.
+
+## Reading` closer when it was written, so the headings ran §59, §60,
 then the closer, then §61, and the gate reported "numbering clean" throughout because it tests for gaps
 (`set(range(1, max+1)) - set(seen)`) and never for order. Corrected by hand on 2026-08-03. This is
 the same well-formed-but-wrong blind spot CLAUDE.md already records for `§N` citations, which is why
@@ -5269,6 +5289,25 @@ does not, so it is one.
 
 Worth stating explicitly because the two sections are adjacent, both are about refusals, and they
 would otherwise read as a contradiction that a future reader has to resolve from first principles.
+
+## 67. A program's second stream is a declaration, not a number
+
+**Decided 2026-08-03 (Chris), from notes/pipes.md's open fork.** `2>` gets built on option (c):
+a program that has diagnostics **declares a second output in its manifest** (`OutputSpec` grows
+the position), the shell plans a second endpoint only for programs that declare one, and `2>`
+binds to the declared output. Aimed at a program that declares none, it is a truthful refusal, the
+same statement `caps` already makes: the command line can only name what the manifest offers.
+
+The alternatives, refused with reasons. A **numbered-slot convention** (Unix's fd 2 transplanted)
+imports the ambient-agreement disease the note diagnoses: nothing here is ambient, and a number
+everyone must agree on forever is the mechanism this system exists to not need. A **second opcode
+on the one endpoint** (a diagnostic tag in the sink frames) is cheap but preserves "one channel,
+two kinds of thing" as a tag, sends diagnostics down a pipe into `wc` by default, and dissolves
+nothing.
+
+The consequence the choice buys: separation arrives per program, as each declares (`date` first,
+whose clockless complaint into a redirected file is the motivating loss). The consequence it
+costs: `2>` works only on declaring programs, which is this shell's grammar being itself.
 
 ## Reading
 

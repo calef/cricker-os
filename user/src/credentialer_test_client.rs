@@ -57,7 +57,7 @@ pub const ROLE_PROVISIONER: u64 = 2;
 pub const RPT_DONE: u64 = 0x_c2ed_c11e_0000_0001;
 
 /// The identities and secrets this milestone's tests use. Three, matching the store's capacity and
-/// the three family members design/roadmap.md says the real deployment serves.
+/// the three family members design/roadmap/56-secrets-and-entropy.md says the real deployment serves.
 const PEOPLE: [(&[u8], &[u8]); 3] = [
     (b"chris", b"correct horse battery staple"),
     (b"corinne", b"a different secret entirely"),

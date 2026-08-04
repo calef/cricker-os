@@ -61,6 +61,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level.
+- [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
+  after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
+  separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
+  watermark. Milestone 90 closed the asymmetry that inventory found: the per-CPU secondary stacks
+  left `.bss` for a region with an unmapped page under each, proven by a page-table walk.
 - [Reading aarch64 assembly](reading-assembly.md): five rules that decode almost
   everything, the addressing-mode table, and a line-by-line walkthrough of `boot.s`.
   **Start here if a code block looks like noise.**
@@ -177,7 +182,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   signature variant's cost (Ed25519 in the TCB, key custody) recorded rather than built. Phase B.2 is
   the other half, what a broken init can still reach: a four-program tree where construction moves to a
   sub-server holding one program image, the supervisor holds no memory at all, and the root deletes its
-  budget, proven by authority (a dropped untyped answers `NoSuchSlot`) rather than by timing.
+  budget, proven by authority (a dropped untyped answers `NoSuchSlot`) rather than by timing. The
+  interactive boot is migrated too: init keeps the ELF loader (moving it would relocate the authority
+  rather than reduce it) but drops the root untyped for a bounded job pool, gives back the UART and its
+  interrupt, and builds every job in a region `job_reaper` returns when the job ends, so a bounded
+  budget is affordable. Honest limits included: recovery is LIFO, and init still maps every page it
+  ever laid down for a child.
 - [Delegating a capability](delegation.md): a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
@@ -393,6 +403,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   then failed to rediscover it in ten minutes. The CI budget and why fuzzing cannot be a gate anyone
   waits on, the corpus discipline (seeds committed, working corpus not, crashes become host tests),
   and a BUGS section that says what a green run does not mean.
+- [Miri over the host crates](miri.md): milestone 79, the third leg of the analysis surface. What
+  Miri checks that Kani, the fuzzers, and clippy cannot (aliasing, provenance, uninitialized reads,
+  leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
+  clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
+  sampled paths, never the exhaustive claims. Run by `script/miri`, weekly in CI plus on demand.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function
@@ -501,7 +516,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   `fs_proto::verb`, saying what a request's words mean and which rights the server demands, so the
   three caretakers that proxy this contract dispatch off the contract instead of off three
   hand-written matches, and a verb with no row is a compile error rather than a capability that is
-  quietly missing.
+  quietly missing. Milestone 57's write half added `fs_maker`, the server's opposite (it creates a
+  filesystem and never serves one), the vendor divergence that let it (the uuid becomes an argument,
+  the way `ctime` already was) and the correction underneath: the *first* divergence taken for this
+  could not have worked, because a `Header` a caller can build has nowhere to go when the write path
+  is `pub(crate)`.
 - [The directory capability](dir-capability.md): milestone 47's keystone: a directory stops being
   one authority and becomes a **six-rung rights ladder**, with `OPENDIR` handing back a directory
   capability rather than bytes. Why `DESCEND` earns its own rung (bundle it with reading and the
@@ -569,7 +588,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   Also what two independent real disks (`sgdisk` and macOS `diskutil`) taught us, including that
   **macOS writes no partition names at all**, and the clearest case yet of the enumerate-versus-prove
   rule: four exhaustive corruption sweeps, one of them 4.2 million cases, beside seven Kani harnesses
-  for the claims that cannot be counted.
+  for the claims that cannot be counted. Since 2026-08-03 it also covers **writing** a table on the
+  target: the version-4 stamp the crate applies to bytes it did not generate, and why a partitioner
+  reads every block before it writes one.
 - [Block devices: what is attached, and what holding one means](block-devices.md): milestone 57's
   block-device lane, which is where `crates/gpt` stopped being wired to nothing. The guest reads a
   partition table **`sgdisk` wrote** off a virtio-blk device, backup half included, and the only real
@@ -579,6 +600,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   carries no capacity because a size is a fact about a device you hold. The negative control is what
   makes that a claim: the same program writes to the roster's exact address and dies. Also the three
   surprises, including a latent `user/link.ld` bug that only a program with no `.data` could hit.
+  The **write half** (2026-08-03) is here too: a disk endpoint plus an entropy endpoint are jointly
+  sufficient to partition and format a drive and separately neither is, proved by withholding each
+  from the same binary and then reading the disk.
 - [Prior art and reuse](prior-art.md): where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,
@@ -613,6 +637,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   suite against `sifive-u54`, the RVA profiles and `thead-c906` (211 tests, all five green), the
   preflight that proves `-cpu` is enforced rather than merely advertised, what the narrow models
   would have caught, and the one test written for the board that no CPU model can exercise.
+- [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts. Five
+  assertions failed pull requests that changed no executable code; the direction of a failure is
+  the diagnosis (a slow machine produces a deficit, never a surplus), so the three that fired on
+  negative counts were measuring their neighbours, not their subject. What each was rescoped to,
+  the one left alone and why, and the honest cost of the `<=` trade.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the
@@ -645,3 +674,4 @@ Topics we've touched but not yet documented. Add as they come up:
 
 - The GIC (interrupt controller)
 - virtio
+- [The SCHED lock inventory](sched-lock-inventory.md): what the one remaining scheduler lock protects, by temperature; milestone 17's denominator, gated on 88's curve and 80's method.

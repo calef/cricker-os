@@ -2,7 +2,7 @@
 
 A restart point, written so a fresh session resumes without re-deriving state. Delete or
 overwrite once its contents are stale; this is a working note, not a permanent record. The
-permanent records are DECISIONS.md, design/roadmap.md, and the notes/ they point to.
+permanent records are DECISIONS.md, design/roadmap/, and the notes/ they point to.
 
 ## Why this exists
 
@@ -57,12 +57,16 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
    to enter anything else (SHA-256 in `crates/measured_boot`, digest compiled into the kernel image, fails
    closed on a *missing* measurement too). B.2: a four-program tree where construction moves to a
    sub-server holding one program image, the supervisor holds no memory at all, and init deletes its
-   budget; proven by authority on both ISAs. **Leftovers:** the interactive boot's init (`system_initializer`,
-   `hello`'s init role) still holds its budget for life because it is the shell's spawn service, and
-   migrating that hand-validated path is the next increment; two design forks are recorded for Chris
-   (a reap-only right so a root supervisor can recover without regaining construction authority, and
-   turning a fault message's tid into a handle a builder holds). This work also found and fixed a
-   real pre-existing race in the exception-return path on both ISAs (notes/exceptions.md).
+   budget; proven by authority on both ISAs. **The interactive boot is migrated too (2026-08-03):**
+   `system_initializer` and `hello`'s init role keep the ELF loader (moving it out would relocate the
+   authority rather than reduce it, because the loader *is* the archive) and instead delete the root
+   untyped for a bounded job pool, give back the UART and its interrupt, and build every job in a
+   region that `job_reaper` returns when the job ends, so a bounded budget is affordable. Proven by a
+   control-and-claim pair in `kernel/src/user/job_reaper_tests.rs` and by `script/shell-check`, which
+   reads init's own dropped-authority sentence and runs eleven jobs through a six-job pool. Both
+   design forks recorded here were since closed by DECISIONS §32 (`Endpoint::REAP`). This work also
+   found and fixed a real pre-existing race in the exception-return path on both ISAs
+   (notes/exceptions.md).
 3. ~~**Milestone 27 phase 2 completion:** std::fs binding to the FS server.~~ **DONE 2026-07-29**
    (DECISIONS §22 phase-two amendment, notes/std.md): `std::fs` binds to the §27 contract through a
    directory capability at slot 4, escapes refused as un-nameable, `Unsupported` without the grant.
@@ -74,7 +78,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real
    state: net_stack under open connections, the FS server). Console hot-swap is instance one.
-6. **The display ladder** (roadmap "The display ladder"): 29 (VT terminal over virtio-gpu) ->
+6. **The display ladder** (design/display-ladder.md): 29 (VT terminal over virtio-gpu) ->
    33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). Chris's stated
    destination is "something like COSMIC driving a GPU." Rung 5 (bare-metal BXE 3D) is struck.
 

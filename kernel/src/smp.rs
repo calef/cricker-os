@@ -25,30 +25,50 @@ use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
 
 /// 64 KiB per secondary, matching core 0's boot stack (link-aarch64.ld).
-///
-/// No guard page yet: in step 2 a secondary only runs [`secondary_main`] and idles, so it
-/// barely touches its stack. A guard page arrives with step 3, when secondaries run real work
-/// and a stack overflow would otherwise walk into whatever `.bss` sits below. See
-/// notes/stack.md.
 const SECONDARY_STACK_SIZE: usize = 64 * 1024;
 
-/// One boot stack per core. Slot 0 is unused (core 0 has its own from link-aarch64.ld); slots
-/// `1..MAX_CPUS` belong to the secondaries.
+/// The unmapped page below each secondary stack (milestone 90).
+///
+/// One page of address space per core and **zero physical frames**: `map_everything` simply skips
+/// it, so the MMU faults on the first byte written past the bottom of the stack. Same mechanism as
+/// the boot stack's `__stack_guard` (link-aarch64.ld, link-riscv64.ld) and as a kernel thread's
+/// guard (`thread::KernelStack`); this was the one kernel stack that had no such page.
+const SECONDARY_STACK_GUARD: usize = 4096;
+
+/// A core's slot: its guard page, then the stack that grows down into it. A multiple of the page
+/// size, so slot `n`'s guard is page-aligned given the region is.
+const SECONDARY_STACK_SLOT: usize = SECONDARY_STACK_GUARD + SECONDARY_STACK_SIZE;
+
+/// One boot stack per core, each over its own guard page. Slot 0 is unused (core 0 has its own
+/// stack from link-aarch64.ld); slots `1..MAX_CPUS` belong to the secondaries. On RISC-V the boot
+/// hart is whichever one OpenSBI picked, so the unused slot is not always 0.
 ///
 /// **The `UnsafeCell` is load-bearing, and not for interior mutability the usual way.** An
 /// immutable `static` of plain arrays lands in **`.rodata`**, which the fine kernel map makes
 /// **read-only** (W^X), and a stack you cannot write is not a stack. That bug is invisible on the
 /// coarse boot map (where `.rodata` is writable) and fires the instant a secondary adopts the fine
-/// map. The `UnsafeCell` forces the stacks into writable `.bss` instead. See DECISIONS.md §11.
-#[repr(C, align(16))]
-struct Stacks(core::cell::UnsafeCell<[[u8; SECONDARY_STACK_SIZE]; MAX_CPUS]>);
+/// map. See DECISIONS.md §11.
+///
+/// **The `link_section` is what makes the guard pages possible** (milestone 90). These used to be
+/// ordinary `.bss`, and `map_everything` maps `.data`..`__bss_end` as one range, so there was
+/// nowhere to put a hole. In their own region the mapper maps each stack separately and skips each
+/// guard. The region is `(NOLOAD)`, so nothing zeroes it, which `.bss` was getting for free from
+/// boot.s: a stack does not need it, and the high-water instrument paints every usable byte of one
+/// in a test build anyway.
+///
+/// The core count stays here rather than being written again in two linker scripts: the scripts
+/// anchor `__secondary_stacks_start`..`__secondary_stacks_end` around whatever this emits, and
+/// `the_secondary_stack_region_is_the_size_the_linker_reserved` holds the two together.
+#[repr(C, align(4096))]
+struct Stacks(core::cell::UnsafeCell<[[u8; SECONDARY_STACK_SLOT]; MAX_CPUS]>);
 
 // SAFETY: each core writes only its OWN slot, as its stack via SP, so no two cores mutate the same
 // bytes. The cell exists to place the stacks in writable memory, not to share them.
 unsafe impl Sync for Stacks {}
 
+#[unsafe(link_section = ".secondary_stacks")]
 static SECONDARY_STACKS: Stacks = Stacks(core::cell::UnsafeCell::new(
-    [[0; SECONDARY_STACK_SIZE]; MAX_CPUS],
+    [[0; SECONDARY_STACK_SLOT]; MAX_CPUS],
 ));
 
 /// How many secondaries have reached [`secondary_main`] and are idling.
@@ -85,13 +105,33 @@ static RAN_ON: [core::sync::atomic::AtomicBool; MAX_CPUS] =
 static SPREAD: [core::sync::atomic::AtomicU32; MAX_CPUS] =
     [const { core::sync::atomic::AtomicU32::new(0) }; MAX_CPUS];
 
-/// The high-VA top of core `id`'s boot stack. Stacks grow down, so the top is base + size, and
-/// the 16-byte alignment `sp` requires comes from `Stack`'s `align(16)` and the size being a
-/// multiple of 16. See notes/stack.md.
+/// The low end of core `id`'s slot, which is its **guard page**: one page of address space the
+/// kernel map deliberately leaves unmapped. `arch::mmu::map_everything` skips exactly this page per
+/// core, and `verify` refuses to install a map in which it translates.
+pub fn secondary_stack_guard(id: usize) -> u64 {
+    SECONDARY_STACKS.0.get() as u64 + (id as u64) * SECONDARY_STACK_SLOT as u64
+}
+
+/// Core `id`'s usable stack as `(bottom, top)`: the slot above its guard page. Used by the mapper
+/// (what to map) and by the high-water report (what to paint and scan, milestone 84). The boot
+/// core's slot exists but is never painted and never used; the report skips it.
+pub fn secondary_stack_span(id: usize) -> (u64, u64) {
+    let bottom = secondary_stack_guard(id) + SECONDARY_STACK_GUARD as u64;
+    (bottom, bottom + SECONDARY_STACK_SIZE as u64)
+}
+
+/// The whole region, `(start, end)`, for the check against what the linker reserved.
+#[cfg(test)]
+fn secondary_stack_region() -> (u64, u64) {
+    let start = SECONDARY_STACKS.0.get() as u64;
+    (start, start + (MAX_CPUS * SECONDARY_STACK_SLOT) as u64)
+}
+
+/// The high-VA top of core `id`'s boot stack. Stacks grow down, so the top is the high address, and
+/// the 16-byte alignment `sp` requires comes from the region's page alignment and every size here
+/// being a multiple of 16. See notes/stack.md.
 fn stack_top(id: usize) -> u64 {
-    // Slot `id` occupies [base + id*SIZE, base + (id+1)*SIZE); stacks grow down from the top.
-    let base = SECONDARY_STACKS.0.get() as u64;
-    base + (id as u64 + 1) * SECONDARY_STACK_SIZE as u64
+    secondary_stack_span(id).1
 }
 
 unsafe extern "C" {
@@ -108,6 +148,16 @@ pub fn bring_up_secondaries() {
     // Record the boot core as online before starting anyone, so a TLB shootdown from here on names
     // it. (Secondaries add their own bits as they come up.)
     ONLINE_MASK.fetch_or(1 << cpu::id(), Ordering::Release);
+
+    // Paint every secondary's stack before any CPU_ON, while the slots are still untouched `.bss`,
+    // so no live frame can be painted over (milestone 84). Whole slots: nothing has run on them.
+    #[cfg(test)]
+    for id in 0..MAX_CPUS {
+        if id != cpu::id() {
+            let (b, t) = secondary_stack_span(id);
+            crate::stack::paint(b, t);
+        }
+    }
 
     // The entry point PSCI needs is PHYSICAL: the core starts with its MMU off. Cast the
     // function item through a pointer (not straight to an integer, which the compiler warns on).
@@ -261,6 +311,82 @@ mod tests {
             crate::sched::yield_now();
         }
         cond()
+    }
+
+    /// **Every secondary stack sits on an unmapped page** (milestone 90).
+    ///
+    /// Proven by walking the live kernel page tables, not by overflowing a stack: `translate` reads
+    /// the root out of the hardware register (`TTBR1_EL1` / `satp`), so this is the map the CPU is
+    /// actually using. A test that faulted on purpose would be a test the suite could not survive,
+    /// and this catches the thing that would actually go wrong, someone mapping the region as one
+    /// range again and closing the holes.
+    ///
+    /// The pages either side of each hole must translate, or the hole is in the wrong place and
+    /// protects nothing. That is the failure the boot stack's own guard test guards against
+    /// (`the_guard_page_is_a_hole` in each arch's mmu.rs), and it is worth repeating per core here
+    /// because these holes come from a loop over slots rather than from one linker symbol.
+    ///
+    /// This says nothing about the **coarse boot map**, on which the guards are inside a 2 MiB
+    /// block and are therefore mapped. A secondary is on that map only between `secondary_boot` and
+    /// `mmu::init_secondary`, a few instructions of Rust; the boot stack's guard has exactly the
+    /// same window. See notes/stack-high-water.md.
+    #[test_case]
+    fn every_secondary_stack_sits_on_a_guard_page() {
+        for id in 0..MAX_CPUS {
+            let guard = super::secondary_stack_guard(id);
+            let (bottom, top) = secondary_stack_span(id);
+
+            assert_eq!(
+                guard % 4096,
+                0,
+                "core {id}'s guard page is not page-aligned"
+            );
+            assert_eq!(
+                guard + 4096,
+                bottom,
+                "core {id}'s guard is not under its stack"
+            );
+
+            assert!(
+                crate::arch::mmu::translate(guard).is_none(),
+                "core {id}'s guard page at {guard:#x} IS mapped: a deep secondary would scribble \
+                 instead of faulting",
+            );
+            assert!(
+                crate::arch::mmu::translate(bottom).is_some(),
+                "core {id}'s stack is not mapped at its bottom {bottom:#x}",
+            );
+            assert!(
+                crate::arch::mmu::translate(top - 16).is_some(),
+                "core {id}'s stack is not mapped at its top {top:#x}",
+            );
+        }
+    }
+
+    /// **The linker reserved exactly the region the Rust side emits** (milestone 90).
+    ///
+    /// `MAX_CPUS` lives in Rust and the two linker scripts only anchor whatever `.secondary_stacks`
+    /// contains, so there is no second copy of the core count to drift. This holds that arrangement
+    /// honest from the other side: if the static ever stops landing in the region (a lost
+    /// `link_section`, a section renamed in one script), the stacks would still work and the guard
+    /// pages would silently be somewhere else.
+    #[test_case]
+    fn the_secondary_stack_region_is_the_size_the_linker_reserved() {
+        unsafe extern "C" {
+            static __secondary_stacks_start: core::ffi::c_void;
+            static __secondary_stacks_end: core::ffi::c_void;
+        }
+        let lo = (&raw const __secondary_stacks_start) as u64;
+        let hi = (&raw const __secondary_stacks_end) as u64;
+        let (start, end) = super::secondary_stack_region();
+
+        assert_eq!(lo, start, "the stacks are not at the start of their region");
+        assert!(
+            end <= hi,
+            "the stacks ({start:#x}..{end:#x}) overflow the region the linker reserved \
+             ({lo:#x}..{hi:#x})",
+        );
+        assert_eq!(lo % 4096, 0, "the region is not page-aligned");
     }
 
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.

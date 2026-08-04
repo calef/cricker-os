@@ -303,27 +303,69 @@ authority is still exactly what the line says, because the program's half is fix
     cap 2  endpoint  file     report.txt  (read-only, and nothing else on the disk)
 ```
 
-### What the interactive shell cannot do yet, and why that refusal is true
+### At the interactive prompt (milestone 50 wired it, and one thing is still missing)
 
-At the prompt today, a file named at a program that declares one is still refused with "you hold no
-such capability: this shell was granted no directory to narrow". That is a **fact about the shell's
-cspace**, not a placeholder:
-the boot that starts it wires no FS service, so init grants it a terminal, a spawn channel, a result
-channel and a budget, and nothing that names a filesystem. `caps` prints the absence in those words.
+The refusal this section used to describe is gone, and the reason it went is the point of the way it
+was written. It said "you hold no such capability: this shell was granted no directory to narrow",
+which was a **fact about the shell's cspace** rather than a release date; milestone 50 gave the
+interactive boot a RedoxFS disk and had init narrow the file service into the shell, and the same
+sentence stopped being printed with no edit to the condition that prints it. Phase 1's first draft
+hardcoded "arrives with milestone 32", which was true when written and would have become a lie the
+moment the mechanism landed.
 
-The decision is a function of `grant_plan::Holdings`, not of the calendar, and that distinction is the
-lesson. Phase 1 hardcoded the refusal ("arrives with milestone 32"), which was true when written and
-would have quietly become a lie the moment the mechanism landed. A refusal that describes what you
-hold stays true as your holdings change; one that describes a release does not.
+So at the prompt today the shell holds the image root, `holdings().dir` is true, and a name on the
+line resolves. What has **not** been built is the last item of phase 3's list: **init does not build
+a caretaker per grant.** Two consequences, both visible from the prompt:
 
-What remains is wiring an FS service into the interactive boot (kernel boot path, a RedoxFS disk on
-the interactive runner, init building the caretaker per grant). It is deliberately not built here
-because **nothing in the test suite boots the interactive shell**, so it would ship unexercised. The
-mechanism it would use is proven on both ISAs by the tests above.
+- **`rm` is still unreachable.** It declares `DirSpec::Required`, so its grant is an endpoint served
+  by a `fs_subtree_caretaker` that init would have to build per invocation, out of the FS endpoint it
+  currently deletes after building the shell. `spawn` says so rather than starting `rm` with nothing,
+  which is the one failure this model must never have: a program told to destroy something, holding
+  nothing, saying nothing.
+- **`FileSpec::Required` still has no consumer.** The per-file caretaker is built and proven on both
+  ISAs (below), and no shipped program declares a file. The one the milestone block names is `wc`,
+  and milestone 50 deliberately made it something else: a stream consumer that cannot speak the
+  filesystem contract at all, on the argument that "a `wc` that could open the file it counts would
+  be a `wc` that could open any file". That argument is right and it is *later*, so the block's
+  `wc report.txt` is a proof of designation rather than of the file-capability path.
 
-Phase 1 grants what exists today: program spawns, endpoints, frames, untyped budgets, device caps.
-The shell demonstrates untyped-budget and endpoint grants concretely; the others share the same
-`SEND_CAP`-to-init path.
+### `wc report.txt`: the input operand, and what it does and does not prove
+
+Naming a file to a program that declares an input grants it that file's bytes. `wc report.txt` is
+`wc < report.txt` with the operator left out, and it runs down the same path: the planner puts the
+designated name in the stage's **source**, the shell opens it and streams it, and the child holds an
+endpoint.
+
+This is milestone 47's move applied to the other direction. The `file:` prefix came out on the
+finding that the manifest was doing all the work, and it is doing all of it here too: a program that
+declares `InputSpec::Required` reads a stream and declares no file and no directory, so a bare name
+after its declared grants can only be the thing feeding it. There is nothing for the parser to
+classify. A manifest that declared both an input and a file would need positional arity, which is the
+same widening `ArgSpec` is waiting on, and no manifest declares both today.
+
+**Designation is authorization here, and the negative control is what says so.** `wc` with no name is
+refused at the prompt, before anything is spawned, because its manifest says it reads a stream; on
+Unix the same command is a shell that appears to hang. So the name is what moved something.
+
+**What it is not** is the per-file capability `FileSpec::Required` describes, and the difference is
+worth stating rather than glossing. The child gets bytes: it cannot seek, re-read, stat, or name a
+second thing, and it cannot tell a file from a pipe from a builtin typing at it. That is *narrower*
+than a file capability, not wider, so nothing is over-granted; what is missing is the claim that the
+**child** holds the file. `caps` prints which it is, in the child's own terms:
+
+```text
+$ caps wc gate.txt
+  wc would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    output   this shell's result endpoint (it reads the bytes and prints them)
+    input    gate.txt  (this shell reads it and streams it in; the program
+             holds an endpoint, not a file)
+```
+
+`script/shell-check` types `wc gate.txt` and `wc < gate.txt` at the real prompt on both ISAs and
+requires the same three numbers from both, which is what makes "the same designation" a claim about
+the machine: one line reaches the file through an operator and one through a name, so if they
+disagree one of them opened something else.
 
 ## `date` at the prompt, and the authority the command line cannot name
 
@@ -337,51 +379,52 @@ set and propose are three different objects there, and the reason `date -s` cann
 read authority is a page permission rather than a check the program could skip. None of that is
 expressible on a command line, so there is nothing to type and nothing to get wrong.
 
-**In this boot, the shell holds no clock, so `date` prints "the time is unknown: this process holds
-no clock capability."** That sentence is true rather than pending, in the same way the file refusal
-above is: the interactive boot starts no clock service, so there is no clock page anywhere in it to
-map. `caps date` says so *before* you run it, which is what `caps` is for now that it is the only
-visibility surface:
+**The interactive boot now starts a clock service and hands the page to init**, on both ISAs, so
+`date` at the prompt prints a time. The shell is not on that path and holds no clock: `Manifest`
+grew a `clock: bool` the way it has `reports: bool` (a fixed fact about the program, not a
+designation), and *init* reads it and endows the child. `caps date` prints the row anyway, because a
+preview that showed only what the line designates would be off by exactly one capability:
 
 ```text
 $ caps date
   date would grant the new process, and nothing else:
     cap 0  endpoint  result   report its answer back
-    (clock: this shell holds none to delegate, so it will report the time
-     as unknown. the clock is init's to endow; no token on the line can.)
+    cap 1  frame     clock    read-only. it can read the time and not set it,
+                              and no token on the line could have asked for more
     arg    (none)
   reading the command is reading its whole authority.
+$ date
+  Tue 2026-08-04 00:35:59 UTC
 ```
 
-### What a shell that could delegate a clock would need (assessed, not built)
+### The four links this note said were missing, and the one it got wrong
 
-The shape that fits is the one `--mem` already uses: **a child's authority is the shell's,
-attenuated.** The shell would hold a `Frame` capability for the clock page with `READ` and nothing
-else, `Manifest` would gain a `clock: bool` the way it has `reports: bool` (a fixed fact about the
-program, not a designation), `Endowment` would carry it, and the preview line above would become a
-cap row. `frame_cap(phys, Rights::READ)` already exists and is what `kernel::user::date_tests` grants
-`date` directly.
+The assessment above listed four, in different subsystems, and three of them were right:
 
-It is not built here because the delegation chain is missing at every link, and the links are in
-different subsystems:
+1. **The interactive boot started no clock service.** Correct, and it was the bulk of the work: the
+   kernel starts it before init exists on both boot paths.
+2. **Init had no way to receive the page.** Correct: it is a read-only frame capability now, granted
+   ahead of the filesystem pair so its slot number does not depend on whether a disk was attached.
+3. **"The spawn protocol carries no clock. A clock is a third position and a new flag word, in both
+   inits."** **Wrong, and the reason is the interesting part.** A clock is not designated on the
+   command line, so there is nothing for the shell to *send*: init already decodes the program id, so
+   it can read that program's manifest itself and decide. The wire did not change at all. The general
+   rule that falls out: a flag word carries what the **sender chose**, and an authority the sender
+   could not choose does not belong on it.
+4. **The child needs the page mapped and the cap inserted.** Correct, at `CLOCK_VA` and slot 1,
+   because `date` probes the slot before touching the address.
 
-1. **The interactive boot starts no clock service.** Every caller of `clock_service::start` is a
-   test. Starting it in the `shell` boot means kernel boot wiring on both ISAs (the aarch64 initboot
-   path and `riscv_shell_boot`), because the service needs the RTC device page mapped and the kernel
-   is what maps it.
-2. **Init has no way to receive the page.** The kernel would have to hand init a read-only frame cap
-   for it, and init would have to keep a copy for the shell.
-3. **The spawn protocol carries no clock.** `grant_plan::spawnproto` delegates in a fixed order (the
-   interrupt pair, then the `--mem` untyped); a clock is a third position and a new flag word, in
-   both inits.
-4. **The child needs the page mapped *and* the cap inserted**, at `CLOCK_VA` and slot 1, because
-   `date` probes the slot before touching the address (a process with no clock must get an answer,
-   not a fault).
+The old paragraph also said all of it "would ship unexercised, because nothing in the test suite
+boots the interactive shell". That stopped being true when milestone 50 wrote `script/shell-check`,
+which is the gate this landed against.
 
-That is a kernel boot change on two ISAs, a protocol change, both inits, the shell and `grant_plan`, and
-**nothing in the test suite boots the interactive shell**, so all of it would ship unexercised. That
-is the same reason the FS wiring above was left out of phase 2, and the same answer applies: it is
-its own lane, and the honest "no clock capability" line holds the place until then.
+### What a delegable clock would still need
+
+Nothing here lets the *shell* hand a clock to anything. That is a real difference and not a
+formality: a shell holding the page could grant it to any child, and init granting it per manifest
+means the set of processes that can read the time is decided by declarations rather than by a prompt.
+Making it delegable would mean init keeping a copy for the shell, a `Holdings` field, and a clock
+position on the wire after all. There is no program asking for it, so it is recorded and not built.
 
 ## What phase 1 deliberately does not do
 

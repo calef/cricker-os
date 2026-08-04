@@ -478,7 +478,21 @@ struct Device {
 /// sixth receipt, and by now the pattern is not a coincidence: every milestone that wires one more
 /// confined device costs a slot forever, because a transport is never unregistered. The fix is an
 /// unregister on process death, not a seventh bump.
-const MAX_DEVICES: usize = 30;
+///
+/// **31 for milestone 57's write half, which is the seventh bump the line above told it not to
+/// take.** It is recorded that way on purpose. The fifth disk is a blank image the guest partitions
+/// and formats, and it needs a block server of its own for the reason every other one does; what it
+/// does not need is a slot held until reboot by a process that has been dead for minutes.
+///
+/// **Why this lane took the bump anyway**, since the alternative was named and refused: the
+/// unregister is not a bookkeeping change. It has to decide what a `Virtio` capability *is* when its
+/// holder dies (revoked, or dangling at a slot that has been reused), whether a transport can be
+/// handed to a second driver at all after the first programmed the device, and how that interacts
+/// with `entropy_service::ensure`'s "one service per device per boot" rule, which exists precisely
+/// because re-driving a live device breaks the first driver. That is a lifetime decision about a
+/// kernel object, which DECISIONS §16 says is a design fork rather than a task, so a lane that was
+/// asked to partition a disk should not settle it in passing. Seventh receipt.
+const MAX_DEVICES: usize = 31;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

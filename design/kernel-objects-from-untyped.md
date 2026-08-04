@@ -1,6 +1,6 @@
 # Milestone 14: kernel objects from untyped, and the death of the kernel heap
 
-The deliverable, from design/roadmap.md: retype TCBs, endpoints, and page tables out of untyped
+The deliverable, from design/roadmap/14-kernel-objects-from-untyped.md: retype TCBs, endpoints, and page tables out of untyped
 memory, the way milestone 11 already does for user pages, and delete the kernel heap and slab.
 This document is the working plan: what the heap actually backs today, the shape we are moving
 to, the phases, and the two decisions that have to be made on purpose rather than by drift.

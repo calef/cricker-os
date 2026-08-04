@@ -71,6 +71,30 @@ for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
 done
 
+# Rule 1, made mechanical (milestone 83): all architecture-specific code in the kernel lives under
+# kernel/src/arch/. This is the rule that makes the x86_64 port a new directory instead of a diff
+# across every file, and until now it was enforced by discipline alone; the discipline slipped once
+# (a raw SPSel read in user/tests.rs), which is exactly how the second slip arrives. The check is
+# the three spellings arch code has in Rust: an `asm!(`/`global_asm!(` invocation (one pattern,
+# since the second contains the first) and anything reached through `core::arch::`.
+#
+# No allowlist, deliberately. `current_sp` and `sync_icache` are the precedent: when portable code
+# needs a register, the register read moves behind an `arch::` helper and the portable caller names
+# what it wants rather than how to get it. Comments are scanned too, and that is the em-dash gate's
+# self-consistency argument: prose may name the macro (`asm!`, no parenthesis, as user.rs already
+# does), but a comment that spells the call form is one copy-paste from being code.
+echo "==> rule 1 (arch code stays under kernel/src/arch/)"
+if git grep -nE 'asm!\(|core::arch::' -- \
+    'kernel/src' ':!kernel/src/arch' > /tmp/cricker-rule-1.txt 2>/dev/null; then
+    echo "lint: architecture-specific code outside kernel/src/arch/ (CLAUDE.md rule 1):" >&2
+    cat /tmp/cricker-rule-1.txt >&2
+    echo "" >&2
+    echo "Move the register touch behind a helper in kernel/src/arch/ and call that; see" >&2
+    echo "arch::current_sp for the shape. A port should be a new directory, not a diff." >&2
+    exit 1
+fi
+echo "rule 1: no asm outside kernel/src/arch/"
+
 # No module-wide dead-code suppression, anywhere (milestone 41, DECISIONS §38).
 #
 # This is a ratchet, and it is the whole reason milestone 41 is not a one-off tidy. Six files used
@@ -125,7 +149,7 @@ if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
     exit 1
 fi
 
-# The milestone table's status column, validated (see design/roadmap.md's status vocabulary and
+# The milestone index's status column, validated (see design/roadmap/README.md's status vocabulary and
 # script/roadmap). Catches a status token nobody defined, a detail block with no table row, and a
 # milestone referenced in prose that the table does not carry, which is exactly how milestone 34 went
 # missing. Documentation is part of this project's deliverable, so its index gets a gate.

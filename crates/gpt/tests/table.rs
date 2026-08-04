@@ -251,7 +251,17 @@ fn the_entry_array_buffer_sets_the_entry_count() {
 /// the point `ntp_proto` made and this crate inherits: a model checker is for domains too big to
 /// count. The symbolic form of this property (any buffer, not this one) is the Kani harness
 /// `a_single_byte_change_always_changes_the_crc`.
+///
+/// Skipped under Miri like its real-disk twins: "runs in the time a test should take" is a claim
+/// about silicon, and under an interpreter the 261,120 parses dominate the whole workspace run
+/// while proving a CRC-completeness claim that is not a memory property. The clean create, write,
+/// and parse at the top of this test are what Miri needs, and every other test in this file walks
+/// them (notes/miri.md).
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "261,120 parses; the clean-path tests cover these paths"
+)]
 fn every_single_byte_corruption_of_a_small_table_is_caught() {
     let mut array = [0u8; 4 * entry::SIZE];
     let mut header = [0u8; BLOCK];

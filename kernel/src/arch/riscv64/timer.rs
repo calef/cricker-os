@@ -201,6 +201,17 @@ pub fn missed_ticks() -> u64 {
     MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
 }
 
+/// This hart's next armed deadline (test support): the grid cell [`rearm`] advances from.
+///
+/// Exposed so the drift test can assert the re-arm law directly (deadlines advance by exactly one
+/// interval per delivered tick) instead of inferring it from a wall-clock tick rate, which a
+/// descheduled emulator falsifies. aarch64 reads its deadline back out of `CNTV_CVAL_EL0`; this is
+/// the software copy that SBI's write-only `set_timer` forces us to keep anyway (module header).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn deadline() -> u64 {
+    DEADLINE[cpu::id()].load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     //! Tests for the SBI timer, and for the thing the whole locking discipline was written to
@@ -227,7 +238,7 @@ mod tests {
         );
     }
 
-    /// Ticks arrive at roughly the rate we asked for.
+    /// Ticks arrive at the configured rate, proven by the grid rather than by the wall clock.
     ///
     /// This is the test aarch64 wrote after measuring 100 Hz configured and ~70 Hz delivered, and
     /// **RISC-V had the same defect** when this test was written: `tick` re-armed with
@@ -235,26 +246,75 @@ mod tests {
     /// clock, so every period ran long by the trap entry plus the SBI round trip and the lateness
     /// compounded. The fix is the same shape as aarch64's, with the grid kept in software because
     /// SBI has no register to read a deadline back from. See the module header.
+    ///
+    /// The original assertion here compared delivered ticks against elapsed counter time, one
+    /// period of slack either way. That measures the emulator as much as the handler: the test
+    /// runner passes no `-icount`, so `rdtime` follows host time, and a host that deschedules the
+    /// vCPU for a few periods coalesces ticks into exactly the deficit the old defect produced.
+    /// It failed gate runs on contended hosts, including on `rv64`, the control model, and no
+    /// margin can separate "our re-arm is late" from "the emulator was not running"
+    /// (notes/cpu-models.md BUGS; notes/load-sensitive-assertions.md).
+    ///
+    /// So assert the re-arm LAW instead, which is what the test was always responsible for and is
+    /// deterministic: over a window in which no miss was recorded, [`rearm`] moved the deadline by
+    /// **exactly one interval per delivered tick**. The re-arm-from-`now` defect fails this on the
+    /// first tick (each deadline lands late by the trap-plus-SBI latency, so the sum overshoots
+    /// the grid); a descheduled emulator cannot fail it, because a deschedule long enough to slip
+    /// the grid is counted by `MISSED_TICKS` and the window is retried.
     #[test_case]
     fn ticks_arrive_at_the_configured_rate() {
         use crate::arch::timer;
 
-        let t0 = timer::ticks();
-        let c0 = timer::now();
+        // A consistent (ticks, missed, deadline, counter) snapshot without masking: a tick
+        // between the reads would skew all of them coherently-looking, so re-read until the tick
+        // count brackets the others unchanged. The hart id is in the bracket too: these statics
+        // are per hart, and a snapshot pair taken on two harts compares unrelated grids.
+        let snapshot = || loop {
+            let hart = crate::cpu::id();
+            let t = timer::ticks();
+            let m = timer::missed_ticks();
+            let d = timer::deadline();
+            let c = timer::now();
+            if timer::ticks() == t && crate::cpu::id() == hart {
+                break (hart, t, m, d, c);
+            }
+        };
 
-        timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
+        // A miss re-anchors the grid, which is correct behaviour (`rearm`'s safety valve), so a
+        // window containing one proves nothing about the law either way: retry it. Eight
+        // quarter-second windows all containing a miss is not load, it is either a pathological
+        // host or a handler genuinely slower than a tick period, and both deserve a red run.
+        let mut attempts = 0;
+        let (elapsed_ticks, deadline_delta, expected) = loop {
+            let (h0, t0, m0, d0, c0) = snapshot();
+            timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
+            let (h1, t1, m1, d1, c1) = snapshot();
 
-        let elapsed_ticks = timer::ticks() - t0;
-        let elapsed_counter = timer::now() - c0;
+            if h0 == h1 && m0 == m1 && t1 - t0 >= 2 {
+                break (t1 - t0, d1 - d0, (c1 - c0) / timer::interval());
+            }
+            attempts += 1;
+            assert!(
+                attempts < 8,
+                "no miss-free measurement window in eight tries: either the host is too \
+                 contended to observe the grid, or the handler is slower than a whole tick \
+                 period (see the_handler_keeps_up_when_no_lock_is_held)"
+            );
+        };
 
-        // How many ticks *should* have fired in that much counter time?
-        let expected = elapsed_counter / timer::interval();
+        assert_eq!(
+            deadline_delta,
+            elapsed_ticks * timer::interval(),
+            "timer drift: {elapsed_ticks} ticks moved the deadline off the grid. Re-arming from \
+             `now()` inside the handler instead of from the previous deadline does exactly this."
+        );
 
-        // Allow one either way: we may start or stop mid-period.
+        // The one wall-clock bound a contended host cannot falsify: descheduling only DROPS
+        // ticks, so more ticks than elapsed periods (plus one for starting mid-period) means the
+        // timer is firing faster than the grid, which is `rearm`'s spin-forever failure mode.
         assert!(
-            elapsed_ticks + 1 >= expected && elapsed_ticks <= expected + 1,
-            "timer drift: {elapsed_ticks} ticks in {expected} periods. Re-arming from `now()` \
-             inside the handler instead of from the previous deadline does exactly this."
+            elapsed_ticks <= expected + 1,
+            "{elapsed_ticks} ticks in {expected} periods: the timer fires faster than configured"
         );
     }
 

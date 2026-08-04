@@ -161,9 +161,7 @@ fn wait_for(mut done: impl FnMut() -> bool) -> bool {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn el1_runs_on_sp_el1() {
-    let spsel: u64;
-    // SAFETY: reading SPSel has no side effects.
-    unsafe { core::arch::asm!("mrs {}, spsel", out(reg) spsel, options(nostack, nomem)) };
+    let spsel = crate::arch::spsel();
 
     assert_eq!(
         spsel & 1,
@@ -1654,17 +1652,11 @@ fn a_driver_killed_mid_write_leaves_the_device_and_transport_sane() {
 /// that entirely: it dies **all at once**, so it never unmaps anything. It records every
 /// frame the mapper hands it, leaves and tables alike, and frees the lot.
 ///
-/// The assertion is exact, not approximate. Approximate would have hidden the milestone 6
-/// bug.
+/// The assertion is exact in the direction this test owns: a leaked frame keeps `used` above
+/// the baseline forever and fails. Approximate there would have hidden the milestone 6 bug.
 #[test_case]
 fn a_dead_user_thread_frees_its_whole_address_space() {
     let used = || crate::memory::stats().expect("no allocator").used;
-
-    // The steady-state thread count to return to after each spawned thread is reaped. It is
-    // NOT a constant: the boot thread and core 0's idle are two, plus one idle thread per
-    // secondary core (SMP, §11). Capture it dynamically so the test does not bake in a core
-    // count.
-    let baseline = sched::thread_count();
 
     // Warm up: the first user thread ever created pays for page tables in a region of
     // kernel VA that nothing has touched. Measure the STEADY state, which is the one that
@@ -1675,6 +1667,7 @@ fn a_dead_user_thread_frees_its_whole_address_space() {
     // snapshot swallows its fault, and the wait below times out on a count that will never
     // move again. Latent until milestone 14 phase A.2/A.3 made spawn-to-fault fast enough
     // to lose the race about once in seven runs.
+    //
     // Pin the outlaws to THIS core (DECISIONS §28 made `spawn` scatter them). Frame accounting
     // must be exact to catch a leak (the milestone-6 bug this test guards), but a thread's frames
     // are freed by `finish_switch` on whatever core reaps it, *after* it leaves the thread table
@@ -1700,18 +1693,24 @@ fn a_dead_user_thread_frees_its_whole_address_space() {
         })
     };
 
+    // Each outlaw's reap is proven by `thread_present` on ITS Tid, not by `thread_count()`
+    // returning to a baseline sampled at the top of the test. The count is the whole table, so a
+    // baseline taken while an earlier test's teardown is still in flight is a number the system
+    // moves on its own; the per-Tid wait is immune to neighbours by construction. Same fix as the
+    // reap wait in `reclaim_frees_a_started_then_exited_childs_regions`; see
+    // notes/load-sensitive-assertions.md.
     let f0 = USER_FAULTS.load(Ordering::Relaxed);
-    outlaw_here().expect("spawn failed");
+    let warmup = outlaw_here().expect("spawn failed");
     assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
-    assert!(wait_for(|| sched::thread_count() <= baseline));
+    assert!(wait_for(|| !sched::thread_present(warmup)));
 
     // Sample the baseline only once `used()` has STOPPED MOVING, for the same reason the
     // assertion below waits rather than reading instantly, applied to the other end. The warm-up
     // outlaw's address space is freed by `finish_switch` on whatever core actually ran it, which
-    // under §28 placement need not be this one, and that free lands a beat *after*
-    // `thread_count` falls. Sampling `before` inside that window captures frames that are about
-    // to come back, `used()` then settles BELOW `before`, and the wait for equality can never
-    // succeed. The failure says so plainly when it happens: it reported "-18 frames did not come
+    // under §28 placement need not be this one, and that free lands a beat *after* its Tid
+    // stops resolving. Sampling `before` inside that window captures frames that are about
+    // to come back, `used()` then settles BELOW `before`, and a wait for equality could never
+    // succeed. The failure said so plainly when it happened: it reported "-18 frames did not come
     // back", a NEGATIVE leak, which no real leak can produce. Found when an unrelated change to
     // the std::fs test shifted this test's timing; the race was already here.
     // Two agreeing samples a yield apart mean nothing is in flight. Bounded by `wait_for`'s own
@@ -1730,21 +1729,27 @@ fn a_dead_user_thread_frees_its_whole_address_space() {
 
     for _ in 0..4 {
         let f = USER_FAULTS.load(Ordering::Relaxed);
-        outlaw_here().expect("spawn failed");
+        let outlaw = outlaw_here().expect("spawn failed");
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f));
-        assert!(wait_for(|| sched::thread_count() <= baseline));
+        assert!(wait_for(|| !sched::thread_present(outlaw)));
     }
 
-    // Exact, but allow the asynchronous reap to settle. Pinning the outlaws with `spawn_on` is a
-    // placement HINT, not a pin (DECISIONS §28): an idle core can steal one before this core runs
-    // it, and then the frame free (finish_switch dropping the address space, after the thread
-    // leaves the table and outside SCHED) lands on that core a beat after `thread_count` already
-    // fell. So wait for `used()` to return to `before` rather than reading it the instant the
-    // count drops. Still exact and still a leak trap: a real leak (the milestone-6 bug) never
-    // gives the frames back, so this wait times out and fails; only cross-core reap lag is
-    // tolerated, not a missing frame.
+    // Exact in the leak direction, but allow the asynchronous reap to settle. Pinning the outlaws
+    // with `spawn_on` is a placement HINT, not a pin (DECISIONS §28): an idle core can steal one
+    // before this core runs it, and then the frame free (finish_switch dropping the address space,
+    // after the thread leaves the table and outside SCHED) lands on that core a beat after the Tid
+    // resolves to nothing. So wait for `used()` to come back to `before` rather than reading it
+    // the instant the last outlaw is gone. Still a leak trap: a real leak (the milestone-6 bug)
+    // never gives the frames back, so this wait times out and fails.
+    //
+    // `<=`, not `==`. Equality demanded that no OTHER test's teardown free a frame during this
+    // window, which is not a property four outlaw address spaces are responsible for, and it is
+    // the only way the old form could fail with a NEGATIVE count: it did, on CI and on a quiet
+    // aarch64 dev machine, as "-19 frames did not come back", frames arriving from outside the
+    // measured window. A leak still fails identically: every frame the outlaws keep holds
+    // `used()` above `before` forever. See notes/load-sensitive-assertions.md.
     assert!(
-        wait_for(|| used() == before),
+        wait_for(|| used() <= before),
         "four user address spaces came and went and {} frames did not come back",
         used() as i64 - before as i64,
     );

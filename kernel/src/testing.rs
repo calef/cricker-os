@@ -323,6 +323,11 @@ pub fn runner(tests: &[&dyn Testable]) {
     }
 
     println!();
+    #[cfg(test)]
+    // the runner itself is compiled in every build; the instrument only exists in test
+    crate::stack::report_high_water();
+
+    println!();
     println!("test result: ok. {} passed", tests.len());
 
     semihosting::exit(semihosting::EXIT_SUCCESS)

@@ -221,6 +221,15 @@ path = "src/flaky.rs"
 test = false
 bench = false
 
+# The interactive boot's corpse collector (milestone 22, the interactive increment). Holds one
+# endpoint capability with READ and nothing else; init endows every job it builds with the same
+# endpoint, and the pages come back to init's budget when this collects the corpse.
+[[bin]]
+name = "job_reaper"
+path = "src/job_reaper.rs"
+test = false
+bench = false
+
 # The C seam (milestone 36). Three files, two binaries: `c_shim` is the Rust user_rt shell that
 # links user/c/c_seam.c (compiled by build.rs with a bare-metal clang) and holds every capability
 # the foreign component is not allowed to see; `c_confiner` builds it, supervises it, and holds the
@@ -370,6 +379,17 @@ bench = false
 [[bin]]
 name = "disk_surveyor"
 path = "src/disk_surveyor.rs"
+test = false
+bench = false
+
+# `disk_partitioner` (milestone 57's write half): writes the map the surveyor reads. The pair of
+# authorities it needs is the demonstration: ONE disk, and an entropy endpoint for the unique ids a
+# GPT requires. Without the second it writes nothing at all rather than inventing an id, and the
+# same binary's verify role reads the disk back to show which happened. `mkinitrd` packs it for both
+# ISAs. Provisional name (milestone 57's lane): Chris settles program names.
+[[bin]]
+name = "disk_partitioner"
+path = "src/disk_partitioner.rs"
 test = false
 bench = false
 

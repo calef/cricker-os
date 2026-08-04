@@ -87,6 +87,189 @@ fn bottom() -> u64 {
 }
 
 #[cfg(test)]
+fn top() -> u64 {
+    unsafe extern "C" {
+        static __stack_top: c_void;
+    }
+    (&raw const __stack_top) as u64
+}
+
+// --- Stack high-water measurement (milestone 84) ---
+//
+// The canary above answers "did an overflow happen"; nothing answered "how close are we". The
+// FS-server stack bug (notes/crickerfs.md) was found the expensive way, and until this landed the
+// claim "the stacks are big enough" was an argument, not a measurement. So: paint every
+// kernel-owned stack with a pattern before use, and at the end of the test suite scan each for the
+// deepest overwritten word. Test builds only, deliberately: painting 16 KiB per thread spawn would
+// perturb the spawn benchmark, and the report goes through the test channel anyway.
+//
+// A watermark sees only exercised paths. An unexercised deep path stays invisible, the same limit
+// coverage has. See notes/stack-high-water.md.
+
+/// The paint word. Not zero (fresh `.bss` is zeroes, and a stack full of zeroes would read as
+/// untouched), not a plausible pointer or length, and not one of the canary words.
+#[cfg(test)]
+const PAINT: u64 = 0x5AFE_57AC_5AFE_57AC;
+
+/// Paint `[bottom, top)` with [`PAINT`]. The caller asserts nothing has used the region yet: a
+/// painted-over live frame is corruption, so every call site painting a stack in use must skip the
+/// live portion (see [`paint_boot_stack`]).
+#[cfg(test)]
+pub fn paint(bottom: u64, top: u64) {
+    let mut p = bottom as *mut u64;
+    while (p as u64) < top {
+        // SAFETY: the caller hands us a mapped, unused stack region; volatile so the writes are
+        // not elided or coalesced into something that assumes the region is ordinary memory.
+        unsafe { core::ptr::write_volatile(p, PAINT) };
+        p = p.wrapping_add(1);
+    }
+}
+
+/// The deepest use of a painted stack `[bottom, top)`, in bytes from the top: scan upward from the
+/// bottom for the first word that is no longer [`PAINT`]. Iterative, no locals of size, so the scan
+/// itself needs no meaningful depth on whatever stack it runs on.
+///
+/// A frame whose deepest word happened to store the paint value exactly reads one word shallow.
+/// Classic limitation of the method; a 64-bit pattern makes it vanishingly unlikely.
+#[cfg(test)]
+pub fn high_water(bottom: u64, top: u64) -> u64 {
+    let mut p = bottom as *const u64;
+    while (p as u64) < top {
+        // SAFETY: a mapped stack region. Volatile because another core may own this stack and be
+        // running on it right now; we only ever compare a snapshot word against the pattern, and a
+        // racing write can only make the stack look deeper, never shallower than it truly was.
+        if unsafe { core::ptr::read_volatile(p) } != PAINT {
+            return top - p as u64;
+        }
+        p = p.wrapping_add(1);
+    }
+    0
+}
+
+/// How far below the paint-time `sp` the boot-stack paint stopped, recorded so the report can say
+/// what its floor is: a measured high-water equal to the floor means "nothing after the paint went
+/// deeper than the paint itself", not "this is the true maximum".
+#[cfg(test)]
+static BOOT_PAINT_CEILING: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Paint the unused part of the boot stack. Called from `kernel_main` right after [`init`], so the
+/// live portion (boot.s frames plus `kernel_main`'s own) is honestly skipped rather than painted
+/// over: everything from the canary up to a margin below the current `sp` gets the pattern.
+///
+/// Two honest limits. Depth used *before* this runs and never reached again is invisible; the boot
+/// path to here is a handful of shallow frames, so the floor is low, and the report prints it. And
+/// the margin below `sp` exists because the paint loop's own callees (`write_volatile` is a real
+/// call in a debug build) push frames below our `sp` while the loop runs; painting inside a live
+/// callee frame would corrupt it.
+#[cfg(test)]
+pub fn paint_boot_stack() {
+    let ceiling = crate::arch::current_sp() - 512;
+    BOOT_PAINT_CEILING.store(ceiling, core::sync::atomic::Ordering::Relaxed);
+    // Start above the canary words: painting them would kill the canary check.
+    paint(bottom() + core::mem::size_of_val(&CANARY) as u64, ceiling);
+}
+
+/// Deepest thread-stack use seen so far, in bytes, over every reaped [`crate::thread::KernelStack`]
+/// (scanned in its `Drop`) and, at report time, every live one. One number, because every kernel
+/// thread stack is the same size.
+#[cfg(test)]
+static THREAD_STACK_MAX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// How many thread stacks fed [`THREAD_STACK_MAX`], so the report says how much evidence the
+/// number rests on.
+#[cfg(test)]
+static THREAD_STACK_SCANS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Record one thread stack's measured use (called from `KernelStack`'s `Drop`, and from the live
+/// scan at report time).
+#[cfg(test)]
+pub fn note_thread_stack_use(used: u64) {
+    use core::sync::atomic::Ordering;
+    THREAD_STACK_MAX.fetch_max(used, Ordering::Relaxed);
+    THREAD_STACK_SCANS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Per-stack high-water report, printed by the test runner after the last test. The numbers are a
+/// property of the code and the suite, not of the host: depth is determined by what ran, so a
+/// loaded runner moves nothing here (the one caveat is interrupt-arrival timing, which decides
+/// where on a stack a trap frame lands; see notes/stack-high-water.md for the measured spread).
+#[cfg(test)]
+pub fn report_high_water() {
+    use core::sync::atomic::Ordering;
+
+    let boot_bottom = bottom() + core::mem::size_of_val(&CANARY) as u64;
+    let size = top() - boot_bottom;
+    let used = high_water(boot_bottom, top());
+    let floor = top() - BOOT_PAINT_CEILING.load(Ordering::Relaxed);
+    crate::println!(
+        "stack high-water: boot   {used}/{size} bytes ({}%), paint floor {floor}",
+        used * 100 / size,
+    );
+
+    let boot_core = crate::arch::boot_cpu_id();
+    let mut max_secondary = 0u64;
+    for id in 0..crate::cpu::MAX_CPUS {
+        if id == boot_core || crate::smp::online_harts_mask() & (1 << id) == 0 {
+            continue; // the boot core runs on the linker-script stack; its slot was never painted
+        }
+        let (b, t) = crate::smp::secondary_stack_span(id);
+        let core_used = high_water(b, t);
+        max_secondary = max_secondary.max(core_used);
+        crate::println!(
+            "stack high-water: core{id}  {core_used}/{} bytes ({}%)",
+            t - b,
+            core_used * 100 / (t - b),
+        );
+    }
+
+    // Live thread stacks last, so long-lived service threads (the FS server, the shape of the
+    // motivating incident) are counted even though nothing ever reaps them.
+    crate::sched::scan_live_thread_stacks();
+    let tmax = THREAD_STACK_MAX.load(Ordering::Relaxed);
+    let tsize = (crate::thread::STACK_PAGES * 4096) as u64;
+    crate::println!(
+        "stack high-water: thread {tmax}/{tsize} bytes ({}%, deepest of {} stacks)",
+        tmax * 100 / tsize,
+        THREAD_STACK_SCANS.load(Ordering::Relaxed),
+    );
+
+    // The gate, landed after the measurement per the milestone's measure-then-gate sequence.
+    // Checked after the printing, so a trip always comes with the numbers that explain it.
+    //
+    // The margins are justified by the measured spread, which is unusually small: two aarch64 runs
+    // agreed byte for byte on every stack under host loads of 33 and 9, and the two ISAs agree to
+    // within ~410 bytes (boot 53808/54216, secondaries 8504/8448, thread 11352/11672; see
+    // notes/stack-high-water.md). So each limit sits far above anything observed, and what it buys
+    // against that stability is an alarm that still fires BEFORE the stack actually runs out:
+    //
+    //   - boot 61440: +7.2 KiB over the observed max, and a trip still leaves a full page before
+    //     the guard. Growth lands here first (test_main runs every test body on this stack).
+    //   - secondary 16384: ~2x observed. Milestone 90 put a guard page under each of these stacks
+    //     (smp.rs), so this is no longer the only thing standing between a deep secondary and
+    //     silent .bss corruption; it is now what a guard page cannot be, an alarm that fires ~48
+    //     KiB BEFORE the fault, in the run that drifts rather than the run that dies.
+    //   - thread 14336: +2.6 KiB over observed, ~8x the cross-ISA spread, trips 2 KiB before the
+    //     thread guard. The tightest, deliberately: 16 KiB stacks are where recursion lives, and
+    //     the FS-server incident was exactly this class outgrowing its allowance unnoticed.
+    assert!(
+        used <= 61440,
+        "boot stack high-water {used} exceeded 61440: the suite's deepest path has grown ~7 KiB \
+         past its measured depth and is within a page of the guard (notes/stack-high-water.md)",
+    );
+    assert!(
+        max_secondary <= 16384,
+        "a secondary stack's high-water {max_secondary} exceeded 16384, ~2x anything measured; \
+         the guard page below it (smp.rs) would still catch a real overflow, but something is \
+         running much deeper on an idle-and-traps stack than the suite has ever measured",
+    );
+    assert!(
+        tmax <= 14336,
+        "thread stack high-water {tmax} exceeded 14336: some kernel thread is within 2 KiB of its \
+         guard page (notes/stack-high-water.md)",
+    );
+}
+
+#[cfg(test)]
 mod tests {
     //! Tests for stack overflow detection.
 

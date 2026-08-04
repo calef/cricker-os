@@ -160,6 +160,20 @@ pub fn current_sp() -> u64 {
     sp
 }
 
+/// `SPSel`, the register that says which stack pointer the name `sp` currently means at EL1:
+/// bit 0 set is `SP_EL1`, clear is `SP_EL0`. Reading a system register is arch-specific (rule 1),
+/// so the trap-frame sanity test (`el1_runs_on_sp_el1`, user/tests.rs) goes through here rather
+/// than embedding an `asm!` in portable code, the same shape as [`current_sp`]. Test-only because
+/// nothing but that test asks, and aarch64-only on purpose: RISC-V does not bank the stack pointer
+/// by privilege level, so there is no analogous register to read (notes/riscv-parity-scope.md).
+#[cfg(test)]
+pub fn spsel() -> u64 {
+    let spsel: u64;
+    // SAFETY: reading SPSel has no side effects.
+    unsafe { core::arch::asm!("mrs {}, spsel", out(reg) spsel, options(nostack, nomem)) };
+    spsel
+}
+
 /// Order all prior normal-memory writes before the next device (MMIO) write.
 ///
 /// The kernel builds a virtio descriptor ring in normal memory, then rings the device with an MMIO

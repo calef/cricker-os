@@ -163,6 +163,11 @@ impl KernelStack {
             *slot = phys;
         }
 
+        // Paint the whole stack for the high-water report (milestone 84): every page is mapped and
+        // no thread has run on it, so there is no live portion to skip.
+        #[cfg(test)]
+        crate::stack::paint(bottom, top);
+
         Some(KernelStack {
             guard,
             bottom,
@@ -191,6 +196,14 @@ impl KernelStack {
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
+        // Measure before unmapping (milestone 84). The reaper runs this on the successor's stack,
+        // never the one being scanned. Skip a partial build (some pages never mapped, so a scan
+        // would fault) and note it was never painted or used anyway.
+        #[cfg(test)]
+        if self.pages.iter().all(|&p| p != 0) {
+            crate::stack::note_thread_stack_use(crate::stack::high_water(self.bottom, self.top));
+        }
+
         for (i, &phys) in self.pages.iter().enumerate() {
             if phys == 0 {
                 continue; // a page a failed build never mapped
