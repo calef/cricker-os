@@ -675,6 +675,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   the diagnosis (a slow machine produces a deficit, never a surplus), so the three that fired on
   negative counts were measuring their neighbours, not their subject. What each was rescoped to,
   the one left alone and why, and the honest cost of the `<=` trade.
+- [The HVF leg](hvf-leg.md): the aarch64 suite on the physical Apple Silicon core, added to
+  `script/gates` as its final step (and skipped loudly where HVF does not exist, so a Linux CI
+  transcript cannot be misread as silicon coverage). What `--hvf` does and does not re-run, the
+  measured cost against TCG, the exact behaviour of a semihosting trap nobody answers, the SMMU
+  belief the machine overruled, and the two yield-count assertions a *fast* machine found for the
+  same reason a slow one finds them.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the

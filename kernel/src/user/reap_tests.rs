@@ -376,16 +376,12 @@ fn reaping_an_uncollected_corpse_leaves_no_ghost_on_the_endpoint() {
     let child = build_child_in(instance, FAULT_STUB, None, Some(fault_ep));
     let cap = hold_endpoint(fault_ep);
 
-    // Nobody is receiving, so the corpse must park. Wait for it rather than assume a schedule.
-    for _ in 0..4000 {
-        if sched::endpoint_waiting_senders(fault_ep) == 1 {
-            break;
-        }
-        sched::yield_now();
-    }
-    assert_eq!(
-        sched::endpoint_waiting_senders(fault_ep),
-        1,
+    // Nobody is receiving, so the corpse must park. Wait for it **on the clock**: 4000 yields was
+    // the wait, and a yield count is not a duration. On the physical core under HVF (milestone 81)
+    // this core spends 4000 yields in microseconds while the child's core has not run it yet, and
+    // the assertion fails with "the corpse never parked" about a corpse that was on its way.
+    assert!(
+        super::tests::wait_for(|| sched::endpoint_waiting_senders(fault_ep) == 1),
         "the corpse never parked on its supervision endpoint",
     );
 

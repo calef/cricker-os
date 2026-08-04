@@ -42,5 +42,43 @@ echo
 echo "==> script/test"
 script/test
 
+# The silicon leg (milestone 81). Everything above ran under TCG, which emulates every instruction:
+# a machine with no real caches, no real reordering, and a scheduler QEMU round-robins between
+# vCPUs. Hypervisor.framework runs the same kernel at guest EL1 on the physical Apple Silicon core,
+# four vCPUs on four host threads at once, and that is a genuinely different machine to be correct
+# on. It found a scheduler test asserting against a yield count on its first run.
+#
+# It lives here rather than in a workflow because GitHub's hosted macOS arm64 runners are themselves
+# virtual machines with no nested virtualization, so HVF does not exist there. This is the one
+# command a person runs before pushing, so this is where the leg reaches a real core.
+#
+# aarch64 only, and that is the honest name for it: HVF runs the host's own ISA, and riscv64 has no
+# equivalent until the board lands.
 echo
-echo "gates: fmt, lint and test all pass"
+echo "==> script/test --hvf (the aarch64 suite on the physical core)"
+hvf_missing=""
+if [ "$(uname -s)" != "Darwin" ]; then
+    hvf_missing="this host is not macOS"
+elif [ "$(uname -m)" != "arm64" ]; then
+    hvf_missing="this host is not Apple Silicon"
+elif [ "$(sysctl -n kern.hv_support 2>/dev/null)" != "1" ]; then
+    hvf_missing="Hypervisor.framework is unavailable (kern.hv_support is not 1; a VM, or entitlements)"
+elif ! qemu-system-aarch64 -accel help 2>/dev/null | grep -q '^hvf$'; then
+    hvf_missing="the QEMU on PATH was built without the hvf accelerator"
+fi
+
+# **Skip LOUDLY.** A silent omission would let a transcript from a Linux CI runner read exactly like
+# one from this laptop, and the whole point of the leg is that those two are not the same evidence.
+# One line, naming what did not run and why, so nobody has to infer it from an absence.
+if [ -n "$hvf_missing" ]; then
+    echo "gates: SKIPPED the HVF leg ($hvf_missing). NO code in this run executed on a physical core; every test above ran under TCG emulation."
+else
+    script/test --hvf
+fi
+
+echo
+if [ -n "$hvf_missing" ]; then
+    echo "gates: fmt, lint and test all pass (TCG only; the HVF leg was skipped)"
+else
+    echo "gates: fmt, lint and test all pass, the aarch64 suite twice (TCG and the physical core)"
+fi
