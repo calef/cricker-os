@@ -23,12 +23,11 @@
 #![no_main]
 
 use abi::{Error, endpoint};
-use grant_plan::{Prog, spawnproto};
-/// The terminal contract's framing (milestone 28). Aliased because `init_boot` also binds a local
-/// called `line_editor` for the discipline's TCB, and a reader should not have to know which
-/// namespace wins.
-use line_editor::proto as term_proto;
-use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
+/// The endowment a child is born holding, for the one loader this tree has (milestone 96). The
+/// interactive boot's own use of it is in `crates/system_builder`; what is left here is milestone
+/// 19d's test roles, which build a child out of one budget and hand it two or three capabilities.
+use supervision_proto::Endow;
+use user_rt::{call, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
 
 /// Roles, as passed in `x0` by the kernel.
 ///
@@ -351,617 +350,50 @@ fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
 }
 
-/// **The boot init, milestone 19d.2c.** This is the program the kernel hands the machine to, and
-/// it builds the whole interactive system out of its own budget: a console server (output), an
-/// input driver (keystrokes, on the UART receive interrupt), and the shell, wired together with
-/// endpoints and shared pages init creates. The kernel wires none of it; init is the system
-/// builder. init then stays alive as the spawn service: `run <n>` in the shell asks init to build
-/// a worker that returns n*n, started with `n` in x1 (the multi-arg START of milestone 19e).
+/// **The boot init, milestone 19d.2c.** This is the program the kernel hands the machine to, and it
+/// builds the whole interactive system out of its own budget: the console server, the input driver,
+/// the line discipline, the shell, the terminal's sink adapter and the job undertaker, wired
+/// together with endpoints and shared pages init creates. The kernel wires none of it. Then it stays
+/// alive as the spawn service the shell directs.
 ///
-/// **It no longer stays alive holding the kernel's whole construction budget** (milestone 22, the
-/// interactive increment). Once the boot servers are built it carves a small scratch budget and a
-/// bounded job pool off the root and deletes the root, gives back the UART device capability, the two
-/// interrupts and the file service, and proves the drop from the inside before the shell starts: a
-/// `RETYPE` on that slot must answer `NoSuchSlot`, and the sentence it prints is what
-/// `script/shell-check` reads. Every job it builds after that gets a region of its own and is born
-/// supervised, so `job_undertaker` collects it and the pages come back to the pool. The whole reasoning,
-/// and the honest limits (LIFO recovery, the scratch window's retained mappings), is written once in
-/// `user/src/system_initializer.rs`, which is this role's portable twin.
-fn init_boot(_x1: u64, fs_rights: u64) -> ! {
-    // Read the initrd length from x1 (passed by spawn_init); the arg name is generic in _start.
-    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA; its length is in x1.
-    let initrd_len = _x1;
-    const UNTYPED: u64 = 0;
-    /// The kernel's report endpoint (`spawn_init` slot 1) and its test interrupt (slot 3). Neither
-    /// is part of the interactive system: nothing receives on the report, and the test SGI belongs
-    /// to milestone 19d.2b's tests. They are deleted with the device capabilities below.
+/// **All of that is `crates/system_builder` now** (milestone 96), shared with riscv64's
+/// `user/src/system_initializer.rs`, and so is the reasoning: what init gives away once the system
+/// is up, why the job pool is bounded, and the honest limits. What is left in this file is the one
+/// thing the two boards genuinely disagree about, which is the order their kernels grant
+/// capabilities in.
+///
+/// The duplication that ended there was expensive rather than untidy. `user::initrd()` loads the
+/// archive entry `init`, which is this role on aarch64 and `system_initializer` on riscv64, and the
+/// construction and the spawn service were written once in each: a fix that landed in one and not
+/// the other presented as a boot that reached userspace and printed nothing at all, with no fault
+/// and no message. `script/shell-check` runs both, which is what makes it the gate for this role.
+fn init_boot(initrd_len: u64, fs_rights: u64) -> ! {
+    /// The kernel's report endpoint. Nothing receives on it here: this role prints through the
+    /// console it builds, and `spawn_init` creates the endpoint only to satisfy its own shape.
     const REPORT: u64 = 1;
+    /// The milestone-19d.2b test interrupt. It belongs to the tests that share this boot path, and
+    /// no interactive component waits on it.
     const TEST_IRQ: u64 = 3;
-    const UART_DEV: u64 = 2;
-    const UART_IRQ: u64 = 4;
-    /// Pages init keeps for its own scratch page tables after the drop; see `system_initializer`.
-    const INIT_OWN_PAGES: u64 = 128;
-    /// One job's region, and the pool it is carved from. Must match `system_initializer`: the two
-    /// inits are the same system on two instruction sets, and `script/shell-check` runs the same
-    /// thirteen jobs through both.
-    const JOB_REGION_PAGES: u64 = 40;
-    const JOBS_BUDGET_PAGES: u64 = JOB_REGION_PAGES * 6;
-    /// Where init maps the shell's output frame in its own space, to print the one line it prints.
-    const INIT_OUT_VA: u64 = 0x0f00_0000;
-    // **The filesystem, when this boot has one** (milestone 50). The kernel wires the block server
-    // and the FS server before it starts us and grants the service endpoint and the page clients
-    // share with it; `fs_rights` is the `fs_proto::dir` rights that endpoint carries, and **0 means
-    // this boot attached no RedoxFS disk**, in which case these two slots hold nothing. Everything
-    // below is written so that case takes exactly the path it took before this existed.
-    const FS_EP: u64 = 6;
-    const FS_PAGE: u64 = 7;
-    // **The wall clock** (milestone 51's wiring). A `Frame` capability with `READ` and nothing else,
-    // granted ahead of the filesystem pair so its slot is the same on every boot, whether or not a
-    // disk was attached. init never hands it on except to a child whose manifest declares a clock,
-    // and it hands on `READ`, so nothing spawned from this prompt can set the time (DECISIONS §43).
-    const CLOCK_PAGE: u64 = 5;
-    /// Where a child that declares a clock maps it, read-only. Must match `user/src/date.rs`'s
-    /// `CLOCK_VA` and `kernel/src/user/clock_service.rs`.
-    const CHILD_CLOCK_VA: u64 = 0x00c0_0000;
-    /// Where the shell maps the page it shares with the FS server (swish.rs `FS_VA`).
-    const SH_FS_VA: u64 = 0x0060_0000;
-    // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
-    // genuinely the shell's own (milestone 31). Must match swish.rs's SH_BUDGET_PAGES.
-    const SH_BUDGET_PAGES: u64 = 128;
 
-    // The VAs each program hardcodes. Console, input, line_editor, and shell are all their own
-    // binaries (19f.3-5, 28), each started with no role; the VAs must match
-    // console.rs/input.rs/line_editor.rs/swish.rs.
-    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; line_editor writes it
-    const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
-    const TERM_OUT_VA: u64 = 0x0080_0000; // line_editor reads the shell's text/prompts here
-    const TERM_IN_VA: u64 = 0x0090_0000; // line_editor delivers completed lines here
-    const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-    const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (swish.rs OUT_VA)
-    const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
-    const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
-
-    // Every service init builds is now its own binary, loaded from the archive by name. init itself
-    // is the only role of hello left on this path, and it loads nothing of hello into a child.
-    let Some(con_bytes) = program(initrd_len, "console") else {
-        halt_forever()
-    };
-    let Ok(con_elf) = elf::Elf::parse(con_bytes) else {
-        halt_forever()
-    };
-    let Some(in_bytes) = program(initrd_len, "input") else {
-        halt_forever()
-    };
-    let Ok(in_elf) = elf::Elf::parse(in_bytes) else {
-        halt_forever()
-    };
-    let Some(td_bytes) = program(initrd_len, "line_editor") else {
-        halt_forever()
-    };
-    let Ok(td_elf) = elf::Elf::parse(td_bytes) else {
-        halt_forever()
-    };
-    let Some(sh_bytes) = program(initrd_len, "swish") else {
-        halt_forever()
-    };
-    let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else {
-        halt_forever()
-    };
-    // **The terminal's sink adapter** (milestone 50's last remainder). Optional on purpose: an
-    // initrd built without it still boots, and a program that declares a second stream then finds an
-    // empty slot and says what it has to say in-band. A missing component should cost a feature, not
-    // a prompt.
-    let sink_elf = program(initrd_len, "terminal_sink_caretaker")
-        .and_then(|bytes| elf::Elf::parse(bytes).ok());
-    // The undertaker (milestone 22, the interactive increment): one endpoint capability and
-    // nothing else, so a finished job's region comes back to init's pool. Required rather than
-    // optional, unlike the adapter above: without it a bounded job pool fills and the prompt stops
-    // spawning, which is a broken system rather than a missing feature.
-    let Some(reaper_bytes) = program(initrd_len, "job_undertaker") else {
-        halt_forever()
-    };
-    let Ok(reaper_elf) = elf::Elf::parse(reaper_bytes) else {
-        halt_forever()
+    /// **What `kernel::user::spawn_init` grants, in order.** This path is shared with milestone
+    /// 19d's test roles, which is why it carries two capabilities the interactive system has no use
+    /// for and why its numbering is not riscv64's; `system_builder` deletes them with the device
+    /// authority once the drivers exist.
+    ///
+    /// The clock is granted ahead of the filesystem pair on purpose, so its slot is the same on
+    /// every boot whether or not a disk was attached. Slots 6 and 7 hold nothing when this boot
+    /// attached no RedoxFS disk, which is what `fs_rights` (0 for no disk) says.
+    const GRANTS: system_builder::Grants = system_builder::Grants {
+        untyped: 0,
+        uart_dev: 2,
+        uart_irq: 4,
+        clock_page: 5,
+        fs_ep: 6,
+        fs_page: 7,
+        unused: &[REPORT, TEST_IRQ],
     };
 
-    // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
-    // rights, so init keeps RWG and delegates narrowed views. `term_ep` is the terminal contract's
-    // one endpoint (milestone 28, notes/terminal-contract.md): the line discipline serves it; the
-    // input driver and the shell hold WRITE and cannot tell what is behind it.
-    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    let Ok(term_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    let Ok(con_shared) = retype_frame(UNTYPED) else {
-        halt_forever()
-    };
-    let Ok(term_out) = retype_frame(UNTYPED) else {
-        halt_forever()
-    };
-    let Ok(term_in) = retype_frame(UNTYPED) else {
-        halt_forever()
-    };
-
-    // 1. Console server: reads text from the shared page, writes it to the UART.
-    let con_caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
-    let con_maps: &[(u64, u64, u64)] = &[
-        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RO),
-        (CON_UART_VA, UART_DEV, DEV),
-    ];
-    let Ok(con) = build_child(UNTYPED, UNTYPED, &con_elf, con_caps, con_maps) else {
-        halt_forever()
-    };
-    check(tcb_start(con, 0, 0, 0) == 0); // no role selector: console is its own binary
-    cap_delete(con);
-
-    // 2. The line discipline (milestone 28): serves the terminal endpoint, prints through the
-    // console. It is the console's only client; everyone else prints through it.
-    let td_caps: &[(u64, u64)] = &[
-        (term_ep, abi::rights::READ),
-        (request, abi::rights::WRITE),
-        (reply, abi::rights::READ),
-    ];
-    let td_maps: &[(u64, u64, u64)] = &[
-        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // line_editor fills what the console reads
-        (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
-        (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
-    ];
-    let Ok(line_editor) = build_child(UNTYPED, UNTYPED, &td_elf, td_caps, td_maps) else {
-        halt_forever()
-    };
-    check(tcb_start(line_editor, 0, 0, 0) == 0);
-    cap_delete(line_editor);
-
-    // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
-    let in_caps: &[(u64, u64)] = &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];
-    let in_maps: &[(u64, u64, u64)] = &[(IN_UART_VA, UART_DEV, DEV)];
-    let Ok(input) = build_child(UNTYPED, UNTYPED, &in_elf, in_caps, in_maps) else {
-        halt_forever()
-    };
-    check(tcb_start(input, 0, 0, 0) == 0); // no role selector: input is its own binary
-    cap_delete(input);
-
-    // **The console's three capabilities go back now, before the shell is built**, and that is not
-    // tidiness: this cspace has sixteen slots, and milestone 50 added two more kernel grants (the
-    // file service and its page). With them held, the shell's `build_child` had no slot left to
-    // retype an address space into and failed silently, which presented as a boot that brought up
-    // the console and then printed nothing. Nothing below needs these: line_editor is the console's
-    // only client and it already holds its narrowed copies.
-    //
-    // **The device, the two interrupts and the kernel's report line go with them** (milestone 22,
-    // the interactive increment). Both drivers exist and hold their own narrowed copies, nothing
-    // below builds another driver, and neither the test SGI nor the report endpoint is part of the
-    // interactive system at all. An init that kept them would be keeping the authority to hand the
-    // UART to anything it later builds, which is the same kind of thing the construction budget is.
-    for c in [
-        request, reply, con_shared, UART_DEV, UART_IRQ, TEST_IRQ, REPORT,
-    ] {
-        cap_delete(c);
-    }
-
-    // **The spawn channel is retyped here, not with the rest**, and the reason is the same sixteen
-    // slots: holding two more endpoints through the three builds above is what pushed this cspace
-    // over. They are the shell's and the service's, so this is also where they belong.
-    let Ok(spawn_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    let Ok(result_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    // **The supervision endpoint every job is born holding** (DECISIONS §26's spawn-slot
-    // convention). We keep it only for its `GRANT`: a `READ` view goes in each job's reserved fault
-    // slot. We never receive on it; `job_undertaker` does, and collecting is all it authorizes.
-    let Ok(deaths) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-
-    // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
-    // its own untyped budget (slot 3) so `run --mem N` grants from memory that is genuinely the
-    // shell's. WRITE lets it SPLIT the budget; GRANT lets it delegate the split to init. We carve it
-    // from our own untyped and hand it over the same way we hand any capability.
-    let Ok(sh_budget) = untyped_split(UNTYPED, SH_BUDGET_PAGES) else {
-        halt_forever()
-    };
-    // Slot 4 is the filesystem when this boot has one, which is the whole of what `>` and `<` need
-    // (milestone 50, notes/pipes.md): the shell resolves a redirection against it and writes the
-    // file itself. Narrowed to WRITE, which on an endpoint is the right to CALL; the shell can no
-    // more delegate it than any other program can delegate what it was not given GRANT on.
-    let all_sh_caps: [(u64, u64); 5] = [
-        (term_ep, abi::rights::WRITE),
-        (spawn_ep, abi::rights::WRITE),
-        (result_ep, abi::rights::READ),
-        (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
-        (FS_EP, abi::rights::WRITE),
-    ];
-    let all_sh_maps: [(u64, u64, u64); 3] = [
-        (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
-        (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
-        (SH_FS_VA, FS_PAGE, abi::aspace::MAP_RW),   // and its half of the FS contract
-    ];
-    let with_fs = fs_rights != 0;
-    let sh_caps: &[(u64, u64)] = if with_fs {
-        &all_sh_caps
-    } else {
-        &all_sh_caps[..4]
-    };
-    let sh_maps: &[(u64, u64, u64)] = if with_fs {
-        &all_sh_maps
-    } else {
-        &all_sh_maps[..2]
-    };
-    // **Built but not started**, because the drop below is announced through the shell's own output
-    // page and a running shell would be printing its banner into the same page.
-    let Ok(shell) = build_child(UNTYPED, UNTYPED, &sh_elf, sh_caps, sh_maps) else {
-        halt_forever()
-    };
-    cap_delete(sh_budget); // our copy; the shell holds its own now
-
-    // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
-    // build a supervised child (which holds a job untyped and a job frame while build_child retypes
-    // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter;
-    // these originals were only init's to hand out.
-    //
-    // **Only the input frame, and the two that stay have a reason each.** `term_ep` is still init's
-    // to delegate: the sink adapter below is handed `WRITE` on it, and the drop announcement is a
-    // `CALL` on it. `term_out` is where that announcement stages its bytes. Both go back the moment
-    // their last use is done, a few dozen lines from here, and after that init holds no way to reach
-    // the terminal at all.
-    cap_delete(term_in);
-    // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
-    // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
-    // init keeps the endpoint instead, because building a `fs_subtree_caretaker` is its job and not
-    // the shell's.
-    if with_fs {
-        cap_delete(FS_EP);
-        cap_delete(FS_PAGE);
-    }
-
-    // 5. **The terminal's sink adapter** (notes/sink-protocol.md, DECISIONS §67). It holds the
-    // terminal `WRITE` and serves the sink contract on an endpoint of its own, so a child can be
-    // handed "the terminal" as a place to put bytes **without** being handed the terminal endpoint,
-    // which also carries `OP_READLINE` and would be the keyboard.
-    //
-    // **After the shell and before the giveaway, and both halves of that are load-bearing.**
-    //
-    // After the shell, because of this cspace's sixteen slots: building the adapter earlier put init
-    // one slot over while `build_child` was retyping the shell's address space, and the symptom was
-    // the one this file has seen twice, a boot that reaches userspace and then prints nothing at
-    // all. That constraint is about the shell's build, not about being the last thing built, and
-    // milestone 22 is what made the difference visible: the adapter is now the fifth of six boot
-    // components rather than the last of five, and the cspace has room either way.
-    //
-    // Before the giveaway, because this is a **system** component and the root untyped is what the
-    // system is built from. Everything below hands that budget away and proves it is gone, so an
-    // adapter built after it would have to come out of `own_ut`, the scratch budget milestone 22
-    // sized for page tables and nothing else. Spending a whole program out of that pool would be
-    // invisible here and would surface as some later child failing to map a scratch page.
-    let Ok(term_sink) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
-        halt_forever()
-    };
-    if let Some(elf) = sink_elf.as_ref() {
-        let sink_caps: &[(u64, u64)] = &[
-            (term_sink, abi::rights::READ),
-            (term_ep, abi::rights::WRITE),
-        ];
-        let Ok(adapter) = build_child(UNTYPED, UNTYPED, elf, sink_caps, &[]) else {
-            halt_forever()
-        };
-        // Started here even though the shell deliberately is not: the adapter owns no page and
-        // prints only what a client sends it, and it has no clients until the spawn service below
-        // hands one its endpoint. It cannot write into the page the announcement below stages in.
-        check(tcb_start(adapter, 0, 0, 0) == 0);
-        cap_delete(adapter);
-    }
-
-    // **Give the construction budget away** (milestone 22, the interactive increment). Two bounded
-    // carves and then the root itself. Two rather than one is load-bearing: the job pool's watermark
-    // must move for jobs only, or §16's LIFO return-of-pages never fires, because a scratch page
-    // table carved between a job's split and its reap would sit above that job's run.
-    let Ok(own_ut) = untyped_split(UNTYPED, INIT_OWN_PAGES) else {
-        halt_forever()
-    };
-    let Ok(jobs_ut) = untyped_split(UNTYPED, JOBS_BUDGET_PAGES) else {
-        halt_forever()
-    };
-    // The shell's output page, in our own space, so we can say what just happened. Permanent: there
-    // is no unmap, and `Frame::REVOKE` would take the page from the shell too. See system_initializer's BUGS.
-    // SAFETY: as above: the kernel validates the capability and the method.
-    check(unsafe { invoke(term_out, abi::frame::MAP, INIT_OUT_VA, 1, UNTYPED) } == 0);
-    cap_delete(UNTYPED);
-
-    // And prove it from the inside, on the two primitives that build things, before anything else
-    // runs. `NoSuchSlot` (-1) rather than `NotPermitted` (-3) is the whole claim: the capability is
-    // *gone*, not narrowed, so there is nothing there to name.
-    // SAFETY: as above: the kernel validates the capability and the method.
-    let dropped_frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
-    // SAFETY: as above: the kernel validates the capability and the method.
-    let dropped_obj = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) };
-    announce(
-        term_ep,
-        INIT_OUT_VA,
-        if dropped_frame == -1 && dropped_obj == -1 {
-            b"init: construction budget dropped; retype answers NoSuchSlot\n"
-        } else {
-            b"init: construction budget NOT dropped; it can still build\n"
-        },
-    );
-    cap_delete(term_ep);
-    cap_delete(term_out);
-
-    // The undertaker, out of what is left of our own budget. One capability, `READ` on the
-    // supervision endpoint: it can free a job's memory and can never spend it.
-    let Ok(reaper) = build_child(
-        own_ut,
-        own_ut,
-        &reaper_elf,
-        &[(deaths, abi::rights::READ)],
-        &[],
-    ) else {
-        halt_forever()
-    };
-    check(tcb_start(reaper, 0, 0, 0) == 0);
-    cap_delete(reaper);
-
-    // Role 0 (the prompt), and `arg1` is the rights its directory capability carries. A shell told 0
-    // holds no directory and says so at every verb that would need one.
-    check(tcb_start(shell, 0, fs_rights, 0) == 0);
-    cap_delete(shell);
-
-    // The programs the shell can spawn (milestone 31), parsed once from the archive; every spawn
-    // request builds a fresh child. A missing or unparseable entry stays None and the service
-    // answers "could not spawn" for it.
-    let worker = program(initrd_len, "worker").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    let budgeter = program(initrd_len, "budgeter").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    let heeder = program(initrd_len, "heeder").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    let spinner = program(initrd_len, "spinner").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    let date = program(initrd_len, "date").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    let wc = program(initrd_len, "wc").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3, date=4, rm=5. The array is
-    // `Prog::PROG_COUNT` long because the service indexes it with an id the shell chose; a variant
-    // added to `grant_plan` without a slot here would be an out-of-bounds read in init.
-    let progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT] = [
-        worker.as_ref(),
-        budgeter.as_ref(),
-        heeder.as_ref(),
-        spinner.as_ref(),
-        date.as_ref(),
-        // `rm` has a slot and no ELF, deliberately: it is endowed a directory capability, which
-        // means a `fs_subtree_caretaker` this init would have to build per invocation out of the FS
-        // endpoint it deletes above. Until it does, the shell refuses the command before it gets
-        // here rather than spawning `rm` with nothing. See the same slot in system_initializer.
-        None,
-        // `wc` (milestone 50): the right-hand side of a pipe. It needs no filesystem, so unlike
-        // `rm` it is reachable from this prompt.
-        wc.as_ref(),
-    ];
-
-    // The spawn service (milestone 31's grant expression + milestone 24's supervised jobs;
-    // grant_plan::spawnproto). A **normal** job: the shell sends the request and, if `--mem` rode along,
-    // one delegated untyped; init builds the child from its own budget, endows it the result
-    // endpoint (and the budget), starts it. A **supervised** (interruptible) job: the shell leads
-    // the delegation with a job untyped and a shared job frame; init builds the whole child *from
-    // that untyped* (so the shell's region owns it and can `DESTROY` it to tear it down), maps the
-    // frame in, endows nothing else, starts it, and sends SPAWN_OK once as the shell's go-ahead.
-    loop {
-        let (w0, w1, w2) = recv(spawn_ep); // blocks until the shell asks
-        let prog = Prog::from_id(spawnproto::prog_id(w0));
-        let arg = spawnproto::arg(w1);
-        let mem_pages = spawnproto::mem_pages(w2);
-        let wiring = spawnproto::wiring(w2);
-        let interruptible = wiring.interruptible;
-
-        // Receive the delegated caps in protocol order: the interrupt pair first (job untyped, job
-        // frame), then any --mem untyped. No promise, no receive, so both sides stay in lockstep.
-        let opt = |slot: u64| {
-            if slot == endpoint::NO_CAP {
-                None
-            } else {
-                Some(slot)
-            }
-        };
-        let (job_ut, job_fr) = if interruptible {
-            (opt(recv_cap(spawn_ep).1), opt(recv_cap(spawn_ep).1))
-        } else {
-            (None, None)
-        };
-        // Milestone 50's two: the child's output slot and its input slot, in protocol order.
-        let sink = if wiring.sink {
-            opt(recv_cap(spawn_ep).1)
-        } else {
-            None
-        };
-        let source = if wiring.source {
-            opt(recv_cap(spawn_ep).1)
-        } else {
-            None
-        };
-        // The declared second stream (DECISIONS §67), in protocol order.
-        let diagnostics = if wiring.diagnostics {
-            opt(recv_cap(spawn_ep).1)
-        } else {
-            None
-        };
-        let budget = if mem_pages > 0 {
-            opt(recv_cap(spawn_ep).1)
-        } else {
-            None
-        };
-
-        let elf = prog.and_then(|p| progs[p.id() as usize]);
-        // Read from the program's own declaration, not from the request: a clock is not something
-        // the command line can designate, so there is no bit on the wire for it (grant_plan's
-        // `Manifest::clock`).
-        let wants_clock = prog.is_some_and(|p| p.manifest().clock);
-
-        if interruptible {
-            // Build the whole child from the shell's job untyped, mapping the shared job frame; no
-            // caps in its cspace. SPAWN_OK is the go-ahead the shell waits for before it watches.
-            let built = match (elf, job_ut, job_fr) {
-                (Some(e), Some(ut), Some(fr)) => build_child(
-                    own_ut,
-                    ut,
-                    e,
-                    &[],
-                    &[(CHILD_JOBFRAME_VA, fr, abi::aspace::MAP_RW)],
-                )
-                .ok(),
-                _ => None,
-            };
-            match built {
-                Some(tcb) => {
-                    let ok = tcb_start(tcb, 0, arg, 0) == 0;
-                    let word = if ok {
-                        spawnproto::SPAWN_OK
-                    } else {
-                        spawnproto::SPAWN_FAILED
-                    };
-                    send(result_ep, word, 0, 0);
-                    cap_delete(tcb);
-                }
-                None => {
-                    send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
-                }
-            }
-        } else {
-            // Slot 0 is the output: the shared result endpoint, or the sink the shell delegated
-            // (milestone 50). Slot 1 is the input source when there is one, and otherwise the
-            // `--mem` untyped; see system_initializer for why that ordering is safe today and where it stops
-            // being. The child never learns which of the three its slot 0 holds.
-            let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
-            let mut caps = [out; 4];
-            let mut n = 1usize;
-            // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
-            // It comes from the manifest rather than from the request, because a person does not
-            // designate a clock: `date` declares that it reads one, and init is the only process in
-            // this system holding a page it could hand over. `READ` and a read-only mapping, so the
-            // child can read the time and has no object through which it could set one.
-            //
-            // Before the source and the budget, so `date`'s clock is slot 1. That is unambiguous
-            // only because no manifest declares a clock *and* an input; see system_initializer's
-            // note on the same ordering, and notes/pipes.md's BUGS on where it stops being true.
-            if wants_clock {
-                caps[n] = (CLOCK_PAGE, abi::rights::READ);
-                n += 1;
-            }
-            if let Some(src) = source {
-                // READ only: a pipe's reader must not be able to write back up its own input.
-                caps[n] = (src, abi::rights::READ);
-                n += 1;
-            }
-            if let Some(b) = budget {
-                // Narrowed to WRITE: the child may spend it, not lend it.
-                caps[n] = (b, abi::rights::WRITE);
-                n += 1;
-            }
-            // **The declared second stream, at the slot the manifest names** (DECISIONS §67).
-            // Read from the program's own declaration for the same reason the clock is, and placed
-            // at a **named** slot rather than the next free one: how many low slots this child gets
-            // depends on what else the line granted, and a program that probes one number needs
-            // that number not to move. See `system_initializer`, which does this identically.
-            let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
-            // **Where the second stream goes when the line did not say.** The shell delegates an
-            // endpoint only for a `2>`, because that is the case it has to back a file for. With no
-            // operator on the line the destination is the **terminal's own sink**, which is init's
-            // to endow exactly as the clock is: the shell holds nothing it could hand over, and a
-            // person does not designate a screen. See `system_initializer`, which is identical.
-            let default_diag = sink_elf
-                .as_ref()
-                .map(|_| term_sink)
-                .filter(|_| diag_slot.is_some());
-            let placed_buf = match (diagnostics.or(default_diag), diag_slot) {
-                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
-                // Either half missing means no second stream reaches the child, and it then says
-                // what it has to say in-band, which is what every program did before §67.
-                _ => None,
-            };
-            let placed: &[(u64, u64, u64)] = match &placed_buf {
-                Some(pl) => pl,
-                None => &[],
-            };
-            let clock_map = [(CHILD_CLOCK_VA, CLOCK_PAGE, abi::aspace::MAP_RO)];
-            let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
-            // **A region of its own, so the job's memory can come home** (milestone 22, the
-            // interactive increment): everything the child is made of comes out of this carve, and
-            // `job_undertaker` collecting the corpse returns the whole run to the pool. Building
-            // straight out of the pool would spend those pages for the life of the boot, because a
-            // watermark only moves forward. An exhausted pool is the ordinary `SPAWN_FAILED` the
-            // shell already reports as "init is out of memory".
-            let region = untyped_split(jobs_ut, JOB_REGION_PAGES).ok();
-            let built = match (elf, region) {
-                // Born supervised: `deaths` goes in the reserved fault slot, where `START` reads it
-                // and clears it, so the job cannot forge messages on its own death channel. The
-                // declared second stream rides the same named-slot mechanism, at the low slot the
-                // manifest picked; the two cannot collide because the fault slot is the last one.
-                (Some(e), Some(r)) => {
-                    build_supervised_child(own_ut, r, e, &caps[..n], placed, maps, deaths).ok()
-                }
-                _ => None,
-            };
-            let ok = match built {
-                Some(tcb) => {
-                    // x0 unused (standalone binary); the argument is in x1.
-                    let started = tcb_start(tcb, 0, arg, 0) == 0;
-                    cap_delete(tcb); // init's TCB cap; the child keeps running until it exits
-                    started
-                }
-                None => false,
-            };
-            // Our capability to the job's region goes back now: it was only the means of building,
-            // and since DECISIONS §32 the reap is a method on the supervision endpoint, so nothing
-            // in this system holds a capability to a live job's memory. A build or a start that
-            // failed leaves nothing running in it, so reclaim it rather than wait for a death that
-            // will never come.
-            if let Some(r) = region {
-                if !ok {
-                    untyped_destroy(r);
-                }
-                cap_delete(r);
-            }
-            // A redirected child's answer goes somewhere else, so the shell has nothing to read;
-            // one ack is what stops a failed spawn from being invisible.
-            if wiring.sink {
-                let word = if ok {
-                    spawnproto::SPAWN_OK
-                } else {
-                    spawnproto::SPAWN_FAILED
-                };
-                send(result_ep, word, 0, 0);
-            } else if !ok {
-                send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
-            }
-            // **A child that was never built cannot end its own second stream**, and the shell
-            // drains that stream to `OP_EOF` before it reads anything else, so nothing would ever
-            // come back. init closes it on the child's behalf: the same hole `SPAWN_OK` closed for
-            // the output side, one stream over.
-            if !ok && let Some(ep) = diagnostics {
-                send(ep, sink_proto::eof(), 0, 0);
-            }
-        }
-
-        // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
-        // mapped, the budget and the streams inserted), and the shell holds the originals it kept
-        // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
-        // filling across a long session.
-        for s in [job_ut, job_fr, sink, source, diagnostics, budget]
-            .into_iter()
-            .flatten()
-        {
-            cap_delete(s);
-        }
-    }
-}
-
-/// Halt this thread forever without exiting, for an init that has nothing left to do but whose
-/// exit would tear nothing useful down. A `-> !` helper the `else` arms above can fall into.
-fn halt_forever() -> ! {
-    loop {
-        yield_now();
-    }
+    system_builder::boot(&GRANTS, initrd_len, fs_rights)
 }
 
 /// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
@@ -987,10 +419,10 @@ fn init_irq(initrd_len: u64) -> ! {
         (REPORT, abi::rights::WRITE),
         (TEST_IRQ, abi::rights::READ), // WAIT/ACK the interrupt
     ];
-    let Ok(tcb) = build_child(UNTYPED, UNTYPED, &elf, caps, &[]) else {
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
         fail_report(REPORT)
     };
-    check(tcb_start(tcb, IRQ_CHILD, 0, 0) == 0);
+    check(tcb_start(tcb, IRQ_CHILD, 0, 0));
     exit();
 }
 
@@ -1017,12 +449,12 @@ fn init_worker(initrd_len: u64) -> ! {
     // The worker's whole authority: the report endpoint as its slot 0, so its one SEND lands where
     // the test (or, in the boot system, the shell) is waiting.
     let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
-    let Ok(tcb) = build_child(UNTYPED, UNTYPED, &elf, caps, &[]) else {
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
         fail_report(REPORT)
     };
     // x0 is unused (a standalone binary needs no role selector); the input is in x1 (the multi-arg
     // START that 19e added).
-    check(tcb_start(tcb, 0, WORKER_INPUT, 0) == 0);
+    check(tcb_start(tcb, 0, WORKER_INPUT, 0));
     exit();
 }
 
@@ -1042,10 +474,10 @@ fn init_coremark(initrd_len: u64) -> ! {
         fail_report(REPORT)
     };
     let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
-    let Ok(tcb) = build_child(UNTYPED, UNTYPED, &elf, caps, &[]) else {
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
         fail_report(REPORT)
     };
-    check(tcb_start(tcb, 0, 0, 0) == 0); // no args: the workload's iteration count is fixed
+    check(tcb_start(tcb, 0, 0, 0)); // no args: the workload's iteration count is fixed
     exit();
 }
 
@@ -1117,10 +549,10 @@ fn init_console(initrd_len: u64) -> ! {
         (SHARED_VA, shared, abi::aspace::MAP_RO),
         (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
     ];
-    let Ok(tcb) = build_child(UNTYPED, UNTYPED, &elf, caps, maps) else {
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else {
         fail_report(REPORT)
     };
-    check(tcb_start(tcb, 0, 0, 0) == 0); // no role selector: console is its own binary
+    check(tcb_start(tcb, 0, 0, 0)); // no role selector: console is its own binary
 
     // Now init is the client. Write a line into the shared page, ask the server to print it.
     let msg = b"cricker-os: the console server was built and started by userspace init.
@@ -1169,10 +601,10 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
     let dev_maps: &[(u64, u64, u64)] = &[(CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO)];
     let maps = if device { dev_maps } else { no_maps };
 
-    match build_child(UNTYPED, UNTYPED, &elf, caps, maps) {
+    match build_child(UNTYPED, &elf, caps, maps) {
         Ok(child_tcb) => {
             let role = if device { DEV_CHILD } else { CHILD };
-            check(tcb_start(child_tcb, role, 0, 0) == 0);
+            check(tcb_start(child_tcb, role, 0, 0));
         }
         Err(_) => {
             send(REPORT, 0, 0, 0);
@@ -1218,267 +650,49 @@ fn child() -> ! {
 
 /// Build a child process from `elf`, out of `untyped`. `caps` are inserted into the child's cspace
 /// at slots 0, 1, ... in order (each `(init_slot, rights)`: the capability init holds in
-/// `init_slot`, narrowed to `rights`). `maps` are extra pages mapped into the child before it
-/// starts (each `(child_va, init_slot, mode)`: init's Frame or `DeviceFrame` cap, mapped at
-/// `child_va` with a `MAP_*` mode) -- how init hands a driver its registers and a shared buffer
-/// (19d.2). Returns the child's TCB slot, ready to start. This is init's ELF loader, mirroring the
-/// kernel's `map_segments` but driven entirely through the granular verbs.
+/// `init_slot`, narrowed to `rights`). `maps` are extra pages mapped into the child before it starts
+/// (each `(child_va, init_slot, mode)`: init's Frame or `DeviceFrame` cap, mapped at `child_va` with
+/// a `MAP_*` mode), which is how init hands a driver its registers and a shared buffer (19d.2).
+/// Returns the child's TCB slot, ready to start.
+///
+/// **The loader itself is `supervision_proto`'s, and is the tree's only one** (milestone 96). It
+/// used to be written out here, once more in `system_initializer`, and once more in that crate, with
+/// a fault slot in each; a change that landed in one of the three was a change the other two did not
+/// get. What is left here is the call shape hello's remaining roles want: one budget for both halves
+/// of the build, no blobs, no supervision, and the stack every child in this system gets.
 fn build_child(
-    own: u64,
     untyped: u64,
     elf: &elf::Elf,
     caps: &[(u64, u64)],
     maps: &[(u64, u64, u64)],
 ) -> Result<u64, ()> {
-    build_child_inner(own, untyped, elf, caps, &[], maps, None)
+    supervision_proto::build_child(
+        untyped,
+        untyped,
+        elf,
+        &Endow {
+            caps,
+            maps,
+            stack_pages: system_builder::CHILD_STACK_PAGES,
+            ..Endow::new()
+        },
+    )
 }
-
-/// [`build_child`], with two kinds of capability that go in a **named** slot rather than the next
-/// free one, both through `abi::tcb::CAP_INSERT`'s explicit target.
-///
-/// `fault` lands in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is born supervised
-/// (DECISIONS §26's spawn-slot convention): `START` records it as the thread's supervision endpoint
-/// and clears the slot, so the child cannot forge messages about its own death. That is what makes a
-/// job's region reclaimable by `job_undertaker` once the job ends.
-///
-/// `placed` is `(child_slot, init_slot, rights)`, inserted after `caps`. One caller: a declared
-/// diagnostic stream (DECISIONS §67), which needs a fixed slot because how many low slots a child
-/// gets depends on what else the command line granted, and a program that probes one number needs
-/// that number not to move. `system_initializer` carries the same pair, because this system has two
-/// inits and they serve the same protocol; see notes/pipes.md on that duplication.
-///
-/// The two cannot collide: `FAULT_EP_SLOT` is the last slot in the cspace and a manifest's
-/// diagnostics slot is one a program reads at startup, far below it.
-fn build_supervised_child(
-    own: u64,
-    untyped: u64,
-    elf: &elf::Elf,
-    caps: &[(u64, u64)],
-    placed: &[(u64, u64, u64)],
-    maps: &[(u64, u64, u64)],
-    fault: u64,
-) -> Result<u64, ()> {
-    build_child_inner(own, untyped, elf, caps, placed, maps, Some(fault))
-}
-
-fn build_child_inner(
-    own: u64,
-    untyped: u64,
-    elf: &elf::Elf,
-    caps: &[(u64, u64)],
-    placed: &[(u64, u64, u64)],
-    maps: &[(u64, u64, u64)],
-    fault: Option<u64>,
-) -> Result<u64, ()> {
-    const PAGE: u64 = 4096;
-    const CHILD_STACK_VA: u64 = 0x0050_0000;
-
-    let aspace = retype_obj(untyped, abi::objtype::ASPACE)?;
-
-    for seg in elf.segments() {
-        let mode = if seg.is_executable() {
-            abi::aspace::MAP_CODE
-        } else if seg.is_writable() {
-            abi::aspace::MAP_RW
-        } else {
-            abi::aspace::MAP_RO
-        };
-        let (start, end) = seg.page_range(PAGE);
-        let mut va = start;
-        while va < end {
-            let frame = retype_frame(untyped)?;
-            // A fresh scratch VA in init's own space. Persistent across build_child calls: init
-            // never unmaps its scratch window, so a per-call reset would collide with the prior
-            // child's mappings (that was the 19d.2c multi-child bring-up bug).
-            let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
-            // Map the frame writable in init's own space, fill it, then hand it to the child. The
-            // scratch mapping's page tables come from INIT's budget, never `untyped`: for a
-            // supervised job `untyped` is the shell's region, and a forcible teardown `DESTROY`s it,
-            // which must not free init's own page tables out from under its persistent scratch window
-            // (milestone 24). The frame itself is the child's, from `untyped`.
-            // SAFETY: as above: the kernel validates the capability and the method.
-            if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, own) } != 0 {
-                return Err(());
-            }
-            // Zero the page (free .bss), then copy this page's slice of the segment's file bytes.
-            // SAFETY: `scratch` is a page we just mapped read/write in our own space.
-            let dst = unsafe { core::slice::from_raw_parts_mut(scratch as *mut u8, PAGE as usize) };
-            dst.fill(0);
-            let file_lo = seg.vaddr;
-            let file_hi = seg.vaddr + seg.data.len() as u64;
-            let lo = va.max(file_lo);
-            let hi = (va + PAGE).min(file_hi);
-            if lo < hi {
-                let d = (lo - va) as usize;
-                let sidx = (lo - file_lo) as usize;
-                let n = (hi - lo) as usize;
-                dst[d..d + n].copy_from_slice(&seg.data[sidx..sidx + n]);
-            }
-            // Into the child at the segment's own VA, with the segment's permissions.
-            // SAFETY: as above: the kernel validates the capability and the method.
-            if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
-                return Err(());
-            }
-            // Done with this frame's capability; free the slot so the next retype reuses it.
-            cap_delete(frame);
-            va += PAGE;
-        }
-    }
-
-    // A multi-page stack for the child: the shell and drivers have deeper stacks than one page.
-    // Mapped growing down from CHILD_STACK_TOP; each page is its own retyped frame.
-    /// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
-    ///
-    /// **Twelve since DECISIONS §67**, and every step of that number was measured. Four overflowed
-    /// at the first `ls > out.txt`; eight held until `2>` put a second `FileOut` on the shell's
-    /// `run_pipeline` frame, each carrying a 256-byte staging buffer by value. Must stay level with
-    /// `system_initializer`'s constant of the same name and with `pipeline_service`'s
-    /// `SHELL_EXTRA_STACK`: a wiring with less headroom than its siblings finds faults they do not
-    /// have, which is a bug in the wiring rather than a signal (notes/pipes.md).
-    const CHILD_STACK_PAGES: u64 = 12;
-    for k in 0..CHILD_STACK_PAGES {
-        let stack_frame = retype_frame(untyped)?;
-        let va = CHILD_STACK_VA - k * PAGE;
-        // SAFETY: as above: the kernel validates the capability and the method.
-        if unsafe {
-            invoke(
-                aspace,
-                abi::aspace::MAP_INTO,
-                va,
-                stack_frame,
-                abi::aspace::MAP_RW,
-            )
-        } != 0
-        {
-            return Err(());
-        }
-        cap_delete(stack_frame);
-    }
-
-    // The extra mappings: a device's registers, a shared buffer. Each is a cap init holds, mapped
-    // into the child at the given VA. The child accesses them directly; it never holds the caps.
-    for &(va, init_slot, mode) in maps {
-        // SAFETY: as above: the kernel validates the capability and the method.
-        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, init_slot, mode) } != 0 {
-            return Err(());
-        }
-    }
-
-    // The thread, then its initial authority, one grant per slot in order, then configured.
-    let tcb = retype_obj(untyped, abi::objtype::TCB)?;
-    for &(init_slot, rights) in caps {
-        // SAFETY: as above: the kernel validates the capability and the method.
-        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, 0) } < 0 {
-            return Err(());
-        }
-    }
-    for &(child_slot, init_slot, rights) in placed {
-        // `target = n` lands the capability in slot `n - 1`; 0 would mean "first free", which is the
-        // behaviour this call exists to avoid.
-        // SAFETY: as above: the kernel validates the capability and the method.
-        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, child_slot + 1) } < 0 {
-            return Err(());
-        }
-    }
-    if let Some(ep) = fault {
-        // The spawn-slot convention: a target of `n + 1` means slot `n`, so the supervision endpoint
-        // lands in the reserved last slot rather than wherever first-free fell. `READ` is all it
-        // needs and all it gets, and `START` clears the slot anyway.
-        // SAFETY: as above: the kernel validates the capability and the method.
-        if unsafe {
-            invoke(
-                tcb,
-                abi::tcb::CAP_INSERT,
-                ep,
-                abi::rights::READ,
-                abi::fault::FAULT_EP_SLOT + 1,
-            )
-        } < 0
-        {
-            return Err(());
-        }
-    }
-    // SAFETY: as above: the kernel validates the capability and the method.
-    if unsafe {
-        invoke(
-            tcb,
-            abi::tcb::CONFIGURE,
-            elf.entry(),
-            CHILD_STACK_VA + PAGE,
-            aspace,
-        )
-    } != 0
-    {
-        return Err(());
-    }
-    Ok(tcb)
-}
-
-/// init's ever-advancing scratch window: where it temporarily maps each child frame to fill it.
-/// Persistent across every `build_child` call because init never unmaps these; a per-call reset
-/// collides with a prior child's mappings. Starts below the initrd (`0x2000_0000`), room for
-/// thousands of pages before it reaches it.
-static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0x1000_0000);
-
-/// Reclaim a region nothing is running in: the unwind path for a job whose build or start failed.
-/// The kernel refuses it while a live thread occupies the region, which is what makes it safe to
-/// call on a half-built job and impossible to call on a running one.
-fn untyped_destroy(untyped: u64) {
-    // SAFETY: as above: the kernel validates the capability and the method.
-    unsafe { invoke(untyped, abi::untyped::DESTROY, 0, 0, 0) };
-}
-
-/// **Say one sentence at the terminal**, through the line discipline, the way the shell does: stage
-/// the bytes in the shell's output page (mapped here at `out_va`) and `CALL` `OP_WRITE`.
-///
-/// The only thing this role ever prints, and it runs before the shell is started so nothing else is
-/// writing that page. It exists for the negative control: a claim about what init can no longer do
-/// is worth only as much as the check behind it, and only the holder can run that check.
-fn announce(term_ep: u64, out_va: u64, text: &[u8]) {
-    let out = out_va as *mut u8;
-    for (i, &b) in text.iter().enumerate() {
-        // SAFETY: the shell's output frame is mapped read/write here, and one line is far under a page.
-        unsafe { core::ptr::write_volatile(out.add(i), b) };
-    }
-    call(
-        term_ep,
-        term_proto::req(term_proto::OP_WRITE, text.len() as u64),
-        0,
-    );
-}
-
-/// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
-/// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
-const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
 /// Retype a kernel object (endpoint | aspace | tcb) out of `untyped`; returns its cap slot.
 fn retype_obj(untyped: u64, objtype: u64) -> Result<u64, ()> {
-    // SAFETY: as above: the kernel validates the capability and the method.
-    let r = unsafe { invoke(untyped, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(r as u64) }
+    supervision_proto::retype_obj_from(untyped, objtype)
 }
 
 /// Retype a page of `untyped` into a Frame capability; returns its cap slot.
 fn retype_frame(untyped: u64) -> Result<u64, ()> {
-    // SAFETY: as above: the kernel validates the capability and the method.
-    let r = unsafe { invoke(untyped, abi::untyped::RETYPE, 0, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(r as u64) }
-}
-
-/// Carve `pages` off `untyped` into a new child untyped we can delegate (milestone 31). The SPLIT
-/// grants full rights on the child, including GRANT, so a memory budget can be handed on.
-fn untyped_split(untyped: u64, pages: u64) -> Result<u64, ()> {
-    // SAFETY: as above: the kernel validates the capability and the method.
-    let r = unsafe { invoke(untyped, abi::untyped::SPLIT, pages, 0, 0) };
-    if r < 0 { Err(()) } else { Ok(r as u64) }
+    supervision_proto::retype_frame_from(untyped)
 }
 
 /// Start a configured TCB, handing the child `arg0`, `arg1`, `arg2` as its first three registers.
-/// Returns the syscall result.
-fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
-    // SAFETY: as above: the kernel validates the capability and the method.
-    unsafe { invoke(tcb, abi::tcb::START, arg0, arg1, arg2) }
+/// True if the kernel started it.
+fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> bool {
+    supervision_proto::tcb_start(tcb, arg0, arg1, arg2)
 }
 
 /// **Building another address space, milestone 19b.** Holds an untyped budget (slot 0) and a
