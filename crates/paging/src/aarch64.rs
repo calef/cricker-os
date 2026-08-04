@@ -208,6 +208,33 @@ mod tests {
         assert_eq!((mair::VALUE >> (8 * mair::NORMAL)) & 0xff, 0xff);
     }
 
+    /// **Both low bits, on both kinds of descriptor.** `is_present` reads bit 0 alone, so a
+    /// descriptor that lost bit 1 walks and translates perfectly in software: every test here and in
+    /// `tests/mapping.rs` still passes. The hardware disagrees. `0b01` at L3 is a translation fault,
+    /// and at L0-L2 it is a *block* descriptor, which maps a 1 GiB or 2 MiB span from bits the walk
+    /// meant as a table pointer.
+    #[test]
+    fn a_descriptor_carries_the_table_or_page_bit_as_well_as_valid() {
+        assert_eq!(Aarch64::table_entry(0x4000_0000) & 0b11, 0b11);
+        assert_eq!(
+            Aarch64::leaf_entry(0x4000_0000, Flags::kernel_data()) & 0b11,
+            0b11,
+        );
+    }
+
+    /// **Normal memory is inner-shareable; device memory is not.** SH is how far hardware coherency
+    /// extends: a normal page that loses it gets a core-private view that another core's write never
+    /// invalidates, which is a data race the code looks innocent of. Nothing else in the crate
+    /// notices, because portable [`Flags`] have no shareability and `leaf_flags` never decodes SH,
+    /// so the round-trip below is blind to these bits.
+    #[test]
+    fn normal_memory_is_inner_shareable_and_device_memory_is_not() {
+        let normal = Aarch64::leaf_entry(0x4000_0000, Flags::kernel_data());
+        assert_eq!((normal >> 8) & 0b11, 0b11, "normal memory is not shareable");
+        let device = Aarch64::leaf_entry(0x0900_0000, Flags::device());
+        assert_eq!((device >> 8) & 0b11, 0, "device memory took a shareability");
+    }
+
     /// **Every constructor round-trips through encode/decode**, the property the Kani proof checks
     /// symbolically, here as a fast concrete smoke test.
     #[test]

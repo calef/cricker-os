@@ -645,4 +645,65 @@ mod flag_tests {
             );
         }
     }
+
+    /// **`bits()` returns the word, not a constant.** The formats encode through the predicates,
+    /// so nothing else in this crate reads the raw word back, and a `bits()` that returned 0 or 1
+    /// would survive every other test here. Expected values hand-assembled from the CAP_* bit
+    /// positions above: write 0, user 1, user-exec 2, kernel-exec 3, global 4, device 5.
+    #[test]
+    fn bits_returns_the_exact_capability_word() {
+        assert_eq!(Flags::kernel_code().bits(), 0b01_1000);
+        assert_eq!(Flags::kernel_rodata().bits(), 0b01_0000);
+        assert_eq!(Flags::kernel_data().bits(), 0b01_0001);
+        assert_eq!(Flags::device().bits(), 0b11_0001);
+        assert_eq!(Flags::user_code().bits(), 0b00_0110);
+        assert_eq!(Flags::user_rodata().bits(), 0b00_0010);
+        assert_eq!(Flags::user_data().bits(), 0b00_0011);
+        assert_eq!(Flags::user_device().bits(), 0b10_0011);
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    /// **The gate is a conjunction.** The aligned high-half address is the case that tells `&&`
+    /// from `||`: it passes the alignment test, so an or-gate would admit a kernel address to a
+    /// user MAP request. One aligned low address per format keeps the gate from being shorted to
+    /// `false`, one unaligned low address keeps it from `true`.
+    #[test]
+    fn the_user_va_gate_admits_only_aligned_low_half_addresses() {
+        assert!(is_user_page_va::<Aarch64>(0x1000));
+        assert!(is_user_page_va::<Sv39>(0x1000));
+        assert!(!is_user_page_va::<Aarch64>(0x1001));
+        assert!(!is_user_page_va::<Sv39>(0x1001));
+        // Page-aligned, but in the kernel half: all-ones above each format's split bit.
+        assert!(!is_user_page_va::<Aarch64>(0xffff_0000_0000_1000));
+        assert!(!is_user_page_va::<Sv39>(0xffff_ffc0_0000_1000));
+    }
+
+    /// **The half bases, pinned.** `half_base` exists for the reader's model and the walk never
+    /// consults it, so only an exact value notices its shifts going the wrong way. The high base
+    /// is all-ones above the split: bit 48 for aarch64 (where TTBR1 takes over), bit 38 for Sv39
+    /// (the sign-extended top VA bit).
+    #[test]
+    fn half_bases_are_zero_and_the_sign_extended_top() {
+        assert_eq!(Aarch64::half_base(Half::Low), 0);
+        assert_eq!(Sv39::half_base(Half::Low), 0);
+        assert_eq!(Aarch64::half_base(Half::High), 0xffff_0000_0000_0000);
+        assert_eq!(Sv39::half_base(Half::High), 0xffff_ffc0_0000_0000);
+    }
+
+    /// **`root()` reports the frame the mapper was built on.** That value is what the kernel
+    /// writes into TTBR0/satp, and nothing in this crate reads it back, so a constant here would
+    /// install the wrong table in silicon while every walk test still passed.
+    #[test]
+    fn the_mapper_reports_the_root_it_was_built_on() {
+        // SAFETY: nothing here walks the tables; new() stores its arguments and root() reads one
+        // back, so the inert closures are never called.
+        let m = unsafe {
+            Mapper::<_, _, Aarch64>::new(0x8_2000, Half::Low, || None, |_| core::ptr::null_mut())
+        };
+        assert_eq!(m.root(), 0x8_2000);
+    }
 }
