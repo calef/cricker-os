@@ -12,8 +12,9 @@
 # not orderings; the HVF leg runs real orderings but samples them. Loom searches them.
 #
 # **What it covers is one protocol, on purpose.** `crates/steal_request`, the work-steal handshake,
-# is the only lock-free protocol between two *cores*; everything else in the scheduler that looks
-# concurrent is under an IrqSafeMutex. The note carries the survey that establishes that.
+# is the only lock-free cross-core protocol in the kernel; everything else that looks concurrent is
+# under an IrqSafeMutex. The note carries the survey that establishes that, and what a second
+# protocol would have to look like to be worth the retrofit.
 #
 # **Loom models C11, not ARM and not RISC-V.** It narrows the gap rather than closing it: a bug it
 # finds is real, and a clean run is not a proof about the silicon. Milestone 81's HVF leg is the
@@ -38,4 +39,5 @@ cd "$(dirname "$0")/.."
 # --release because the search is compute-bound and an unoptimised loom run is minutes where an
 # optimised one is seconds. Nothing here depends on debug assertions.
 echo "==> loom: the hand-rolled atomic protocols, every interleaving"
-RUSTFLAGS="--cfg loom -D warnings" cargo test --release -p steal_request --lib "$@"
+RUSTFLAGS="--cfg loom -D warnings" cargo test --release \
+    -p steal_request -p clock_proto --lib "$@"
