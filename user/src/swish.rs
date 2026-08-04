@@ -897,15 +897,12 @@ fn spawn(e: Endowment) {
         None
     };
 
-    // **The declared second stream** (DECISIONS §67). It rides on the manifest and not on anything
-    // typed, so an ordinary `date` gets one too: what `2>` decides is only where the bytes go, and
-    // with no operator on the line this shell prints them.
-    let diag = match e.diagnostics {
-        line::Diagnostics::None => None,
-        _ => diag_endpoint(),
-    };
-
     // The request: program id, argument, page count, and the operators' answer (grant_plan::spawnproto).
+    //
+    // **`diagnostics` is false here and always will be** (DECISIONS §67). This path runs a line with
+    // no operators on it, so there is no `2>` and nothing for this shell to back; a program that
+    // declares a second stream gets the terminal's own sink, which init endows from the manifest the
+    // way it endows the clock. `2>` makes a line non-plain and goes down [`pipeline`].
     let (w0, w1, w2) = spawnproto::request(
         e.prog.id(),
         e.arg,
@@ -914,25 +911,16 @@ fn spawn(e: Endowment) {
             interruptible: false,
             sink: false,
             source: false,
-            diagnostics: diag.is_some(),
+            diagnostics: false,
         },
     );
     send(SPAWN, w0, w1, w2);
 
-    // In the protocol's order: the diagnostic endpoint, then the budget.
-    if let Some(slot) = diag {
-        delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
-    }
     // If a budget rode along, delegate it now, narrowed to WRITE|GRANT so init can re-insert it into
     // the child (init narrows it again to WRITE there: the child spends it, it does not lend it).
     if let Some(slot) = mem_slot {
         delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
         cap_delete(slot); // our copy is delegated; free the slot
-    }
-
-    // Diagnostics first, and the order is forced: see [`drain_diagnostics`].
-    if diag.is_some() {
-        drain_diagnostics(&mut TermOut, 1);
     }
 
     // One reader, one word: a real program's answer, or init's spawn-failed sentinel. A program
@@ -1023,7 +1011,6 @@ fn diag_endpoint() -> Option<u64> {
 fn drain_diagnostics(dest: &mut dyn ByteOut, writers: usize) {
     let Some(ep) = diag_endpoint() else { return };
     let mut done = 0usize;
-    let mut wrote = false;
     for _ in 0..MAX_FILE_CHUNKS {
         if done == writers {
             break;
@@ -1031,13 +1018,7 @@ fn drain_diagnostics(dest: &mut dyn ByteOut, writers: usize) {
         let (w0, w1, w2) = recv(ep);
         let mut buf = [0u8; sink_proto::INLINE_MAX];
         match sink_proto::unpack(w0, w1, w2, &mut buf) {
-            sink_proto::Msg::Bytes(n) => {
-                if !wrote {
-                    dest.start();
-                    wrote = true;
-                }
-                dest.push(&buf[..n]);
-            }
+            sink_proto::Msg::Bytes(n) => dest.push(&buf[..n]),
             sink_proto::Msg::Eof => done += 1,
             // init's failure sentinel arrives here too, as an `OP_EOF` it sends on this endpoint so
             // this drain can end; anything else is a program that cannot spell the contract.
@@ -1247,10 +1228,13 @@ fn run_pipeline(
     // How many stages were handed the diagnostic endpoint, which is what [`drain_diagnostics`]
     // counts end-of-stream messages against. It comes from the manifests rather than from the line:
     // a declared stream exists whether or not a `2>` named a destination for it.
+    // Only the stages whose second stream this shell is backing, which is the ones a `2>` named a
+    // file for. A `Diagnostics::Printed` stage writes to the terminal's sink adapter and this shell
+    // never sees those bytes, which is the whole point of that component existing.
     let declarers = plans
         .iter()
         .take(n)
-        .filter(|p| p.is_some_and(|e| !matches!(e.diagnostics, line::Diagnostics::None)))
+        .filter(|p| p.is_some_and(|e| matches!(e.diagnostics, line::Diagnostics::File(..))))
         .count();
 
     // **A builtin with a file on its output spawns nothing at all.** `ls > out.txt` is one process:
@@ -1304,8 +1288,8 @@ fn run_pipeline(
         let stage_sink = if i + 1 < n { Some(pipes[i]) } else { None };
         let stage_source = if i > 0 { Some(pipes[i - 1]) } else { feed_pipe };
         let stage_diag = match e.diagnostics {
-            line::Diagnostics::None => None,
-            _ => diag_endpoint(),
+            line::Diagnostics::File(..) => diag_endpoint(),
+            _ => None,
         };
         if !spawn_stage(e, stage_sink, stage_source, stage_diag) {
             release_pipeline(region, &pipes[..minted]);
@@ -1316,18 +1300,15 @@ fn run_pipeline(
     // **Diagnostics before anything else**, because in `date | wc` this shell is not the reader of
     // `date`'s output and draining the output first would wait on `wc`, which waits on `date`, which
     // is blocked in a rendezvous send on the diagnostic endpoint. See [`drain_diagnostics`].
-    if declarers > 0 {
-        match &mut diag_sink {
-            Some(f) => {
-                drain_diagnostics(f, declarers);
-                f.report();
-            }
-            None => drain_diagnostics(&mut TermOut, declarers),
+    if let Some(f) = &mut diag_sink {
+        if declarers > 0 {
+            drain_diagnostics(f, declarers);
+            f.report();
+        } else {
+            // A `2>` on a line where nothing was spawned to write to it. Close the file rather than
+            // leaving a handle open on a name the line created.
+            f.finish();
         }
-    } else if let Some(f) = &mut diag_sink {
-        // A `2>` on a line whose stages all declare a stream but none was spawned. Close the file
-        // rather than leaving a handle open on a name the line created.
-        f.finish();
     }
 
     // The shell as the producer, in either of its two shapes. Both run after every reader exists,
@@ -1362,29 +1343,6 @@ trait ByteOut {
     fn push(&mut self, bytes: &[u8]);
     /// Say the stream is over. On a pipe that is `OP_EOF`; on a file it is the last write.
     fn finish(&mut self);
-    /// **The first byte is about to arrive**, called at most once and only when there is one.
-    ///
-    /// It exists for the terminal, whose manners are a two-space indent, and it is deliberately not
-    /// "write the indent in `push`": a stream that turns out to be empty must print nothing at all,
-    /// and a `date` with a working clock has an empty diagnostic stream on every run.
-    fn start(&mut self) {}
-}
-
-/// **The terminal, as a place to put bytes.** The default destination of a declared second stream:
-/// no `2>` on the line means the shell prints those bytes, which is what keeps a `date`'s complaint
-/// out of the file its `>` named.
-struct TermOut;
-
-impl ByteOut for TermOut {
-    fn push(&mut self, bytes: &[u8]) {
-        print(bytes);
-    }
-
-    fn finish(&mut self) {}
-
-    fn start(&mut self) {
-        print(b"  ");
-    }
 }
 
 /// **Run a producing builtin with the given destination as its output**, one message at a time.

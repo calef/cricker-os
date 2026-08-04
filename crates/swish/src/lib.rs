@@ -587,8 +587,9 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
     match e.diagnostics {
         line::Diagnostics::None => {}
         line::Diagnostics::Printed => {
-            out(b"    diags    this shell's diagnostic endpoint (it prints them). declared by\n");
-            out(b"             the program, so a > cannot swallow them and 2> can name them\n");
+            out(b"    diags    the terminal's own sink, a component this shell does not hold.\n");
+            out(b"             declared by the program, so a > cannot swallow them, 2> can\n");
+            out(b"             name them, and they reach the screen without passing here\n");
         }
         line::Diagnostics::File(g, mode) => {
             out(b"    diags    ");
@@ -1175,7 +1176,10 @@ mod tests {
         let s = shown(|o| write_preview(&e, o));
         assert!(s.contains("    output   when.txt"), "{s}");
         assert!(
-            s.contains("    diags    this shell's diagnostic endpoint"),
+            // And the row says the destination is **not** this shell, which is what the terminal's
+            // own sink adapter exists for: those bytes reach the screen without passing through
+            // here, so nothing the shell does to the output can reach them.
+            s.contains("    diags    the terminal's own sink"),
             "{s}"
         );
 

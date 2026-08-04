@@ -108,6 +108,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     let Some(sh_elf) = fs.read("swish").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
+    // **The terminal's sink adapter** (milestone 50's last remainder). Optional on purpose: an
+    // initrd built without it still boots, and a program that declares a second stream then finds
+    // an empty slot and says what it has to say in-band. A missing component should cost a feature,
+    // not a prompt.
+    let sink_elf = fs
+        .read("terminal_sink")
+        .and_then(|b| elf::Elf::parse(b).ok());
 
     // The endpoints and shared pages we own and hand out, each retyped with full rights so we can
     // delegate narrowed views. `term_ep` is the terminal contract's one endpoint: the discipline
@@ -216,7 +223,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
     // build a supervised child (which holds a job untyped and a job frame while build_child retypes
     // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter.
-    for c in [term_ep, term_out, term_in] {
+    for c in [term_out, term_in] {
         cap_delete(c);
     }
     // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
@@ -227,6 +234,32 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
         cap_delete(FS_EP);
         cap_delete(FS_PAGE);
     }
+
+    // 5. **The terminal's sink adapter** (milestone 50's last remainder, notes/sink-protocol.md,
+    // DECISIONS §67). It holds the terminal `WRITE` and serves the sink contract on an endpoint of
+    // its own, so a child can be handed "the terminal" as a place to put bytes **without** being
+    // handed the terminal endpoint, which also carries `OP_READLINE` and would be the keyboard.
+    //
+    // **Built last, and that is this cspace's sixteen slots again.** Building it before the shell
+    // put init one slot over while `build_child` was retyping the shell's address space, and the
+    // symptom was the one this file has already seen: a boot that reaches userspace and then prints
+    // nothing at all. Here, with the shell built and every boot capability but `term_ep` given back,
+    // the cspace is at its narrowest. `term_ep` goes back immediately after.
+    let term_sink = must(retype_obj(abi::objtype::ENDPOINT));
+    if let Some(elf) = sink_elf.as_ref() {
+        let adapter = must(build_child(
+            UNTYPED,
+            elf,
+            &[
+                (term_sink, abi::rights::READ),
+                (term_ep, abi::rights::WRITE),
+            ],
+            &[],
+        ));
+        must0(tcb_start(adapter, 0, 0, 0));
+        cap_delete(adapter);
+    }
+    cap_delete(term_ep);
 
     // The spawn service (milestone 31's grant expression, wire half; grant_plan::spawnproto). The shell
     // resolved a command into a program, an argument, and a memory-grant page count, and it directs
@@ -243,6 +276,11 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     spawn_service(
         spawn_ep,
         result_ep,
+        // The terminal's sink, if this initrd carried an adapter to serve it. This is what a
+        // declared second stream gets by default (DECISIONS §67): the shell names a file with `2>`
+        // and otherwise the bytes go straight to the screen, through a process that can do nothing
+        // else with them.
+        sink_elf.is_some().then_some(term_sink),
         [
             worker.as_ref(),
             budgeter.as_ref(),
@@ -288,6 +326,7 @@ fn opt_cap(slot: u64) -> Option<u64> {
 fn spawn_service(
     spawn_ep: u64,
     result_ep: u64,
+    term_sink: Option<u64>,
     progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT],
 ) -> ! {
     loop {
@@ -380,9 +419,18 @@ fn spawn_service(
             // child gets depends on what else the line granted, and a stream the program probes for
             // by number cannot move under it.
             let diag_slot = prog.and_then(|p| p.manifest().output.diagnostics_slot());
+            // **Where the second stream goes when the line did not say.** The shell delegates an
+            // endpoint only for a `2>`, because that is the case it has to back a file for. With no
+            // operator on the line the destination is the **terminal's own sink**, which is init's
+            // to endow exactly as the clock is: the shell holds nothing it could hand over, and a
+            // person does not designate a screen.
+            //
+            // That is also what keeps a redirected `date`'s complaint off the redirection. The
+            // shell drains the output into the file and never sees these bytes at all.
+            let default_diag = term_sink.filter(|_| diag_slot.is_some());
             // Either half missing means no second stream reaches the child, and it then says what it
             // has to say in-band, which is what every program did before §67.
-            let placed_buf = match (diagnostics, diag_slot) {
+            let placed_buf = match (diagnostics.or(default_diag), diag_slot) {
                 (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
                 _ => None,
             };

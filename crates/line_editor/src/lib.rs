@@ -66,9 +66,15 @@ pub mod proto {
     /// signal: there is no non-blocking receive, so a busy-poll with `yield` is how the shell watches
     /// two things (the job and `^C`) at once until the blocking notification primitive arrives.
     pub const OP_INTRCOUNT: u64 = 4;
-    /// Adapter → terminal: print `len` (1..=16) bytes carried **in registers**, packed
-    /// little-endian in the second and third words, low word first. Replied when the bytes are on
-    /// the wire: r0 = bytes consumed, exactly as [`OP_WRITE`] answers.
+    /// Adapter → terminal: print `len` (1..=8) bytes carried **in registers**, packed
+    /// little-endian in the second word. Replied when the bytes are on the wire: r0 = bytes
+    /// consumed, exactly as [`OP_WRITE`] answers.
+    ///
+    /// Eight, not sixteen, and that is the request shape rather than a choice: a served request
+    /// here arrives through `recv_cap`, which hands the server the reply capability and **two** data
+    /// words. [`OP_BYTES`] carries eight for the same reason, from the other direction. So a
+    /// sixteen-byte `sink_proto` message is two of these, which is the honest cost of a second
+    /// writer that needs no page.
     ///
     /// # Why this exists when `OP_WRITE` already prints
     ///

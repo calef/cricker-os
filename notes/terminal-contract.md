@@ -56,6 +56,7 @@ terminal writes, it reads).
 | `OP_READLINE` | app → terminal | `req(OP_READLINE, plen)` | 0 | line length | flags |
 | `OP_BYTES` | driver → terminal | `req(OP_BYTES, n)` | n bytes, packed LE | 0 | 0 |
 | `OP_INTRCOUNT` | app → terminal | `req(OP_INTRCOUNT, 0)` | 0 | `^C` count so far | 0 |
+| `OP_PRINT` | adapter → terminal | `req(OP_PRINT, len)` | len bytes, packed LE | bytes consumed | 0 |
 
 - **`OP_WRITE`**: print `len` bytes from the client's output page. The terminal performs
   output-side newline translation (`\n` becomes `\r\n`) and passes everything else, ANSI
@@ -76,6 +77,20 @@ terminal writes, it reads).
   rendezvous is the flow control that keeps a fast sender from outrunning the discipline. The
   driver does no editing, echo, or line assembly; it forwards bytes and nothing else, the way a
   UART driver feeds the Unix tty layer without being the tty layer.
+
+- **`OP_PRINT`** (DECISIONS §67): print one to eight bytes carried **in the request's own words**.
+  Same job as `OP_WRITE` and same manners (both go through `expand_output`), and it exists because
+  of a limit `OP_WRITE` has that is easy to miss: it reads from **the client's output page**, and
+  there is exactly one of those. init maps a single frame into the terminal read-only and into the
+  shell read/write, so a second page-based client would need a second frame and a page index in
+  every request. That is `fs_proto`'s one-page-two-clients problem (DECISIONS §55) arriving in a
+  second contract.
+
+  Register-only sidesteps it: `user/src/terminal_sink.rs` turns the sink contract into terminal
+  output with **no page at all**, which is what let the terminal become a destination a program's
+  output slot can hold. Eight bytes rather than sixteen is this contract's request shape, not a
+  choice: a served request arrives through `recv_cap` with the reply capability and two data words,
+  which is why `OP_BYTES` carries eight too.
 
 - **`OP_INTRCOUNT`** (milestone 24): reply immediately with the running count of `^C` the terminal
   has seen since boot. This is the shell's `^C` sensor for the case a parked read cannot cover: when
