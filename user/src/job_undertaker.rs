@@ -31,6 +31,13 @@
 //! prompt the forcible tier already exists for the case a person can see: `^C` twice tears the job's
 //! region down through the shell (DECISIONS §24), and those jobs are built from the shell's own
 //! untyped rather than init's, so they never reach this program at all.
+//!
+//! Name: ratified 2026-08-03 (Chris), replacing `job_reaper`. Refused `job_reaper` (named for what
+//! it does to jobs, while its siblings are named for what they serve, and "reaper" carries a faint
+//! sense of taking a life) and, on 2026-08-04, `job_killer` (it claims an authority this program is
+//! specifically denied). An undertaker arrives strictly after death and never causes it, which is
+//! exactly the constraint DECISIONS §32 enforces by refusing to reap a live thread, and it joins
+//! the register its siblings already speak: supervisor, caretaker, undertaker.
 
 #![no_std]
 #![no_main]

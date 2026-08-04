@@ -23,6 +23,10 @@
 #
 # Not part of script/lint or script/test, on purpose. Both are gates a developer waits on, and a
 # minute per target is not a wait either of them should grow.
+#
+# Name: ratified 2026-08-03 (Chris), retroactively and as a pattern: it runs cargo-fuzz and does not
+# say so, which is the property that lets the tool be replaced without touching the command.
+# Introduced 2026-08-02 with milestone 42's four targets.
 
 set -e
 cd "$(dirname "$0")/.."

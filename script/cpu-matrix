@@ -13,6 +13,9 @@
 # It does NOT stop at the first failure. A matrix that halts tells you one model broke; a matrix that
 # finishes tells you which ones did, which is the difference between "something is wrong" and a
 # diagnosis. The exit status is still non-zero if any model failed.
+#
+# Name: unrecorded. Introduced 2026-07-31 to run the riscv64 suite across QEMU's CPU models.
+# Hyphenated, which milestone 63 later made the rule for this directory.
 
 set -e
 cd "$(dirname "$0")/.."

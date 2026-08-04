@@ -21,6 +21,9 @@
 //! from the contract. So a pass means the pattern this process wrote is the pattern that was in the
 //! frames the device read, byte for byte, and the driver agreed about it from its own address space.
 //! See notes/framebuffer-contract.md for what that does and does not prove about the screen.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as always
+//! right.
 
 #![no_std]
 #![no_main]

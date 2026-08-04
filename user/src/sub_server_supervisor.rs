@@ -20,6 +20,12 @@
 //!
 //! init is not involved in any of this, and cannot be: by the time the first death arrives, `root_supervisor`
 //! has deleted the construction budget it would need. See notes/trusted-init.md.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `subsup`. Refused `subsup` and
+//! `sub_supervisor`, which is ambiguous in the way that matters: this supervises **a sub-server**,
+//! rather than being a supervisor beneath another one. "Sub-server" was already established
+//! vocabulary here, 44 occurrences across the decisions, `supervision_proto`, the kernel and the
+//! notes, so the name is built from a word the reader has met.
 
 #![no_std]
 #![no_main]

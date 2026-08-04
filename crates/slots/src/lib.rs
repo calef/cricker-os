@@ -62,6 +62,11 @@
 //! assert!(t.insert_with(|_| 2).is_some());
 //! assert!(t.insert_with(|_| 3).is_none(), "a full table refuses");
 //! ```
+//!
+//! Name: unrecorded, and flagged. The naming tenet names it among the crate names that are generic
+//! words which could label almost anything in an operating system (`compose`, `measure`, `regions`,
+//! `slots`, `caps`, `frames`); three of those six were settled on 2026-08-01 and this one was not.
+//! Nothing records who chose it.
 
 #![cfg_attr(not(test), no_std)]
 

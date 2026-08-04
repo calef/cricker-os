@@ -64,6 +64,10 @@
 //! assert_eq!(effective_size(Layout::from_size_align(16, 1).unwrap()), 16);
 //! assert_eq!(effective_size(Layout::from_size_align(17, 1).unwrap()), 32);
 //! ```
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `uheap`. Refused `uheap` (the `u` was
+//! "userspace" and had to be decoded, while `user_rt` already establishes `user_` as this tree's
+//! prefix for it).
 
 #![no_std]
 

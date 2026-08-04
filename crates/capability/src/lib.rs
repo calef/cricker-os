@@ -46,6 +46,11 @@
 //! assert_eq!(read_only.intersect(Rights::ALL), read_only);
 //! assert!(!read_only.intersect(Rights::ALL).allows(Rights::WRITE));
 //! ```
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `caps`. Refused `caps` (a container's
+//! name for what is the capability model: it exports `Cap`, `Rights`, `Object`, `Reap` and
+//! `CSpace`) and `cap_space` (names one of five exports, and stutters as `cap_space::CSpace`).
+//! `CSpace` itself stays, because it is seL4's own spelling.
 
 #![no_std]
 

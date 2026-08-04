@@ -6,6 +6,11 @@
 # does not reach; DECISIONS §7 deliberately keeps the testable logic in host crates, and this
 # measures exactly those (abi, capability, crickerfs, dtb, elf, frames, paging, pci, ...). Requires
 # cargo-llvm-cov. Not one of the canonical "Scripts to Rule Them All"; see notes/scripts.md.
+#
+# Name: ratified 2026-08-03 (Chris), retroactively and as a pattern rather than as a rename. When he
+# renamed `script/miri` and `script/mutants`, the argument was that `script/verify` runs Kani,
+# `script/fuzz` runs cargo-fuzz and `script/coverage` runs llvm-cov, and none of them says so in its
+# name, which is why swapping the tool someday costs nothing. Introduced 2026-07-22.
 
 set -e
 cd "$(dirname "$0")/.."

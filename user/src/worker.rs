@@ -11,6 +11,9 @@
 //! shared load address is not a conflict) but not one line of hello's code: a distinct ELF with its
 //! own `_start` and panic handler. The syscall runtime (`send`/`exit`) comes from the shared
 //! `user_rt` crate, lifted out at 19f.6 once all the split binaries existed.
+//!
+//! Name: unrecorded. Introduced 2026-07-25 when the worker became its own binary rather than a role
+//! of `hello`.
 
 #![no_std]
 #![no_main]
