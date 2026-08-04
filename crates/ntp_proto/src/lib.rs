@@ -843,9 +843,20 @@ mod tests {
     ///
     /// It needs an optimised build to be this quick; `[profile.dev.package.ntp_proto]` in the
     /// workspace manifest supplies one, the same way `measured_boot` gets one for SHA-256.
+    ///
+    /// Under Miri the sweep is sampled instead: an interpreter is around three orders of magnitude
+    /// slower than 0.6 s of native arithmetic, so the full domain would run for days. A strided
+    /// walk (every 999,983rd value, a prime, so the samples do not line up with any power-of-two
+    /// structure in the arithmetic) plus the edges keeps the function on Miri's paths without
+    /// pretending to be the exhaustive claim; the native run above it stays that claim. "Miri-clean"
+    /// here means the sampled values. See notes/miri.md.
     #[test]
     fn every_nanosecond_survives_the_round_trip() {
-        for n in 0..1_000_000_000u32 {
+        #[cfg(miri)]
+        let domain = (0..1_000_000_000u32).step_by(999_983).chain([999_999_999]);
+        #[cfg(not(miri))]
+        let domain = 0..1_000_000_000u32;
+        for n in domain {
             assert_eq!(
                 ticks_to_nanos(nanos_to_ticks(n)),
                 n,
