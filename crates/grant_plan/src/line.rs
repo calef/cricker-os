@@ -81,10 +81,15 @@
 //!   `<` is read as the operator it is and then there is no name after it. The message is about a
 //!   missing name where the mistake was a missing feature, which is a wording gap and not a
 //!   silent acceptance.
-//! - **A redirection cannot be quoted away.** There is no quoting in this shell at all, so a file
-//!   whose name contains `>` cannot be named. That is a gap in the tokenizer, not in this module.
+//! - **Quoting reaches this module, and it decides what an operator is** (milestone 67). A `>`,
+//!   `<`, `|` or `2>` inside quotes is an ordinary byte, so `echo "a > b"` has no redirection on it
+//!   and `date > "my out.txt"` writes to a file whose name has a space in it. What quoting cannot do
+//!   is put an operator *back*: there is no spelling that makes a quoted `>` redirect.
+//! - **A quoted redirection name is exempt from [`Refusal::PatternInRedirect`]**, because quoting is
+//!   what says the token designates one thing. `> "*.txt"` writes to a file called `*.txt`; `> *.txt`
+//!   is still refused.
 
-use crate::Refusal;
+use crate::{Refusal, word};
 
 /// The most stages one pipeline may carry. Four is past what anybody types interactively and it is
 /// a real ceiling rather than a buffer size: each stage costs a process and an endpoint, and a line
@@ -294,6 +299,12 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
     let mut ins: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
     let mut outs: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
     let mut diags: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
+    // Whether each redirection's name arrived quoted. A quoted name is not a pattern, whatever
+    // bytes are in it, so `date > "*.txt"` writes to a file called `*.txt` rather than being
+    // refused for designating a set (milestone 67, notes/swish-language.md).
+    let mut in_q = [false; MAX_STAGES];
+    let mut out_q = [false; MAX_STAGES];
+    let mut diag_q = [false; MAX_STAGES];
     let mut apps = [false; MAX_STAGES];
     let mut diag_apps = [false; MAX_STAGES];
     let mut n = 0usize;
@@ -303,10 +314,20 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         if n == MAX_STAGES {
             return Err(Refusal::TooManyStages);
         }
-        // The command words: everything up to the first operator or the end of the line.
+        // The command words: everything up to the first **bare** operator or the end of the line.
+        // Quoted is the whole of what milestone 67 added here: `echo "a > b"` has no redirection on
+        // it, because the `>` arrives while the cursor is inside a quote.
         let start = i;
-        while i < line.len() && !is_op(line[i]) && !is_diag_op(line, i, start) {
+        let mut c = word::Cursor::new();
+        while i < line.len() {
+            if !c.open() && (is_op(line[i]) || is_diag_op(line, i, start)) {
+                break;
+            }
+            c.step(line[i]);
             i += 1;
+        }
+        if c.open() {
+            return Err(Refusal::UnclosedQuote);
         }
         stages[n] = crate::trim(&line[start..i]);
 
@@ -338,28 +359,32 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
             while i < line.len() && line[i].is_ascii_whitespace() {
                 i += 1;
             }
+            // **The name, which may be quoted** (milestone 67). The scan stops at a *bare*
+            // whitespace or operator byte, so `> "my out.txt"` is one name and the space in it is
+            // part of what is designated rather than the end of it. That is the correctness gap this
+            // shell had: a file with a space in its name could not be written to at all.
             let t = i;
-            while i < line.len() && !line[i].is_ascii_whitespace() && !is_op(line[i]) {
-                i += 1;
-            }
+            i = word::span(line, i, &|b| b.is_ascii_whitespace() || is_op(b));
             if i == t {
                 return Err(Refusal::NoRedirectTarget);
             }
-            let slot = match which {
-                Which::In => &mut ins,
+            let name = word::read(&line[t..i])?;
+            let (slot, quoted) = match which {
+                Which::In => (&mut ins, &mut in_q),
                 Which::Out => {
                     apps[n] = append;
-                    &mut outs
+                    (&mut outs, &mut out_q)
                 }
                 Which::Diag => {
                     diag_apps[n] = append;
-                    &mut diags
+                    (&mut diags, &mut diag_q)
                 }
             };
             if slot[n].is_some() {
                 return Err(Refusal::RedirectRepeated);
             }
-            slot[n] = Some(&line[t..i]);
+            slot[n] = Some(name.text);
+            quoted[n] = name.quoted;
             // A word after the name is the `< f wc` spelling. Refused rather than reordered: see
             // the module note.
             let mut j = i;
@@ -405,8 +430,20 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
     }
     // A redirection designates one destination, so a pattern in one designates the wrong number of
     // things. Refused here, where the token is read, rather than expanded and then counted.
-    for t in [ins[0], outs[n - 1], diags[n - 1]].into_iter().flatten() {
-        if glob::has_magic(t) {
+    //
+    // **A quoted name is exempt, and that is not a loophole**: quoting is what says "this is one
+    // name, spelled with these bytes", so `> "*.txt"` designates exactly one destination and is the
+    // only way to write to a file somebody managed to call `*.txt`. The check is about how many
+    // things the token designates, and a quoted token designates one.
+    for (t, quoted) in [
+        (ins[0], in_q[0]),
+        (outs[n - 1], out_q[n - 1]),
+        (diags[n - 1], diag_q[n - 1]),
+    ] {
+        if let Some(t) = t
+            && !quoted
+            && glob::has_magic(t)
+        {
             return Err(Refusal::PatternInRedirect);
         }
     }
@@ -696,6 +733,81 @@ mod tests {
         assert_eq!(split(b"wc < log?.txt"), Err(Refusal::PatternInRedirect));
         // A name with no magic in it is untouched.
         assert!(split(b"date > report.txt").is_ok());
+    }
+
+    /// **An operator inside quotes is an ordinary byte** (milestone 67), which is what makes
+    /// `echo "a > b"` print an angle bracket instead of writing a file called `b`.
+    #[test]
+    fn a_quoted_operator_does_not_split_the_line() {
+        let l = split(b"echo \"a > b\"").unwrap();
+        assert_eq!(l.stages(), [&b"echo \"a > b\""[..]]);
+        assert_eq!(l.output, None);
+        assert!(l.is_plain(), "a quoted `>` must not leave the old path");
+        // Every operator, not just `>`: one cursor answers for all of them.
+        for line in [
+            &b"echo 'a | b'"[..],
+            b"echo 'a < b'",
+            b"echo 'a 2> b'",
+            b"echo 'a >> b'",
+        ] {
+            let l = split(line).unwrap();
+            assert_eq!(l.stage_count(), 1, "{}", core::str::from_utf8(line).unwrap());
+            assert_eq!((l.input, l.output, l.diagnostics), (None, None, None));
+        }
+    }
+
+    /// **The correctness gap this milestone opened**: a file whose name has a space in it could not
+    /// be written to, so it could not be named, so it could not be granted.
+    #[test]
+    fn a_redirection_can_name_a_file_with_a_space_in_it() {
+        let l = split(b"date > \"my out.txt\"").unwrap();
+        assert_eq!(l.stages(), [&b"date"[..]]);
+        // The quotes are **off** by the time anything downstream sees the name, because what is
+        // designated is the name and not the spelling.
+        assert_eq!(l.output, Some(&b"my out.txt"[..]));
+        assert_eq!(l.mode(), Mode::Truncate);
+
+        // Both quote forms, both ends, and `>>` too, because they are one operator each.
+        let l = split(b"wc < 'my in.txt' >> \"my out.txt\"").unwrap();
+        assert_eq!(
+            (l.input, l.output, l.mode()),
+            (Some(&b"my in.txt"[..]), Some(&b"my out.txt"[..]), Mode::Append),
+        );
+        // And the word-after-a-redirection rule still holds: the quoted name ends where its quote
+        // ends, so `extra` is a word after it rather than part of it.
+        assert_eq!(
+            split(b"date > 'my out.txt' extra"),
+            Err(Refusal::WordAfterRedirect),
+        );
+    }
+
+    /// **A quoted name designates one thing, so it is not a pattern**, which is the only exemption
+    /// quoting buys anywhere in this crate. It is not a loophole: the check counts destinations, and
+    /// a quoted token is one.
+    #[test]
+    fn quoting_a_redirection_name_is_how_a_file_called_star_is_written_to() {
+        assert_eq!(split(b"date > \"*.txt\"").unwrap().output, Some(&b"*.txt"[..]));
+        assert_eq!(split(b"wc < '?.log'").unwrap().input, Some(&b"?.log"[..]));
+        // Bare, it is still refused, so the exemption is quoting and not a hole in the check.
+        assert_eq!(split(b"date > *.txt"), Err(Refusal::PatternInRedirect));
+    }
+
+    /// A quote that never closes takes the whole line with it, wherever it opened. Running the
+    /// complete prefix of a line that is missing its end would run something nobody typed.
+    #[test]
+    fn an_unclosed_quote_refuses_the_line() {
+        for line in [
+            &b"echo 'hello"[..],
+            b"date > \"my out.txt",
+            b"echo \"a | wc",
+        ] {
+            assert_eq!(
+                split(line),
+                Err(Refusal::UnclosedQuote),
+                "{}",
+                core::str::from_utf8(line).unwrap(),
+            );
+        }
     }
 
     /// [`Line::sink_for`] and [`Line::source_for`] are the whole of "which capability goes in which
