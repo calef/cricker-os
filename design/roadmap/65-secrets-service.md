@@ -1,6 +1,6 @@
 # 65. A secrets service: hold the key, expose the operation, never the key
 
-**Status: NOT-STARTED.** Raised 2026-08-01, from a question about MD4 and MD5 that turned out to be
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/65-secrets-service`. Raised 2026-08-01, from a question about MD4 and MD5 that turned out to be
 asking something else.
 
 **Gate: NONE.** Deliberately decoupled from milestone 49's identity model, because a secret is
