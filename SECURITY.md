@@ -1,6 +1,6 @@
 # Security policy
 
-cricker-os is a capability microkernel built as a **demonstrator** (DECISIONS.md §14): a small
+cricker-os is a capability microkernel built as a **demonstrator** (DECISIONS §14): a small
 machine-checked core that confines unverified workloads. Nobody runs it in production, including us.
 It boots under QEMU and under HVF on an Apple Silicon laptop, and it has never run on physical
 hardware.
@@ -103,7 +103,7 @@ down, which makes them roadmap items rather than reports.
 - **Acknowledgement within about a week.** This is a side project; there is no on-call.
 - **No fixed remediation timeline, and no bounty.** What there is instead: a real answer about
   whether the boundary you found is one the project claims to hold, and if it is, a fix with a test
-  that would have caught it, plus a `DECISIONS.md` or `notes/` entry recording what was wrong. That
+  that would have caught it, plus a `design/decisions/` or `notes/` entry recording what was wrong. That
   is how every previous security finding here was handled (notes/security.md, notes/arch-audit.md).
 - **Credit however you want it**, in the fix commit and in the note. Say if you would rather not be
   named.

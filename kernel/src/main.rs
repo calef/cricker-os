@@ -121,6 +121,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // Timer + interrupts: arm the SBI timer, unmask interrupts, and let the S-mode timer
         // interrupt fire for ~0.2 s. A nonzero tick count proves the whole interrupt path (SBI
         // set_timer, sie.STIE, sstatus.SIE, the trap vector routing scause=timer to timer::tick).
+        //
+        // The counter's rate comes out of the device tree first (milestone 100). It used to be a
+        // 10 MHz constant, which is QEMU's; RISC-V has no CNTFRQ_EL0 to read, so the tree is the
+        // architected source and this is the earliest point anything needs the number.
+        arch::timer::init_frequency(dtb);
         arch::timer::init();
         arch::interrupts::enable();
         let start = arch::timer::now();
@@ -153,6 +158,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // parsed, then asks OpenSBI what it implements. The summary prints after paging, because
         // one of the numbers in it is measured by `mmu::init`.
         arch::isa::init(dtb);
+
+        // Which harts does this machine have (milestone 100)? Here, while the device tree is still
+        // reachable through the boot map, rather than at bring-up time after `mmu::init` has
+        // replaced it. The list used to be `0..cpu::MAX_CPUS`, a constant.
+        smp::read_cpu_list(dtb);
 
         // Replace the coarse RWX boot table with fine-grained W^X Sv39 kernel tables. We keep
         // running (and printing) across the satp switch, which proves the fine map covers this code.
@@ -550,6 +560,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // rather than turning the MMU on and faulting on the next instruction fetch with no console
     // line to explain it.
     arch::isa::init(dtb);
+
+    // Which cores does this machine have, and how are they started (milestone 100)? Both come out
+    // of the device tree, and both have to be read HERE: `mmu::init` on the next line replaces the
+    // coarse boot map, and the blob is only reachable through that one. The list used to be
+    // `0..cpu::MAX_CPUS` and the PSCI conduit used to be `hvc`, compiled in; `isa::init` above took
+    // the `/psci` half.
+    smp::read_cpu_list(dtb);
 
     // And now the sketchiest moment in the kernel. The instant SCTLR_EL1.M is set, the very
     // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.

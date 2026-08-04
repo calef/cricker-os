@@ -1,6 +1,6 @@
 # Capabilities, and why the kernel has no `open()`
 
-The milestone 7 decision. [DECISIONS.md §10](../DECISIONS.md) is the record of *what* we chose
+The milestone 7 decision. [DECISIONS §10](../design/decisions/10-capability-microkernel.md) is the record of *what* we chose
 and what we rejected. This is the note on *what the words mean*.
 
 ## The one sentence
@@ -127,7 +127,7 @@ want it. It just is not the primitive.
 | capabilities to a Unix-shaped API | **additive.** A library. Nothing is thrown away. |
 | Unix to capabilities | **a rewrite**, and it has never once succeeded. |
 
-Which is the same table as [DECISIONS §5](../DECISIONS.md)'s threads-versus-async, and it decides
+Which is the same table as [DECISIONS §5](../design/decisions/05-preemptive-threads.md)'s threads-versus-async, and it decides
 this the same way. **When one direction is cheap and the other is a rewrite, take the one that
 keeps the option open.**
 

@@ -15,6 +15,15 @@
 //! on any file last read more than an hour ago. `read_node_inner` is the same read without the
 //! timestamp, so recovery uses it.
 //!
+//! **A device and a partition, not only an image file** (milestone 110). Every read verb takes a
+//! [`Volume`], which is either the whole file (the bytes at offset zero are the filesystem, which is
+//! what an image is) or one partition inside it, found by reading the GUID partition table with
+//! `crates/gpt`. The offset then lives in the [`PartitionDisk`] the engine is handed, so block zero
+//! of the filesystem is the partition's first block and nothing above the disk layer knows a
+//! partition was involved. That is the same shape the board's own `mkfs` uses, and the point is that
+//! a disk pulled out of the machine at 2am can be read where it lies instead of being `dd`ed into an
+//! image first, on a laptop that may not have room for it.
+//!
 //! **No key handling, deliberately** (roadmap milestone 57, decided 2026-07-30). RedoxFS supports
 //! encryption and this volume does not use it: encryption belongs at the Time Machine layer, where
 //! the Mac encrypts before anything is sent. So every `FileSystem::open` here passes `None` for the
@@ -28,15 +37,142 @@
 //! `Transaction` can only be made by `FileSystem::tx`, whose closure must fail in the engine's own
 //! vocabulary. Read paths write nothing, so committing a walk that failed commits nothing.
 
+use std::fs::File;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs_proto::xattr;
-use redoxfs::{Disk, DiskFile, FileSystem, Node, Transaction, TreeData, TreePtr};
+use gpt::{Gpt, Guid};
+use redoxfs::{BLOCK_SIZE, Disk, DiskFile, FileSystem, Node, Transaction, TreeData, TreePtr};
+use syscall::error::{EIO, Error};
 
 /// Public so the recovery test can read an attribute back off the host file the extract wrote. The
 /// round trip is the claim this feature makes, and closing it needs both halves in one place.
 pub mod host_xattr;
+
+/// How much of the front of a device to read before parsing the table: 34 blocks at the largest
+/// logical block size this crate handles, which covers the protective MBR, the primary header and
+/// the whole 16 KiB entry array on a 4Kn drive and covers them eight times over on a 512-byte one.
+/// One read, then both candidate block sizes are tried against the same bytes.
+const TABLE_BYTES: usize = 34 * gpt::MAX_BLOCK_SIZE;
+
+/// Which partition to read, when the path names a device rather than an image.
+///
+/// Two forms, because they answer different questions and both get asked. **PROVISIONAL naming**
+/// (CLAUDE.md: names are Chris's call).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PartitionSelector {
+    /// The partition number a person reads off a listing: 1-based, the `2` in `/dev/sda2`, in
+    /// macOS's `disk0s2`, and in `sgdisk -i 2`. It is the array index plus one, and it survives a
+    /// hole in the array, so it means the same thing here as it does in every other partition tool.
+    Index(u32),
+    /// The partition's **type GUID**, which is how cricker-os finds its own data partition on the
+    /// board (`fs_server/src/bin/mkfs.rs`, DECISIONS §45). A slot number is a fact about one disk's
+    /// current layout; a type GUID is a fact about what the partition *is*, so a script should ask
+    /// this way and a person with a listing in front of them should not have to.
+    ///
+    /// **Not the partition name.** GPT names are cosmetic and frequently absent: macOS writes none
+    /// at all (notes/gpt.md), so a selector keyed on one would fail on exactly the disk the recovery
+    /// story is about.
+    Type(Guid),
+}
+
+/// Where a filesystem is: the whole file, or one partition inside it.
+///
+/// `Volume::image` is what this tool always did, and it is still the right thing for an image file,
+/// where offset zero is the filesystem. `Volume::partition` is milestone 110: a device has a
+/// partition table at offset zero instead, and the filesystem starts wherever the table says.
+#[derive(Clone, Copy)]
+pub struct Volume<'a> {
+    /// The image file or device to open.
+    pub path: &'a Path,
+    /// `None` means the file *is* the filesystem.
+    pub partition: Option<PartitionSelector>,
+}
+
+impl<'a> Volume<'a> {
+    /// A whole-file image: the bytes at offset zero are the filesystem.
+    pub fn image(path: &'a Path) -> Volume<'a> {
+        Volume {
+            path,
+            partition: None,
+        }
+    }
+
+    /// One partition of a device (or of a whole-device image, which is the same bytes in a file).
+    pub fn partition(device: &'a Path, selector: PartitionSelector) -> Volume<'a> {
+        Volume {
+            path: device,
+            partition: Some(selector),
+        }
+    }
+}
+
+/// So `ls(&img, "/")` still says what it always said for an image file.
+impl<'a> From<&'a Path> for Volume<'a> {
+    fn from(path: &'a Path) -> Volume<'a> {
+        Volume::image(path)
+    }
+}
+
+/// A [`Disk`] that is a window onto a file: block zero is `first_block` of the file, and the disk
+/// is `blocks` long.
+///
+/// **The window is what keeps the engine inside the partition**, by construction rather than by the
+/// engine's good behaviour: every address it computes is relative to block zero, and `size` reports
+/// the partition's length, which is what its allocator sizes itself from. An address past the end is
+/// `EIO` rather than a read of the next partition. This is `fs_server/src/bin/mkfs.rs`'s
+/// `PartitionDisk` with a file underneath instead of the block-service IPC; the two are deliberately
+/// separate, because that one is `no_std` inside a `[[bin]]` on the board and this one wraps
+/// `DiskFile`.
+///
+/// A whole-file volume is the same type with `first_block: 0` and no length, which delegates `size`
+/// to the file. **That case must not be turned into a block count**: a raw device on macOS reports a
+/// length of zero (see `Volume::window`), and computing a size from it would hand the engine a
+/// zero-block disk.
+pub struct PartitionDisk {
+    file: DiskFile,
+    /// Where the window starts, in RedoxFS blocks from the start of the file.
+    first_block: u64,
+    /// How long the window is, or `None` for "the whole file", which is the image case.
+    blocks: Option<u64>,
+}
+
+impl PartitionDisk {
+    /// The file block a filesystem block lands on, given a read or write of `len` bytes, or `EIO` if
+    /// any part of it would fall outside the window.
+    fn file_block(&self, block: u64, len: usize) -> Result<u64, Error> {
+        if let Some(blocks) = self.blocks {
+            let span = (len as u64).div_ceil(BLOCK_SIZE);
+            let end = block.checked_add(span).ok_or(Error::new(EIO))?;
+            if end > blocks {
+                return Err(Error::new(EIO));
+            }
+        }
+        block.checked_add(self.first_block).ok_or(Error::new(EIO))
+    }
+}
+
+impl Disk for PartitionDisk {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> syscall::error::Result<usize> {
+        let at = self.file_block(block, buffer.len())?;
+        // SAFETY: the contract is `DiskFile`'s, which this forwards to unchanged.
+        unsafe { self.file.read_at(at, buffer) }
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> syscall::error::Result<usize> {
+        let at = self.file_block(block, buffer.len())?;
+        // SAFETY: as above.
+        unsafe { self.file.write_at(at, buffer) }
+    }
+
+    fn size(&mut self) -> syscall::error::Result<u64> {
+        match self.blocks {
+            Some(blocks) => Ok(blocks * BLOCK_SIZE),
+            None => self.file.size(),
+        }
+    }
+}
 
 /// What an entry is. `Other` covers the modes RedoxFS can hold and a host directory cannot
 /// meaningfully receive (sockets, and anything a later format version adds).
@@ -122,7 +258,188 @@ fn now() -> (u64, u32) {
     (t.as_secs(), t.subsec_nanos())
 }
 
-/// Open an existing image **read-only**, for the recovery paths. No `cleanup`, so nothing is
+/// Read the front of a device: enough for the protective MBR, the primary header and the entry
+/// array at either candidate block size. A short file is not an error here, because the parse below
+/// says what is missing in the format's own vocabulary and "read 8192 bytes, wanted 139264" does not.
+fn read_head(file: &File, path: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::FileExt;
+
+    let mut head = vec![0u8; TABLE_BYTES];
+    let mut got = 0;
+    while got < head.len() {
+        match file.read_at(&mut head[got..], got as u64) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                return Err(format!(
+                    "cannot read the partition table off {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    head.truncate(got);
+    Ok(head)
+}
+
+/// Parse the GUID partition table at the front of `head`, returning it and the logical block size it
+/// was found at.
+///
+/// **The block size is discovered, not configured.** Nothing in a GPT records it (it is a property
+/// of the device, and the block-service wire does not carry it either: `disk_surveyor`'s BUGS), so
+/// the header is tried at 512 first, which is what almost every disk reports and what everything
+/// this project has written, and then at 4096, which is what a native-4K drive reports. A wrong
+/// guess fails on the signature rather than reading a plausible wrong table, because at the wrong
+/// offset there is no `EFI PART`.
+fn parse_table<'a>(head: &'a [u8], path: &Path) -> Result<(Gpt<'a>, usize), String> {
+    let mut first: Option<(usize, gpt::Error)> = None;
+    for block_size in [gpt::MIN_BLOCK_SIZE, gpt::MAX_BLOCK_SIZE] {
+        let Some(header_block) = head.get(block_size..2 * block_size) else {
+            continue;
+        };
+        // The header is decoded on its own first, because its `PartitionEntryLBA` is what says where
+        // the array starts; passing the array from a hardcoded LBA 2 would be right on every disk
+        // anyone has written and wrong on the one that is not.
+        let header = match gpt::Header::decode(header_block) {
+            Ok(h) => h,
+            Err(e) => {
+                first.get_or_insert((block_size, e));
+                continue;
+            }
+        };
+        let array_at = (header.entry_array_lba as usize).saturating_mul(block_size);
+        let array = head.get(array_at..).unwrap_or(&[]);
+        match Gpt::parse(header_block, array) {
+            Ok(table) => return Ok((table, block_size)),
+            Err(e) => {
+                first.get_or_insert((block_size, e));
+            }
+        }
+    }
+    match first {
+        Some((block_size, e)) => Err(format!(
+            "{}: no GUID partition table ({e}, reading {block_size}-byte logical blocks). \
+             An image file has no table and is read without a partition selector.",
+            path.display(),
+        )),
+        None => Err(format!(
+            "{}: only {} bytes, which is too short to hold a partition table",
+            path.display(),
+            head.len(),
+        )),
+    }
+}
+
+impl Volume<'_> {
+    /// Resolve this volume to a window on the open file: `(first block, length in blocks)` in
+    /// RedoxFS blocks, with `None` for "the whole file".
+    ///
+    /// Three refusals here are worth naming where a reader meets them:
+    ///
+    /// - **A partition whose first byte is not on a 4096-byte boundary** is refused rather than
+    ///   rounded into. That filesystem would read back correctly only through a disk offset by the
+    ///   same fraction, which is the worst failure available; the board's `mkfs` refuses to *create*
+    ///   one for the same reason.
+    /// - **A partition that runs past the end of a regular file** is refused, because that is a
+    ///   truncated dump and half-reading one produces a corrupt recovery that looks like a real one.
+    ///   Only for a regular file: **a raw device reports a length of zero on macOS**, so the bound
+    ///   does not exist to be checked against and applying it would refuse every real disk.
+    /// - **A partition shorter than one filesystem block** is refused; there is nothing to open.
+    ///
+    /// The length is *floored* to whole blocks rather than refused, unlike creation: a partition
+    /// whose length is not a multiple of 4096 holds a filesystem that reads perfectly, plus a tail
+    /// the engine never addresses.
+    fn window(&self, file: &File, path: &Path) -> Result<(u64, Option<u64>), String> {
+        let Some(selector) = self.partition else {
+            return Ok((0, None));
+        };
+        let head = read_head(file, path)?;
+        let (table, block_size) = parse_table(&head, path)?;
+        let lba = block_size as u64;
+
+        let entry = match selector {
+            PartitionSelector::Index(n) => {
+                let index = n.checked_sub(1).ok_or_else(|| {
+                    format!(
+                        "{}: partition numbers start at 1, the way every partition tool prints them",
+                        path.display()
+                    )
+                })?;
+                match table.entry(index as usize) {
+                    Some(e) if e.is_used() => e,
+                    Some(_) => {
+                        return Err(format!(
+                            "{}: partition {n} is an empty slot in the table",
+                            path.display()
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "{}: this table has {} entries, so there is no partition {n}",
+                            path.display(),
+                            table.entry_count(),
+                        ));
+                    }
+                }
+            }
+            PartitionSelector::Type(want) => table
+                .partitions()
+                .map(|(_, e)| e)
+                .find(|e| e.type_guid == want)
+                .ok_or_else(|| {
+                    format!(
+                        "{}: no partition of type {} on this disk",
+                        path.display(),
+                        String::from_utf8_lossy(&want.to_ascii()),
+                    )
+                })?,
+        };
+
+        let start = entry.first_lba * lba;
+        // `Gpt::parse` has already rejected an entry whose last LBA is below its first, so this
+        // cannot be `None`; the arm exists so that a change there cannot turn into an offset of zero.
+        let len = entry
+            .blocks()
+            .ok_or_else(|| format!("{}: that partition has no length", path.display()))?
+            * lba;
+
+        if !start.is_multiple_of(BLOCK_SIZE) {
+            return Err(format!(
+                "{}: that partition starts at byte {start}, which is not a multiple of the {BLOCK_SIZE}-byte \
+                 filesystem block. A filesystem there is readable only through a disk offset by the same \
+                 fraction, so this refuses rather than guessing.",
+                path.display(),
+            ));
+        }
+        let blocks = len / BLOCK_SIZE;
+        if blocks == 0 {
+            return Err(format!(
+                "{}: that partition is {len} bytes, less than one {BLOCK_SIZE}-byte filesystem block",
+                path.display(),
+            ));
+        }
+
+        // Only for a regular file: a raw device's metadata length is zero on macOS, and a bound of
+        // zero would refuse every disk this feature exists for.
+        if let Ok(meta) = file.metadata()
+            && meta.is_file()
+            && start + blocks * BLOCK_SIZE > meta.len()
+        {
+            return Err(format!(
+                "{}: that partition ends at byte {}, past the end of a {}-byte file. This dump is \
+                 truncated; recovering half of a filesystem would look like recovering all of it.",
+                path.display(),
+                start + blocks * BLOCK_SIZE,
+                meta.len(),
+            ));
+        }
+
+        Ok((start / BLOCK_SIZE, Some(blocks)))
+    }
+}
+
+/// Open an existing volume **read-only**, for the recovery paths. No `cleanup`, so nothing is
 /// replayed or tidied, and the file is opened without write permission in the first place: a disk
 /// that is failing, or an image on read-only media, still reads.
 ///
@@ -130,13 +447,114 @@ fn now() -> (u64, u32) {
 /// header out of the ring regardless, which is the crash-consistency property itself; `cleanup`
 /// only releases nodes an unclean unmount left open. Upstream's own `redoxfs-clone` reads its
 /// source disk exactly this way.
-fn open_ro(image: &Path) -> Result<FileSystem<DiskFile>, String> {
+fn open_ro(volume: Volume) -> Result<FileSystem<PartitionDisk>, String> {
+    let path = volume.path;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(false)
-        .open(image)
-        .map_err(|e| format!("cannot open {}: {e}", image.display()))?;
-    FileSystem::open(DiskFile::from(file), None, None, false).map_err(|e| open_failed(image, e))
+        .open(path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    if volume.partition.is_none() {
+        warn_if_partitioned(&file, path);
+    }
+    let (first_block, blocks) = volume.window(&file, path)?;
+    let disk = PartitionDisk {
+        file: DiskFile::from(file),
+        first_block,
+        blocks,
+    };
+    FileSystem::open(disk, None, None, false)
+        .map_err(|e| open_failed(path, first_block * BLOCK_SIZE, e))
+}
+
+/// Say so when a volume opened as a whole file turns out to have a partition table on it.
+///
+/// **This is not a hypothetical, and finding it out corrected the milestone's own premise**
+/// (2026-08-04). `FileSystem::open` scans blocks 0..65536 for a valid header, so handing it a
+/// partitioned device does not fail: it finds whatever filesystem lies in the first 256 MiB of the
+/// disk and opens that. Three things are wrong with letting that stand silently, and none of them
+/// is fixed by the scan being clever:
+///
+/// - **It reads a partition nobody named.** On a disk with two RedoxFS volumes it takes the lower
+///   one, and a recovery that read the wrong partition looks exactly like a recovery that worked.
+/// - **It stops at 256 MiB.** A data partition further out is invisible, which is every real disk
+///   with an ESP and a root partition ahead of it.
+/// - **It sizes the engine from the whole device**, so the allocator believes it owns bytes that
+///   belong to other partitions. Harmless while every path here is read-only, and a corruption
+///   waiting for the day one is not.
+///
+/// A warning rather than a refusal: the bytes do come back, and a tool that refused to read a disk
+/// it *can* read would be the wrong answer at 2am. The line tells you what actually happened.
+fn warn_if_partitioned(file: &File, path: &Path) {
+    let Ok(head) = read_head(file, path) else {
+        return;
+    };
+    let Ok((table, block_size)) = parse_table(&head, path) else {
+        return;
+    };
+    eprintln!(
+        "redoxfs_host: {} has a GUID partition table ({}-byte blocks, {} partitions), so it is a \
+         device rather than an image. Read whole, the engine takes whichever filesystem its scan \
+         meets first and sizes itself from the whole device. Name the partition with --partition N \
+         (`redoxfs_host partitions` prints them).",
+        path.display(),
+        block_size,
+        table.partitions().count(),
+    );
+}
+
+/// One used entry of a partition table, as the listing reports it.
+pub struct PartitionInfo {
+    /// The number a person types: 1-based, and a hole in the array does not renumber what follows.
+    pub number: usize,
+    pub type_guid: Guid,
+    /// The short name for a type this project recognises, or `None`, in which case the GUID is the
+    /// string to go and look up.
+    pub type_name: Option<&'static str>,
+    pub first_lba: u64,
+    pub last_lba: u64,
+    pub bytes: u64,
+    /// The GPT label, often empty: macOS writes none at all.
+    pub name: String,
+}
+
+/// The table itself, for a listing.
+pub struct TableInfo {
+    /// The logical block size the table was found at. Printed because every LBA below counts in it.
+    pub block_size: usize,
+    pub disk_guid: Guid,
+    pub partitions: Vec<PartitionInfo>,
+}
+
+/// Read a device's partition table, so a person can see what is on the disk before choosing what to
+/// recover from it.
+///
+/// This is the half that makes a partition selector usable at a keyboard: `--partition 3` is only
+/// obvious once something has printed the three. It reads the front of the device and nothing else.
+pub fn partitions(device: &Path) -> Result<TableInfo, String> {
+    let file = File::open(device).map_err(|e| format!("cannot open {}: {e}", device.display()))?;
+    let head = read_head(&file, device)?;
+    let (table, block_size) = parse_table(&head, device)?;
+    let mut out = Vec::new();
+    for (index, entry) in table.partitions() {
+        // 4 bytes per UTF-16 code unit is always enough (`name_utf8`), so this cannot overflow.
+        let mut label = [0u8; 4 * gpt::entry::NAME_UNITS];
+        let written = entry.name_utf8(&mut label).unwrap_or(0);
+        out.push(PartitionInfo {
+            number: index + 1,
+            type_guid: entry.type_guid,
+            type_name: gpt::guid::types::name(entry.type_guid),
+            first_lba: entry.first_lba,
+            last_lba: entry.last_lba,
+            bytes: entry.blocks().unwrap_or(0) * block_size as u64,
+            name: String::from_utf8_lossy(&label[..written]).into_owned(),
+        });
+    }
+    Ok(TableInfo {
+        block_size,
+        disk_guid: table.disk_guid(),
+        partitions: out,
+    })
 }
 
 /// Explain a failed open, and in particular explain the one failure the operational rule exists to
@@ -147,8 +565,12 @@ fn open_ro(image: &Path) -> Result<FileSystem<DiskFile>, String> {
 /// ENOENT. "No such file or directory" for a file that is plainly there is the wrong thing to be
 /// told at 2am, so when the signature is on the disk we read the version field beside it and say so.
 /// See notes/host-recovery.md: this is the message that tells you to go and find the pin.
-fn open_failed(image: &Path, err: impl std::fmt::Display) -> String {
-    match on_disk_version(image) {
+///
+/// `at` is where the filesystem starts in the file, which is zero for an image and the partition's
+/// first byte for a device. Reading the version from the wrong place would answer "not a RedoxFS
+/// image" for every partitioned disk, which is the message this function exists to avoid giving.
+fn open_failed(image: &Path, at: u64, err: impl std::fmt::Display) -> String {
+    match on_disk_version(image, at) {
         Some(v) if v != redoxfs::VERSION => format!(
             "{}: on-disk format version {v}, but this build of redoxfs_host reads version {}. \
              A reader must match the format version it reads; recover with the RedoxFS pin the \
@@ -163,13 +585,13 @@ fn open_failed(image: &Path, err: impl std::fmt::Display) -> String {
 /// The format version recorded on the disk, if a RedoxFS signature is anywhere in the header ring's
 /// range. Best effort and deliberately independent of the engine: it reads 16 bytes at a block
 /// boundary, so it still works when nothing in the image parses.
-fn on_disk_version(image: &Path) -> Option<u64> {
+fn on_disk_version(image: &Path, at: u64) -> Option<u64> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = std::fs::File::open(image).ok()?;
     let mut buf = [0u8; 16];
     for block in 0..redoxfs::HEADER_RING {
-        file.seek(SeekFrom::Start(block * redoxfs::BLOCK_SIZE))
+        file.seek(SeekFrom::Start(at + block * redoxfs::BLOCK_SIZE))
             .ok()?;
         if file.read_exact(&mut buf).is_err() {
             return None;
@@ -187,7 +609,7 @@ fn on_disk_version(image: &Path) -> Option<u64> {
 fn open_rw(image: &Path) -> Result<FileSystem<DiskFile>, String> {
     let disk =
         DiskFile::open(image).map_err(|e| format!("cannot open {}: {e}", image.display()))?;
-    FileSystem::open(disk, None, None, true).map_err(|e| open_failed(image, e))
+    FileSystem::open(disk, None, None, true).map_err(|e| open_failed(image, 0, e))
 }
 
 /// Split an image path into components. Leading, trailing and doubled slashes are ignored, `.` is
@@ -338,9 +760,9 @@ fn decode_attrs(blob: &[u8]) -> (Vec<Attr>, usize) {
 
 /// Every extended attribute on `path` inside the image, in the order the store holds them (which is
 /// the order they were set, since a replacement keeps its place).
-pub fn attrs(image: &Path, path: &str) -> Result<Vec<Attr>, String> {
+pub fn attrs(volume: Volume, path: &str) -> Result<Vec<Attr>, String> {
     let comps = components(path)?;
-    let mut fs = open_ro(image)?;
+    let mut fs = open_ro(volume)?;
     fs.tx(|tx| Ok(attrs_tx(tx, &comps)))
         .map_err(|e| format!("reading the attributes of {path} failed: {e}"))?
 }
@@ -380,11 +802,11 @@ pub fn mkfs(image: &Path, size: u64) -> Result<(), String> {
 
 /// List a directory: name, size, and kind of every entry, sorted by name. `path` may be `/` or
 /// empty for the image root.
-pub fn ls(image: &Path, path: &str) -> Result<Vec<LsEntry>, String> {
+pub fn ls(volume: Volume, path: &str) -> Result<Vec<LsEntry>, String> {
     let comps = components(path)?;
-    let mut fs = open_ro(image)?;
+    let mut fs = open_ro(volume)?;
     fs.tx(|tx| Ok(ls_tx(tx, &comps)))
-        .map_err(|e| format!("listing {} failed: {e}", image.display()))?
+        .map_err(|e| format!("listing {} failed: {e}", volume.path.display()))?
 }
 
 fn ls_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<LsEntry>, String> {
@@ -428,11 +850,11 @@ fn ls_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<LsEntry
 }
 
 /// Read a whole file out of the image. A directory is an error, not an empty result.
-pub fn cat(image: &Path, path: &str) -> Result<Vec<u8>, String> {
+pub fn cat(volume: Volume, path: &str) -> Result<Vec<u8>, String> {
     let comps = components(path)?;
-    let mut fs = open_ro(image)?;
+    let mut fs = open_ro(volume)?;
     fs.tx(|tx| Ok(cat_tx(tx, &comps)))
-        .map_err(|e| format!("reading {path} from {} failed: {e}", image.display()))?
+        .map_err(|e| format!("reading {path} from {} failed: {e}", volume.path.display()))?
 }
 
 fn cat_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<u8>, String> {
@@ -452,11 +874,15 @@ fn cat_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<u8>, S
 /// Anything it refuses is counted and named on stderr rather than dropped, and the raw store is
 /// copied out beside the tree either way, so a refusal costs presentation and not data. See
 /// notes/host-recovery.md.
-pub fn extract(image: &Path, path: &str, dest: &Path) -> Result<ExtractStats, String> {
+pub fn extract(volume: Volume, path: &str, dest: &Path) -> Result<ExtractStats, String> {
     let comps = components(path)?;
-    let mut fs = open_ro(image)?;
-    fs.tx(|tx| Ok(extract_tx(tx, &comps, dest)))
-        .map_err(|e| format!("extracting {path} from {} failed: {e}", image.display()))?
+    let mut fs = open_ro(volume)?;
+    fs.tx(|tx| Ok(extract_tx(tx, &comps, dest))).map_err(|e| {
+        format!(
+            "extracting {path} from {} failed: {e}",
+            volume.path.display()
+        )
+    })?
 }
 
 fn extract_tx<D: Disk>(

@@ -266,19 +266,27 @@ fi
 # is the only answer and asking for anything else is a mistake worth failing on rather than
 # silently ignoring.
 if [ "$CRICKER_ACCEL" = "hvf" ]; then
-    MACHINE="virt,accel=hvf,gic-version=2"
+    # iommu=smmuv3 is on BOTH paths since milestone 81, and this is a correction: it used to be
+    # TCG-only, on the recorded belief that "smmuv3 emulation alongside HVF acceleration is the
+    # fragile combination". Nobody had run it. The suite on the physical core says otherwise, and
+    # the belief cost a real gap while it stood: without an SMMU the display test fails outright
+    # ("a virtio-gpu is present but the IOMMU is not active") and the DMA confinement tests, which
+    # assert the HARDWARE faults an escaping DMA, would have had no hardware to assert about.
+    #
+    # It is also the right place for it on principle. The accelerator chooses how CPU instructions
+    # execute; the SMMU is in front of the PCIe root complex and translates DEVICE traffic, which
+    # QEMU emulates in the host process either way. The two are orthogonal, and the suite proves it.
+    MACHINE="virt,accel=hvf,gic-version=2,iommu=smmuv3"
     if [ -n "$CRICKER_CPU" ] && [ "$CRICKER_CPU" != "host" ]; then
         echo "qemu-runner-aarch64: CRICKER_CPU=$CRICKER_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
         exit 1
     fi
     CPU="host"
 else
-    # iommu=smmuv3 puts an SMMUv3 in front of the PCIe root complex (milestone 16b). It is on the
-    # TCG path only, on purpose: the IOMMU is a correctness feature proven by the test suite (which
-    # runs under TCG), not a benchmark axis, and smmuv3 emulation alongside HVF acceleration is the
-    # fragile combination. The device tree then carries an `smmuv3@...` node (memory::smmu_region
-    # finds it) and an identity iommu-map for the bus. A plain boot without a PCI disk still gets the
-    # SMMU; it just has nothing to confine.
+    # iommu=smmuv3 puts an SMMUv3 in front of the PCIe root complex (milestone 16b). The device tree
+    # then carries an `smmuv3@...` node (memory::smmu_region finds it) and an identity iommu-map for
+    # the bus. A plain boot without a PCI disk still gets the SMMU; it just has nothing to confine.
+    # The HVF branch above takes the same flag, since milestone 81.
     MACHINE="virt,gic-version=2,iommu=smmuv3"
     CPU="${CRICKER_CPU:-cortex-a72}"
 fi

@@ -9,6 +9,7 @@
 //!     cargo xtask shell    boot straight to the interactive shell (add --hvf for the real core)
 //!     cargo xtask shell-check  boot that same shell, type at it, and check what it answered
 //!     cargo xtask test     host tests (milliseconds), then the kernel under QEMU
+//!                          (--hvf runs the aarch64 kernel leg on the physical core)
 //!     cargo xtask gdb      boot paused, waiting for a debugger on :1234
 //!     cargo xtask objdump  disassemble the kernel
 //!     cargo xtask image    build the flat arm64 Image and dump its header
@@ -141,7 +142,9 @@ fn main() -> ExitCode {
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
-            eprintln!("       cargo xtask test [--arch aarch64|riscv64] [--cpu <qemu-cpu-model>]");
+            eprintln!(
+                "       cargo xtask test [--arch aarch64|riscv64] [--cpu <qemu-cpu-model>] [--hvf]"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -894,20 +897,7 @@ fn screendump(sock: &str, out: &Path) -> bool {
 /// or a component that never got its picture to the device, fails loudly instead of being waved
 /// through. The child inherits stdio, so the suite's output streams exactly as before.
 fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
-    let sock = gpu_mon_socket(arch);
-    let shot = gpu_shot_path(arch);
-    let composed_shot = gpu_compose_path(arch);
-    let text_shot = gpu_text_path(arch);
-    let _ = std::fs::remove_file(&sock);
-    let _ = std::fs::remove_file(&shot);
-    let _ = std::fs::remove_file(&composed_shot);
-    let _ = std::fs::remove_file(&text_shot);
-
-    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
-    // threads. xtask is single-threaded here: this runs on the main thread before the child
-    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
-    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
+    let mut referee = ScanoutReferee::new(arch);
     let mut child = match Command::new("cargo").args(test_args).spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -916,13 +906,6 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         }
     };
 
-    let mut composed: Option<String> = None;
-    let mut text: Option<String> = None;
-    let mut matched: Option<String> = None;
-    let missing = String::from("no screendump was ever taken (did QEMU get a monitor?)");
-    let mut last_composed = missing.clone();
-    let mut last_text = missing.clone();
-    let mut last_reason = missing;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -937,104 +920,177 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
                 return false;
             }
         }
+        referee.poll();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    referee.report()
+}
+
+/// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
+/// the device's own scanout for the three pictures the suite puts there.
+///
+/// It exists as a struct rather than a loop body because **two legs need the same referee driven
+/// two different ways** (milestone 81). Under TCG the harness exits by itself, so the loop can be
+/// "poll until the child is gone". Under HVF nothing exits (QEMU does not answer the semihosting
+/// trap), so the verdict comes from reading the transcript, which blocks, and the referee has to be
+/// driven from a second thread beside it. Same state machine, same messages, two drivers.
+struct ScanoutReferee {
+    arch: String,
+    sock: String,
+    shot: PathBuf,
+    composed_shot: PathBuf,
+    text_shot: PathBuf,
+    composed: Option<String>,
+    text: Option<String>,
+    matched: Option<String>,
+    last_composed: String,
+    last_text: String,
+    last_reason: String,
+}
+
+impl ScanoutReferee {
+    /// Clear last run's evidence and tell the runner where to put the monitor socket.
+    fn new(arch: &str) -> Self {
+        let sock = gpu_mon_socket(arch);
+        let shot = gpu_shot_path(arch);
+        let composed_shot = gpu_compose_path(arch);
+        let text_shot = gpu_text_path(arch);
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&shot);
+        let _ = std::fs::remove_file(&composed_shot);
+        let _ = std::fs::remove_file(&text_shot);
+
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the threads xtask ever starts (the transcript reader in
+        // shell_check_leg, and this referee's driver in hvf_kernel_leg) copy pipe bytes and poll a
+        // socket, and neither touches the environment.
+        unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
+
+        let missing = String::from("no screendump was ever taken (did QEMU get a monitor?)");
+        Self {
+            arch: arch.to_string(),
+            sock,
+            shot,
+            composed_shot,
+            text_shot,
+            composed: None,
+            text: None,
+            matched: None,
+            last_composed: missing.clone(),
+            last_text: missing.clone(),
+            last_reason: missing,
+        }
+    }
+
+    /// One pass: press a key, take a screendump, and see whether it is the picture we are waiting
+    /// for. Call it on a cadence for as long as the suite is running.
+    fn poll(&mut self) {
         // Press a key every poll. Harmless before the keyboard driver exists (QEMU drops the event)
         // and harmless after its test has passed (the driver ends up parked in a `CALL` nobody
         // answers), so there is nothing to time.
-        sendkey(&sock, video_terminal::script::HOST_KEY);
-        if matched.is_none()
-            && screendump(&sock, &shot)
-            && let Ok(bytes) = std::fs::read(&shot)
+        sendkey(&self.sock, video_terminal::script::HOST_KEY);
+        if self.matched.is_none()
+            && screendump(&self.sock, &self.shot)
+            && let Ok(bytes) = std::fs::read(&self.shot)
         {
             // Each picture is transient except the last (the next test on the same device replaces
             // it), so the dump that matched is copied aside: `shot` is overwritten on every poll.
-            if composed.is_none() {
+            if self.composed.is_none() {
                 match scanout_holds_the_composed_screen(&bytes) {
                     Ok(()) => {
-                        let _ = std::fs::write(&composed_shot, &bytes);
-                        composed = Some(format!("{}", composed_shot.display()));
+                        let _ = std::fs::write(&self.composed_shot, &bytes);
+                        self.composed = Some(format!("{}", self.composed_shot.display()));
                     }
-                    Err(reason) => last_composed = reason,
+                    Err(reason) => self.last_composed = reason,
                 }
-            } else if text.is_none() {
+            } else if self.text.is_none() {
                 match scanout_holds_the_terminals_text(&bytes) {
                     Ok(()) => {
-                        let _ = std::fs::write(&text_shot, &bytes);
-                        text = Some(format!("{}", text_shot.display()));
+                        let _ = std::fs::write(&self.text_shot, &bytes);
+                        self.text = Some(format!("{}", self.text_shot.display()));
                     }
-                    Err(reason) => last_text = reason,
+                    Err(reason) => self.last_text = reason,
                 }
             } else {
                 match scanout_holds_the_pattern(&bytes) {
-                    Ok(()) => matched = Some(format!("{}", shot.display())),
-                    Err(reason) => last_reason = reason,
+                    Ok(()) => self.matched = Some(format!("{}", self.shot.display())),
+                    Err(reason) => self.last_reason = reason,
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    let _ = std::fs::remove_file(&sock);
 
-    let mut ok = true;
-    match &composed {
-        Some(path) => eprintln!(
-            "scanout check ({arch}): the compositor's {} windows reached the DEVICE's scanout, \
+    /// Say what reached the device's scanout and what did not, and return whether all three did.
+    fn report(self) -> bool {
+        let _ = std::fs::remove_file(&self.sock);
+        let arch = &self.arch;
+        let (composed, text, matched) = (&self.composed, &self.text, &self.matched);
+        let (last_composed, last_text, last_reason) =
+            (&self.last_composed, &self.last_text, &self.last_reason);
+
+        let mut ok = true;
+        match composed {
+            Some(path) => eprintln!(
+                "scanout check ({arch}): the compositor's {} windows reached the DEVICE's scanout, \
              verified pixel for pixel against compositor::expected_screen_pixel ({path})",
-            compositor::SCENE.len(),
-        ),
-        None => {
-            eprintln!();
-            eprintln!(
-                "scanout check ({arch}) FAILED: the compositor test passed, so the guest's witnesses \
+                compositor::SCENE.len(),
+            ),
+            None => {
+                eprintln!();
+                eprintln!(
+                    "scanout check ({arch}) FAILED: the compositor test passed, so the guest's witnesses \
                  agree about the framebuffer, but QEMU's scanout never held the composed screen. Last \
                  mismatch: {last_composed}"
-            );
-            eprintln!(
-                "  A compositor's output is exactly what a guest-side digest cannot confirm; this is \
+                );
+                eprintln!(
+                    "  A compositor's output is exactly what a guest-side digest cannot confirm; this is \
                  the check that can. See notes/compositor.md."
-            );
-            ok = false;
+                );
+                ok = false;
+            }
         }
-    }
-    match &text {
-        Some(path) => eprintln!(
-            "scanout check ({arch}): the display terminal's text reached the DEVICE's scanout, \
+        match text {
+            Some(path) => eprintln!(
+                "scanout check ({arch}): the display terminal's text reached the DEVICE's scanout, \
              verified pixel for pixel against the vt engine run over video_terminal::script ({path})",
-        ),
-        None => {
-            eprintln!();
-            eprintln!(
-                "scanout check ({arch}) FAILED: the display-terminal test passed, so the guest \
+            ),
+            None => {
+                eprintln!();
+                eprintln!(
+                    "scanout check ({arch}) FAILED: the display-terminal test passed, so the guest \
                  agrees about the framebuffer, but QEMU's scanout never held the terminal's text. \
                  Last mismatch: {last_text}"
-            );
-            eprintln!(
-                "  A wrong pixel format makes a test pattern look odd and makes text unreadable, \
+                );
+                eprintln!(
+                    "  A wrong pixel format makes a test pattern look odd and makes text unreadable, \
                  which is why this check exists for glyphs too. See notes/glyphs.md."
-            );
-            ok = false;
+                );
+                ok = false;
+            }
         }
-    }
-    match &matched {
-        Some(path) => eprintln!(
-            "scanout check ({arch}): the {}x{} pattern reached the DEVICE's scanout, verified pixel \
+        match matched {
+            Some(path) => eprintln!(
+                "scanout check ({arch}): the {}x{} pattern reached the DEVICE's scanout, verified pixel \
              for pixel against gfx_proto::pixel ({path})",
-            gfx_proto::WIDTH,
-            gfx_proto::HEIGHT,
-        ),
-        None => {
-            eprintln!();
-            eprintln!(
-                "scanout check ({arch}) FAILED: the display test passed, so the framebuffer holds \
+                gfx_proto::WIDTH,
+                gfx_proto::HEIGHT,
+            ),
+            None => {
+                eprintln!();
+                eprintln!(
+                    "scanout check ({arch}) FAILED: the display test passed, so the framebuffer holds \
                  the pattern, but QEMU's scanout never did. Last mismatch: {last_reason}"
-            );
-            eprintln!(
-                "  This is the check that catches a wrong pixel format or scanout rectangle, which \
+                );
+                eprintln!(
+                    "  This is the check that catches a wrong pixel format or scanout rectangle, which \
                  the in-guest test cannot see. See notes/framebuffer-contract.md."
-            );
-            ok = false;
+                );
+                ok = false;
+            }
         }
+        ok
     }
-    ok
 }
 
 /// Where the packed initrd archive is written.
@@ -2019,10 +2075,12 @@ fn mkblankdisk() -> bool {
 /// different program, on a different operating system, with a different engine build, opening the
 /// file the run left behind. If the two ever disagreed, the guest would be the one to doubt.
 ///
-/// The partition is **sliced out** into its own file first, because `redoxfs_host` takes an image
-/// rather than a device plus an offset (a limitation notes/host-recovery.md records). Slicing is
-/// what a partition-aware tool would do internally, and doing it here keeps the claim about the
-/// guest's bytes rather than about a feature of the tool.
+/// **The filesystem is read out of the partition in place** (milestone 110). This used to slice the
+/// partition into its own file first, because the tool took an image rather than a device plus a
+/// selector; that was twenty lines of the join written in a build script, and it is now in the tool
+/// where a person can use it. The partition is named by **type GUID**, not by slot number, for the
+/// same reason the guest's `mkfs` finds it that way: the type is what the partition is, and the slot
+/// is a fact about this table's current order.
 fn blank_check_after_run() -> bool {
     use fs_proto::fixture::blank;
 
@@ -2079,26 +2137,18 @@ fn blank_check_after_run() -> bool {
             }
         }
     }
-    let Some((_, data)) = parts
+    if !parts
         .iter()
-        .find(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
-    else {
+        .any(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
+    {
         eprintln!("BLANK IMAGE CHECK FAILED: no cricker-os data partition on the guest's disk");
         return false;
-    };
+    }
 
-    // The filesystem inside it, opened by the pinned engine on the host.
-    let at = data.first_lba as usize * lba;
-    let end = (data.last_lba as usize + 1) * lba;
-    if end > img.len() {
-        eprintln!("BLANK IMAGE CHECK FAILED: the data partition runs past the end of the image");
-        return false;
-    }
-    let sliced = workspace_root().join("target/crickerfs-blank-data.img");
-    if let Err(e) = std::fs::write(&sliced, &img[at..end]) {
-        eprintln!("BLANK IMAGE CHECK FAILED: could not slice the partition out: {e}");
-        return false;
-    }
+    // The filesystem inside it, opened by the pinned engine on the host, at the offset the tool
+    // works out from the same table this function just checked.
+    let data_type =
+        String::from_utf8_lossy(&gpt::guid::types::CRICKER_DATA.to_ascii()).into_owned();
     let out = capture(
         "cargo",
         &[
@@ -2108,8 +2158,10 @@ fn blank_check_after_run() -> bool {
             "tools/redoxfs_host/Cargo.toml",
             "--",
             "cat",
-            &sliced.display().to_string(),
+            &path,
             blank::MADE_NAME,
+            "--partition-type",
+            &data_type,
         ],
     );
     match out.as_deref() {
@@ -2552,23 +2604,46 @@ impl ArchLegs {
 /// emulator, so they fail fast and cheap. Only once they pass is it worth spending twenty
 /// seconds booting QEMU. See DECISIONS.md §7.
 ///
-/// Two flags narrow what runs, both added by milestone 59 and both defaulting to today's behaviour:
+/// Three flags narrow what runs, and all three default to today's behaviour:
 ///
-/// - `--arch aarch64|riscv64` runs one ISA leg instead of both.
+/// - `--arch aarch64|riscv64` runs one ISA leg instead of both (milestone 59).
 /// - `--cpu <model>` picks the emulated CPU model (`CRICKER_CPU`, read by both QEMU runners).
-///   Unset means `cortex-a72` on aarch64 and `rv64` on riscv64, exactly as before.
+///   Unset means `cortex-a72` on aarch64 and `rv64` on riscv64, exactly as before (milestone 59).
+/// - `--hvf` runs the aarch64 kernel leg on the physical Apple Silicon core (milestone 81). It is
+///   aarch64-only by construction, so it narrows the run to that leg and refuses `--cpu`; see
+///   [`hvf_kernel_leg`] for the mechanism and notes/hvf-leg.md for what differs.
 ///
-/// `script/cpu_matrix` is the caller that needs them; see notes/cpu-models.md.
+/// `script/cpu_matrix` is the caller that needs the first two (notes/cpu-models.md); `script/gates`
+/// is the caller that needs the third.
 fn test() -> bool {
+    // Milestone 81. Read before `--arch`, because it constrains it: Hypervisor.framework runs the
+    // host's own ISA and this host is aarch64, so there is no riscv64 leg to accelerate and asking
+    // for one is a mistake worth naming rather than ignoring.
+    let hvf = std::env::args().any(|a| a == "--hvf");
     let legs = match flag_value("--arch").as_deref() {
+        None if hvf => ArchLegs::Aarch64,
         None => ArchLegs::Both,
         Some("aarch64") => ArchLegs::Aarch64,
+        Some("riscv64") if hvf => {
+            eprintln!(
+                "test: --hvf is aarch64 only (Hypervisor.framework runs this host's own ISA; riscv64 \
+                 has no equivalent until the board lands)"
+            );
+            return false;
+        }
         Some("riscv64") => ArchLegs::Riscv64,
         Some(other) => {
             eprintln!("test: --arch {other} is not an architecture (aarch64 or riscv64)");
             return false;
         }
     };
+    if hvf && flag_value("--cpu").is_some() {
+        eprintln!(
+            "test: --cpu cannot apply under --hvf (the guest runs the physical core; -cpu host is \
+             mandatory)"
+        );
+        return false;
+    }
     // The CPU model rides to the runners in the environment rather than on the QEMU command line,
     // because cargo owns that command line: the runner is invoked by cargo, and the only channel we
     // have to it is env. Unset it when no flag was given so a stale value from the caller's shell
@@ -2589,84 +2664,98 @@ fn test() -> bool {
         None => unsafe { std::env::remove_var("CRICKER_CPU") },
     }
 
-    // Tests always run under TCG. They exit via semihosting, which QEMU only intercepts in the
-    // TCG path; under HVF the `hlt #0xf000` traps to the guest and the harness hangs. TCG is also
-    // the right place for reproducible tests: deterministic, and identical on any host.
+    // Nothing cargo starts inherits an accelerator choice. The default leg is TCG, which is the
+    // right place for reproducible tests (deterministic, identical on any host), and the HVF leg
+    // does not go through cargo at all: it sets `CRICKER_ACCEL` on the one child that needs it
+    // (see `hvf_kernel_leg`), so a stale value from the caller's shell cannot reach anything else.
     // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::remove_var("CRICKER_ACCEL") };
-    eprintln!("--- host tests (pure logic, no emulator) ---");
-    // Every host crate, by asking cargo which ones those are instead of listing them.
-    //
-    // This was a hand-maintained list of twenty `-p` flags, and it drifted exactly the way a
-    // hand-maintained list does. It was written because `paging`, `heap` and `slab` were silently not
-    // run for four milestones; by milestone 51 it had five crates missing again, and `fs_proto`,
-    // `compositor`, `video_terminal`, `bitfont` and `grant_plan` carried **82 host tests that this gate never ran**. All
-    // 82 passed when finally run, which is the point: nobody noticed because nothing failed, and a
-    // gate that quietly covers less than it claims is the failure mode script/fmt's `--check` bug
-    // already cost this project a day over.
-    //
-    // The exclusions are the three bare-metal crates, and they are the same three script/lint's host
-    // clippy pass excludes, for the same reason: kernel, user and user_rt only compile for aarch64
-    // or riscv64 (user_rt is EL0 syscall `asm!`). Everything else in the workspace is host code by
-    // construction, so a new crate is covered the moment it joins the workspace.
-    if !cargo(&[
-        "test",
-        "--workspace",
-        "--exclude",
-        "kernel",
-        "--exclude",
-        "user",
-        "--exclude",
-        "user_rt",
-    ]) {
-        return false;
+    if hvf {
+        eprintln!(
+            "--- host tests, the vendored redoxfs round trip and the fs_server core: SKIPPED under \
+             --hvf ---"
+        );
+        eprintln!(
+            "    They are host code on the host; no accelerator exists on that path, so running \
+             them again would cost ~30 s and prove nothing the TCG leg has not. What --hvf re-runs \
+             is the part an accelerator can change: the kernel, under QEMU."
+        );
     }
+    if !hvf {
+        eprintln!("--- host tests (pure logic, no emulator) ---");
+        // Every host crate, by asking cargo which ones those are instead of listing them.
+        //
+        // This was a hand-maintained list of twenty `-p` flags, and it drifted exactly the way a
+        // hand-maintained list does. It was written because `paging`, `heap` and `slab` were silently not
+        // run for four milestones; by milestone 51 it had five crates missing again, and `fs_proto`,
+        // `compositor`, `video_terminal`, `bitfont` and `grant_plan` carried **82 host tests that this gate never ran**. All
+        // 82 passed when finally run, which is the point: nobody noticed because nothing failed, and a
+        // gate that quietly covers less than it claims is the failure mode script/fmt's `--check` bug
+        // already cost this project a day over.
+        //
+        // The exclusions are the three bare-metal crates, and they are the same three script/lint's host
+        // clippy pass excludes, for the same reason: kernel, user and user_rt only compile for aarch64
+        // or riscv64 (user_rt is EL0 syscall `asm!`). Everything else in the workspace is host code by
+        // construction, so a new crate is covered the moment it joins the workspace.
+        if !cargo(&[
+            "test",
+            "--workspace",
+            "--exclude",
+            "kernel",
+            "--exclude",
+            "user",
+            "--exclude",
+            "user_rt",
+        ]) {
+            return false;
+        }
 
-    // The vendored RedoxFS pin (vendor/redoxfs, milestone 32) is kept honest here, both halves of
-    // vendor/README.md's promise. Both are driven by --manifest-path because the engine and the
-    // host tool are their OWN workspaces, deliberately outside ours so upstream code never reaches
-    // our clippy/fmt gates (see the workspace `exclude` in Cargo.toml).
-    //
-    // First: the host tool's round trip (mkfs, put, ls, cat) against the pinned engine, the same
-    // code phase 2's FS server will open images with, so a regression is caught on the host in
-    // milliseconds. Second: the engine's no_std core built for BOTH bare-metal targets, because
-    // upstream does not CI the no_std path and it bit-rotted once already (the two Vec imports the
-    // pin carries); this build catches the next such regression instead of phase 2 doing it.
-    eprintln!();
-    eprintln!("--- vendored redoxfs: host round trip + no_std core (both targets) ---");
-    if !run(
-        "cargo",
-        &["test", "--manifest-path", "tools/redoxfs_host/Cargo.toml"],
-    ) {
-        return false;
-    }
-    // The FS server's sans-IO core (fs_server, its own workspace): open, read, write, close against
-    // a real RedoxFS image in memory, in milliseconds. This proves the filesystem logic for BOTH the
-    // read and write paths on the host, which the on-device test can only do for reads today.
-    eprintln!();
-    eprintln!("--- fs_server sans-IO core (host, its own workspace) ---");
-    if !run(
-        "cargo",
-        &["test", "--manifest-path", "fs_server/Cargo.toml"],
-    ) {
-        return false;
-    }
-    for target in [TARGET, RISCV_TARGET] {
+        // The vendored RedoxFS pin (vendor/redoxfs, milestone 32) is kept honest here, both halves of
+        // vendor/README.md's promise. Both are driven by --manifest-path because the engine and the
+        // host tool are their OWN workspaces, deliberately outside ours so upstream code never reaches
+        // our clippy/fmt gates (see the workspace `exclude` in Cargo.toml).
+        //
+        // First: the host tool's round trip (mkfs, put, ls, cat) against the pinned engine, the same
+        // code phase 2's FS server will open images with, so a regression is caught on the host in
+        // milliseconds. Second: the engine's no_std core built for BOTH bare-metal targets, because
+        // upstream does not CI the no_std path and it bit-rotted once already (the two Vec imports the
+        // pin carries); this build catches the next such regression instead of phase 2 doing it.
+        eprintln!();
+        eprintln!("--- vendored redoxfs: host round trip + no_std core (both targets) ---");
         if !run(
             "cargo",
-            &[
-                "build",
-                "--manifest-path",
-                "vendor/redoxfs/Cargo.toml",
-                "--no-default-features",
-                "--target",
-                target,
-            ],
+            &["test", "--manifest-path", "tools/redoxfs_host/Cargo.toml"],
         ) {
             return false;
+        }
+        // The FS server's sans-IO core (fs_server, its own workspace): open, read, write, close against
+        // a real RedoxFS image in memory, in milliseconds. This proves the filesystem logic for BOTH the
+        // read and write paths on the host, which the on-device test can only do for reads today.
+        eprintln!();
+        eprintln!("--- fs_server sans-IO core (host, its own workspace) ---");
+        if !run(
+            "cargo",
+            &["test", "--manifest-path", "fs_server/Cargo.toml"],
+        ) {
+            return false;
+        }
+        for target in [TARGET, RISCV_TARGET] {
+            if !run(
+                "cargo",
+                &[
+                    "build",
+                    "--manifest-path",
+                    "vendor/redoxfs/Cargo.toml",
+                    "--no-default-features",
+                    "--target",
+                    target,
+                ],
+            ) {
+                return false;
+            }
         }
     }
 
@@ -2722,12 +2811,15 @@ fn test() -> bool {
         // `cargo()` only exports the env the runner needs; the test itself runs under the scanout
         // check, which drives QEMU's monitor beside the suite and proves the pixels reached the
         // device's scanout rather than only the driver's frames.
-        if !cargo(&["build", "-p", "kernel", "--target", TARGET])
-            || !cargo_test_with_scanout_check(
-                "aarch64",
-                &["test", "-p", "kernel", "--target", TARGET],
-            )
-        {
+        if !cargo(&["build", "-p", "kernel", "--target", TARGET]) {
+            return false;
+        }
+        let leg = if hvf {
+            hvf_kernel_leg()
+        } else {
+            cargo_test_with_scanout_check("aarch64", &["test", "-p", "kernel", "--target", TARGET])
+        };
+        if !leg {
             return false;
         }
     }
@@ -2796,6 +2888,212 @@ fn test() -> bool {
     // crash test's own disk (milestone 37), and milestone 57's blank disk, where the guest wrote
     // both the partition table and the filesystem inside it.
     redoxfs_check_after_run() && redoxfs_crash_check_after_run() && blank_check_after_run()
+}
+
+/// **The aarch64 kernel suite on the physical Apple Silicon core** (milestone 81, `--hvf`).
+///
+/// # Why this is not just `cargo test` with an env var set
+///
+/// **QEMU does not intercept ARM semihosting under HVF**, and the whole test harness reports its
+/// verdict through it: the kernel's `testing::runner` ends in `semihosting::exit`, and so do the panic
+/// handler and both watchdogs. Measured against QEMU 11.0.2 with a nine-instruction guest that
+/// writes a byte to the PL011 and then executes the semihosting trap: under TCG the process exits
+/// at the trap, under HVF the byte appears and `hlt #0xf000` never returns. So under HVF the guest
+/// prints its result and then wedges, and cargo (which waits for the child) would wait forever.
+///
+/// The answer is the one `run_bench` already uses for the same reason: **own the QEMU child and
+/// read its transcript.** We ask cargo for the test ELF without running it, hand that ELF to the
+/// same runner script everything else boots through, and read stdout until the harness says how it
+/// went. Three markers decide the verdict, all of them printed *before* the exit that will not
+/// happen:
+///
+/// - `test result: ok. N passed` from the runner: the suite passed;
+/// - `[PANIC] ` from the panic handler: a failing assertion, which is a failing test;
+/// - `WATCHDOG:` from either watchdog: a hang or a livelock, also a failure.
+///
+/// Reaching end of output with none of them means QEMU died on its own, which is a failure too.
+/// The guest's own watchdogs are what bound this leg, exactly as they bound the TCG one: they still
+/// fire (the virtual timer is passed through and QEMU injects the interrupt), and their message is
+/// what we read. So there is no host-side deadline.
+///
+/// # The referee runs beside it, on a thread, and it has to
+///
+/// [`ScanoutReferee`] is not optional here even though it is a *display* check: it is also what
+/// presses keys, over QEMU's monitor, and the keyboard test asserts that a keystroke arrived
+/// ("the keyboard driver came up but never typed anything in ten seconds"). Nothing in the guest
+/// can press a key. Reading the transcript blocks, so the referee is driven from a second thread
+/// and joined when the verdict is in. It touches a unix socket and two files and never the
+/// environment.
+fn hvf_kernel_leg() -> bool {
+    let Some(elf) = kernel_test_elf() else {
+        return false;
+    };
+
+    eprintln!();
+    eprintln!("--- kernel tests, aarch64, ON THE PHYSICAL CORE (QEMU + Hypervisor.framework) ---");
+
+    // Constructed before the child, because it is what sets `CRICKER_GPU_MON`: the runner reads
+    // that when it builds the QEMU command line, so a referee born later would find no monitor.
+    let referee = ScanoutReferee::new("aarch64");
+
+    let mut cmd = Command::new(RUNNER);
+    cmd.arg(&elf);
+    // The one child that gets the accelerator. `test()` cleared it from our own environment, so
+    // nothing else in this process can inherit it.
+    cmd.env("CRICKER_ACCEL", "hvf");
+    // The same devices the TCG leg attaches, set by `test()` and `cargo()` in our environment and
+    // inherited from there: the initrd, the disks, the NIC, the GPU, the keyboard, the RNGs.
+    cmd.env("CRICKER_INITRD", initrd_path());
+    cmd.env("CRICKER_DISK", disk_path());
+    cmd.env("CRICKER_NET", "1");
+    cmd.stdout(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("test --hvf: failed to start {RUNNER}: {e}");
+            return false;
+        }
+    };
+
+    // The referee, on its own thread, polling on the same 100 ms cadence the TCG leg uses. It stops
+    // when `running` clears and hands itself back through the join, so the reporting happens on this
+    // thread exactly as it does for TCG.
+    let running = std::sync::Arc::new(AtomicBool::new(true));
+    let watcher = {
+        let running = running.clone();
+        let mut referee = referee;
+        std::thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                referee.poll();
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            referee
+        })
+    };
+
+    use std::io::BufRead;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::io::BufReader::new(stdout);
+    let mut verdict: Option<bool> = None;
+    // How much more transcript to relay once something has failed. The watchdogs print a thread
+    // dump after the line that names the failure and that dump is the diagnosis, so we cannot stop
+    // at the marker; but we cannot read to the end either, because **there is no end**. The
+    // semihosting trap the failure path takes is not answered under HVF: it raises a real
+    // synchronous exception (EC 0x00, "Unknown reason") into the guest's own vector table, whose
+    // handler panics, whose panic handler takes the same trap again. Four cores doing that write
+    // interleaved garbage at native speed forever. 200 lines is comfortably more than the longest
+    // dump and stops well short of the storm.
+    const AFTER_FAILURE: usize = 200;
+    let mut budget = AFTER_FAILURE;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        // Stream it, because a test suite you cannot watch is a test suite you cannot debug. The
+        // TCG leg inherits stdio and prints as it goes; this leg has to relay.
+        println!("{line}");
+        if line.starts_with("test result: ok.") {
+            verdict = Some(true);
+            break;
+        }
+        if line.contains("[PANIC] ") || line.contains("WATCHDOG:") {
+            verdict = Some(false);
+        }
+        if verdict == Some(false) {
+            budget -= 1;
+            if budget == 0 {
+                break;
+            }
+        }
+    }
+
+    // Stop and collect the referee BEFORE killing QEMU: its last look at the scanout has to happen
+    // while there is still a device to look at.
+    running.store(false, Ordering::Relaxed);
+    let scanout_ok = match watcher.join() {
+        Ok(referee) => referee.report(),
+        Err(_) => {
+            eprintln!("test --hvf: the scanout referee panicked");
+            false
+        }
+    };
+
+    // It is parked at a semihosting trap HVF will not answer, so it will never exit by itself.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    match verdict {
+        Some(true) => scanout_ok,
+        Some(false) => {
+            eprintln!();
+            eprintln!(
+                "test --hvf: the suite failed on the physical core (see the transcript above)"
+            );
+            false
+        }
+        None => {
+            eprintln!();
+            eprintln!(
+                "test --hvf: QEMU's output ended without a verdict. The harness prints one before \
+                 every exit, so this is QEMU dying rather than the suite finishing."
+            );
+            false
+        }
+    }
+}
+
+/// Ask cargo to build the kernel's test binary and say where it put it, without running it.
+///
+/// `cargo test --no-run` is the build; `--message-format=json` is how we learn the path, which
+/// carries a content hash and lives under the build script's `OUT_DIR`, so it cannot be spelled
+/// out by hand. The scan is a substring match rather than a parse because xtask has no JSON
+/// dependency and taking one for a single field would be the wrong trade (DECISIONS §46): the
+/// field is a filesystem path emitted by cargo, so it contains no escapes, and the only artifact
+/// line `cargo test --no-run -p kernel` emits with a non-null `executable` is the one we want.
+fn kernel_test_elf() -> Option<String> {
+    let out = Command::new("cargo")
+        .args([
+            "test",
+            "-p",
+            "kernel",
+            "--target",
+            TARGET,
+            "--no-run",
+            // Diagnostics still render as text on stderr; only the machine-readable artifact
+            // records go to stdout. A compile error is as readable as it always was.
+            "--message-format=json-render-diagnostics",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|c| c.wait_with_output());
+    let out = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(_) => {
+            eprintln!("test --hvf: building the kernel test binary failed");
+            return None;
+        }
+        Err(e) => {
+            eprintln!("test --hvf: cannot run cargo: {e}");
+            return None;
+        }
+    };
+
+    const KEY: &str = "\"executable\":\"";
+    let found = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| {
+            l.contains("\"reason\":\"compiler-artifact\"") && l.contains("\"name\":\"kernel\"")
+        })
+        .filter_map(|l| l.split_once(KEY).map(|(_, rest)| rest.to_string()))
+        .filter_map(|rest| rest.split_once('"').map(|(path, _)| path.to_string()))
+        .next_back();
+
+    if found.is_none() {
+        eprintln!(
+            "test --hvf: cargo built the kernel but named no test executable. That is a change in \
+             cargo's JSON output, not a test failure."
+        );
+    }
+    found
 }
 
 /// **The host tests again, under Miri's interpreter** (milestone 79, notes/undefined-behavior.md).

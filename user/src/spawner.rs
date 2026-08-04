@@ -89,6 +89,7 @@ fn build(elf: &elf::Elf, attempt: u64) -> bool {
             maps: &[],
             blobs: &[],
             fault: Some(CHILDFAULT),
+            ..Endow::new()
         },
     ) else {
         return false;

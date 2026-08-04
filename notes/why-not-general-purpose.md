@@ -5,7 +5,7 @@ is the nuance that keeps both honest.
 
 ## It was never trying to be
 
-The stated goal (top of [CLAUDE.md](../CLAUDE.md), and [DECISIONS.md](../DECISIONS.md) §10)
+The stated goal (top of [CLAUDE.md](../CLAUDE.md), and [DECISIONS](../design/decisions/10-capability-microkernel.md) §10)
 is understanding how operating systems work, not running applications. *Velocity is not the
 goal. Understanding is.*
 
@@ -54,8 +54,8 @@ What is missing is the userspace built *on top* of the kernel:
 - a **network stack**,
 - a **display server**.
 
-Each is a milestone someone could build, and the kernel was shaped ([DECISIONS.md](../DECISIONS.md)
-§4 rules) to keep them **additive** rather than blocked. This is the same asymmetry argument
+Each is a milestone someone could build, and the kernel was shaped ([DECISIONS §4](../design/decisions/04-kernel-shape.md)
+rules) to keep them **additive** rather than blocked. This is the same asymmetry argument
 that decided §5 and §10: capabilities → a Unix-shaped API is additive; the reverse is a
 rewrite.
 

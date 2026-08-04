@@ -9,6 +9,13 @@
 //! So the aarch64 record is a **decoder**, not a parser: the kernel reads three registers and hands
 //! the raw words here, and everything below is shifts, masks and the ARM ARM's encodings.
 //!
+//! # Except for one thing the silicon cannot tell you, which is [`Psci`]
+//!
+//! Milestone 100 added the one aarch64 fact that is *not* in an ID register, and could not be:
+//! whether a firmware call leaves the kernel at `hvc` or at `smc` depends on what is running above
+//! EL1, which is a property of the boot arrangement rather than of the part. So [`Psci`] is a
+//! parser, like the whole RISC-V half, and it reads `/psci`.
+//!
 //! # What the kernel already did, and what changed
 //!
 //! One field was read before this milestone: `TCR_EL1.IPS` is written from
@@ -258,3 +265,126 @@ const _: () = {
         i += 1;
     }
 };
+
+/// **How a PSCI call leaves EL1.**
+///
+/// PSCI (Power State Coordination Interface) is ARM's firmware call standard for turning cores on
+/// and off, and the instruction that reaches the firmware is not fixed: it depends on what runs
+/// above the kernel. A hypervisor at EL2 serves `hvc`; secure firmware at EL3 serves `smc`. Getting
+/// it wrong is not a wrong answer, it is **no answer**: an `hvc` on a machine with nothing at EL2
+/// traps as an undefined instruction, and an `smc` on a machine with no EL3 does the same. So this
+/// cannot be guessed, and the `/psci` node's `method` property is where the machine states it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Conduit {
+    /// `"hvc"`: the call goes to a hypervisor at EL2. What QEMU `virt` states by default.
+    Hvc,
+    /// `"smc"`: the call goes to secure firmware at EL3. What QEMU `virt` states under
+    /// `virtualization=on`, and what a board with TF-A under it states.
+    Smc,
+}
+
+impl Conduit {
+    /// Decode a `method` value. `None` for a spelling the binding does not define, rather than a
+    /// default: there is no safe fallback here, because both wrong answers are traps.
+    pub fn from_property(value: &[u8]) -> Option<Conduit> {
+        match value.split(|&b| b == 0).next().unwrap_or(b"") {
+            b"hvc" => Some(Conduit::Hvc),
+            b"smc" => Some(Conduit::Smc),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Conduit::Hvc => "hvc",
+            Conduit::Smc => "smc",
+        }
+    }
+}
+
+/// The `CPU_ON` function id every PSCI 0.2 and later implementation uses, in its 64-bit (SMC64)
+/// form. PSCI 0.1 had no fixed ids at all and each implementation published its own in the device
+/// tree, which is why [`Psci::cpu_on`] prefers the property when there is one.
+pub const PSCI_CPU_ON_64: u32 = 0xC400_0003;
+
+/// **What the machine's `/psci` node says.**
+///
+/// Two facts, and both are needed to start a second core: which instruction reaches the firmware,
+/// and what number to put in `x0` when it does.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Psci {
+    /// The conduit `method` named. `None` when the node does not say, or says something the binding
+    /// does not define. Not defaulted: see [`Conduit`].
+    pub conduit: Option<Conduit>,
+    /// The `CPU_ON` function id: the node's own `cpu_on` property when it has one, otherwise
+    /// [`PSCI_CPU_ON_64`] when `compatible` claims 0.2 or later. `None` when neither holds, which is
+    /// a PSCI 0.1 node that never published its ids and is therefore unusable.
+    pub cpu_on: Option<u32>,
+    /// Did the id come from the node's own property rather than from the standard? Worth a boot
+    /// line, because it is exactly the case in which a hardcoded id would have been wrong.
+    pub cpu_on_from_property: bool,
+    /// Does `compatible` claim `arm,psci-0.2` or `arm,psci-1.0`? False for a bare `arm,psci`, which
+    /// is 0.1 and shares nothing with the modern specification but the name.
+    pub standard: bool,
+}
+
+impl Psci {
+    /// **Read `/psci`.**
+    ///
+    /// `Ok(None)` when the tree has no PSCI node. That is a legitimate machine (spin-table bring-up,
+    /// or a uniprocessor), and one on which starting a second core is not merely unimplemented but
+    /// impossible. It is a different answer from a node this decoder could not make sense of, which
+    /// comes back as `Ok(Some(..))` with `None` fields, and a caller wants to say different things
+    /// about the two.
+    ///
+    /// The node is found by name. The binding places it at the root and names it `psci`, and unlike
+    /// a device there is no `reg` and nothing to match `compatible` against until you have found it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn f(dt: &dtb::Dtb<'_>) -> Result<(), dtb::Error> {
+    /// use isa::aarch64::{Conduit, PSCI_CPU_ON_64, Psci};
+    /// let psci = Psci::from_device_tree(dt)?.expect("QEMU virt has a /psci node");
+    /// assert_eq!(psci.conduit, Some(Conduit::Hvc));
+    /// assert_eq!(psci.cpu_on, Some(PSCI_CPU_ON_64));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_device_tree(dt: &dtb::Dtb<'_>) -> Result<Option<Psci>, dtb::Error> {
+        let method = dt.node_prop(b"psci", b"method")?;
+        let cpu_on = dt.node_prop(b"psci", b"cpu_on")?;
+        let compatible = dt.node_prop(b"psci", b"compatible")?;
+
+        // None of the three: either there is no `/psci` node, or there is one holding nothing. The
+        // two are indistinguishable through this API and mean the same thing to every caller, so
+        // they get the same answer.
+        if method.is_none() && cpu_on.is_none() && compatible.is_none() {
+            return Ok(None);
+        }
+
+        let standard = compatible.is_some_and(|bytes| {
+            bytes
+                .split(|&b| b == 0)
+                .any(|s| matches!(s, b"arm,psci-0.2" | b"arm,psci-1.0"))
+        });
+        let from_property = cpu_on.and_then(|bytes| {
+            (bytes.len() >= 4).then(|| u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        });
+
+        Ok(Some(Psci {
+            conduit: method.and_then(Conduit::from_property),
+            // The property wins over the standard id when both are present, because a node that
+            // publishes an id is telling us its own, and a 0.2 implementation publishing the
+            // standard number loses nothing by being taken at its word.
+            cpu_on: from_property.or(standard.then_some(PSCI_CPU_ON_64)),
+            cpu_on_from_property: from_property.is_some(),
+            standard,
+        }))
+    }
+
+    /// Can a core actually be started with this? Both halves have to be known.
+    pub fn can_start_a_core(&self) -> bool {
+        self.conduit.is_some() && self.cpu_on.is_some()
+    }
+}

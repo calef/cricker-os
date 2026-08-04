@@ -87,14 +87,14 @@ const SPAWN: u64 = 1; // SEND a spawn request to init
 const RESULT: u64 = 2; // RECV a spawned program's answer
 const BUDGET: u64 = 3; // our own untyped; SPLIT a grant off it for `--mem`
 
-/// The budget init granted us at boot (must match `system_initializer` / hello `init_boot`'s `SH_BUDGET_PAGES`).
+/// The budget init granted us at boot (must match `crates/system_initializer`'s `SH_BUDGET_PAGES`).
 /// We cannot query how much remains (there is no such syscall), so `caps` prints the initial grant.
 const SH_BUDGET_PAGES: u64 = 128;
 
 // ---- the shell's own clock (milestone 86, notes/time-command.md) ----
 
 /// **Where this shell's read-only clock page is mapped**, in the wiring that granted one. Must match
-/// `system_initializer`'s and hello `init_boot`'s `SH_CLOCK_VA`, and `pipeline_service`'s.
+/// `crates/system_initializer`'s `SH_CLOCK_VA`, and `pipeline_service`'s.
 ///
 /// Not [`OUT_VA`]'s `0x00c0_0000`, which is where a *child* maps its clock (`date`'s `CLOCK_VA`) and
 /// where this shell already maps the terminal's output frame. Two programs in different address
@@ -665,8 +665,9 @@ fn read_line(prompt: &[u8], out: &mut [u8]) -> (usize, u64) {
 }
 
 /// The interactive shell: a terminal at slot 0, a spawn channel, a result channel, a budget. It is
-/// role **0** because `system_initializer` starts this program with `(0, 0, 0)`, and it is also what any
-/// unrecognized role falls through to: this program's failure mode should be a prompt.
+/// role **0** because `crates/system_initializer` starts this program with
+/// `(0, fs_rights, clock_slot)`, and it is also what any unrecognized role falls through to: this
+/// program's failure mode should be a prompt.
 /// **The navigating witness** (milestone 47): no terminal, a directory capability at slot 0, and a
 /// report endpoint at slot 1. It runs the same builtins this file's prompt runs and reports a
 /// bitmap; see [`navigate`].

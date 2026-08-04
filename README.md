@@ -4,7 +4,7 @@
 
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
-The goal (DECISIONS.md §14): a verified-Rust capability microkernel that runs real workloads,
+The goal (DECISIONS §14): a verified-Rust capability microkernel that runs real workloads,
 built to stand next to Linux, macOS, and seL4 on the primitives that define an OS, and to win
 where a minimal kernel should. The capability core carries machine-checked proofs. The kernel
 allocates no memory of its own. Every driver and server is an EL0 process. The same portable
@@ -140,7 +140,7 @@ script/                normalized entry points (setup, test, console, verify, be
 xtask/                 build orchestration (build, run, test, bench, gdb, objdump, image)
 notes/                 a concept glossary, written as questions came up
 design/                the roadmap and worked designs
-DECISIONS.md           what we chose, what we rejected, and why
+design/decisions/      what we chose, what we rejected, and why
 ```
 
 ## The notes are the point
@@ -162,15 +162,15 @@ kernels are structured](notes/portability.md).
 
 ## The decisions
 
-Written down in [`DECISIONS.md`](DECISIONS.md) as they were made, so the reasons survive
+Written down in [`design/decisions/`](design/decisions/README.md) as they were made, so the reasons survive
 contact with month four. The short version:
 
 | | |
 |---|---|
 | **Architecture** | Three declared targets: aarch64 (first: clean exception model, weak ordering as a discipline), riscv64 (at parity), x86_64 (declared, not started). **Parity is a gate, not an aspiration** (DECISIONS §19): a capability ships on every supported ISA under the same suite, or the gap is on the record. |
 | **Target** | QEMU `virt` (TCG and HVF) for daily work; real hardware is milestone 16. |
-| **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
-| **Execution** | **Preemptive threads with real stacks.** Not async: async assumes "I compiled everything that runs", and an operating system's whole purpose is to run code it did not compile ([§5](DECISIONS.md)). |
+| **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS §10 and §14. |
+| **Execution** | **Preemptive threads with real stacks.** Not async: async assumes "I compiled everything that runs", and an operating system's whole purpose is to run code it did not compile ([§5](design/decisions/05-preemptive-threads.md)). |
 | **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (the original plan said "one core, refactor when it hurts"; it hurt.) |
 | **Verification** | Machine-checked proofs (Kani) of the capability core: `capability`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
 | **Testing** | QEMU harness plus host-testable pure-logic crates from the first commit, plus benchmarks with committed baselines that fail on regression. |

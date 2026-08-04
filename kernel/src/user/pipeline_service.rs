@@ -66,7 +66,7 @@ pub fn start() -> Option<Wiring> {
 /// - `None`: no capability at all, so no mapping either, and the shell has to answer without
 ///   touching the address a clock would have been at.
 ///
-/// `READ` and no `GRANT`, matching what both inits hand the shell: a witness with wider rights than
+/// `READ` and no `GRANT`, matching what the init hands the shell: a witness with wider rights than
 /// the boot wiring would be proving something about a shell nobody runs.
 pub fn start_timing(clock: Option<u64>) -> Option<Wiring> {
     start_with(ROLE_TIMING, 0, None, clock)
@@ -76,8 +76,8 @@ pub fn start_timing(clock: Option<u64>) -> Option<Wiring> {
 const ROLE_TIMING: u64 = 5;
 
 /// Where the shell maps its own clock page, read-only. Must match `user/src/swish.rs`'s
-/// `SH_CLOCK_VA` and both inits'. **Not** `date`'s `CLOCK_VA`: that is where a *child* maps one, and
-/// the shell already has the terminal's output frame at that address.
+/// `SH_CLOCK_VA` and `crates/system_initializer`'s. **Not** `date`'s `CLOCK_VA`: that is where a
+/// *child* maps one, and the shell already has the terminal's output frame at that address.
 const SH_CLOCK_VA: u64 = 0x0000_0000_00d0_0000;
 
 /// **The same shell, one capability wider**: a directory at slot 4 and the page it shares with

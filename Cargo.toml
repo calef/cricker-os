@@ -32,6 +32,7 @@ members = [
     "crates/regions",
     "crates/c_seam",
     "crates/supervision_proto",
+    "crates/system_initializer",
     "crates/swap_proto",
     "crates/socket_proto",
     "crates/sink_proto",
@@ -221,4 +222,4 @@ opt-level = 2
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
 # has abort baked in already, and setting it workspace-wide would break `cargo test`
-# for the host-side crates we plan to add (DECISIONS.md §7).
+# for the host-side crates we plan to add (DECISIONS §7).

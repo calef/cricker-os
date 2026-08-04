@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+use redoxfs_host::Volume;
+
 fn scratch_image(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("redoxfs_host-{}-{name}", std::process::id()))
 }
@@ -27,7 +29,7 @@ fn an_image_round_trips_a_file_through_the_real_engine() {
 
     redoxfs_host::put(&img, "motd", &payload).expect("put failed");
 
-    let listing = redoxfs_host::ls(&img, "/").expect("ls failed");
+    let listing = redoxfs_host::ls(Volume::image(&img), "/").expect("ls failed");
     let entry = listing
         .iter()
         .find(|e| e.name == "motd")
@@ -39,7 +41,7 @@ fn an_image_round_trips_a_file_through_the_real_engine() {
         "a file came back as something else"
     );
 
-    let back = redoxfs_host::cat(&img, "motd").expect("cat failed");
+    let back = redoxfs_host::cat(Volume::image(&img), "motd").expect("cat failed");
     assert_eq!(
         back, payload,
         "the payload did not round trip byte-identical"
@@ -48,12 +50,12 @@ fn an_image_round_trips_a_file_through_the_real_engine() {
     // Overwrite must truncate, not append or splice.
     let short = b"rewritten".to_vec();
     redoxfs_host::put(&img, "motd", &short).expect("overwrite failed");
-    let back = redoxfs_host::cat(&img, "motd").expect("cat after overwrite failed");
+    let back = redoxfs_host::cat(Volume::image(&img), "motd").expect("cat after overwrite failed");
     assert_eq!(back, short, "overwrite did not truncate the old contents");
 
     // A name nobody put there is a clean error, not a panic or empty file.
     assert!(
-        redoxfs_host::cat(&img, "nonesuch").is_err(),
+        redoxfs_host::cat(Volume::image(&img), "nonesuch").is_err(),
         "reading a missing file did not error",
     );
 

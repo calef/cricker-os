@@ -1,6 +1,6 @@
 [toolchain]
 # Nightly is required for `custom_test_frameworks` (our QEMU test harness, see
-# DECISIONS.md §7). This is the normal, well-trodden path for OS development in
+# DECISIONS §7). This is the normal, well-trodden path for OS development in
 # Rust, but it is a real dependency and we'd rather name it than hide it.
 # PINNED to a date, not the floating `nightly` channel, and this is a fix rather than caution.
 #

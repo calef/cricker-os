@@ -19,7 +19,7 @@ moment the timing lines up, and it will look exactly like the mystery in
 [stack.md](stack.md) that cost us two hours.
 
 And note what it does **not** need: a second core. Our "single-core for now" decision
-([DECISIONS.md](../DECISIONS.md) §6) does not protect us here at all. One core, one lock,
+([DECISIONS](../design/decisions/06-single-core-first.md) §6) does not protect us here at all. One core, one lock,
 one interrupt, dead machine.
 
 ## The fix
@@ -184,7 +184,7 @@ wrong.**
 
 ## The rules
 
-See [DECISIONS.md](../DECISIONS.md) §9 for the full table. The short version:
+See [DECISIONS](../design/decisions/09-irq-safe-locking.md) §9 for the full table. The short version:
 
 1. All kernel locks are `IrqSafeMutex`.
 2. Mask, then lock. Unlock, then restore.
