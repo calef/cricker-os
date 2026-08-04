@@ -162,8 +162,8 @@ probes. Thread stacks carry every spawned kernel thread and every process's kern
 
 ### The guard-page move changed nothing (milestone 90)
 
-Re-measured after the secondary stacks left `.bss` for their own region, full suite, both ISAs, one
-run each (host load average ~8):
+Re-measured after the secondary stacks left `.bss` for their own region, full suite, both ISAs, two
+runs each (host load average ~8):
 
 | Stack | aarch64, before | aarch64, after | riscv64, before | riscv64, after |
 |---|---|---|---|---|
@@ -171,9 +171,14 @@ run each (host load average ~8):
 | core 1 / 2 / 3 | 8504 | **8504** | 8448 | **8448** |
 | thread max | 11352 (420 stacks) | **11352 (420 stacks)** | 11672 (415 stacks) | **11672 (415 stacks)** |
 
-Byte for byte, including the paint floors (640 and 1024) and the stack counts. That is the expected
-result and it is worth stating why: depth is decided by which calls run, and moving a stack's base
-address changes no call. Anything else would have meant the move perturbed the code, and the number
+Byte for byte, including the paint floors (640 and 1024) and the stack counts, and byte for byte
+across the two runs of each ISA as well. OpenSBI's lottery picked hart 0 for one riscv64 run and
+hart 3 for the other, so the second run's three numbers came from *different harts on different
+slots of the new region*, and were 8448 again. That is the same cross-hart reproduction milestone 84
+saw, now over the moved stacks.
+
+The stability is the expected result and it is worth stating why: depth is decided by which calls
+run, and moving a stack's base address changes no call. Anything else would have meant the move perturbed the code, and the number
 to explain would have been the difference. The suite grew by the two tests this milestone added
 (aarch64 223 to 225, riscv64 224 to 226), and even that did not move the boot stack's deepest byte,
 which says those tests are nowhere near the deepest chain.
