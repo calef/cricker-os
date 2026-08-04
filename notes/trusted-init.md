@@ -361,10 +361,31 @@ the program ids `spawnproto` already sends in word 0.
   covered by milestone 24's forcible tier, and those jobs are built from the shell's own untyped
   rather than init's, so they never reach the collector at all.
 
-The loader duplication is unchanged and still scheduled: `crates/supervision_proto`'s child builder is
-a generalization of the two inits' `build_child`, so the logic exists three times. This increment
-added the fault slot to all three rather than unifying them, because unifying loaders and migrating
-the boot path in one pass would have made a boot failure ambiguous.
+### One init, and one loader (milestone 96)
+
+This increment left two duplications behind on purpose, and both are gone now.
+
+The larger one was **the system itself**. `user::initrd()` loads the archive entry `init`, which is
+`user/src/hello.rs`'s `init_boot` role on aarch64 and `user/src/system_initializer.rs` on riscv64, and
+everything above (the six boot components, the giveaway, the negative control, the spawn service) was
+written once in each. About three hundred near-identical lines, and the failure mode is the reason it
+mattered rather than the line count: a fix that lands in one and not the other is **a boot that
+reaches userspace and prints nothing at all**, with no fault and no message, which cost three separate
+lanes an evening each. It is now `crates/system_builder`, and each init is the table of slot numbers
+its own kernel granted plus a call into it. Those tables are the one thing the two boards genuinely
+disagree about: aarch64's boot path is shared with milestone 19d's test roles, so it grants a report
+endpoint and a test SGI the interactive system never uses and numbers everything after them
+differently. That is data the crate takes (`Grants::unused`), not code it repeats.
+
+The smaller one was **the loader**. `crates/supervision_proto`'s child builder was a generalization of
+the two inits' `build_child`, so the logic existed three times, and this increment added the fault
+slot to all three rather than unifying them, because unifying loaders and migrating the boot path in
+one pass would have made a boot failure ambiguous. Milestone 96 did both, in that order, with
+`script/shell-check` between them. `supervision_proto`'s is the tree's only loader now; what it grew
+is what the inits needed, a capability placed at a **named** slot (§67's diagnostic stream) and a
+stack size the caller states. The stack is a field rather than a constant because the two callers
+honestly differ: four pages is enough for the supervision tree, and a child at the prompt gets twelve
+because the shell's redirection path found the wall twice.
 
 ## Not covered, deliberately
 
