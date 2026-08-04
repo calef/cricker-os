@@ -1,5 +1,7 @@
 # 25. Socket identity: a socket id in phase one, minted endpoints as the tracked later step
 
+**Status: DECIDED.**
+
 **Decided 2026-07-28 (Chris), resolving the milestone 30 piece-3 fork (notes/net.md).** A process
 holds one `Stack` endpoint capability; opening a connection yields a **socket id**, a small
 integer carried in the message words, with the per-connection **shared frame** as the real granted

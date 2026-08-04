@@ -1,5 +1,7 @@
 # 56. The filesystem contract describes its own verbs, so a caretaker is written once
 
+**Status: DECIDED.**
+
 Milestone 61, 2026-08-01. `fs_proto::verb::{Operand, Verb, TABLE, of}`, and the dispatch in all
 three caretakers. See `notes/dir-capability.md` and `notes/glob-grant.md`.
 

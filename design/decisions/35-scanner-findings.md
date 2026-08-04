@@ -1,5 +1,7 @@
 # 35. What a scanner is for here, and how its findings get dispositioned
 
+**Status: DECIDED.**
+
 **Decided 2026-07-30 (milestone 45), the first time code scanning actually ran.** CodeQL found nine
 things, and **all nine are fixed**: seven CI jobs holding a `GITHUB_TOKEN` with permissions they never
 used, and two `rust/access-invalid-pointer` in `crates/intrusive` that moving the queue API to

@@ -1,5 +1,7 @@
 # 14. The project's direction: a verified-Rust capability microkernel that runs real workloads
 
+**Status: DECIDED.**
+
 Committed 2026-07-23. This is the North Star, recorded because everything downstream (which
 milestones are on the critical path, what "done" means) now answers to it. It does not replace the
 learning ethos (CLAUDE.md: understanding over velocity); it gives that learning a destination and

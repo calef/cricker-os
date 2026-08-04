@@ -1,5 +1,7 @@
 # 15. The native ABI: formalize the convention, defer the BootInfo (milestone 19e)
 
+**Status: DECIDED.**
+
 Decided 2026-07-25, at milestone 19e ("Decision 2" in design/init-and-granular-spawn.md), against a
 system that could finally run and deliver distinct programs (19f). The full contract is written up in
 notes/abi.md; this records the decision and why.

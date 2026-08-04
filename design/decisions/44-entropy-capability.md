@@ -1,5 +1,7 @@
 # 44. Entropy is a capability, `std::random` improves transparently, and the refusal is loud
 
+**Status: DECIDED.**
+
 **Built 2026-07-30** (milestone 56, the entropy half: the virtio-rng driver, the entropy service,
 and the std PAL). Concept note: notes/entropy.md. The contract is `crates/entropy_proto`.
 

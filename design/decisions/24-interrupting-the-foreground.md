@@ -1,5 +1,7 @@
 # 24. Interrupting the foreground process: two-tier, shell-held, no new kernel surface
 
+**Status: AMENDED.** (an implementation amendment below records the two primitives the build forced.)
+
 **Decided 2026-07-28 (Chris), from the proposal in design/interrupt-routing.md.** `^C` routes in
 two tiers. The first `^C` is cooperative: the shell sends an interrupt message on an endpoint the
 foreground child was spawned holding, and a program that listens can cancel cleanly. The second

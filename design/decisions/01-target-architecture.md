@@ -1,5 +1,7 @@
 # 1. Target architecture: aarch64
 
+**Status: DECIDED.**
+
 Chosen over x86_64 and RISC-V.
 
 x86_64 has the deepest pool of tutorials, but a large fraction of what it teaches is

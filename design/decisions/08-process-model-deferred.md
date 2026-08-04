@@ -1,5 +1,7 @@
 # 8. Process model / syscall ABI: DEFERRED to a hard decision point
 
+**Status: SUPERSEDED BY 10.** (resolved at milestone 7; the deferral itself was the decision and it held.)
+
 **RESOLVED at milestone 7. See §10.** Kept here as written, because the deferral was the
 decision and it held.
 

@@ -1,5 +1,7 @@
 # 63. The line between a program and its crate is "does this need a capability"
 
+**Status: DECIDED.**
+
 Milestone 70 lifted `swish`'s logic into `crates/swish` and had to decide, function by function, what
 went. The rule that fell out is the one to reuse: **logic that needs no capability goes in the crate;
 anything that moves or exercises authority stays in the program.**

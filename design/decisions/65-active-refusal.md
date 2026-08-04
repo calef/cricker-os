@@ -1,5 +1,7 @@
 # 65. A refusal that is not passive cannot be used as a question
 
+**Status: DECIDED.**
+
 Milestone 72 spent a day on an intermittent hang whose whole content is one line of test code:
 
 ```rust

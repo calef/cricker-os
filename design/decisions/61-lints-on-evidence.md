@@ -1,5 +1,7 @@
 # 61. A lint is adopted on evidence from this tree, not on its description
 
+**Status: DECIDED.**
+
 Milestone 68 turned on eight candidate lints and kept five. The three that lost were not bad lints;
 they are all defensible defaults that many Rust projects run. They were wrong **here**, and nothing
 short of running them over this tree and reading the output would have shown it.

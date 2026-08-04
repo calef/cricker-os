@@ -1,5 +1,7 @@
 # 27. The filesystem service: a capability-shaped contract over a component we did not write (milestone 32 phase 2)
 
+**Status: AMENDED.** (one amendment and three superseded accounts below, all kept for the record.)
+
 RedoxFS runs confined as a userspace FS-server component, and its interface is **capability-shaped
 from birth**. Three processes, wired by the kernel and named by nobody else: a **block server** (a
 role of the virtio driver) that serves blocks over blk IPC with the DMA confinement unchanged; an

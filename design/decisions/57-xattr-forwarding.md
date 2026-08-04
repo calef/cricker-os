@@ -1,5 +1,7 @@
 # 57. Extended attributes forward through the caretakers, and the server enforces direction
 
+**Status: DECIDED.**
+
 Milestone 61. See `notes/xattr.md` and `notes/dir-capability.md`.
 
 All three caretakers forward `GETXATTR`, `SETXATTR`, `LISTXATTR` and `REMOVEXATTR`. Before this they

@@ -1,5 +1,7 @@
 # 67. A program's second stream is a declaration, not a number
 
+**Status: DECIDED.**
+
 **Decided 2026-08-03 (Chris), from notes/pipes.md's open fork.** `2>` gets built on option (c):
 a program that has diagnostics **declares a second output in its manifest** (`OutputSpec` grows
 the position), the shell plans a second endpoint only for programs that declare one, and `2>`

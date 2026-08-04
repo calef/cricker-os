@@ -1,5 +1,7 @@
 # 55. The file behind a `>` is the shell itself, because one page cannot serve two clients
 
+**Status: DECIDED.**
+
 Milestone 50, finished 2026-08-01. `user/src/swish.rs`, `kernel::user::redirection_tests`. See
 `notes/pipes.md`.
 

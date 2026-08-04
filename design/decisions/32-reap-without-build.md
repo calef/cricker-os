@@ -1,5 +1,7 @@
 # 32. A supervisor may collect a corpse without being able to build one
 
+**Status: DECIDED.**
+
 **Decided 2026-07-29 (Chris).** Reaping a dead child stops requiring the authority to construct
 one. The supervision relationship, not the memory, becomes the unit of authority.
 

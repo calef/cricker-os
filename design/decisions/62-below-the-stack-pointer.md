@@ -1,5 +1,7 @@
 # 62. Nothing of yours lives below the live stack pointer
 
+**Status: DECIDED.**
+
 Milestone 71 spent a day on a bug whose whole content is one sentence: **an object parked below the
 live `sp` is not yours.** Everything under `sp` belongs to a callee's frame, or to the trap vector,
 which subtracts 288 bytes on RISC-V and 272 on aarch64 to build its own frame the instant an

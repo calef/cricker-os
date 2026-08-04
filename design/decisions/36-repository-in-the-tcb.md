@@ -1,5 +1,7 @@
 # 36. The repository is part of the TCB (milestones 44 and 42)
 
+**Status: DECIDED.**
+
 **Decided 2026-07-30.** §14 promises a verified core that confines code we did not write. That
 promise is only as strong as our ability to say *which* code we are running and *how it got in*, and
 both of those are properties of a GitHub repository rather than of the kernel. So the repository gets

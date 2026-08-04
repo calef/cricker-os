@@ -1,5 +1,7 @@
 # 60. Fuzzing complements the proofs, and the parsers are exactly where it wins
 
+**Status: DECIDED.**
+
 Milestone 42 put `cargo-fuzz` over the four parsers that read bytes we did not write: `dtb_walk`,
 `elf_parse`, `gpt_table`, `crickerfs_roundtrip`. Those four are the tree's actual trust boundary;
 everything else parses bytes this system wrote itself.

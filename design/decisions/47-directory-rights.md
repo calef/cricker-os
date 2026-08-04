@@ -1,5 +1,7 @@
 # 47. A directory capability carries six rights, and a child can never exceed its parent
 
+**Status: DECIDED.**
+
 **Built 2026-07-31** (milestone 47's keystone). Concept note: notes/dir-capability.md.
 
 Milestone 47's own finding was that `cd`, `mkdir` and per-process namespaces all converge on one

@@ -1,5 +1,7 @@
 # 18. The PCIe transport: one driver, two buses, the seam in the kernel
 
+**Status: DECIDED.**
+
 **Decided 2026-07-27, built the same night** (notes/pcie.md, notes/pcie-transport-scope.md). A PCI
 root complex (ECAM enumeration, BAR placement, virtio-pci capability parsing, INTx through the
 PLIC) and a virtio transport seam, so the same userspace block driver runs over virtio-mmio and

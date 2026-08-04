@@ -1,5 +1,7 @@
 # 49. Removal is a directory operation, and `-r` widens the grant rather than setting a flag
 
+**Status: DECIDED.**
+
 **Built 2026-07-31** (milestone 47). Concept note: notes/rm.md. Rests on §47's rights ladder and §48's
 navigation.
 

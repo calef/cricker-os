@@ -1,5 +1,7 @@
 # 58. A wider archive name, and the one format change that had to bump the magic
 
+**Status: DECIDED.**
+
 2026-08-01, ahead of milestone 63's rename sweep. `crates/crickerfs`. See `notes/crickerfs.md`.
 
 | | Before | After |

@@ -1,5 +1,7 @@
 # 45. A cricker-os partition is `EC5CC08B-D749-4434-AC38-A274C50385BA`, and that never changes
 
+**Status: DECIDED.**
+
 Milestone 57 needed a GPT partition **type** GUID for a cricker-os data partition (a RedoxFS volume,
 §34). There is no registry to apply to and no upstream value to adopt: RedoxFS ships none, and Redox
 itself does not define one. So one was generated, version 4, on 2026-07-30:

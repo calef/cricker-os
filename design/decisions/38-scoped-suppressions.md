@@ -1,5 +1,7 @@
 # 38. A suppression is scoped to an item and carries a reason, or it does not ship (milestone 41)
 
+**Status: DECIDED.**
+
 **Decided 2026-07-30**, after triaging every `allow(dead_code)` / `allow(unused)` in the tree. This
 extends §35's disposition rule from scanner alerts to compiler warnings, which is where the same
 failure was already happening and nobody was counting.

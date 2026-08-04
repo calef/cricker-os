@@ -1,5 +1,7 @@
 # 10. Process model: capability-based, microkernel. Untyped memory deferred.
 
+**Status: DECIDED.**
+
 Decided 2026-07-14, at the §8 decision point, before any of milestone 7 was written.
 
 **A process names a resource by holding an unforgeable token it was handed. There is no

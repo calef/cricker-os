@@ -1,5 +1,7 @@
 # 42. A filesystem declares what it offers and must be truthful; it is not required to be capable
 
+**Status: DECIDED.**
+
 **Decided 2026-07-30, not yet built.** The rule that governs every filesystem backend behind the
 §27 contract, arrived at by Chris over two corrections of mine. Milestone 47 (navigation and naming)
 owns `mv`; this is the contract rule underneath it.

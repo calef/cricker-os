@@ -1,5 +1,7 @@
 # 66. A refusal is a non-zero status, and not the same one an error gets
 
+**Status: DECIDED.**
+
 Decided 2026-08-03, for milestone 67's `&&` and `$?`. `swish` refuses constantly and by design, so
 "what status does a refusal produce" is a claim about the capability model rather than a detail of the
 shell.

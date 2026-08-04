@@ -1,5 +1,7 @@
 # 3. Use the crate ecosystem
 
+**Status: DECIDED.**
+
 `aarch64-cpu` for system-register access, `tock-registers` for typed MMIO. Not
 hand-rolled `asm!` and raw volatile pointer writes.
 

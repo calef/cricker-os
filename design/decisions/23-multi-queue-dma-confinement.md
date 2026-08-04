@@ -1,5 +1,7 @@
 # 23. Multi-queue DMA confinement: the validator's second direction (milestone 30)
 
+**Status: DECIDED.**
+
 **Decided and built 2026-07-28.** A virtio-net device needs two virtqueues (receive on queue 0,
 transmit on queue 1), and receive is the direction where the *device writes into* the driver's
 memory rather than reading from it. The §18 seam and the shadow-ring validator were queue-0-only,

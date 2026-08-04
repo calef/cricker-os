@@ -1,5 +1,7 @@
 # 59. Append is an open mode, so `>>` costs a character and a flag
 
+**Status: DECIDED.**
+
 Milestone 50 finished the prompt's operators: `|`, `<`, `>` and now `>>`, on both ISAs.
 
 **`>>` needed no new machinery at all, and that is the interesting part.** §55 decided that the file
