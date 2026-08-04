@@ -52,6 +52,41 @@ Refusals of names that were never adopted anywhere (`caretaker` for the steward 
 Manager` for the maintainer) belong where that thing is defined, which for the roles is CLAUDE.md
 and already says so.
 
+## The three states, and the worklist they produce
+
+Chris will work back through the existing names over time (2026-08-04), so the record has to hold
+*which ones still want him* rather than only what is known. A provenance line therefore carries a
+state, and the three are different claims:
+
+| State | Means |
+|---|---|
+| **unrecorded** | nothing in the tree or its history says why this name was chosen |
+| **recorded** | the history explains it (milestone 63's table, a commit, a header) but Chris never ruled |
+| **ratified** | Chris ruled, with the date and what was refused |
+
+**The lint gates on a state being present, never on it being `ratified`.** Otherwise the gate would
+demand a review queue be drained before anything else could merge, which is the wall this milestone
+must not build. The mechanical backfill therefore lands every name as `unrecorded` or `recorded`,
+truthfully, and the tree goes green immediately.
+
+**`script/names --unratified` is the worklist**, and it is the deliverable Chris actually asked for:
+what is left, in an order worth working through. Sort it by **exposure**, because that is what makes
+a wrong name expensive: programs a person types at a prompt first, then crates (a newcomer greps
+`crates/` before they open anything else, per the naming tenet), then `script/` entry points, then
+the rest. Within a tier, `unrecorded` before `recorded`, since a name nobody can justify is a worse
+risk than one whose reasoning merely lacks a signature.
+
+**Ratifying is then a conversation with a queue behind it**, a few names at a time, in the shape that
+worked on 2026-08-04: the maintainer brings a name with what the thing does and what the history
+says, Chris rules, the state and the reason land in the same commit. Roughly fifteen names went that
+way in one day, several of them improved by the ruling, so the rate is not the problem; the
+accounting was.
+
+**This section was written in another session and sat on an unmerged branch**
+(`roadmap/milestone-115-ratified-names`) while the milestone was built without it, so the first
+implementation shipped two states rather than three. That is this project's own "nobody reads
+branches" rule proving itself at its own expense; the branch was deleted once this landed.
+
 ## Scope note
 
 **Not a rename pass.** Nothing in the tree changes name because of this milestone; the backfill
