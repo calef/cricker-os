@@ -150,9 +150,11 @@ What the names actually do, over the 39 directories under `crates/`:
 
 **Milestone 63 deleted the third bullet, which used to read "run together when the result is one
 word".** It was a real observation (`capsh`, `lineedit`, `uheap`, `crickerfs`, `bitfont`), and it was
-the rule that produced every abbreviation a reader had to decode. `crickerfs` survives it, because
-`procfs` is the shape of a filesystem name outside this project and nobody writes `proc_fs`; the
-other four are `grant_plan`, `line_editor`, `user_heap` and `bitfont` now. The boundary that
+the rule that produced every abbreviation a reader had to decode. **Two of the five survive it, not
+one**, and this sentence said otherwise until milestone 115 checked the history: `crickerfs` stayed
+with a reason, because `procfs` is the shape of a filesystem name outside this project and nobody
+writes `proc_fs`, and **`bitfont` stayed with none**, having never been renamed at all. Three moved,
+to `grant_plan`, `line_editor` and `user_heap`. The boundary that
 remains, between one word and two, is judgement, and the guard rail is that a **standard term keeps
 its standard spelling** (see above).
 
@@ -222,12 +224,55 @@ So:
 4. **The maintainer writes the block at ratification**, in the same commit that applies the name,
    while the alternatives are still in mind.
 
-### The two forms
+### The three states
+
+Chris works back through the existing names over time, so the record has to hold **which ones still
+want him**, not only what is known. The state is the first word of the block:
+
+| State | Means | What it costs to clear |
+|---|---|---|
+| **unrecorded** | nothing in the tree or its history says why this name was chosen | research, and then a ruling |
+| **recorded** | the tree argues the name somewhere (a milestone block, a decision, a header) and Chris never ruled | a ruling |
+| **ratified** | Chris ruled, with the date and what was refused | done |
+
+The first cut of this mechanism had two states, and `unrecorded` was doing both of the first two
+jobs. "Nobody in this tree can say why this is called that" and "here is the argument, nobody ever
+signed it" are different amounts of Chris's time, and a worklist that cannot tell them apart is a
+list rather than a plan.
+
+**The criterion, stated so that a reader can disagree with a case rather than with a mystery: a name
+is `recorded` when something *outside its own block* argues for the name it has.** Three corollaries
+did most of the work in the 2026-08-04 triage:
+
+- **A `Name:` block is never its own evidence.** All 126 were written in one week by this milestone.
+  Reading them as history would make the record prove itself and every name `recorded` by
+  construction, which is why a `recorded` block must cite somewhere else and the citation is checked
+  for being present.
+- **"It got here first" is not a reason.** `notes/naming.md` exempts `abi` from the `*_proto` rule
+  because it "predates the suffix", which explains why the crate is not called `syscall_proto` and
+  says nothing about why it is called `abi`. Counting an exemption as an explanation would let every
+  old name in the tree explain itself.
+- **An assertion is not an argument.** The BUGS section below says of `virtio` that "the crate keeps
+  its name, which is right", with no reason attached, so a reader learns that somebody agreed rather
+  than why.
+
+**The gate never keys on `ratified`, and that is deliberate rather than a weakness to tighten
+later.** 54 of 126 names are unratified today. A lint that demanded the queue be drained would hold
+every unrelated merge behind a review nobody can hurry, which is a wall this milestone was written
+specifically not to build. `script/lint` insists only that a name say which of the three it is.
+
+### The three forms
 
 ```
 Name: ratified <YYYY-MM-DD> (<who>, <where>). Refused `x` (why), `y` (why).
+Name: recorded (<where>). <what the tree already argues, and what it does not settle>
 Name: unrecorded. <what the history does and does not say>
 ```
+
+**`recorded` carries a citation for the same reason `ratified` carries a date.** The claim is that
+the reasoning lives somewhere else, so a block that will not say where has not made the claim. Both
+are checked as form and neither as truth: nothing follows the citation to see whether it says what
+the block says it says.
 
 A block runs from its `Name:` line to the next empty comment line, so it may wrap over as many
 lines as the reasons need. Two conventions make the refusals machine-readable without a syntax
@@ -242,13 +287,43 @@ writing naming decisions down. Inventing a ratification to fill a row would put 
 one record whose entire job is saying who claimed what, so where the history does not say, the entry
 says it does not say and cites the commit that introduced the name.
 
-**The number is itself a finding.** Of 126 names, **72 carry a ratification and 54 do not**: 43% of
-this tree's most reader-facing vocabulary arrived without a recorded decision. The unrecorded ones
-are not evenly spread, and the pattern says something. Every name a rename ever touched is recorded,
-because a rename is an argument and somebody wrote it down. What is unrecorded is what nobody
-objected to: `frames`, `regions` and `slots` (the generic-word group the tenet flags and has not
-settled), the `*_proto` stems, the fixtures (`flaky`, `spinner`, `chatty`, `worker`), and about half
-of `script/`.
+### The numbers, and the one that was not expected
+
+Of 126 names: **72 ratified, 10 recorded, 44 unrecorded.** So 43% of this tree's most reader-facing
+vocabulary arrived without a recorded decision, and only a fifth of that backlog is the cheap kind
+where the argument exists and wants a signature.
+
+Every name a rename ever touched is ratified, because a rename is an argument and somebody wrote it
+down. What is left over is what nobody objected to at the time.
+
+**The distribution is the finding, and it runs opposite to exposure:**
+
+| Surface | ratified | recorded | unrecorded |
+|---|---|---|---|
+| programs (54) | 36 | **0** | 18 |
+| crates (43) | 23 | 8 | 12 |
+| `script/` (29) | 13 | 2 | 14 |
+
+**Programs are 0 recorded of 18.** The surface a person types at the prompt, which the worklist puts
+first precisely because a wrong name there is read by everyone who uses the system, is the one with
+no argued reasoning anywhere in the tree: not in a header, not in a milestone block, not in an
+introducing commit. `budgeter` and `heeder` are cited *as* an established agent-noun family when
+milestone 63 argues for `benchmarker`, and neither was ever argued for itself. `sink` is used
+throughout DECISIONS §51 and defended nowhere in it. The one program whose record says anything
+useful is `disk_partitioner`, whose introducing commit calls the name provisional in as many words.
+
+The 10 `recorded` are almost all one rule doing the work: seven `*_proto` crates, where milestone
+46's spelling decision plus the service the stem names produces the whole string. The three
+outliers are `intrusive` (its own header grounds the term in Linux's `list_head` and seL4's TCB
+queues), `script/fmt` (the name was itself the fix, and the header cites §39 for it), and
+`script/supply-chain` (the naming tenet cites this name and says not to respell it).
+
+**Two `*_proto` crates are not recorded, and the split is the criterion working.** `gfx_proto` and
+`cred_proto` have abbreviated stems, which is the first of the three failure modes the tenet lists
+for crate names, and the rule that yields `<service>_proto` does not pick which word goes in front
+of the underscore. `cred` is the sharper case: milestone 63 expanded `credcli` and argued
+`credentialer` in full, then left two crates spelled `cred` without saying why. `user_rt` fails the
+same way twice over, since the only thing establishing `user_` as a prefix is `user_rt` itself.
 
 ### EXAMPLES
 
@@ -278,30 +353,68 @@ REFUSED (85), and what holds each refusal
   sheesh                       crate swish
 ```
 
-What nobody has decided, which is the work list this milestone produces rather than a defect:
+**What is left, in the order worth working through.** This is the deliverable, and the ordering is
+exposure rather than alphabet or count, because exposure is what makes a wrong name expensive: a
+program is typed at the prompt, a crate is what a newcomer greps before opening anything, a
+`script/` entry point is typed by whoever works on the tree rather than in it. Within a tier, a name
+nobody can justify comes before one whose reasoning merely lacks a signature.
+
+```
+$ script/names --unratified
+UNRATIFIED (54 of 126), in the order worth working through
+...
+  programs, unrecorded
+    budgeter                     user/src/budgeter.rs
+    builder                      user/src/builder.rs
+    ...
+  crates, unrecorded
+    abi                          crates/abi/src/lib.rs
+    ...
+  crates, recorded
+    clock_proto                  crates/clock_proto/src/lib.rs
+    ...
+  scripts, recorded
+    fmt                          script/fmt
+    supply-chain                 script/supply-chain
+
+44 unrecorded (research, then a ruling), 10 recorded (a ruling only).
+```
+
+**The tier is the kind, and not "programs a person actually types".** That second split is the
+two-tier rule Chris rejected on 2026-08-01, keyed on a property that is not stable: `wc` went from
+internal plumbing to a prompt-typed pipeline stage inside a day. Every program in `user/src/` is in
+the initrd and can be typed, so the kind is the honest tier and needs no classification anybody
+could get wrong. This is a sort order rather than a naming convention, so the cost of being wrong
+about one entry is that it is read in the wrong minute.
+
+Then one name at a time, with what the history does and does not say about it:
+
+```
+$ script/names bitfont
+crate bitfont  (crates/bitfont/src/lib.rs)
+  unrecorded. One of the five run-together names milestone 63 reviewed on 2026-08-01 ...
+```
+
+The narrower slice, for the names where the research is still owed:
 
 ```
 $ script/names --unrecorded
-UNRECORDED (54 of 126): no ratification is on record
-
-  crate    abi
-  crate    bitfont
-  ...
-  program  driver
-  script   initboot
+UNRECORDED (44 of 126): nothing outside the block says why
 ```
 
 The whole table, and the gate:
 
 ```
 $ script/names | tail -3
-total: 126 names, 72 ratified, 54 unrecorded, 85 refusals
+total: 126 names, 72 ratified, 10 recorded, 44 unrecorded, 85 refusals
+54 still want Chris: script/names --unratified
 refused but live: video_terminal
 
 $ script/names --check
 names: NOTE 'video_terminal' is recorded as refused and is also a live name
 names: 126 names carry provenance (43 crates, 54 programs, 29 scripts)
-names: 72 ratified, 54 unrecorded, 85 refusals recorded beside them
+names: 72 ratified, 10 recorded, 44 unrecorded, 85 refusals recorded beside them
+names: 54 still want Chris (script/names --unratified), which is a worklist and not a failure
 ```
 
 That `video_terminal` line is the mechanism working rather than a defect. The name was **refused for
@@ -317,10 +430,22 @@ people learn to skip.
   argument was overtaken looks exactly like one whose argument holds. That is the same limit
   `script/decisions --check` records for `§N` citations, and it is not closeable by a script,
   because a reason is prose and prose is checked by reading. Milestone 97 is the neighbouring case.
-- **It cannot tell an honest `unrecorded` from a lazy one.** The 54 above were each researched
-  against the git history, and nothing stops the fifty-fifth from being a shrug. The only defence is
+- **It cannot tell an honest `unrecorded` from a lazy one.** The 44 above were each researched
+  against the git history, and nothing stops the forty-fifth from being a shrug. The only defence is
   that an `unrecorded` entry cites the commit that introduced the name, so the next reader starts
   where this one stopped rather than from nothing.
+- **`recorded` is the state easiest to claim and hardest to check**, which is the price of splitting
+  it out. The citation is checked for being present and never followed, so `recorded (milestone 46)`
+  on a name milestone 46 never mentions passes the gate exactly as well as a true one. Read the
+  citation before trusting the state, and note that a wrong one costs less than the alternatives: it
+  demotes the entry from "research owed" to "signature owed" in a worklist, rather than putting a
+  false claim in the tree.
+- **Seven of the ten `recorded` lean on a rule that was derived from the names it now explains.**
+  `*_proto` won in milestone 46 partly *because* "it is what the actual crates already were", so
+  saying `fs_proto` is recorded by that rule is not fully independent of `fs_proto`. It is not
+  circular either, since the decision adjudicated four live spellings and `script/lint` has enforced
+  the winner since, but a reader deciding how much weight the state carries should know it leans on
+  one decision and that the decision partly ratified the status quo.
 - **Three surfaces, and the tree has more than three kinds of name.** Crates, programs and `script/`
   entry points carry blocks. Directories, types, `scripts/` helpers, `kernel`, `xtask`, `fs_server`
   and `tools/redoxfs_host` do not, and at least one ratified name has no home as a result:
@@ -329,6 +454,13 @@ people learn to skip.
   dismissals and it is also what an operating system means by it (`auditd`), and bare `audits` was
   passed over because every file in the directory is a report. Recorded here rather than stretched
   into a schema that does not fit it.
+
+  **That blind spot has a live casualty, found while triaging.** `disk_partitioner`'s introducing
+  commit (2026-08-03) named two provisional things: itself, and `fs_maker`. The first is on a
+  covered surface, so it is in the worklist with the word "provisional" quoted in its block. The
+  second is at `fs_server/src/bin/mkfs.rs`, where nothing looks, so it was resolved to `mkfs` by
+  whoever was mid-task and no record anywhere says a decision was owed. That is the exact failure
+  this milestone exists to prevent, still happening one directory over.
 - **A type's name is a naming decision the mechanism does not see.** `BootEndowment` was ratified on
   2026-08-04 (replacing `Grants`) and is mentioned inside `system_initializer`'s block only because
   its crate happens to export it. `supervision_proto::Endow` is an open naming question (§69) and
@@ -442,7 +574,10 @@ which is the ordinary way a hand-kept count drifts; take it from the script.)
    moment any of this is published. `README.md` is the only exception, and it is GitHub behaviour
    rather than style.
 7. **Every crate, program and `script/` entry point carries a `Name:` block** (milestone 115, and
-   the section above). Presence only: it cannot check that the reason is still true.
+   the section above). Presence only: it cannot check that the reason is still true. It checks that
+   the block names one of the three states, that `ratified` carries a date and that `recorded`
+   carries a citation, and it **never checks that the state is `ratified`**, so a name waiting on
+   Chris does not fail anybody's build. `script/names --unratified` is how that queue gets worked.
 
 Everything else here is prose because it needs judgement and no checker can supply it. In particular
 **a checker cannot catch the jargon half of §39**: `linedisc` would have passed all four rules above.
