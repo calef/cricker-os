@@ -601,4 +601,19 @@ mod tests {
         assert_eq!(e.signal(), Some(rp)); // the waiter, dequeued
         assert!(e.one_queue_invariant());
     }
+
+    /// The manual PartialEq and Debug impls answer for themselves. Every use above compares
+    /// equal values, so an eq stuck at `true` passed (milestone 85); different variants must
+    /// disagree, and the rendering is the string a hang dump prints.
+    #[test]
+    fn verdict_variants_are_distinct_and_print_their_names() {
+        let mut s = node();
+        let sp = NonNull::from(&mut *s);
+        assert_ne!(Send::<N>::Blocked, Send::Rendezvous(sp));
+        assert_ne!(Recv::<N>::Signal, Recv::Blocked);
+        assert_ne!(Recv::<N>::FromSender(sp), Recv::Signal);
+        assert_eq!(format!("{:?}", Send::<N>::Blocked), "Blocked");
+        assert_eq!(format!("{:?}", Recv::<N>::Signal), "Signal");
+        assert!(format!("{:?}", Recv::<N>::FromSender(sp)).starts_with("FromSender"));
+    }
 }
