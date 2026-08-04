@@ -1,40 +1,7 @@
-use fs_proto::dir;
 use pipeline_service::{answer, counts};
+use redirection_tests::{TRANSCRIPT_MAX, transcript};
 
 use super::*;
-
-/// The last line `user/src/swish.rs`'s language role prints. Must match `LANGUAGE_DONE`.
-const DONE: &[u8] = b"== language done\n";
-
-/// The script's transcript, run **once** and shared by every assertion below, for
-/// [`redirection_tests`]'s reason: the assertions are about one run of one script, and re-running
-/// it per test would be the same measurement several times rather than several measurements.
-static TRANSCRIPT: spin::Mutex<Option<([u8; 3072], usize)>> = spin::Mutex::new(None);
-
-/// Run the script if nothing has yet, and hand back everything the shell printed. `None` when this
-/// boot has no RedoxFS disk attached, which is the same skip every FS test takes.
-fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
-    let mut cache = TRANSCRIPT.lock();
-    if cache.is_none() {
-        let dir = fs_service::narrow_dir(
-            dir_capability_tests::blk_server_image(),
-            program("fs_server")?,
-            program("fs_subtree_caretaker")
-                .expect("no fs_subtree_caretaker program in the initrd archive"),
-            fs_proto::fixture::tree::REDIR,
-            dir::ALL,
-        )?;
-        let Some(w) = pipeline_service::start_language(dir, dir::ALL) else {
-            panic!("no swish program in the initrd archive, or no memory to wire one");
-        };
-        let mut buf = [0u8; 3072];
-        let n = pipeline_service::transcript(&w, DONE, &mut buf);
-        *cache = Some((buf, n));
-    }
-    let (buf, n) = cache.as_ref().expect("just filled");
-    out.copy_from_slice(buf);
-    Some(*n)
-}
 
 /// What the shell said, as a `str`, for an assertion that wants to read words.
 fn said<'a>(t: &'a [u8], line: &[u8]) -> &'a str {
@@ -52,7 +19,7 @@ fn said<'a>(t: &'a [u8], line: &[u8]) -> &'a str {
 /// dropped bytes or a quote that swallowed a word fails even though a file would still exist.
 #[test_case]
 fn a_name_with_a_space_in_it_can_be_written_and_read_back() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -85,7 +52,7 @@ fn a_name_with_a_space_in_it_can_be_written_and_read_back() {
 /// worth of grammar later.
 #[test_case]
 fn a_quoted_name_is_the_grant_with_the_operator_left_out() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -110,7 +77,7 @@ fn a_quoted_name_is_the_grant_with_the_operator_left_out() {
 /// hands over everything the pattern matched.
 #[test_case]
 fn the_same_word_is_a_name_quoted_and_a_set_unquoted() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -144,7 +111,7 @@ fn the_same_word_is_a_name_quoted_and_a_set_unquoted() {
 /// this and fail the other half.
 #[test_case]
 fn a_connector_runs_the_second_command_only_when_it_should() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -186,7 +153,7 @@ fn a_connector_runs_the_second_command_only_when_it_should() {
 /// kind of integer; here they are different events and the shell knows which.
 #[test_case]
 fn a_refusal_and_a_success_report_different_numbers() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -234,7 +201,7 @@ fn a_refusal_and_a_success_report_different_numbers() {
 /// in this shell has: decided at the prompt, before anything is spawned or opened.
 #[test_case]
 fn a_line_the_grammar_cannot_read_runs_nothing() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;

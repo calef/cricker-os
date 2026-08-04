@@ -2124,9 +2124,14 @@ mod time_tests;
 
 /// **Quoting, sequencing and `$?` at a real prompt** (milestone 67, notes/swish-language.md).
 ///
-/// [`redirection_tests`]'s shell, slot for slot, typing a different script. The two halves both
-/// need a filesystem: a quoted name is only worth anything if it reaches one, and a `&&` needs a
-/// command that can succeed.
+/// The **same run** of the same script [`redirection_tests`] asserts about, whose tail milestone 67
+/// added: one shell, once. A seventh scripted shell would have been a seventh live process whose
+/// frames nothing reclaims, and wiring one put [`time_tests`] over the frame pool intermittently
+/// (`refused to load a user program: Unmappable(OutOfFrames)`). The wiring these lines need is
+/// [`redirection_tests`]'s exactly, so a second copy bought nothing but the failure.
+///
+/// It is still its own module, because what it claims is its own: the redirection tests are about
+/// where bytes go, and these are about what a word *is* and what a status means.
 ///
 /// The assertions are pairs, which is [`redirection_tests`]'s shape and for the same reason. `echo
 /// "*.txt"` against `echo *.txt` is one line quoted and one not; `worker 3 && echo yes` against

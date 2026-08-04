@@ -43,7 +43,13 @@ pub struct Wiring {
 /// The collected transcript. A static because the terminal service and the assertions are the
 /// same thread and the buffer outlives one call; sized for the whole script with room to spare,
 /// so a transcript that ran long is truncated rather than overrunning.
-static TRANSCRIPT: spin::Mutex<[u8; 4096]> = spin::Mutex::new([0; 4096]);
+///
+/// **Eight kilobytes since milestone 67**, which folded that milestone's script onto the
+/// redirection witness rather than wiring a seventh shell: every scripted shell here is a live
+/// process whose frames are never reclaimed, and one more put `time_tests` over the frame pool
+/// intermittently. Kernel `.bss` costs no frames, so the longer script is the cheap half of that
+/// trade.
+static TRANSCRIPT: spin::Mutex<[u8; 8192]> = spin::Mutex::new([0; 8192]);
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 /// **Wire a scripted shell and the init service behind it.**
@@ -96,21 +102,6 @@ pub fn start_redirecting(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
 
 /// The shell's redirection role (`user/src/swish.rs`).
 const ROLE_REDIRECT: u64 = 4;
-
-/// **The same shell again, typing quoted and sequenced lines** (milestone 67,
-/// notes/swish-language.md): [`start_redirecting`]'s wiring exactly, because both halves of that
-/// milestone need something real to name.
-///
-/// It is a second role rather than more lines on the redirection script for the reason every
-/// witness here is its own: a transcript is read by slicing at the prompt it followed, so a script
-/// that grows past its buffer truncates the assertions that come last, silently. Same ELF, same
-/// slots, different script.
-pub fn start_language(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
-    start_with(ROLE_LANGUAGE, rights, Some(dir), None)
-}
-
-/// The shell's language role (`user/src/swish.rs`).
-const ROLE_LANGUAGE: u64 = 6;
 
 /// Where an FS client maps the page it shares with the FS server (`fs_service`'s
 /// `FILE_VA_CLIENT`, and `user/src/swish.rs`'s `FS_VA`).

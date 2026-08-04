@@ -280,11 +280,24 @@ the same script rather than by a second implementation.
 
 ## What the guest test proves, on both ISAs
 
-`kernel::user::language_tests` wires the **real shell binary** with `redirection_tests`'s endowment,
-slot for slot: a terminal, a spawn channel, a result channel, a budget, and a directory narrowed by
-an `fs_subtree_caretaker` to one subtree of the real RedoxFS image. Both halves of the milestone need
-that: a quoted name is only worth something if it reaches a filesystem, and a `&&` needs a command
-that can succeed.
+`kernel::user::language_tests` reads the tail of the **same run of the same script**
+`redirection_tests` reads: the real shell binary with a terminal, a spawn channel, a result channel,
+a budget, and a directory narrowed by an `fs_subtree_caretaker` to one subtree of the real RedoxFS
+image. Both halves of the milestone need that wiring: a quoted name is only worth something if it
+reaches a filesystem, and a `&&` needs a command that can succeed.
+
+**It shares the witness rather than wiring its own, and that is a memory finding worth keeping.**
+The first version had a seventh role, `ROLE_LANGUAGE`, with the identical endowment. Every scripted
+shell in this suite is a live process whose frames nothing reclaims, and the seventh one put
+`time_tests` over the frame pool *intermittently*: two consecutive runs of unchanged code, one green
+and one dying with `refused to load a user program: Unmappable(OutOfFrames)` and then a lost-wakeup
+watchdog sixty seconds later. The wiring the new lines needed was already there, so the second copy
+of it bought nothing but the flake. The transcript buffer grew from 4 KiB to 8 KiB to hold the longer
+script, which is kernel `.bss` and costs no frames at all.
+
+The lesson generalises past this milestone: **a scripted-shell witness is not free, and the price is
+paid by whatever test runs last.** A new claim about the shell should look for a witness whose
+endowment already matches before it asks for a role of its own.
 
 The assertions are **pairs**, which is `redirection_tests`'s shape and for the same reason. A single
 line proving "it printed something" would pass on a shell that ignored quoting entirely.

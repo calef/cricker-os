@@ -727,10 +727,6 @@ const ROLE_REDIRECT: u64 = 4;
 /// the prompt uses, and the same script is run three times against three clock states, which is what
 /// makes the refusals assertions rather than unreachable branches. See [`timing`].
 const ROLE_TIMING: u64 = 5;
-/// **The language witness** (milestone 67): [`ROLE_REDIRECT`]'s wiring, because a quoted name has to
-/// reach a real filesystem to be worth anything. It types a fixed script through the same
-/// [`dispatch_line`] the prompt uses. See [`language`].
-const ROLE_LANGUAGE: u64 = 6;
 
 /// **What `arg1` carries into every role that holds a directory**: the `fs_proto::dir` rights that
 /// capability was granted, with 0 meaning "you were granted no directory at all".
@@ -753,7 +749,6 @@ pub extern "C" fn _start(role: u64, arg: u64, clock: u64) -> ! {
         ROLE_PIPELINE => piping(),
         ROLE_REDIRECT => redirecting(arg),
         ROLE_TIMING => timing(),
-        ROLE_LANGUAGE => language(arg),
         _ => interactive(arg),
     }
 }
@@ -849,6 +844,43 @@ fn redirecting(rights: u64) -> ! {
         // diagnostics ride it, so the operator names nothing and the line does not run. The
         // sentence is the assertion; what it is *not* is a permission.
         b"wc out.txt 2> err.txt",
+        // ---- milestone 67's grammar, on this same shell (notes/swish-language.md) ----
+        //
+        // **One witness rather than a seventh**, and that is a memory decision rather than a
+        // filing one: every scripted shell in this suite is a live process whose frames are never
+        // reclaimed, and adding one more put `time_tests` over the frame pool intermittently
+        // (`refused to load a user program: Unmappable(OutOfFrames)`). The wiring these lines need
+        // is this wiring exactly, so a second copy of it bought nothing but the failure.
+        //
+        // The correctness gap quoting closed: a name with a space in it, written and read back.
+        // Before milestone 67 the `>` would have written to a file called `"my`.
+        b"echo hello world > \"my notes.txt\"",
+        b"wc < \"my notes.txt\"",
+        // The same designation with the operator left out, which has to agree with the line above
+        // it or one of the two opened something else.
+        b"wc \"my notes.txt\"",
+        // Quoted and unquoted, side by side: the same four characters are one name and a set.
+        b"echo \"*.txt\"",
+        b"echo *.txt",
+        // A quoted operator is text, so this line has no redirection on it and writes no file.
+        b"echo 'a > b'",
+        // Sequencing. `worker 3` succeeds and `worker` alone is refused at the prompt, so these
+        // lines cover every arm of the condition table with real commands.
+        b"worker 3 && echo yes",
+        b"worker && echo yes",
+        b"worker 3 || echo no",
+        b"worker || echo no",
+        // `;` runs the second whatever the first did, which is the arm the four above cannot show.
+        b"worker && echo yes ; echo always",
+        // The status, after a command that ran and after one this shell refused. The second is the
+        // decision this milestone settled: a refusal is 2 rather than 1, because nothing ran.
+        b"worker 3",
+        b"echo $?",
+        b"worker",
+        b"echo $?",
+        // And the refusals the grammar itself makes, which run nothing at all.
+        b"echo 'unclosed",
+        b"date &&",
     ] {
         print(b"$ ");
         print(line);
@@ -900,69 +932,6 @@ fn timing() -> ! {
 
 /// [`PIPELINE_DONE`]'s twin for [`timing`]. Must match `kernel::user::time_tests`.
 const TIMING_DONE: &[u8] = b"== timings done\n";
-
-/// **A scripted shell that quotes and sequences** (milestone 67, notes/swish-language.md).
-///
-/// [`redirecting`]'s wiring, because both halves of this milestone need something real to name: a
-/// quoted name has to reach a filesystem to be worth anything, and `&&` has to have a command that
-/// can succeed and a command that is refused.
-///
-/// The lines check each other rather than constants, which is [`redirecting`]'s shape:
-///
-/// - `echo hello world > "my notes.txt"` then `wc < "my notes.txt"`. **The file could not have been
-///   written before this milestone**, because its name has a space in it and a name you cannot say
-///   is a resource you cannot grant. The counts come from the `echo` above them.
-/// - `wc "my notes.txt"` is the same designation with the operator left out, so it has to agree.
-///   That is milestone 31's headline, asked of a name only quoting can express.
-/// - `echo "*.txt"` and `echo *.txt` are **the same four characters, quoted and not**, and the two
-///   answers are each other's control: one is a name and one is the set it matches.
-/// - The `&&` and `||` pair run the same two commands with the connector changed, so what the
-///   connector did is measured against what the other one did rather than against a constant.
-/// - `echo $?` after a refusal and after a success, which is the fork this milestone settled: the
-///   number after a refusal is **2**, not 1, because nothing ran.
-fn language(rights: u64) -> ! {
-    let mut nav = Nav::rooted_at(DIR_TERMINAL, rights);
-    for line in [
-        // The correctness gap, closed: a name with a space in it, written and read back.
-        &b"echo hello world > \"my notes.txt\""[..],
-        b"wc < \"my notes.txt\"",
-        // The same designation with the operator left out. It has to answer what the line above it
-        // answered, or one of the two opened something else.
-        b"wc \"my notes.txt\"",
-        // Quoted and unquoted, side by side: one name against the set it matches.
-        b"echo \"*.txt\"",
-        b"echo *.txt",
-        // A quoted operator is text, so this line has no redirection on it and writes no file.
-        b"echo 'a > b'",
-        // Sequencing. `worker 3` succeeds and `worker` alone is refused at the prompt, so these
-        // four lines cover every arm of the condition table with real commands.
-        b"worker 3 && echo yes",
-        b"worker && echo yes",
-        b"worker 3 || echo no",
-        b"worker || echo no",
-        // `;` runs the second whatever the first did, which is the arm the two above cannot show.
-        b"worker && echo yes ; echo always",
-        // The status, after a command that ran and after one this shell refused. The second is the
-        // decision: a refusal is 2 rather than 1, because nothing ran.
-        b"worker 3",
-        b"echo $?",
-        b"worker",
-        b"echo $?",
-        // And the refusals the grammar itself makes, which run nothing at all.
-        b"echo 'unclosed",
-        b"date &&",
-    ] {
-        print(b"$ ");
-        print(line);
-        print(b"\n");
-        dispatch_line(&mut nav, line);
-    }
-    print(LANGUAGE_DONE);
-    exit();
-}
-
-/// [`PIPELINE_DONE`]'s twin for [`language`]. Must match `kernel::user::language_tests`.
-const LANGUAGE_DONE: &[u8] = b"== language done\n";
 
 /// The interactive prompt. `rights` is the [`_start`] convention: the `fs_proto::dir` rights of the
 /// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
