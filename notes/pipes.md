@@ -251,9 +251,13 @@ pattern. And **there is no here-document**: `<<` is refused, because the second 
 operator it is and there is then no name after it. The message is about the missing name where the
 mistake was a missing feature, which is a wording gap and is in this note's BUGS.
 
-## `2>`: an open fork, and the question is not the operator
+## `2>`: a closed fork, decided as a declaration (DECISIONS §67)
 
-**Not built, deliberately.** `>>` was an implementation task and `2>` is not, and the difference is
+**Decided 2026-08-03**: option (c) below, the manifest declaration; the analysis that follows is
+the record of the fork as it stood open, kept because the reasoning is the reusable part. The
+build lands with milestone 50's closure.
+
+**Not built at this note's last update, deliberately.** `>>` was an implementation task and `2>` is not, and the difference is
 worth stating because it is the same difference this project keeps meeting: one is a spelling for
 something the system already has, and the other would create the thing it is a spelling for.
 
