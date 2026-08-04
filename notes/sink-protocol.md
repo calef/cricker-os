@@ -272,7 +272,7 @@ transcript, a pipe and a file and now a terminal, and the program holds one capa
 - **Building it found init's sixteen-slot cspace for the third time.** One more endpoint held across
   the shell's `build_child` made the boot print nothing at all, so the adapter is built **after the
   shell**; see notes/pipes.md. It was written down as "built last", and merging milestone 22 proved
-  that half wrong: init now builds a `job_reaper` after it and the cspace has room either way. The
+  that half wrong: init now builds a `job_undertaker` after it and the cspace has room either way. The
   real constraint was never the ordinal, it was the shell's build. Where the adapter does have to sit
   is **before init gives the construction budget away**, because it is a system component and that
   budget is what the system is built from; building it afterwards would spend init's scratch pool on

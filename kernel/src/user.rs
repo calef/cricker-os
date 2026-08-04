@@ -1849,17 +1849,17 @@ mod authority_tests;
 /// interactive init cannot: it stays the shell's spawn service, so it must keep *some* budget. What
 /// it can do instead is keep a **bounded** one and make it renewable, which is what these two tests
 /// are about. Every job the prompt spawns is built in a region split off that pool and born
-/// supervised, and `job_reaper` (one endpoint capability, no memory at all) collects the corpse
+/// supervised, and `job_undertaker` (one endpoint capability, no memory at all) collects the corpse
 /// through `Endpoint::REAP`, which returns the region to **init's** pool under §13 region ownership.
 ///
 /// The pair is a control and a claim, in that order: three jobs exhaust the pool when nothing
-/// collects, and twelve go through the same pool when `job_reaper` does. Neither is a timing
+/// collects, and twelve go through the same pool when `job_undertaker` does. Neither is a timing
 /// argument; the assertion in both is which budget the pages are in.
 ///
-/// Cross-ISA, because every piece is portable: `job_reaper` is an ordinary program in both archives
+/// Cross-ISA, because every piece is portable: `job_undertaker` is an ordinary program in both archives
 /// and the reap authorization reads two TCB fields.
 #[cfg(test)]
-mod job_reaper_tests;
+mod job_undertaker_tests;
 
 /// **A memory-unsafe C component, confined** (milestone 36, DECISIONS §31).
 ///

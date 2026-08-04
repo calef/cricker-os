@@ -140,7 +140,7 @@ above: **there is now a fifth mmio disk, at slot 4, and it is blank on purpose.*
 - **`disk_partitioner`** (provisional name) writes the table `disk_surveyor` reads, drawing its
   unique GUIDs from the entropy service. notes/gpt.md has the details, including why every write is
   a read-modify-write.
-- **`fs_maker`** (provisional name) creates a RedoxFS filesystem inside the cricker-os data
+- **`mkfs`** (provisional name) creates a RedoxFS filesystem inside the cricker-os data
   partition of that table. notes/fs-server.md has the details, including the vendor divergence it
   needed and why the first attempt at that divergence did not work.
 
@@ -149,7 +149,7 @@ jointly sufficient to partition and format a drive, and separately neither is; t
 withholds each in turn from the same binary, with the same budget, the same stack and the same
 shared page, and then *reads the disk* to show that a refused run wrote nothing.
 
-`fs_maker`'s wiring needed `grant_at` rather than `run`'s fill-in-order grants, and the reason
+`mkfs`'s wiring needed `grant_at` rather than `run`'s fill-in-order grants, and the reason
 generalises: **when the missing capability is not the last slot, withholding it has to leave a
 hole.** A shorter grant list renumbers everything above the gap, so a program that was meant to find
 slot 1 empty would instead find its report endpoint there and write a verdict into a block server.

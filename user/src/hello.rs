@@ -364,7 +364,7 @@ fn init(initrd_len: u64) -> ! {
 /// interrupts and the file service, and proves the drop from the inside before the shell starts: a
 /// `RETYPE` on that slot must answer `NoSuchSlot`, and the sentence it prints is what
 /// `script/shell-check` reads. Every job it builds after that gets a region of its own and is born
-/// supervised, so `job_reaper` collects it and the pages come back to the pool. The whole reasoning,
+/// supervised, so `job_undertaker` collects it and the pages come back to the pool. The whole reasoning,
 /// and the honest limits (LIFO recovery, the scratch window's retained mappings), is written once in
 /// `user/src/system_initializer.rs`, which is this role's portable twin.
 fn init_boot(_x1: u64, fs_rights: u64) -> ! {
@@ -453,11 +453,11 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // a prompt.
     let sink_elf =
         program(initrd_len, "terminal_sink").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    // The corpse collector (milestone 22, the interactive increment): one endpoint capability and
+    // The undertaker (milestone 22, the interactive increment): one endpoint capability and
     // nothing else, so a finished job's region comes back to init's pool. Required rather than
     // optional, unlike the adapter above: without it a bounded job pool fills and the prompt stops
     // spawning, which is a broken system rather than a missing feature.
-    let Some(reaper_bytes) = program(initrd_len, "job_reaper") else {
+    let Some(reaper_bytes) = program(initrd_len, "job_undertaker") else {
         halt_forever()
     };
     let Ok(reaper_elf) = elf::Elf::parse(reaper_bytes) else {
@@ -555,7 +555,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     };
     // **The supervision endpoint every job is born holding** (DECISIONS §26's spawn-slot
     // convention). We keep it only for its `GRANT`: a `READ` view goes in each job's reserved fault
-    // slot. We never receive on it; `job_reaper` does, and collecting is all it authorizes.
+    // slot. We never receive on it; `job_undertaker` does, and collecting is all it authorizes.
     let Ok(deaths) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
         halt_forever()
     };
@@ -693,7 +693,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     cap_delete(term_ep);
     cap_delete(term_out);
 
-    // The corpse collector, out of what is left of our own budget. One capability, `READ` on the
+    // The undertaker, out of what is left of our own budget. One capability, `READ` on the
     // supervision endpoint: it can free a job's memory and can never spend it.
     let Ok(reaper) = build_child(
         own_ut,
@@ -887,7 +887,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
             let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
             // **A region of its own, so the job's memory can come home** (milestone 22, the
             // interactive increment): everything the child is made of comes out of this carve, and
-            // `job_reaper` collecting the corpse returns the whole run to the pool. Building
+            // `job_undertaker` collecting the corpse returns the whole run to the pool. Building
             // straight out of the pool would spend those pages for the life of the boot, because a
             // watermark only moves forward. An exhausted pool is the ordinary `SPAWN_FAILED` the
             // shell already reports as "init is out of memory".
@@ -1239,7 +1239,7 @@ fn build_child(
 /// `fault` lands in the reserved [`abi::fault::FAULT_EP_SLOT`] so the child is born supervised
 /// (DECISIONS §26's spawn-slot convention): `START` records it as the thread's supervision endpoint
 /// and clears the slot, so the child cannot forge messages about its own death. That is what makes a
-/// job's region reclaimable by `job_reaper` once the job ends.
+/// job's region reclaimable by `job_undertaker` once the job ends.
 ///
 /// `placed` is `(child_slot, init_slot, rights)`, inserted after `caps`. One caller: a declared
 /// diagnostic stream (DECISIONS §67), which needs a fixed slot because how many low slots a child

@@ -302,7 +302,7 @@ So the interactive init keeps the loader and gives up three other things instead
 Bounding init's budget would be a bad trade on its own: a prompt that runs out of memory after thirty
 commands is worse than a prompt whose init holds too much. What makes it cheap is that the pages come
 back. Every job is born supervised (§26's spawn-slot convention: a `READ` view of one endpoint in the
-reserved fault slot, which `START` reads and clears), and **`job_reaper`** collects the corpse through
+reserved fault slot, which `START` reads and clears), and **`job_undertaker`** collects the corpse through
 `Endpoint::REAP`. Its entire authority is that one endpoint capability: no untyped, no frame, no TCB,
 nothing it could build with. The reclaimed region returns to *init's* pool, because §13 says a region
 belongs to whoever owns it and init is the one who split it. A process that can free a job's memory
@@ -316,11 +316,11 @@ the program ids `spawnproto` already sends in word 0.
 
 ### Proven, both ISAs
 
-- `kernel/src/user/job_reaper_tests.rs`, a control and a claim in that order.
+- `kernel/src/user/job_undertaker_tests.rs`, a control and a claim in that order.
   `without_a_collector_a_bounded_job_pool_runs_out` builds three jobs in a three-job pool, lets all
   three *finish*, and shows the fourth refused: a finished job's region is not free memory. Then
-  `job_reaper_returns_every_finished_job_to_the_pool` puts **twelve** jobs through the same pool with
-  the real `job_reaper` binary running, and asserts after each one that the pool came all the way
+  `job_undertaker_returns_every_finished_job_to_the_pool` puts **twelve** jobs through the same pool with
+  the real `job_undertaker` binary running, and asserts after each one that the pool came all the way
   back and at the end that it carves again in one piece. The assertion is which budget the pages are
   in, never how long anything took.
 - `script/shell-check`, which is the only thing that boots the real interactive init. It reads a
@@ -353,7 +353,7 @@ the program ids `spawnproto` already sends in word 0.
   restart them would make their corpses persist forever instead of being reaped by the kernel, which
   is strictly worse. A dead console is still a halt, which is §26's fail-closed floor and correct for
   a tier-one server nothing can rebuild.
-- **`job_reaper` cannot say anything.** Init holds no channel it could report on, so a refused reap
+- **`job_undertaker` cannot say anything.** Init holds no channel it could report on, so a refused reap
   traps rather than being ignored. The visible symptom of the collector dying is that the pool stops
   coming back and the prompt eventually answers "could not spawn".
 - **A hung job is not collected**, on purpose: `REAP` refuses a live thread (§32), and that is the
