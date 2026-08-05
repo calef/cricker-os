@@ -602,6 +602,10 @@ fn fatal(frame: &TrapFrame, index: u64, esr: u64) -> ! {
             "  FAR_EL1   {:#018x}   the address that faulted",
             FAR_EL1.get()
         );
+        // And say whether that address is a guard page, which decides what everything below means.
+        // Only here: for a class where FAR is stale garbage the classifier would be reading a
+        // previous fault's address and could name a stack at random. See the riscv64 twin.
+        crate::stack::warn_if_guard_page(FAR_EL1.get());
     } else {
         println!("  FAR_EL1   (not meaningful for this exception class)");
     }

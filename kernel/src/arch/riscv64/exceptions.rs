@@ -425,6 +425,13 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
         _ => {
             // An exception from S-mode is a KERNEL bug, and fatal. Report it with the detail
             // that makes it legible.
+            //
+            // Say first whether `stval` is a guard page, because that single fact decides what the
+            // rest of the message means. Milestone 78: two `cpu matrix` runs died here with
+            // `scause=0xf ... from_user=false` and an address nothing interpreted, and it took
+            // arithmetic on the CI log to work out that both were the base of a thread stack's
+            // guard page. The kernel knew; it just was not saying.
+            crate::stack::warn_if_guard_page(frame.stval);
             panic!(
                 "unexpected RISC-V trap: scause={scause:#x} (code {code}) stval={:#x} sepc={:#x} \
                  from_user={from_user}",
