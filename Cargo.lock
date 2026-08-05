@@ -323,6 +323,7 @@ dependencies = [
  "regions",
  "sink_proto",
  "slots",
+ "socket_proto",
  "spin",
  "tock-registers",
  "video_terminal",

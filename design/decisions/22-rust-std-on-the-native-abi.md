@@ -62,8 +62,10 @@ networking only if it holds those two slots; without them `std::net` returns `Un
 "no ambient network" (§10) made visible from inside a process. The same `std_exerciser` binary proves
 both: spawned without the net slots it runs the offline transcript, spawned with them (and a running
 net_stack) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
-ISAs. Honest gaps carried as `Unsupported`: `TcpListener` (no LISTEN verb), non-blocking mode and
-timeouts (blocking-only contract), DNS resolution (`lookup_host`; numeric addresses only), and IPv6.
+ISAs. Honest gaps carried as `Unsupported`: `TcpListener` (**the reason changed on 2026-08-04**: milestone
+107 added `OP_LISTEN` and `OP_ACCEPT`, so the verb exists and the gap is now the PAL binding, which
+that milestone deferred deliberately), non-blocking mode and timeouts (blocking-only contract), DNS
+resolution (`lookup_host`; numeric addresses only), and IPv6.
 One finding reported up: net_stack ties a socket's local port to its socket id, so reopening a closed id
 reuses its port and can stall against slirp; the fix is ephemeral local ports in net_stack, a contract-side
 change (notes/std.md).
