@@ -264,6 +264,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
   redirection is being written.
+- [`swish` the language](swish-language.md): milestone 67: quoting, sequencing, and the one design
+  fork inside them. **Quoting was an authority gap rather than a convenience**: a file called `my
+  notes.txt` could not be named, and a resource you cannot name is a resource you cannot grant. It
+  **delimits a word and never rewrites one**, because every token here is a slice of the line you
+  typed and a shell with no allocator has nothing to join pieces into, so there is no backslash
+  escape and `a"b"` is refused rather than misread. The one thing it does to authority is *narrow*:
+  it suppresses expansion, so `rm "*.txt"` hands over one name where `rm *.txt` hands over the set,
+  and it stops `-r` widening a directory grant into a subtree walk. Sequencing splits **outermost**,
+  which is bash's binding and also what keeps a pipeline region scoped to its segment. And the fork:
+  **a refusal is not an error and gets its own status**, because "did my command fail" and "was I
+  able to ask" are different questions and Unix cannot tell them apart.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the

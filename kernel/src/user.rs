@@ -2123,6 +2123,27 @@ mod redirection_tests;
 #[cfg(test)]
 mod time_tests;
 
+/// **Quoting, sequencing and `$?` at a real prompt** (milestone 67, notes/swish-language.md).
+///
+/// The **same run** of the same script [`redirection_tests`] asserts about, whose tail milestone 67
+/// added: one shell, once. A seventh scripted shell would have been a seventh live process whose
+/// frames nothing reclaims, and wiring one put [`time_tests`] over the frame pool intermittently
+/// (`refused to load a user program: Unmappable(OutOfFrames)`). The wiring these lines need is
+/// [`redirection_tests`]'s exactly, so a second copy bought nothing but the failure.
+///
+/// It is still its own module, because what it claims is its own: the redirection tests are about
+/// where bytes go, and these are about what a word *is* and what a status means.
+///
+/// The assertions are pairs, which is [`redirection_tests`]'s shape and for the same reason. `echo
+/// "*.txt"` against `echo *.txt` is one line quoted and one not; `worker 3 && echo yes` against
+/// `worker && echo yes` is one connector against a refused left-hand side. A single line proving
+/// "it printed something" would pass on a shell that ignored quoting entirely.
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+#[cfg(test)]
+mod language_tests;
+
 /// **The sink contract, and the one behaviour it changed** (milestone 50, notes/sink-protocol.md).
 ///
 /// Two claims, one per test, and they need each other. The first is that a program cannot tell what
