@@ -341,6 +341,25 @@ Stated plainly, because a demonstrator's honest limits are part of the deliverab
 - **A screenshot can tear.** The capture grant is a live read-only mapping, so a reader that looked
   during a composite would see a half-composed screen. The tests read it at a quiet moment. The fix is
   the served-copy path in the section above, which wants the missing primitive.
+- **A window can tear too, and the reason is sharper than the screenshot's** (milestone 43's audit,
+  notes/shared-page-audit.md finding 5). `serve_frame` composites **every** committed window, not
+  only the one that rang, and the input source's `COMMIT` arrives when no window client is blocked
+  at all. So the invariant written next to `source()` ("the client that rang cannot be writing while
+  we read") covers the caller and nobody else: a client that did not ring is runnable and holds its
+  surface and its control page read-write throughout. The damage rectangle is four independent
+  32-bit loads, so it can be sampled mid-write and describe a rectangle that never existed; the
+  client's `SEQ` fence orders that client's stores and cannot stop the compositor sampling between
+  them on somebody else's frame.
+
+  **It is bounded to tearing and cannot be worse**, and that is worth stating with the limit: every
+  slice length and every clip comes from `compositor::SCENE`, a compile-time constant, so no
+  client-supplied value indexes anything. The consequence is a half-drawn window or a wrong damage
+  rectangle, never a read outside a surface. Making it a guarantee means per-client double
+  buffering, which is a design decision this note does not take.
+- **The compositor holds every client surface read-write and never writes one.** Read-only there
+  would make "the compositor cannot deface a client's window" a fact about the mapping rather than
+  about the code, exactly as `ROLE_CAPTURE`'s read-only screen already is. Recorded by the same
+  audit and not taken in it, because flipping a mapping wants a test that proves the fault.
 - **No defence against denial of service.** A client can spam the doorbell, never answer an input
   `CALL`, or never reply, and the compositor's single thread will slow or stall. Confidentiality and
   integrity are what this rung proves; availability against a hostile client needs the same missing

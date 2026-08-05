@@ -823,3 +823,36 @@ that could return a new process to its entry point at the wrong exception level.
 
 Measured-boot (phase B.1) moved nothing on either ISA, which is expected: the bench boot enters no boot
 program, so the SHA-256 over init never runs there.
+
+## 2026-08-04: the RISC-V baseline re-saved for a win this instrument cannot see
+
+Milestone 58 removed the unconditional `sfence.vma` from every RISC-V context switch. That is a full
+TLB flush per switch, gone. The numbers went **up**:
+
+| benchmark | before | after | delta |
+|---|---|---|---|
+| ctx_switch | 471,827 | 477,635 | +1.2% |
+| ipc_rtt_el0 | 1,738,256 | 1,766,199 | +1.6% |
+| yield_switch | 179,097 | 179,217 | +0.07% |
+
+**This is the clearest case yet of icount measuring the wrong thing, and it is worth keeping as the
+worked example.** icount counts guest instructions retired. A TLB flush is *one instruction*; its
+entire cost is the misses that follow, and QEMU's TCG refills its softmmu TLB with host-side work
+that retires no guest instructions at all. So the instrument charged us for what we added and
+credited us nothing for what we removed.
+
+What we added, per switch: an atomic load and a branch for the ASID-width gate, and a `csrr satp`
+plus a compare for the "already installed?" early return `switch_user_root` gained (aarch64 has had
+it since milestone 15, and it fires on every switch between two kernel threads, which is most of them
+on an idle machine). Three or four instructions, traded for not throwing the TLB away.
+
+The baseline was re-saved in the commit that caused it, per the milestone-21 discipline. aarch64 was
+left alone: the only aarch64 change in that milestone is a `dsb ishst` at the top of `flush_asid`,
+which runs at address-space teardown and not on any measured path, and its numbers moved by less than
+the run-to-run drift already documented above.
+
+**The number that would settle it needs hardware with a real TLB.** `--real` runs under
+Hypervisor.framework, which executes the host's own ISA, so there is no accelerated RISC-V leg to
+take it on; the VisionFive 2 is where this gets measured. Recorded here rather than deferred silently,
+because a milestone whose stated win is a benchmark improvement and whose benchmark got slower is
+exactly the result that has to be written down.
