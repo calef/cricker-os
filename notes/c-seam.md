@@ -200,7 +200,7 @@ $ /opt/homebrew/opt/llvm/bin/clang -print-targets | grep -c riscv
 
 **Apple's clang is rejected on purpose**, and it is worth being clear that this is not an oversight:
 it compiles the aarch64 side perfectly well. Requiring both backends from *one* compiler even when
-only one ISA is being built is DECISIONS §19 (architectural parity is a gate) applied to the
+only one ISA is being built is DECISIONS §19 (parity is a gate, not an aspiration) applied to the
 toolchain. A machine where the two architectures are compiled by two different clangs is a machine
 where "it works on aarch64" has stopped predicting anything about riscv64, and the failure would
 surface halfway through a build instead of at the front door.

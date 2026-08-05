@@ -34,6 +34,10 @@
 //! the design routes everything through one doorbell plus shared memory rather than one endpoint per
 //! source, and the reason a client that stops answering can stall the compositor. See
 //! notes/compositor.md, "The primitive this rung wants and does not have".
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `compd`.
+//! Refused `compd` (the `-d` claim). Sharing the crate's name is deliberate: the crate is this
+//! program's logic and the program is its authority (DECISIONS §63).
 
 #![no_std]
 #![no_main]
@@ -162,6 +166,15 @@ fn flush(damage: Rect) {
 fn drain_input(focusable: usize, focus: &mut u32) {
     let mut head = rd32(RING_VA + ring::HEAD);
     let tail = rd32(RING_VA + ring::TAIL);
+    // **The acquire half of `kbd::ring_publish`'s release** (milestone 43,
+    // notes/shared-page-audit.md finding 7). The producer fences before it stores the tail, with a
+    // comment saying the bytes must be visible before the tail that advertises them; that orders
+    // the producer's stores and does nothing whatever for this reader. `rd32` is a plain volatile
+    // load, and on aarch64 the byte loads below may be satisfied before the tail load above, so
+    // without this the compositor can act on a fresh tail and stale bytes. The kernel's stand-in
+    // for this same ring (`kernel/src/user/keyboard_service.rs`, `take_typed`) already fences
+    // here; the userspace reader of the same contract did not.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     while head != tail {
         let at = RING_VA + ring::BYTES + (head % ring::CAPACITY) as u64;
         // SAFETY: inside the ring page, which the kernel mapped read/write.
@@ -214,6 +227,20 @@ fn serve_frame(
         }
         last_seq[i] = seq;
         committed[i] = true;
+
+        // **The acquire half of the client's release** (milestone 43,
+        // notes/shared-page-audit.md finding 7). Both clients (`window.rs`, `display_terminal.rs`)
+        // put a fence between their pixel and rectangle stores and the sequence store, each with a
+        // comment saying the sequence must become visible last "or the compositor could composite
+        // a frame we have not finished writing". That is the release side, and it was the only
+        // side there was: nothing here ordered the rectangle and pixel loads *after* the sequence
+        // load, so on a weakly-ordered machine this could read a fresh sequence beside the
+        // previous frame's pixels. A one-sided fence is not a fence.
+        //
+        // The same shape, in the clock page's seqlock, is milestone 80's finding; it is recorded
+        // here because it is a different page, a different pair, and the reader's half rather than
+        // the writer's.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         // The client's rectangle is **untrusted input**. Clip it to the surface it owns; say so in its
         // own control page if it was out of bounds (per-client feedback through the only channel that

@@ -32,6 +32,13 @@
 //! Role 3 is genuinely separate from the C component and must be: a checker inside the faulting
 //! address space could only report what that address space could see, which is exactly the thing
 //! under suspicion.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `cwarden`. Refused `cwarden` and the
+//! whole `warden` family, a synonym this project invented for a pattern that already has a name:
+//! DECISIONS §50 settled that using the literature's word claims "this is that", where a synonym
+//! asserts novelty there is none. Refused the caretaker noun for this one specifically: it holds a
+//! region and confines foreign code rather than attenuating a directory capability to a narrower
+//! one, so it is deliberately outside that family.
 
 #![no_std]
 #![no_main]

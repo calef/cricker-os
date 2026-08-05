@@ -13,6 +13,12 @@
 # are milliseconds, and the class of bug it catches moves at the pace of `unsafe` blocks, not of
 # commits. Cadence is the weekly miri workflow plus on demand, here. Extra args go to
 # `cargo miri test`, so `script/undefined-behavior-check -p gpt` narrows the run.
+#
+# Name: ratified 2026-08-03 (Chris), replacing `miri`. Refused `miri` (it names the tool rather than
+# the function) and `sanitize` (in a project whose thesis is confining hostile input, that reads as
+# *input* sanitization, and the misreading is worse than the length it saves). The `-check` suffix
+# is established here, in `shell-check` and `qemu-check`, and eight of twenty-six scripts were
+# already hyphenated, so the long form costs nothing the directory was not already paying.
 
 set -e
 cd "$(dirname "$0")/.."

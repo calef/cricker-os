@@ -49,7 +49,12 @@
 //! };
 //!
 //! let mut printed = Vec::new();
-//! let said = echo(b"the set: *.txt", &mut listing, &mut |b| printed.extend_from_slice(b));
+//! let said = echo(
+//!     b"the set: *.txt",
+//!     swish::Status::Ran,
+//!     &mut listing,
+//!     &mut |b| printed.extend_from_slice(b),
+//! );
 //!
 //! assert!(matches!(said, Say::Nothing));
 //! // The words with no magic in them came through byte for byte; the pattern became what it
@@ -69,8 +74,18 @@
 //!   around a choice between two spawn paths. Lifting it would have moved the spawn decision away
 //!   from the code that can act on it and bought no new coverage.
 //! - `spawn`, `pipeline` and everything below them, which is capability movement and nothing else.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `shell`. Refused `shell` (a category
+//! rather than a name: `bash`, `zsh`, `fish` and `rc` are identities), `capsh` (Linux's libcap
+//! ships `capsh(1)`) and `sheesh` (it carries a 2020-21 timestamp where `bash` and `fish` are
+//! era-neutral, and it is an interjection of exasperation, while this shell's most characteristic
+//! behaviour is refusing things by design). A swish is the shot that goes through the net touching
+//! nothing, which is least authority in one word. The crate takes the program's name because the
+//! crate is that program's logic (DECISIONS §63); it was lifted out on 2026-08-02 by milestone 70.
 
 #![no_std]
+
+pub mod sequence;
 
 use fs_proto::dir;
 use grant_plan::expand::{Expansion, NameSet};
@@ -99,6 +114,102 @@ pub enum Say {
     /// refusals with no program on the line at all.
     Cannot(Refusal),
 }
+
+/// **What a command did**, which is what `$?` reports and what `&&` reads (milestone 67,
+/// notes/swish-language.md).
+///
+/// # The fork this milestone had to settle: a refusal is not an error
+///
+/// On Unix `127` (no such command) and a program's own `exit(1)` are the same kind of integer, and
+/// `&&` cannot tell them apart because the shell has nothing better to say. Here the two are
+/// genuinely different events and the shell knows which:
+///
+/// - [`Refused`](Status::Refused) is **the shell declining to run the line**, decided at the prompt
+///   from what this shell *holds* and what a manifest says, with nothing spawned, nothing opened
+///   and no authority moved. It is reproducible: the same line refuses again. "You hold no such
+///   capability", `Refusal::TooManyNames`, a pattern that matched nothing, a name that is not a
+///   name.
+/// - [`Failed`](Status::Failed) is **something was attempted and did not work**: the filesystem
+///   answered with an errno, init had no memory to spawn with, a job was interrupted.
+///
+/// Separating them is the answer to "what does a status mean when the thing that failed was a
+/// refusal", and it is worth a number because the two answer different questions. "Did my command
+/// fail?" and "was I able to ask?" are not the same question, and a shell that refuses constantly
+/// and by design should be able to say which one happened.
+///
+/// # What it is *not*, stated because the gap is real
+///
+/// **No program in this system reports an exit status**, and this value does not pretend one did. A
+/// spawned program answers with a *value* (`worker 7` answers 49), with bytes, or through a job
+/// frame, and none of those is a status. So `$?` is the shell's own reading of what happened to the
+/// line, which today is all there is; inventing a per-program status would mean a `spawnproto`
+/// change and an edit to every program, which is a milestone and not a field.
+///
+/// # And what it cannot carry
+///
+/// One small integer, which designates nothing. There is no capability in it, no name, no handle:
+/// a `&&` chain hands the next segment a **bit**, and that segment is planned from scratch against
+/// what the shell holds, exactly as if it had been typed alone. See [`sequence`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Status {
+    /// The command ran and the shell has nothing to report. `$?` is `0`.
+    #[default]
+    Ran,
+    /// Something was attempted and did not work. `$?` is `1`.
+    Failed,
+    /// The shell would not run it, so nothing did. `$?` is `2`.
+    Refused,
+}
+
+impl Status {
+    /// Whether `&&` should carry on. Only [`Ran`](Status::Ran) is a yes.
+    pub fn ok(self) -> bool {
+        matches!(self, Status::Ran)
+    }
+
+    /// The number `$?` shows.
+    pub fn code(self) -> u64 {
+        match self {
+            Status::Ran => 0,
+            Status::Failed => 1,
+            Status::Refused => 2,
+        }
+    }
+
+    /// Read a status back out of [`code`](Status::code). The shell keeps it in an atomic cell,
+    /// because every printer in the program can reach it and none of them holds a `&mut` to
+    /// anything shared.
+    pub fn from_code(code: u64) -> Status {
+        match code {
+            0 => Status::Ran,
+            1 => Status::Failed,
+            _ => Status::Refused,
+        }
+    }
+
+    /// The number as bytes, which is `'static` because there are three of them.
+    ///
+    /// That is not a micro-optimisation, it is what makes `$?` expressible at all in a shell with
+    /// no allocator: a substituted word has to be a slice with the line's lifetime, and a `'static`
+    /// slice unifies with any of them. A status with an unbounded range would need a buffer, and
+    /// there would be nowhere to put one.
+    pub fn digits(self) -> &'static [u8] {
+        match self {
+            Status::Ran => b"0",
+            Status::Failed => b"1",
+            Status::Refused => b"2",
+        }
+    }
+}
+
+/// **The word that reads the last command's status.** Recognised where words are expanded, which
+/// today is [`echo`].
+///
+/// It is spelled `$?` because that is the spelling every shell user already knows, and this project
+/// does not respell a name a reader arrives with. It is **not** a variable: there is no variable
+/// mechanism here at all (milestone 47 owns that, and studies it as "the same question wearing a
+/// string costume"), so this is one word the expander knows, in the same category as a pattern.
+pub const STATUS_WORD: &[u8] = b"$?";
 
 /// **What kind of thing the user typed**, decided before anything is invoked.
 ///
@@ -193,6 +304,13 @@ pub fn expansion(
     expand: &mut dyn FnMut(&[u8]) -> Result<NameSet, Say>,
 ) -> Result<Expansion, Say> {
     for (i, token) in spec.positionals().iter().enumerate() {
+        // **A quoted word designates itself** (milestone 67). This is the whole of what quoting
+        // does to authority, and it is a narrowing: `rm "*.txt"` hands over one name where
+        // `rm *.txt` hands over the set. Asked before `is_pattern`, because the question "is this a
+        // pattern" is only worth asking about a word nobody quoted.
+        if spec.quoted(i) {
+            continue;
+        }
         match is_pattern(token) {
             Ok(false) => continue,
             Ok(true) => return Ok(Expansion::at(i, expand(token)?)),
@@ -220,8 +338,19 @@ pub fn write_set(set: &NameSet, out: &mut dyn FnMut(&[u8])) {
 /// Words with no magic in them are copied through **byte for byte, spacing included**, so `echo
 /// two  spaces` still prints its two spaces. Only a word that is a pattern is replaced by what it
 /// designates, which keeps `echo` a text command everywhere it was one before.
+///
+/// # The two words that are not text (milestone 67)
+///
+/// A **quoted** word prints what is between its quotes and is never expanded, so `echo "*.txt"`
+/// prints a pattern and `echo *.txt` prints the set it designates. Those two lines side by side are
+/// the demonstration this milestone owes: quoting is the difference between naming a name and
+/// naming a set, and `echo` shows it before anything moves.
+///
+/// And [`STATUS_WORD`] prints `status`, which is how `$?` is read at a prompt. `echo "$?"` prints
+/// the two characters, because both quote forms are literal here (see [`grant_plan::word`]).
 pub fn echo(
     text: &[u8],
+    status: Status,
     expand: &mut dyn FnMut(&[u8]) -> Result<NameSet, Say>,
     out: &mut dyn FnMut(&[u8]),
 ) -> Say {
@@ -235,16 +364,27 @@ pub fn echo(
             out(&text[space..i]);
         }
         let word = i;
-        while i < text.len() && !text[i].is_ascii_whitespace() {
-            i += 1;
-        }
+        // A word ends at the first **bare** whitespace, so `echo "two  spaces"` is one word and
+        // keeps the spacing inside it.
+        i = grant_plan::word::span(text, i, &|b| b.is_ascii_whitespace());
         if i == word {
             continue;
         }
-        let token = &text[word..i];
-        match is_pattern(token) {
-            Ok(false) => out(token),
-            Ok(true) => match expand(token) {
+        let token = match grant_plan::word::read(&text[word..i]) {
+            Ok(w) => w,
+            Err(r) => return Say::Cannot(r),
+        };
+        if token.quoted {
+            out(token.text);
+            continue;
+        }
+        if token.text == STATUS_WORD {
+            out(status.digits());
+            continue;
+        }
+        match is_pattern(token.text) {
+            Ok(false) => out(token.text),
+            Ok(true) => match expand(token.text) {
                 Ok(set) => write_set(&set, out),
                 // A pattern that matched nothing stops the line rather than printing itself. That is
                 // the same answer `rm` gets, and it has to be: if `echo` printed the pattern where
@@ -576,6 +716,17 @@ pub fn write_help(out: &mut dyn FnMut(&[u8])) {
     out(b"  a < name                a file's bytes become a's input\n");
     out(b"  a 2> name               a's DECLARED second stream, if it has one (date does)\n");
     out(b"  echo hello | wc         a builtin can lead a pipeline: this shell writes the bytes\n");
+    out(b"\n  quoting (milestone 67). it decides what a WORD is, and a word is often the\n");
+    out(b"  thing you are granting. it never widens what you may name.\n");
+    out(b"  'text'  \"text\"          one word, spaces and operators included\n");
+    out(b"  wc \"my notes.txt\"       ... which is the only way to name a file with a space\n");
+    out(b"  echo \"*.txt\"            quoted, so it is ONE name and not the set it matches\n");
+    out(b"\n  sequencing. a connector carries one bit and no capability: each command is\n");
+    out(b"  planned from scratch against what this shell holds.\n");
+    out(b"  a ; b                   run b whatever a did\n");
+    out(b"  a && b                  run b only if a succeeded\n");
+    out(b"  a || b                  run b only if a did not\n");
+    out(b"  echo $?                 0 it ran, 1 it failed, 2 THIS SHELL REFUSED IT\n");
     out(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
 }
 
@@ -1068,7 +1219,12 @@ mod tests {
     #[test]
     fn echo_copies_ordinary_words_byte_for_byte() {
         let out = shown(|o| {
-            echo(b"  two  spaces ", &mut |_| Ok(NameSet::empty()), o);
+            echo(
+                b"  two  spaces ",
+                Status::Ran,
+                &mut |_| Ok(NameSet::empty()),
+                o,
+            );
         });
         assert_eq!(out, "  two  spaces ");
     }
@@ -1077,7 +1233,7 @@ mod tests {
     fn echo_prints_exactly_what_the_same_pattern_would_grant() {
         let set = listing(&[b"notes.txt", b"report.txt"]);
         let printed = shown(|o| {
-            echo(b"*.txt", &mut |_| Ok(set), o);
+            echo(b"*.txt", Status::Ran, &mut |_| Ok(set), o);
         });
         let granted = shown(|o| write_set(&set, o));
         // One renderer, so `echo *.txt` and `caps rm *.txt` cannot disagree about what the line
@@ -1092,9 +1248,14 @@ mod tests {
         // endpoint. A word with nothing before it must not cost a round trip that carries no
         // bytes, which is what emitting the zero-length whitespace run ahead of it would be.
         let mut writes: Vec<Vec<u8>> = Vec::new();
-        let said = echo(b"one  two", &mut |_| Ok(NameSet::empty()), &mut |b| {
-            writes.push(b.to_vec());
-        });
+        let said = echo(
+            b"one  two",
+            Status::Ran,
+            &mut |_| Ok(NameSet::empty()),
+            &mut |b| {
+                writes.push(b.to_vec());
+            },
+        );
         assert_eq!(said, Say::Nothing);
         assert!(writes.iter().all(|w| !w.is_empty()), "{writes:?}");
         assert_eq!(writes.concat(), b"one  two");
@@ -1107,6 +1268,7 @@ mod tests {
         let mut printed = Vec::new();
         let said = echo(
             b"before *.txt after",
+            Status::Ran,
             &mut |_| Err(Say::Cannot(Refusal::NoMatch)),
             &mut |b| printed.extend_from_slice(b),
         );
@@ -1120,6 +1282,7 @@ mod tests {
         let said = shown_say(|o| {
             echo(
                 b"*/report.txt",
+                Status::Ran,
                 &mut |_| {
                     asked += 1;
                     Ok(NameSet::empty())
@@ -1133,6 +1296,138 @@ mod tests {
 
     fn shown_say(f: impl FnOnce(&mut dyn FnMut(&[u8])) -> Say) -> Say {
         f(&mut |_| {})
+    }
+
+    // ---- quoting: what a word is, and therefore what is designated (milestone 67) ----
+
+    /// **The demonstration the milestone owes, in two lines.** The same four characters are a name
+    /// when quoted and a set when not, and `echo` prints exactly what a grant would move either way.
+    #[test]
+    fn quoting_is_the_difference_between_naming_a_name_and_naming_a_set() {
+        let set = listing(&[b"notes.txt", b"report.txt"]);
+        let expanded = shown(|o| {
+            echo(b"*.txt", Status::Ran, &mut |_| Ok(set), o);
+        });
+        assert_eq!(expanded, "notes.txt report.txt");
+
+        let mut asked = 0;
+        let literal = shown(|o| {
+            echo(
+                b"\"*.txt\"",
+                Status::Ran,
+                &mut |_| {
+                    asked += 1;
+                    Ok(set)
+                },
+                o,
+            );
+        });
+        assert_eq!(literal, "*.txt");
+        // And the directory was never read, so the quoting is a decision about the line rather than
+        // a filter on what came back.
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn a_quoted_word_keeps_the_spaces_inside_it() {
+        let out = shown(|o| {
+            echo(
+                b"a \"two  spaces\" b",
+                Status::Ran,
+                &mut |_| Ok(NameSet::empty()),
+                o,
+            );
+        });
+        assert_eq!(out, "a two  spaces b");
+    }
+
+    /// The planner never sees a quoted pattern as a pattern, which is the same claim one layer up
+    /// from [`quoting_is_the_difference_between_naming_a_name_and_naming_a_set`] and the one that
+    /// decides what actually moves.
+    #[test]
+    fn a_quoted_operand_is_not_expanded_before_it_is_planned() {
+        let mut asked = 0;
+        let e = expansion(&spec_of(b"rm \"*.txt\""), &mut |_| {
+            asked += 1;
+            Ok(listing(&[b"one.txt"]))
+        })
+        .expect("nothing to expand");
+        assert_eq!(asked, 0, "a quoted word must not reach the directory");
+        assert!(e.for_positional(0).is_none());
+        // The same line unquoted does read the directory, so the pair is a control rather than a
+        // test of a code path nothing takes.
+        let mut asked = 0;
+        expansion(&spec_of(b"rm *.txt"), &mut |_| {
+            asked += 1;
+            Ok(listing(&[b"one.txt"]))
+        })
+        .expect("the fixture matches");
+        assert_eq!(asked, 1);
+    }
+
+    /// A misquoted word stops `echo` where a misplaced pattern stops it, and for the same reason:
+    /// the line does not designate what it looks like it designates.
+    #[test]
+    fn echo_refuses_a_word_it_cannot_read() {
+        assert_eq!(
+            shown_say(|o| echo(b"'unclosed", Status::Ran, &mut |_| Ok(NameSet::empty()), o)),
+            Say::Cannot(Refusal::UnclosedQuote),
+        );
+        assert_eq!(
+            shown_say(|o| echo(b"a\"b\"", Status::Ran, &mut |_| Ok(NameSet::empty()), o)),
+            Say::Cannot(Refusal::PartlyQuoted),
+        );
+    }
+
+    // ---- the status word ----
+
+    /// `$?` is read where words are expanded, and its three values are the three things that can
+    /// happen to a line here.
+    #[test]
+    fn the_status_word_reads_the_last_commands_status() {
+        for (s, digit) in [
+            (Status::Ran, "0"),
+            (Status::Failed, "1"),
+            (Status::Refused, "2"),
+        ] {
+            let out = shown(|o| {
+                echo(b"$?", s, &mut |_| Ok(NameSet::empty()), o);
+            });
+            assert_eq!(out, digit);
+        }
+    }
+
+    /// **Quoting turns it off**, which is the escape hatch and also the honest statement of where
+    /// this shell is: both quote forms are literal today, so `"$?"` is two characters. When
+    /// variables arrive the two forms have to stop being the same thing.
+    #[test]
+    fn a_quoted_status_word_is_two_characters() {
+        let out = shown(|o| {
+            echo(b"'$?' $?", Status::Failed, &mut |_| Ok(NameSet::empty()), o);
+        });
+        assert_eq!(out, "$? 1");
+    }
+
+    /// The status a line ends on is not a name, a handle or a capability. This pins the shape
+    /// rather than a value: three variants, one small integer each, and nothing to designate with.
+    #[test]
+    fn a_status_carries_a_number_and_nothing_else() {
+        assert_eq!(Status::default(), Status::Ran);
+        assert!(Status::Ran.ok());
+        assert!(!Status::Failed.ok() && !Status::Refused.ok());
+        assert_eq!(
+            (
+                Status::Ran.code(),
+                Status::Failed.code(),
+                Status::Refused.code()
+            ),
+            (0, 1, 2),
+        );
+        for s in [Status::Ran, Status::Failed, Status::Refused] {
+            let mut rendered = Vec::new();
+            write_num(s.code(), &mut |b| rendered.extend_from_slice(b));
+            assert_eq!(rendered, s.digits(), "the two spellings of {s:?} disagree");
+        }
     }
 
     // ---- the sentences ----

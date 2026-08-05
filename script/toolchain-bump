@@ -12,6 +12,10 @@
 # With no argument it targets today. On success the working tree holds the new pin and a rebuilt std
 # farm, ready to commit; on failure it says what broke and leaves the old pin in place, because a
 # half-applied toolchain bump is worse than none.
+#
+# Name: unrecorded. Introduced 2026-07-30. A verb phrase where the tenet says noun, and the tenet's
+# rule is written for crates, programs and modules rather than for commands, which is arguably the
+# right exemption and is recorded nowhere.
 
 set -e
 cd "$(dirname "$0")/.."

@@ -16,6 +16,10 @@
 //! two programs is the function that computes a request's answer: this one is Rust, that one is C.
 //! That is deliberate, and it is what makes the milestone's claim about the component rather than
 //! about the harness.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `conx`. Refused `conx`, whose
+//! expansion is recorded nowhere in this tree; that absence is one of the two cases the naming
+//! tenet cites as evidence that it needed a rule.
 
 #![no_std]
 #![no_main]

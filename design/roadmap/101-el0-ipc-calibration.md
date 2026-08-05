@@ -1,19 +1,28 @@
 # 101. The L4 calibration, read from the IPC number that pays for the trap
 
-**Status: NOT-STARTED.** Raised 2026-08-04 as "build the EL0-to-EL0 IPC benchmark nobody owns", and
-that is not what the tree says. **The benchmark exists and has been published for days.** The
+**Status: PARTIAL** since 2026-08-04 (PR #104). Raised 2026-08-04 as "build the EL0-to-EL0 IPC
+benchmark nobody owns", and that is not what the tree says. **The benchmark exists and has been published for days.** The
 milestone survives because the comparison built on it did not follow, and the corrected comparison
 is considerably worse for us than the one on the page.
 
-**Gate: NONE.** The paragraph that overstates the L4 comparison by a factor of three can be
+**Gate: NONE.** What remains is one step, reading cycles from a PMU instead of deriving them from
+nanoseconds and an assumed clock. That rides milestone 16's silicon (board expected
+~2026-08-21) and is deferred to milestone 74 by name, so it is blocked in fact while gating on
+nothing this project controls.
+
+**The prediction in this file was tested and was wrong.** It forecast 12-24x; the measured answer is
+~1.1x to 1.7x, an error the same size as the one it was written to correct, in the other direction.
+The 12-24x figures below are left standing as the prediction of record rather than quietly fixed.
+
+The paragraph that overstates the L4 comparison by a factor of three can be
 corrected today, and the block says it should not wait for a board. Reading cycles from a PMU
 rather than estimating them rides milestone 16's silicon, and folding the whole thing into
 milestone 25 is the alternative the block names.
 
 **What the source actually says.** notes/benchmarks.md:66 names a true EL0-to-EL0 benchmark as "the
 right follow-up" and says it "needs one `CNTKCTL_EL1` bit so EL0 can read the counter". Both halves
-are stale. The bit was opened by milestone 19e (`kernel/src/arch/aarch64/timer.rs:134`, with the
-riscv twin `scounteren.TM` in its timer init), and `ipc_rtt_el0` has been in `kernel/src/bench.rs`
+are stale. The bit was opened by milestone 19e, in `kernel/src/arch/aarch64/timer.rs:134` with the
+riscv twin `scounteren.TM` in its timer init, and `ipc_rtt_el0` has been in `kernel/src/bench.rs`
 since the EL0 primitive suite landed: two EL0 processes, two endpoints, a client self-timing
 `SEND`-then-`RECV` against a server process. The same note reports it, 130 lines below the sentence
 that asks for it.

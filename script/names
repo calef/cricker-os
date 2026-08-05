@@ -1,0 +1,381 @@
+#!/bin/sh
+#
+# script/names: who named this, when, and what was refused (milestone 115).
+#
+# PROVISIONAL NAME. This script is one day old and its own name has not been ratified; see the
+# `Name:` block at the end of this comment.
+#
+# Why this exists. A lane proposed `system_builder` for the crate milestone 96 extracted, the
+# maintainer endorsed it, and Chris overruled it to `system_initializer`. Only afterwards did anyone
+# find that milestone 63 had **already refused `system_builder`**, and for a reason nobody had
+# located: `user/src/builder.rs` calls itself "a minimal init: the system builder", so two programs
+# would claim one phrase. The refusal existed, in one table cell inside one milestone block,
+# invisible at the moment it was needed. A blind rename then swept the old name out of that very
+# row, and the record of the refusal was nearly destroyed by the rename it should have prevented.
+#
+# **The refusals are the valuable half.** A ratified name is visible in the tree, because it is the
+# name; a refused one is visible nowhere, and the person who most needs it is the person about to
+# propose it again.
+#
+# Why a query and not a table. The first draft of milestone 115 proposed one ratified-names table in
+# notes/naming.md. Chris rejected it on 2026-08-04 for scaling the way the original DECISIONS.md and
+# design/roadmap.md scaled, and size is the smaller half of that: every lane that adds a name would
+# edit **one file**, which is exactly what produced three section-number collisions in a day. So the
+# provenance lives **at the name**, in the header of the crate, program or script it belongs to,
+# where adding a name touches one file and two lanes naming two things cannot collide. This script
+# derives the table. Same family as script/roadmap, script/decisions and script/catch-up: a computed
+# report over the tree, which therefore cannot drift from it.
+#
+# What carries a provenance block, and where:
+#
+#   crates/<name>/src/lib.rs   the crate's module doc  (`//! Name: ...`)
+#   user/src/<name>.rs         the program's module doc (`//! Name: ...`)
+#   script/<name>              the entry point's comment block (`# Name: ...`)
+#
+# The form, which is all that is checked:
+#
+#   Name: ratified <YYYY-MM-DD> (<who>, <where>). Refused `x` (why), `y` (why).
+#   Name: recorded (<where>). <what the history says, and what it does not settle>
+#   Name: unrecorded. <what the history does and does not say>
+#
+# A block runs from its `Name:` line to the next empty comment line, so it may wrap. `Refused` is
+# optional and every refused name is in backticks, which is what makes `script/names <name>` able to
+# answer "has this been proposed before" from the refusals as well as from the tree.
+#
+# **Three states, because two of them were one job wearing one word.** The first cut of this script
+# had `ratified` and `unrecorded`, and the second answered two different questions at once. "Nobody
+# in this tree can say why this is called that" needs research *and* a ruling; "here is the argument,
+# nobody ever signed it" needs only the ruling. Those are different amounts of Chris's time, and a
+# worklist that cannot tell them apart is a list rather than a plan. So:
+#
+#   ratified    Chris ruled, with the date and what was refused.
+#   recorded    the tree argues the name somewhere (a milestone block, a decision, a header) and
+#               nobody ever put it to him.
+#   unrecorded  nothing outside this block says why the name is what it is.
+#
+# `recorded` carries a citation for the same reason `ratified` carries a date: the claim is that the
+# reasoning exists somewhere, so a block that will not say where has not made it. That is checked as
+# form, never as truth.
+#
+# **A `Name:` block is never its own evidence.** Every one of these was written by milestone 115, so
+# reading them as "the tree explains this name" would make the record prove itself and every name
+# `recorded` by construction. The citation points somewhere else, and that is the whole content of
+# the distinction.
+#
+# **`unrecorded` is a first-class answer and must stay one.** Most of this tree's vocabulary arrived
+# before anyone was writing naming decisions down, and inventing a ratification to fill a row would
+# put a false claim in the one record whose entire job is saying who claimed what. Where the history
+# does not say, the entry says it does not say, and cites the commit that introduced the name so the
+# next reader starts where this one stopped.
+#
+#   script/names              the table, by kind
+#   script/names --unratified the worklist: what still wants Chris, in the order to work it
+#   script/names --refused    every refused name, and what holds the refusal
+#   script/names --unrecorded the names nobody wrote a reason for
+#   script/names <name>       one name: its provenance, or the entry that refused it
+#   script/names --check      every surface carries a block; non-zero on a problem (script/lint)
+#
+# **The gate is presence, never `ratified`.** Nothing here fails a build because a name is waiting on
+# Chris, and it must stay that way: a lint that demanded the queue be drained would block every
+# unrelated merge behind a review nobody can hurry, which is the wall this milestone exists to avoid
+# building. The worklist is how the queue gets worked; the gate only insists that a name says which
+# of the three it is.
+#
+# BUGS. It checks that a name carries provenance and that the provenance parses. It cannot check
+# that the recorded reason is **still true**, that a date is right, that a `recorded` citation leads
+# anywhere, or that an `unrecorded` entry is honest rather than lazy. That is the same limit
+# script/decisions records for `§N` citations, and it is not closeable by a script: a reason is
+# prose, and prose is checked by reading.
+#
+# Name: unrecorded. Provisional, minted by milestone 115's lane on 2026-08-04 and not yet put to
+# Chris, who names things. `provenance` was considered and set aside as naming the mechanism rather
+# than the subject; `ratifications` names half the record and drops the refusals, which are the half
+# that pays.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import os
+import re
+import sys
+
+root, mode = sys.argv[1], sys.argv[2]
+
+# The three surfaces, each with the file that holds its header. Anything else in the tree (kernel,
+# xtask, fs_server, tools/, scripts/) is out of scope on purpose; see notes/naming.md's BUGS.
+SURFACES = [
+    ("crate", os.path.join(root, "crates"),
+     lambda name: os.path.join(root, "crates", name, "src", "lib.rs"), "//!"),
+    ("program", os.path.join(root, "user", "src"),
+     lambda name: os.path.join(root, "user", "src", name + ".rs"), "//!"),
+    ("script", os.path.join(root, "script"),
+     lambda name: os.path.join(root, "script", name), "#"),
+]
+
+problems = []
+
+
+def items():
+    """Every crate, program and script/ entry point, with the file that must carry its block."""
+    out = []
+    for kind, directory, path_of, prefix in SURFACES:
+        for entry in sorted(os.listdir(directory)):
+            if kind == "crate":
+                if not os.path.isdir(os.path.join(directory, entry)):
+                    continue
+                name = entry
+            elif kind == "program":
+                if not entry.endswith(".rs"):
+                    continue
+                name = entry[:-3]
+            else:
+                if os.path.isdir(os.path.join(directory, entry)):
+                    continue
+                name = entry
+            out.append((kind, name, path_of(name), prefix))
+    return out
+
+
+def block(path, prefix):
+    """The provenance block: the `Name:` line and its continuations, joined into one string.
+
+    A continuation is the next comment line at the same prefix; an EMPTY comment line ends the
+    block. That is why the convention puts the block in a paragraph of its own: it is the only
+    terminator a header can carry without inventing punctuation nobody would remember.
+    """
+    try:
+        lines = open(path, errors="replace").read().split("\n")
+    except FileNotFoundError:
+        return None, f"{os.path.relpath(path, root)} does not exist"
+
+    head = re.compile(rf"^{re.escape(prefix)} ?Name:\s*(.*)$")
+    cont = re.compile(rf"^{re.escape(prefix)} (\S.*)$")
+    empty = re.compile(rf"^{re.escape(prefix)}\s*$")
+
+    for i, line in enumerate(lines):
+        m = head.match(line)
+        if not m:
+            continue
+        parts = [m.group(1).strip()]
+        for later in lines[i + 1:]:
+            if empty.match(later):
+                break
+            c = cont.match(later)
+            if not c:
+                break
+            parts.append(c.group(1).strip())
+        return " ".join(p for p in parts if p), None
+    return None, None
+
+
+TICKED = re.compile(r"`([^`]+)`")
+PAREN = re.compile(r"\([^()]*\)")
+# A refused name is a bare identifier: a crate, program or script/ entry that could have existed.
+# Anything with a dot, a `::` or a bracket in it is a citation, not a candidate.
+NAMEISH = re.compile(r"[A-Za-z][A-Za-z0-9_/-]*$")
+
+
+def refused_in(text):
+    """Every name recorded as refused, in order, without duplicates.
+
+    Two rules make this parseable without a syntax nobody would remember. **A reason goes in
+    parentheses**, so parenthesized spans are removed before the names are read (otherwise
+    `capsh(1)`, cited as the Linux tool that refused `capsh`, reads as a refusal of its own). And
+    **the refusal clause ends at its sentence**, so the prose that follows it can name other things
+    freely: `grant_plan` explains after its list that it is deliberately not named for `swish`, and
+    neither `swish` nor the `dwarden` it compares itself to is a refusal.
+    """
+    out = []
+    for chunk in re.split(r"\bRefused\b", text)[1:]:
+        flat, prev = chunk, None
+        while flat != prev:
+            prev = flat
+            flat = PAREN.sub(" ", flat)
+        clause = re.split(r"\.\s", flat)[0]
+        for token in TICKED.findall(clause):
+            if NAMEISH.fullmatch(token) and token not in out:
+                out.append(token)
+    return out
+
+
+def parse(text):
+    """(status, date, [refused names]). Form only: this cannot judge a reason."""
+    m = re.match(r"(ratified|recorded|unrecorded)\b", text)
+    status = m.group(1) if m else None
+    date = None
+    if status == "ratified":
+        d = re.match(r"ratified (\d{4}-\d{2}-\d{2})\b", text)
+        date = d.group(1) if d else None
+    return status, date, refused_in(text)
+
+
+# `recorded` claims the reasoning is somewhere else, so it has to point: `recorded (milestone 46)`,
+# `recorded (notes/naming.md)`. Same shape of check as the date on `ratified`, and the same limit,
+# since nothing here follows the citation to see whether it says what the block claims.
+CITED = re.compile(r"^recorded \([^()]+\)")
+
+
+records = []
+for kind, name, path, prefix in items():
+    text, err = block(path, prefix)
+    if err:
+        problems.append(err)
+        continue
+    if text is None:
+        problems.append(f"{kind} {name}: no `Name:` block in {os.path.relpath(path, root)}")
+        continue
+    status, date, refused = parse(text)
+    if status is None:
+        problems.append(f"{kind} {name}: the block must start `ratified <date>` or `unrecorded` "
+                        f"(found {text[:48]!r})")
+        continue
+    if status == "ratified" and date is None:
+        problems.append(f"{kind} {name}: `ratified` must carry a date (ratified 2026-08-04), "
+                        f"because a ratification nobody can place is prose")
+        continue
+    if status == "recorded" and not CITED.match(text):
+        problems.append(f"{kind} {name}: `recorded` must cite where (recorded (milestone 46)), "
+                        f"because the claim IS that the reasoning is somewhere else")
+        continue
+    records.append({"kind": kind, "name": name, "path": os.path.relpath(path, root),
+                    "status": status, "date": date, "refused": refused, "text": text})
+
+by_kind = {}
+for r in records:
+    by_kind.setdefault(r["kind"], []).append(r)
+
+ratified = [r for r in records if r["status"] == "ratified"]
+recorded = [r for r in records if r["status"] == "recorded"]
+unrecorded = [r for r in records if r["status"] == "unrecorded"]
+refusals = [(bad, r) for r in records for bad in r["refused"]]
+
+# The worklist's order, and it is exposure rather than alphabet or count, because exposure is what
+# makes a wrong name expensive. A program is what a person types at the prompt, so it is read by
+# everyone who uses the system; a crate is what a newcomer greps before opening anything (the naming
+# tenet's own argument for putting crates in scope); a `script/` entry point is typed by whoever
+# works ON the tree rather than in it.
+#
+# The tier is the KIND, deliberately, and not "programs a person actually types". That second split
+# is the two-tier rule Chris rejected on 2026-08-01, keyed on a property that is not stable: `wc`
+# went from internal plumbing to a prompt-typed pipeline stage inside a day. Every program in
+# `user/src/` is in the initrd and can be typed, so the kind is the honest tier and needs no
+# classification anybody could get wrong.
+EXPOSURE = {"program": 0, "crate": 1, "script": 2}
+# Within a tier, a name nobody can justify outranks one whose reasoning merely lacks a signature.
+URGENCY = {"unrecorded": 0, "recorded": 1}
+
+# A refused name that something in the tree still USES is a contradiction worth seeing: either the
+# refusal was reversed and nobody said so, or a name came back. Reported, never fatal, because a
+# refused word can legitimately survive as ordinary English (`brief`, `measure`) and a gate that
+# fires on prose is a gate people learn to skip.
+live = {r["name"] for r in records}
+contradictions = sorted({bad for bad, _ in refusals if bad in live})
+
+# ---- report ------------------------------------------------------------------
+if mode == "--check":
+    for p in sorted(set(problems)):
+        print(f"names: {p}", file=sys.stderr)
+    if problems:
+        print("", file=sys.stderr)
+        print("Every crate, program and script/ entry point carries a provenance block in its own "
+              "header:", file=sys.stderr)
+        print("  Name: ratified 2026-08-04 (Chris, milestone 63). Refused `x` (why).",
+              file=sys.stderr)
+        print("  Name: recorded (milestone 46). <what the tree already argues, and where>",
+              file=sys.stderr)
+        print("  Name: unrecorded. <what the history does and does not say>", file=sys.stderr)
+        print("See notes/naming.md. Presence is the gate, never `ratified`: a name waiting on Chris "
+              "never fails a build.", file=sys.stderr)
+        print("`unrecorded` is a real answer; a ratification you cannot cite is not.",
+              file=sys.stderr)
+        sys.exit(1)
+    print(f"names: {len(records)} names carry provenance "
+          f"({len(by_kind.get('crate', []))} crates, {len(by_kind.get('program', []))} programs, "
+          f"{len(by_kind.get('script', []))} scripts)")
+    print(f"names: {len(ratified)} ratified, {len(recorded)} recorded, {len(unrecorded)} "
+          f"unrecorded, {len(refusals)} refusals recorded beside them")
+    print(f"names: {len(recorded) + len(unrecorded)} still want Chris "
+          f"(script/names --unratified), which is a worklist and not a failure")
+    for bad in contradictions:
+        print(f"names: NOTE {bad!r} is recorded as refused and is also a live name", file=sys.stderr)
+    sys.exit(0)
+
+if mode == "--refused":
+    if not refusals:
+        print("no refusals recorded")
+        sys.exit(0)
+    print(f"REFUSED ({len(refusals)}), and what holds each refusal\n")
+    for bad, r in sorted(refusals, key=lambda t: t[0].lower()):
+        print(f"  {bad:<28} {r['kind']} {r['name']}")
+    print("\nscript/names <name> prints the reason.")
+    sys.exit(0)
+
+if mode == "--unrecorded":
+    print(f"UNRECORDED ({len(unrecorded)} of {len(records)}): nothing outside the block says why\n")
+    for r in sorted(unrecorded, key=lambda r: (r["kind"], r["name"])):
+        print(f"  {r['kind']:<8} {r['name']}")
+    print(f"\n{len(unrecorded)} of {len(records)} names have no reasoning anywhere in the tree. "
+          f"See --unratified for these plus the {len(recorded)} that are argued but unsigned.")
+    sys.exit(0)
+
+if mode == "--unratified":
+    todo = sorted(recorded + unrecorded,
+                  key=lambda r: (EXPOSURE[r["kind"]], URGENCY[r["status"]], r["name"]))
+    if not todo:
+        print("every name in the tree is ratified")
+        sys.exit(0)
+    print(f"UNRATIFIED ({len(todo)} of {len(records)}), in the order worth working through\n")
+    print("Exposure first: a program is typed at the prompt, a crate is what a newcomer greps,")
+    print("a script/ entry point is typed by whoever works on the tree. Within a tier, a name")
+    print("nobody can justify comes before one whose reasoning merely lacks a signature.\n")
+    tier = None
+    for r in todo:
+        if (r["kind"], r["status"]) != tier:
+            tier = (r["kind"], r["status"])
+            print(f"  {r['kind']}s, {r['status']}")
+        print(f"    {r['name']:<28} {r['path']}")
+    print(f"\n{len(unrecorded)} unrecorded (research, then a ruling), "
+          f"{len(recorded)} recorded (a ruling only).")
+    print("script/names <name> prints what the history does and does not say about one of them.")
+    sys.exit(0)
+
+if mode and not mode.startswith("-"):
+    hits = [r for r in records if r["name"] == mode]
+    refused_hits = [(bad, r) for bad, r in refusals if bad == mode]
+    if not hits and not refused_hits:
+        print(f"names: {mode!r} is neither a name in the tree nor a recorded refusal")
+        sys.exit(1)
+    for r in hits:
+        print(f"{r['kind']} {r['name']}  ({r['path']})")
+        print(f"  {r['text']}\n")
+    for bad, r in refused_hits:
+        print(f"REFUSED for {r['kind']} {r['name']}  ({r['path']})")
+        print(f"  {r['text']}\n")
+    sys.exit(0)
+
+if mode:
+    print(f"names: unknown argument {mode!r} (no argument, --unratified, --refused, --unrecorded, "
+          f"--check, or a name)", file=sys.stderr)
+    sys.exit(2)
+
+for kind in ["crate", "program", "script"]:
+    group = sorted(by_kind.get(kind, []), key=lambda r: r["name"])
+    tally = {s: sum(1 for r in group if r["status"] == s)
+             for s in ("ratified", "recorded", "unrecorded")}
+    print(f"\n{kind.upper()}S ({len(group)}: {tally['ratified']} ratified, "
+          f"{tally['recorded']} recorded, {tally['unrecorded']} unrecorded)")
+    for r in group:
+        when = r["date"] if r["status"] == "ratified" else r["status"]
+        tail = f"  refused {len(r['refused'])}" if r["refused"] else ""
+        print(f"  {r['name']:<28} {when:<12}{tail}")
+
+print(f"\ntotal: {len(records)} names, {len(ratified)} ratified, {len(recorded)} recorded, "
+      f"{len(unrecorded)} unrecorded, {len(refusals)} refusals")
+print(f"{len(recorded) + len(unrecorded)} still want Chris: script/names --unratified")
+if contradictions:
+    print(f"refused but live: {', '.join(contradictions)}")
+for p in sorted(set(problems)):
+    print(f"PROBLEM: {p}")
+PY

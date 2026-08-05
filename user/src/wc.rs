@@ -62,6 +62,12 @@
 //!   the prompt as an operand with nowhere to go, because a manifest here declares one input and a
 //!   second would need positional arity the shell does not have yet. Unix prints a per-file table
 //!   and a total; that is formatting over a set, and this program counts one stream.
+//!
+//! Name: unrecorded. Introduced 2026-07-31, and it is the program that settled a naming rule
+//! without ever being named by one. The tenet's rejected two-tier draft (short names for typed
+//! commands, underscores for spawned programs) was refused because the category is not stable, and
+//! `wc` is the proof: it was internal plumbing and became a prompt-typed pipeline stage inside a
+//! day.
 
 #![no_std]
 #![no_main]

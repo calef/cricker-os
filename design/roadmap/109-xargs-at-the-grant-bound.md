@@ -1,11 +1,7 @@
 # 109. `xargs`: batching a grant too large to hand over
 
-**Status: NOT-STARTED.** Raised 2026-08-04. Milestone 47 (navigation and naming) names this twice in
+**Status: BUILT** 2026-08-04 (PR #111). Built as a shell prefix word rather than a program, deliberately: a batching program would have to hold the union of every batch, which is the thing that cannot be handed over. **One limit, named here because a reader will meet it**: `xargs <program>` still stops after planning batch one, because the shell cannot yet ask init to mint a per-batch caretaker. `xargs echo` and `xargs caps rm` run end to end. The missing delegation chain is milestone 47's, not this one's. Raised 2026-08-04. Milestone 47 (navigation and naming) names this twice in
 its own block and will close without it, and both glob notes end on the same sentence.
-
-**Gate: NONE.** The bound stays at eight, which is measured rather than chosen, so this is a
-program rather than a constant edit. The name `xargs` is provisional like every program name here,
-and it is the standard term milestone 47 and both notes already use.
 
 **The finding, with the number.** A glob expansion grants at most **eight names**.
 `grant_plan::expand::MAX_NAMES` is 8 and `fs_proto::nameset::MAX_NAMES` matches it, pinned by a host

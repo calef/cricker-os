@@ -36,6 +36,14 @@
 //! ```
 //!
 //! `x8` for the number is Linux's aarch64 convention, and there is no reason to be different.
+//!
+//! Name: unrecorded, and the near miss is worth knowing. notes/naming.md says "plus `abi`, which
+//! is the syscall boundary and predates the suffix", which explains why this crate is exempt from
+//! `*_proto` and says nothing about why it is called `abi`. "It got here first" is a history, not
+//! a reason, and counting it as one would let every old name in the tree explain itself. The word
+//! is the field's own for what this crate holds, so it would sit in the tenet's protected group
+//! (`elf`, `pci`, `dtb`, `gpt`, `ipc`, `paging`, `glob`, `asid`, `socket_proto`) if anyone had
+//! filed it there; nobody has. Introduced 2026-07-14 with milestone 7d's first three syscalls.
 
 #![no_std]
 

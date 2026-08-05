@@ -22,6 +22,11 @@
 //! No kerning, no proportional widths, no anti-aliasing, no Unicode beyond the basic-latin block
 //! (see [`glyph`] for what a byte outside it draws), and no font loading: this font is compiled in.
 //! The honest limits are listed in notes/glyphs.md.
+//!
+//! Name: unrecorded. One of the five run-together names milestone 63 reviewed on 2026-08-01
+//! (`capsh`, `lineedit`, `uheap`, `crickerfs`, `bitfont`) when it deleted the rule that had
+//! produced them. Three moved, `crickerfs` stayed with a reason recorded, and this one stayed with
+//! none.
 
 #![no_std]
 

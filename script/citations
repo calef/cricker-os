@@ -1,0 +1,417 @@
+#!/bin/sh
+#
+# Check that a citation says what it cites, and that a quotation still says what it quoted.
+#
+# Why this exists: `script/decisions --check` proves a cited `§N` resolves to SOME decision and
+# `script/roadmap --check` proves a cited `milestone N` resolves to SOME milestone. Neither can prove
+# it resolves to the RIGHT one, and both scripts say so in their own headers. That blind spot has a
+# measured cost: 23 comments across `user/`, `crates/`, `kernel/` and `user/Cargo.toml` credit the
+# `^C` work to "milestone 24", which is A SECOND AARCH64 BOARD. The decision they meant is §24. It
+# was wrong the day it was written (the roadmap already said Virtualization.framework on 2026-07-28)
+# and it spread by copy-paste through two gates that both reported clean, because both numbers exist.
+#
+# The fix is to make a citation carry something a machine can compare. A number resolves; a number
+# with a NAME resolves to a checkable place:
+#
+#     milestone 24 (a second aarch64 board)          <- checkable, and true
+#     §24 (interrupting the foreground process)      <- checkable, and true
+#     milestone 24 (interrupting the foreground process)   <- checkable, and CAUGHT
+#
+# ---------------------------------------------------------------------------------------------
+# What is checked
+# ---------------------------------------------------------------------------------------------
+#
+# 1. **A gloss must be grounded in the thing it glosses.** A parenthetical immediately after a
+#    citation is read as a gloss, and it passes on either of two tiers (see "the tolerance rule").
+#    It is NOT mandatory: see BUGS in notes/citations.md for why 2,911 sites is the wrong sweep.
+#
+# 2. **An attributed block quote must still exist in the file it names.** Whitespace-normalized, so
+#    reflowing a quote or its source cannot fail this. This is the check that would have caught
+#    milestone 74's file quoting a paragraph of notes/benchmarks.md that milestone 101 had retracted:
+#    the arithmetic was gone from the note and the quote of it was still in the roadmap.
+#
+# Both are the same primitive, which is why they are one script: does this text still say what that
+# document says. Neither existing gate can ask it, because neither reads the target's content.
+#
+# ---------------------------------------------------------------------------------------------
+# The tolerance rule, which is the only design work here
+# ---------------------------------------------------------------------------------------------
+#
+# A title is long ("Interrupting the foreground process: two-tier, shell-held, no new kernel
+# surface") and a citation should be allowed to name a distinctive fragment. Two tiers, because the
+# tree's ~93 existing glosses are two different things and only one of them glosses a TITLE:
+#
+#   Tier 1, the title.  Every content word of the gloss appears in the target's own H1. Order-free
+#   and stopword-free, because a gloss abbreviates and reorders: `§31 (the foreign-language seam)`
+#   against "The foreign-language seam: C holds no capabilities and makes no policy". 43 of 93
+#   existing glosses are this.
+#
+#   Tier 2, the quotation.  The gloss appears as a contiguous phrase in the target's BODY, matched on
+#   normalized whitespace. This is not a weaker tier 1, it is a different act: `§46 (taking a
+#   dependency is a decision)` and `§4 ("a driver never reaches into a kernel global")` quote what the
+#   decision SAYS rather than what it is called, and both are good citations that no title check can
+#   accept. Contiguous rather than bag-of-words on purpose: "every word appears somewhere in a
+#   5,000-word document" is not a test, it is a coincidence generator.
+#
+# Three shapes are not glosses at all and are recognised rather than judged: a repo path
+# (`milestone 15 (design/roadmap/15-asids.md)`), a cross-reference to the other record
+# (`milestone 12 (§12)`), and a bare date. A path is checked harder than a gloss, since it is exact:
+# it must exist, and a numbered record file must carry the number that cites it.
+#
+# ---------------------------------------------------------------------------------------------
+# What a failure means, and the diagnostic that matters
+# ---------------------------------------------------------------------------------------------
+#
+# When a gloss fails against what it cites, this script asks whether it matches THE SAME NUMBER UNDER
+# THE OTHER SCHEME, and says so if it does. That is not a nicety; it is the entire defect this
+# milestone was raised for, and it names the fix instead of the symptom:
+#
+#     notes/credentials.md:346: §49's gloss does not match §49, but it matches milestone 49
+#
+# `milestone N` and `§N` are two numbering schemes over the same tree that agree by accident for the
+# early numbers (milestone 12 and §12 really are both Call/Reply IPC) and diverge after, which is
+# exactly the trap: the habit of reading them as one scheme is correct often enough to survive.
+#
+#   script/citations           report: every citation, classified
+#   script/citations --check   validate; non-zero on a problem (wired into script/lint)
+#
+# Name: unrecorded. Provisional, minted by milestone 97's lane on 2026-08-04 and not yet put to
+# Chris. Named for the thing it reads rather than for the act, in the family of `script/roadmap`,
+# `script/decisions` and `script/names`. This block was added at merge rather than by that lane: the
+# provenance gate arrived from milestone 115 in a *different* pull request, so both were green apart
+# and red together, and `main` was briefly red until it was noticed. See notes/naming.md.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+root, mode = sys.argv[1], sys.argv[2]
+
+# ---- the two records ---------------------------------------------------------
+# Title from the H1 and body from the whole file. Milestone 114 and 76 split both records into one
+# file per entry, which is what makes this affordable: `§43 (the clock ladder)` is checked against
+# 43-clock-authority.md's own first line, with no need to parse a 5,000-line document to find where
+# §43 begins and §44 starts.
+def load(subdir, pattern):
+    d = os.path.join(root, "design", subdir)
+    out = {}
+    for fname in sorted(os.listdir(d)):
+        m = re.fullmatch(pattern, fname)
+        if not m:
+            continue
+        text = open(os.path.join(d, fname), errors="replace").read()
+        h = re.match(r"# (\d+)[a-z]?\. (.+)$", text.split("\n", 1)[0])
+        if h:
+            out.setdefault(int(h.group(1)), (h.group(2).strip(), text, fname))
+    return out
+
+
+DECISIONS = load("decisions", r"(\d+)-[a-z0-9][a-z0-9-]*\.md")
+MILESTONES = load("roadmap", r"(\d+)[a-z]?-[a-z0-9][a-z0-9-]*\.md")
+
+problems = []
+if not DECISIONS or not MILESTONES:
+    problems.append("no decisions or no milestones loaded: has design/ moved?")
+
+# ---- normalization -----------------------------------------------------------
+# Stopwords are the words a gloss adds or drops freely when it shortens a title. Keep the list small
+# and boring: every word here is a word a WRONG citation could hide behind, so this is a budget, not
+# a convenience. "over" earns its place because `milestone 55 (Time Machine over SMB3 with Apple's
+# extensions)` against "Time Machine: SMB3 with Apple's extensions, and mDNS" is a correct citation
+# that differs by one preposition.
+STOPWORDS = frozenset("""
+a an the of and or to in on for is are was were be been by that this it its with as at from
+not no over under into onto s
+""".split())
+
+
+def content_words(text):
+    text = text.lower().replace("`", " ").replace("*", " ").replace("'s", " ")
+    return [w for w in re.sub(r"[^a-z0-9]+", " ", text).split() if w and w not in STOPWORDS]
+
+
+def normalized(text):
+    """Collapse every run of whitespace, drop markdown emphasis and quote punctuation.
+
+    This is what makes a quotation check survive REFLOWING, which is the whole reason it is
+    affordable. A note wraps at 100 columns and a block quote of it wraps at 96 after the `> `
+    prefix, so byte equality would fail on every correct quote in the tree and the check would be
+    thrown away in a week.
+    """
+    text = text.replace("`", "").replace("*", "").replace("“", '"').replace("”", '"')
+    text = text.replace("’", "'")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def grounded(gloss, title, body):
+    """Which tier accepts this gloss, or None. See the header for why there are two."""
+    words = content_words(gloss)
+    if not words:
+        return None
+    if set(words) <= set(content_words(title)):
+        return "title"
+    if normalized(gloss).strip('"\'') in normalized(body):
+        return "quotation"
+    return None
+
+
+# ---- what is not a gloss -----------------------------------------------------
+IS_PATH = re.compile(r"[a-zA-Z0-9_./-]+\.(md|rs|toml|c|h|sh|txt|lock)$")
+IS_XREF = re.compile(r"(DECISIONS |ROADMAP )?(§\d+|[Mm]ilestone \d+[a-z]?)"
+                     r"(,? (and )?(DECISIONS )?(§\d+|[Mm]ilestone \d+[a-z]?))*")
+IS_DATE = re.compile(r"[a-z ]*\d{4}-\d{2}-\d{2}([/ -]\d{2})?")
+NUMBERED_RECORD = re.compile(r"design/(decisions|roadmap)/(\d+)[a-z]?-[a-z0-9-]*\.md")
+
+# A gloss that is deliberately not checkable, each with the reason it is exempt, the same shape as
+# `naming_allow` in script/lint. An entry is a claim that the parenthetical is commentary rather
+# than a gloss AND that rephrasing it would cost the reader something, so it needs that kind of
+# reason. Keyed by "file:scheme:number".
+#
+# One entry, and it is the category this check cannot have: a HISTORICAL title. The roadmap records
+# that milestone 9 was once "Processes: spawn, exit, wait" before the ladder was rewritten around
+# §10, and the sentence says "the original milestone 9" in as many words. A gloss that is
+# deliberately not the current title is the one thing "matches the current title" can never accept,
+# and script/lint's TODO check already carved out the same category for the same reason (notes/uart.md
+# quotes a milestone-5 TODO as history, not as intent).
+GLOSS_ALLOW = {
+    "design/roadmap/10-shell-and-spawn.md:milestone:9":
+        "quotes milestone 9's ORIGINAL title, as history; the text says so",
+}
+
+# ---- scan the tree -----------------------------------------------------------
+# **Whole files, not `git grep` output lines**, and this was a correction rather than a preference.
+# The line-based first draft silently missed every gloss that WRAPS, because a doc comment breaks at
+# 100 columns and `git grep` hands you one line at a time, so
+#
+#     //! It grew from one block to two at milestone 24 (the interactive system plus its demo
+#     //! programs passed fifteen files)
+#
+# arrives as an unterminated `(` and matches nothing. That is not a rare shape: it is what every
+# long gloss in a Rust doc comment looks like, and it was hiding one of the milestone-24 defects
+# this script was written to find. A checker whose blind spot is "the citation was long" is worse
+# than none, because length correlates with the glosses that say something.
+#
+# So each line is stripped of its comment marker and the file is matched whole, with **at most one
+# newline inside a gloss**. The cap is what stops a stray `(` on line 40 from pairing with a `)` on
+# line 900 and swallowing the file.
+# `[^\S\n]` is "whitespace that is not a newline". Written the long way on purpose: `\s*` here ate
+# the line breaks it was meant to preserve, every reported line number drifted by the number of
+# comment lines above it, and the numbers still looked plausible enough to chase.
+COMMENT_MARKER = re.compile(r"^[^\S\n]*(///|//!|//|#!?|\*|>)[^\S\n]?", re.MULTILINE)
+CITE = re.compile(r"(§|(?<![a-zA-Z])[Mm]ilestone )(\d+)[a-z]?,? \(([^)\n]{0,160}(?:\n[^)\n]{0,160})?)\)")
+
+# `git grep -I` skips binary files, which is the defect script/decisions records: for a binary,
+# git grep prints the SENTENCE "Binary file <path> matches" into the same stream as the matches, and
+# a parser that trusts its input reads "Binary" as a citation.
+candidates = subprocess.run(
+    ["git", "-C", root, "grep", "-I", "-l", "-E", r"(§[0-9]+|[Mm]ilestone [0-9]+),? \(",
+     "--", ":!vendor/", ":!patches/", ":!*.lock", ":!script/citations"],
+    capture_output=True, text=True,
+).stdout.split()
+
+tally = {"title": 0, "quotation": 0, "path": 0, "cross-reference": 0, "date": 0, "exempt": 0}
+
+def blank_fenced_blocks(raw):
+    """Blank the inside of ``` fences, keeping the line count.
+
+    A page that documents this convention has to be able to SHOW a wrong citation, and a checker
+    that reads its own counter-examples as defects is one nobody can write documentation against.
+    script/lint's TODO gate exempts all of markdown for this reason; a fence is the narrower
+    version of the same carve-out, and it is narrow enough that prose stays checked.
+    """
+    out, fence = [], False
+    for line in raw.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            out.append("")
+        else:
+            out.append("" if fence else line)
+    return "\n".join(out)
+
+
+for path in candidates:
+    raw = open(os.path.join(root, path), errors="replace").read()
+    if path.endswith(".md"):
+        raw = blank_fenced_blocks(raw)
+    # Strip the comment marker but keep the newline, so offsets still map to lines.
+    text = COMMENT_MARKER.sub("", raw)
+    starts = [0]
+    for ch in text:
+        starts.append(starts[-1] + (1 if ch == "\n" else 0))
+
+    for m in CITE.finditer(text):
+        lineno = starts[m.start()] + 1
+        scheme = "decision" if m.group(1) == "§" else "milestone"
+        num = int(m.group(2))
+        gloss = re.sub(r"\s+", " ", m.group(3)).strip()
+        table = DECISIONS if scheme == "decision" else MILESTONES
+        label = f"§{num}" if scheme == "decision" else f"milestone {num}"
+        where = f"{path}:{lineno}"
+
+        # A citation to a number that does not resolve at all is script/decisions' and
+        # script/roadmap's problem, and they already fail on it. Not repeated here.
+        if num not in table:
+            continue
+
+        if GLOSS_ALLOW.get(f"{path}:{scheme}:{num}"):
+            tally["exempt"] += 1
+            continue
+
+        # ---- the shapes that are not glosses ---------------------------------
+        if IS_XREF.fullmatch(gloss):
+            tally["cross-reference"] += 1
+            continue
+        if IS_DATE.fullmatch(gloss):
+            tally["date"] += 1
+            continue
+        # `fullmatch` on the segment, not `search` anywhere in it. A gloss that MENTIONS a path
+        # (`milestone 19 ("Decision 2" in design/init-and-granular-spawn.md)`) is prose, and reading
+        # it as a path citation reports the quoted sentence as a missing file.
+        if IS_PATH.fullmatch(gloss.split(",")[0].strip()):
+            tally["path"] += 1
+            target = gloss.split(",")[0].strip()
+            if not os.path.exists(os.path.join(root, target)):
+                problems.append(f"{where}: {label} points at {target!r}, which does not exist")
+                continue
+            # A path INTO a numbered record is a second spelling of the citation, so the two must
+            # agree. This is the cheapest possible instance of the whole idea: the name is right
+            # there in the filename.
+            rec = NUMBERED_RECORD.fullmatch(target)
+            if rec:
+                kind = "decision" if rec.group(1) == "decisions" else "milestone"
+                if kind != scheme or int(rec.group(2)) != num:
+                    problems.append(
+                        f"{where}: {label} points at {target!r}, which is "
+                        f"{kind} {int(rec.group(2))}, not {label}")
+            continue
+
+        # ---- the gloss -------------------------------------------------------
+        title, body, fname = table[num]
+        tier = grounded(gloss, title, body)
+        if tier:
+            tally[tier] += 1
+            continue
+
+        # The diagnostic this milestone exists for: the gloss is right, the SCHEME is wrong.
+        other = MILESTONES if scheme == "decision" else DECISIONS
+        other_label = f"milestone {num}" if scheme == "decision" else f"§{num}"
+        hint = ""
+        if num in other and grounded(gloss, other[num][0], other[num][1]):
+            hint = (f"\n      but it matches {other_label}: {other[num][0][:64]}"
+                    f"\n      Two schemes, one number. This is the milestone-24 defect.")
+        problems.append(
+            f"{where}: {label}'s gloss ({gloss[:56]}) is not grounded in {fname}"
+            f"\n      {label} is: {title[:64]}{hint}")
+
+# ---- attributed quotations ---------------------------------------------------
+# The form, which is opt-in and binding once used:
+#
+#     > A passage, quoted from somewhere else in the tree.
+#     >
+#     > -- notes/benchmarks.md
+#
+# An ellipsis (`...`) splits the quote into segments that must appear IN ORDER, so a quote may skip
+# the middle of a paragraph without quoting the whole thing.
+QUOTE_ATTRIB = re.compile(r"^>\s*--\s+(\S+?)\s*$")
+
+md = subprocess.run(
+    ["git", "-C", root, "ls-files", "*.md", ":!vendor/", ":!patches/"],
+    capture_output=True, text=True,
+).stdout.split()
+
+attributed = 0
+for rel in md:
+    # Fences blanked here too, so a page can SHOW the attribution form without every worked example
+    # being resolved against a real file.
+    lines = blank_fenced_blocks(open(os.path.join(root, rel), errors="replace").read()).split("\n")
+    # Collect the block quotes. The trailing flush after the loop matters: a block that ends the
+    # file has no following blank line to close it.
+    block, blocks = [], []
+    for n, line in enumerate(lines, start=1):
+        if line.startswith(">"):
+            block.append((n, line))
+        elif block:
+            blocks.append(block)
+            block = []
+    if block:
+        blocks.append(block)
+
+    for blk in blocks:
+        attrib = None
+        body_lines = []
+        for n, line in blk:
+            m = QUOTE_ATTRIB.match(line)
+            if m:
+                attrib = (n, m.group(1))
+            else:
+                body_lines.append(re.sub(r"^>\s?", "", line))
+        if not attrib:
+            continue
+        attributed += 1
+        lineno, target = attrib
+        where = f"{rel}:{lineno}"
+        full = os.path.join(root, target)
+        if not os.path.exists(full):
+            problems.append(f"{where}: quote attributed to {target!r}, which does not exist")
+            continue
+        source = normalized(open(full, errors="replace").read())
+        quote = normalized(" ".join(body_lines))
+        if not quote:
+            problems.append(f"{where}: an attribution with nothing quoted above it")
+            continue
+        pos, missing = 0, None
+        for seg in [s.strip() for s in re.split(r"\.\.\.|…", quote) if s.strip()]:
+            found = source.find(seg, pos)
+            if found < 0:
+                missing = seg
+                break
+            pos = found + len(seg)
+        if missing:
+            problems.append(
+                f"{where}: this quote is no longer in {target}"
+                f"\n      missing: {missing[:72]}"
+                f"\n      Either the source was rewritten and the quote is stale (the milestone-74"
+                f"\n      defect: a retracted paragraph still quoted as current), or the"
+                f"\n      attribution names the wrong file.")
+
+# ---- report ------------------------------------------------------------------
+total = sum(tally.values())
+if mode == "--check":
+    for p in problems:
+        print(f"citations: {p}", file=sys.stderr)
+    if problems:
+        print("", file=sys.stderr)
+        print("A citation names what it cites so a check can prove it resolves to the RIGHT thing,",
+              file=sys.stderr)
+        print("not merely to some thing. See notes/citations.md, including what this cannot check.",
+              file=sys.stderr)
+        sys.exit(1)
+    # The breakdown sums to the total, deliberately: a summary line whose parts do not add up is a
+    # number nobody can check, which is the habit script/lint's shellcheck line was fixed for.
+    print(f"citations: {total} glossed citations, all grounded "
+          f"({tally['title']} by title, {tally['quotation']} by quotation, {tally['path']} by path, "
+          f"{tally['cross-reference']} cross-references, {tally['date']} dates, "
+          f"{tally['exempt']} exempt)")
+    print(f"citations: {attributed} attributed quotations, all still present in their sources")
+    sys.exit(0)
+
+if mode:
+    print(f"citations: unknown argument {mode!r} (no argument, or --check)", file=sys.stderr)
+    sys.exit(2)
+
+print(f"{len(DECISIONS)} decisions, {len(MILESTONES)} milestones")
+print(f"\nGLOSSED CITATIONS ({total})")
+for k in sorted(tally):
+    print(f"  {k:<16} {tally[k]}")
+print(f"\nATTRIBUTED QUOTATIONS ({attributed})")
+if problems:
+    print(f"\nPROBLEMS ({len(problems)})")
+    for p in problems:
+        print(f"  {p}")
+PY

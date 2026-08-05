@@ -43,7 +43,13 @@ pub struct Wiring {
 /// The collected transcript. A static because the terminal service and the assertions are the
 /// same thread and the buffer outlives one call; sized for the whole script with room to spare,
 /// so a transcript that ran long is truncated rather than overrunning.
-static TRANSCRIPT: spin::Mutex<[u8; 4096]> = spin::Mutex::new([0; 4096]);
+///
+/// **Eight kilobytes since milestone 67**, which folded that milestone's script onto the
+/// redirection witness rather than wiring a seventh shell: every scripted shell here is a live
+/// process whose frames are never reclaimed, and one more put `time_tests` over the frame pool
+/// intermittently. Kernel `.bss` costs no frames, so the longer script is the cheap half of that
+/// trade.
+static TRANSCRIPT: spin::Mutex<[u8; 8192]> = spin::Mutex::new([0; 8192]);
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
 /// **Wire a scripted shell and the init service behind it.**

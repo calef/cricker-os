@@ -43,7 +43,27 @@ fn read_satp() -> u64 {
     satp
 }
 
-/// Write `satp` and flush the TLB, installing a whole address space (kernel high + user low).
+/// Install a whole address space (kernel high half + user low half) by writing `satp`.
+/// **No TLB flush, on hardware whose ASID field is wide enough to be trusted.**
+///
+/// # Where the sledgehammer went (milestone 58)
+///
+/// This used to be `csrw satp` followed by a bare `sfence.vma`: every translation this hart had
+/// cached, kernel entries included, discarded on every context switch. It had to be, because
+/// nothing else made a dying address space's entries stop matching a new one, and RISC-V permits
+/// `satp.ASID` to be **zero bits wide**, in which case every space really does share tag 0 and their
+/// entries really would alias.
+///
+/// Three things had to exist before it could go, and now do. Every user mapping is non-global
+/// (`paging::Sv39` sets `G` only for the kernel's half), so its TLB entries carry the ASID that was
+/// live during the walk. Each address space owns one ASID for life (`crates/asid`), freed only after
+/// [`flush_asid`] has swept it **from every hart**. And [`probe_asid_bits`] measures the field the
+/// hardware actually implements, so this decision is made against the machine rather than against
+/// the specification's permission.
+///
+/// On a core that implements too few bits, [`asid_tagging_is_trusted`] is false and the flush stays.
+/// That is the honest degradation: correct and slow beats fast and silently wrong, and a panic would
+/// refuse to boot a machine that works.
 ///
 /// # Safety
 /// `satp` must name a well-formed, live Sv39 root that contains the kernel's high half. It is the
@@ -59,8 +79,14 @@ fn read_satp() -> u64 {
 /// defect one level up.
 unsafe fn write_satp(satp: u64) {
     // SAFETY: this function's own `# Safety` contract is exactly the one this write needs; it
-    // forwards, it does not weaken. `sfence.vma` makes it take effect and drops stale entries.
-    unsafe { asm!("csrw satp, {}", "sfence.vma", in(reg) satp, options(nostack)) };
+    // forwards, it does not weaken.
+    unsafe { asm!("csrw satp, {}", in(reg) satp, options(nostack)) };
+
+    if !asid_tagging_is_trusted() {
+        // SAFETY: TLB maintenance is always sound. The full sweep is what makes the switch safe when
+        // the tag cannot be relied on to keep two spaces apart.
+        unsafe { asm!("sfence.vma", options(nostack)) };
+    }
 }
 
 /// The physical address of the currently-installed root page table (`satp.PPN << 12`).
@@ -199,6 +225,14 @@ pub fn init() {
     // the coarse boot table. See `probe_asid_bits`: this validates the assumption `crates/asid`
     // is already built on, and it is the gate on ever removing the flush in `write_satp`.
     ASID_BITS.store(probe_asid_bits(), Ordering::Relaxed);
+
+    // And the decision the probe exists to make (milestone 58): may a context switch stop flushing?
+    // Set here, once, on the primary hart, before any secondary is started and before any user
+    // address space is created, so every `write_satp` in the machine's life reads a settled value.
+    ASID_TAGGING_TRUSTED.store(
+        ASID_BITS.load(Ordering::Relaxed) >= ASID_BITS_NEEDED as usize,
+        Ordering::Relaxed,
+    );
     // Read back through the accessor rather than the local, so the store/load path is exercised on
     // every boot and `asid_bits`'s "was it probed" assertion fires here if the ordering ever moves,
     // instead of at some later caller.
@@ -252,10 +286,12 @@ const SATP_ASID_WIDTH: u32 = 16;
 /// implemented bits, every one of the 160 address spaces would carry ASID 0 in hardware and their
 /// TLB entries would **alias**: one process reading another's memory, with nothing to signal it.
 ///
-/// The reason that has not bitten us is an accident: `write_satp` follows every `csrw satp` with an
-/// unconditional `sfence.vma`, throwing the whole TLB away on each switch, so no entry ever survives
-/// long enough to alias. **The flush is currently load-bearing for correctness, not just slow.**
-/// Whoever removes it (see notes/riscv-arch-tests.md) must gate that on this probe.
+/// This probe is what the context switch's silence is bought with (milestone 58). [`write_satp`]
+/// used to follow every `csrw satp` with an unconditional `sfence.vma`, throwing the whole TLB away
+/// on each switch, so no entry ever survived long enough to alias; that flush was load-bearing for
+/// correctness rather than merely slow. It is now conditional on this number, through
+/// [`asid_tagging_is_trusted`]: a machine that implements fewer bits than `crates/asid` needs keeps
+/// the sweep and pays for it. See notes/riscv-tlb-shootdown.md.
 ///
 /// The probe writes ones into the ASID field of the *current* `satp`, leaving MODE and PPN alone, and
 /// reads back which bits stuck. The address space is unchanged throughout (only the tag moves), so
@@ -292,6 +328,28 @@ pub fn asid_bits() -> usize {
     let n = ASID_BITS.load(core::sync::atomic::Ordering::Relaxed);
     assert_ne!(n, usize::MAX, "asid_bits() read before mmu::init probed it");
     n
+}
+
+/// How many `satp.ASID` bits the allocator's numbers need: enough to hold `asid::ASIDS - 1`, the
+/// largest tag `crates/asid` can hand out. Derived rather than written as `8`, so that raising
+/// `ASIDS` moves the gate with it instead of leaving a constant behind that used to be right.
+const ASID_BITS_NEEDED: u32 = (asid::ASIDS as u64 - 1).ilog2() + 1;
+
+/// **Whether two live address spaces are guaranteed to be distinguishable in this hart's TLB.**
+///
+/// False until [`init`] has probed, which is the safe direction: every `satp` write before the probe
+/// (and every one after it on a core that implements too narrow a field) carries the full
+/// `sfence.vma` that [`write_satp`] used to do unconditionally.
+static ASID_TAGGING_TRUSTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Whether the context switch may skip its TLB flush: `satp.ASID` is wide enough to hold every
+/// number the allocator hands out, so two spaces can never share a hardware tag.
+///
+/// Read on the context-switch path, so it is a relaxed load of a value written once at boot, before
+/// any secondary hart exists and before any user address space does.
+pub fn asid_tagging_is_trusted() -> bool {
+    ASID_TAGGING_TRUSTED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Adopt the kernel's fine-grained Sv39 map on a secondary hart (SMP). `secondary_boot` brought this
@@ -512,10 +570,75 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
     SATP_MODE_SV39 | ((asid as u64) << SATP_ASID_SHIFT) | (root >> 12)
 }
 
-/// Discharge every TLB entry tagged with `asid`: `sfence.vma x0, asid` (all addresses, one ASID).
+/// Read the ASID back out of a composed [`ttbr0_value`]. The inverse of the line above, and it
+/// exists so a portable test can ask "which tag is this space wearing?" without knowing that this
+/// ISA keeps it in `satp[59:44]` and aarch64 keeps it in `TTBR0_EL1[63:48]`.
+#[cfg_attr(not(test), allow(dead_code))] // the tests are its only caller; the kernel composes, never decomposes
+pub fn asid_of(satp: u64) -> u16 {
+    ((satp >> SATP_ASID_SHIFT) & 0xffff) as u16
+}
+
+/// Discard every TLB entry tagged with `asid`, **on every online hart**. The teardown half of the
+/// ASID contract (crates/asid): after this, and only after this, the number may tag someone else.
+/// The aarch64 twin of this function is one instruction, and the gap between them is milestone 58.
+///
+/// # What each half guarantees
+///
+/// `sfence.vma x0, asid` invalidates every address for one ASID **on the hart that executes it**,
+/// and orders this hart's own earlier page-table writes ahead of it. It deliberately does *not*
+/// touch global mappings, which is right: the kernel's high half is `G`, shared by every address
+/// space, and must survive a process dying. Only user mappings wear a tag.
+///
+/// The remote half is an SBI RFENCE ([`sbi_remote_sfence_vma_asid`](super::sbi_remote_sfence_vma_asid)),
+/// which returns only once every other online hart has run the same instruction. Without it, a hart
+/// that ran a thread of the dying space keeps its translations, and the next space to be handed this
+/// number reads them: **one process reading another's memory, with no fault to announce it.** That
+/// is not a latent hazard, it is the hazard that the unconditional flush in [`write_satp`] was
+/// covering up until this milestone; see notes/riscv-tlb-shootdown.md.
+///
+/// Skipped when this is the only hart online, exactly as [`flush_tlb`] skips it: there is nobody to
+/// shoot down, and single-hart boot tears down address spaces before the secondaries exist.
 pub fn flush_asid(asid: u16) {
+    // Local first, so this hart's own page-table writes are ordered before anyone is told to look.
     // SAFETY: TLB maintenance is always sound.
     unsafe { asm!("sfence.vma zero, {}", in(reg) asid as u64, options(nostack)) };
+
+    let others = crate::smp::online_harts_mask() & !(1usize << crate::cpu::id());
+    if others != 0 {
+        super::sbi_remote_sfence_vma_asid(others, asid);
+    }
+}
+
+/// **Test-only: let S-mode load and store through pages marked `U`** (`sstatus.SUM`), returning
+/// whether it was already permitted so the caller can put it back.
+///
+/// **RISC-V forbids this by default and aarch64 permits it**, which is a parity difference nothing
+/// in this tree had written down until milestone 58 went looking for why a ported test faulted.
+/// S-mode reading a `U` page raises a load page fault unless `sstatus.SUM` is set; EL1 reading an
+/// EL0 page is simply allowed, because this kernel does not enable `PAN`. So a test that reads
+/// through a *user* virtual address to see what the TLB is holding, which is the only way to observe
+/// a TLB from software, needs this on one ISA and nothing on the other.
+///
+/// It is `#[cfg(test)]` on purpose. No syscall in this ABI dereferences a user pointer (see
+/// [`user_can_read`]), so the running kernel never needs to touch a user page, and leaving `SUM`
+/// clear in a shipping build means a kernel bug that strays into the low half faults instead of
+/// succeeding quietly. Making that reachable outside tests would trade a real protection for
+/// nothing.
+#[cfg(test)]
+pub fn permit_kernel_access_to_user_pages(allowed: bool) -> bool {
+    const SSTATUS_SUM: u64 = 1 << 18;
+    let previous: u64;
+    // SAFETY: sets or clears one `sstatus` bit and reports the old value. Widening what S-mode may
+    // touch is a permission change, not a memory-safety one; the kernel's own mappings are
+    // unaffected.
+    unsafe {
+        if allowed {
+            asm!("csrrs {}, sstatus, {}", out(reg) previous, in(reg) SSTATUS_SUM, options(nostack));
+        } else {
+            asm!("csrrc {}, sstatus, {}", out(reg) previous, in(reg) SSTATUS_SUM, options(nostack));
+        }
+    }
+    previous & SSTATUS_SUM != 0
 }
 
 /// Install a user address space by writing its composed `satp`.
@@ -615,20 +738,28 @@ pub fn reserved_root() -> u64 {
     ttbr0_value(KERNEL_ROOT.load(Ordering::Relaxed), 0)
 }
 
-/// Install the address space rooted at physical `root` by writing `satp`, and flush the TLB.
+/// Install the address space named by the composed `satp` value, **unless it is already installed**.
 ///
 /// **This is the RISC-V single-`satp` model.** aarch64 has separate `TTBR0` (user) and `TTBR1`
 /// (kernel), so switching a process swaps only `TTBR0` and leaves the kernel mapped. RISC-V has one
 /// `satp` for the whole address space, so a process's root table must *itself* contain the kernel's
 /// high-half entries (shared at address-space creation), and switching threads rewrites the whole
-/// `satp`. For a kernel thread, `root` is [`reserved_root`] (the kernel root), so this is a no-op
-/// switch that still flushes.
+/// `satp`.
+///
+/// The early return matches aarch64's, and it earns more here than it does there. Every switch
+/// between two kernel threads names [`reserved_root`], and until milestone 58 each of those wrote
+/// `satp` and threw away the hart's whole TLB for a switch that changed nothing. The comparison
+/// reads the register back, so it is against what the hardware is walking rather than against our
+/// record of it; `satp` carries the ASID in the same word, so "same address space" is one compare.
 ///
 /// # Safety
 /// `satp` must be a value [`ttbr0_value`] composed over a **live** `AddressSpace`'s root, or
 /// [`reserved_root`]. Same contract as [`write_satp`]; see the aarch64 twin for why the liveness
 /// half of it cannot be carried by a type instead.
 pub unsafe fn switch_user_root(satp: u64) {
+    if read_satp() == satp {
+        return;
+    }
     // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it
     // forwards, it does not weaken. `satp` is already a composed value (from `ttbr0_value` or
     // `reserved_root`), so it is written directly.

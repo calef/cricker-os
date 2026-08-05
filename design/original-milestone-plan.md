@@ -39,8 +39,8 @@ process owns and delegates (notes/frames.md); SMP (§11); Call/Reply IPC, a one-
 milestone 13).
 
 **The road past v1** is sketched in [design/roadmap/](roadmap/README.md): proposed milestones
-12-17 and the two decisions they force. Milestone 12 (Call/Reply, §11's sibling in getting its own
-decision entry before code) is the first of them built; the rest stay proposals until started.
+12-17 and the two decisions they force. Milestone 12 (Call/Reply IPC) is §11's sibling in getting its own
+decision entry before code, and the first of them built; the rest stay proposals until started.
 
 Deliberately out of scope for v1: a writable filesystem, networking, a GUI, dynamic linking.
 Each multiplies debugging difficulty and none teaches something the first ten don't already set

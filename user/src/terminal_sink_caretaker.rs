@@ -47,6 +47,13 @@
 //! - **`OP_EOF` ends a writer, not the terminal.** One endpoint serves every declaring child in
 //!   turn, so end-of-stream is a fact about one client and this loop simply continues. There is
 //!   nothing here that could notice a client that died mid-message, and nothing that needs to.
+//!
+//! Name: ratified 2026-08-03 (Chris), replacing `terminal_sink`. It holds the terminal endpoint,
+//! which also carries `OP_READLINE`, and hands out a sink that cannot read, which is the caretaker
+//! shape exactly; naming it one also proves that shape generalizes beyond `fs_`, where every other
+//! member lives, so a reader stops taking caretaker for a filesystem concept. The full form keeps
+//! both facts a shorter name would have forced a choice between: the client learns it gets a sink,
+//! the auditor learns what it holds.
 
 #![no_std]
 #![no_main]

@@ -24,9 +24,10 @@
 //! ```
 //!
 //! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
-//! entries. It grew from one block to two at milestone 24 (the interactive system plus its demo
-//! programs passed fifteen files), to four on 2026-07-30 (three lanes landing together made 32), and
-//! to six on 2026-08-01 when the entries got wider. `start_block` is an absolute block number, so a
+//! entries. It grew from one block to two under DECISIONS §24 (interrupting the foreground
+//! process), when the interactive system plus its demo programs passed fifteen files; to four on
+//! 2026-07-30 (three lanes landing together made 32); and to six on 2026-08-01 when the entries
+//! got wider. `start_block` is an absolute block number, so a
 //! reader never needs to know `DIR_BLOCKS` to find data; only the writer places it.
 //!
 //! # Names
@@ -73,6 +74,10 @@
 //!   initrd, but the limit is real and nothing in the format announces it.
 //! - **No directories, no writes, no permissions.** This is a boot archive. The read-write
 //!   filesystem is the RedoxFS server in `fs_server/` (DECISIONS §34), which is a different job.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63): the one run-together name kept when that rule
+//! was deleted. Refused `cricker_fs` (`procfs` is the shape of a filesystem name outside this
+//! project, and nobody writes `proc_fs`).
 
 #![no_std]
 

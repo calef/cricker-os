@@ -40,6 +40,9 @@
 //! | `ROLE_WRITER` | the sink, `WRITE` | report, `WRITE` | | |
 //! | `ROLE_FILE` | the sink, `READ` | FS service, `WRITE` | report, `WRITE` | shared with the FS server |
 //! | `ROLE_VERIFY` | the sink, `WRITE` | FS service, `WRITE` | report, `WRITE` | shared with the FS server |
+//!
+//! Name: unrecorded. Introduced 2026-07-31 with the sink contract (DECISIONS §51), taking the
+//! contract's own word.
 
 #![no_std]
 #![no_main]

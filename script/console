@@ -3,6 +3,10 @@
 # at EL0 in QEMU. For this project the console is literally a shell running as an unprivileged
 # process. Extra flags are forwarded (e.g. `script/console --hvf`). Ctrl-C quits. See
 # notes/scripts.md.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md).
 
 set -e
 cd "$(dirname "$0")/.."

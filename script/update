@@ -3,6 +3,10 @@
 #
 # Re-resolves dependencies (the pinned toolchain can change from one checkout to the next) and
 # rebuilds for the current tree. See notes/scripts.md.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md).
 
 set -e
 cd "$(dirname "$0")/.."

@@ -18,6 +18,10 @@
 //! them. The confused-deputy problem that 7d had to defend against **cannot arise here**, because
 //! the thing that could be confused (a kernel doing I/O for a user) no longer exists. The
 //! architecture dissolved the bug.
+//!
+//! Name: unrecorded. Introduced 2026-07-14 as the first program the kernel ever loaded, and the
+//! name has outlived the description: on aarch64 it also carries the `init_boot` role, which the
+//! name does not say.
 
 #![no_std]
 #![no_main]

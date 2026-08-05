@@ -1,6 +1,6 @@
 # 80. Loom: the hand-rolled atomic protocols, model-checked
 
-**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/80-loom`. Raised 2026-08-03, same survey as 79.
 
 **Gate: NONE.** The pilot is one protocol on the host and the candidates are named: the per-CPU
 run-queue handoff, the reaper handoff, and the IPC sender queue. The board arriving ~2026-08-21 is

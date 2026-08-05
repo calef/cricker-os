@@ -1,11 +1,8 @@
 # 100. Read the machine's PSCI and its CPU list, not QEMU `virt`'s
 
-**Status: NOT-STARTED.** Raised 2026-08-04 from two limitations recorded in the code the same day,
+**Status: BUILT** 2026-08-04 (PR #107). Raised 2026-08-04 from two limitations recorded in the code the same day,
 in `kernel/src/arch/aarch64/mod.rs:88` and `kernel/src/smp.rs:170`. Both were written by a lane that
 found them while working on something else, and both name the other.
-
-**Gate: NONE.** The parser is not what is missing: `crates/dtb` already answers both questions and
-the call sites are named. The block fences its own scope, `MAX_CPUS` is not raised here.
 
 **The finding.** SMP bring-up is the one subsystem that assumes a board instead of asking it. Three
 facts are compiled in:

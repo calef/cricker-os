@@ -127,8 +127,8 @@ than "the service checks". See notes/credentials.md.
 - **Take the crypto as a dependency, do not write it and do not vendor it** (§46, amended
   2026-07-31: vendoring is for what must be patched, and RustCrypto needs no patch; a vendored copy is
   also invisible to `cargo-deny`/`cargo-audit`, which is the one thing crypto most needs). Its crates are `no_std` and reviewed, and the
-  supply-chain tooling from milestone 44 (`deny.toml`, `script/supply-chain`, `script/vendor-verify`)
-  already exists for exactly this shape. Writing our own AES or SHA is a bad idea and the entry should
+  supply-chain tooling from milestone 44, namely `deny.toml`, `script/supply-chain` and
+  `script/vendor-verify`, already exists for exactly this shape. Writing our own AES or SHA is a bad idea and the entry should
   say so rather than leaving it open. **Done for the KDF, 2026-07-31**: `argon2` 0.5.3 plus `blake2`,
   `subtle` and `zeroize`, `default-features = false`, nine crates, `deny.toml` clean unchanged. The
   discipline that came with it and should hold for the SMB primitives too: **the specification's own

@@ -38,6 +38,14 @@
 //!
 //! The echo this engine emits and the sequences it understands are the terminal contract's
 //! wire half; the IPC framing is `proto`. Both documented in notes/terminal-contract.md.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46) for the word and again
+//! 2026-08-01 (milestone 63) for the spelling, replacing `linedisc` and then `lineedit`. Refused
+//! `linedisc` (the correct Unix term of art, which the person who built this system did not
+//! recognise, and which imports vocabulary from exactly the model this OS rejects),
+//! `line_discipline` (overclaims: that term covers echo, canonical mode, signals and flow control,
+//! and this crate is narrower) and `line_edit` (a verb phrase where its sibling `video_terminal` is
+//! a noun).
 
 #![no_std]
 
@@ -62,7 +70,7 @@ pub mod proto {
     /// Application → terminal: how many `^C` has the terminal seen since boot? Replied immediately
     /// (r0 = the running count). This is the shell's `^C` sensor while a foreground job runs and no
     /// read is parked to fail: the shell polls this and drives its two-tier interrupt escalation
-    /// from the count's advance (milestone 24, DECISIONS §24). Deliberately a poll, not a delivered
+    /// from the count's advance (DECISIONS §24). Deliberately a poll, not a delivered
     /// signal: there is no non-blocking receive, so a busy-poll with `yield` is how the shell watches
     /// two things (the job and `^C`) at once until the blocking notification primitive arrives.
     pub const OP_INTRCOUNT: u64 = 4;

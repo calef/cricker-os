@@ -4,10 +4,10 @@
 left behind is no longer a gap in work-in-progress; it is a permanent property of the shipped system
 with nobody assigned to it.
 
-**Gate: MILESTONE 96.** The design content is one question the lane answers on the record, what
-init does with a mismatch. The sequencing is 96's: `build_child` exists twice today, so measuring
-in two places is measuring twice, and the block says waiting for one init is worth more than the
-wait costs.
+**Gate: NONE.** The design content is one question the lane answers on the record, what init does
+with a mismatch. This gated on milestone 96 because `build_child` existed twice and measuring in two
+places is measuring twice; **96 landed on 2026-08-04**, so `supervision_proto::build_child` is now
+the tree's only loader and there is one place to measure.
 
 **The finding, in the words of the note that owns it** (`notes/trusted-init.md`, "Not covered,
 deliberately"): "The kernel measures the program **it** loads. Every other program in the archive

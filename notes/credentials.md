@@ -343,7 +343,7 @@ in the same place.
   consequence: if two identities were ever provisioned at *different* costs, the verify time would
   distinguish them. Nothing today can produce that, because a store has one cost and `put` uses it.
 - **The identity is an opaque byte string and nothing more.** No uid, no group, no home directory,
-  no session, no login. DECISIONS §49 (users, login, and attribution) is a different milestone and
+  no session, no login. milestone 49 (users, login, and attribution) is a different milestone and
   this one deliberately does not start it. What is built here is the credential *primitive*; who
   gets to ask, and what an answer of "yes" then permits, is §49's question. The roadmap's answer,
   which this does not contradict: the adapter authenticates the client because the protocol demands

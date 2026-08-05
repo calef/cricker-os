@@ -105,27 +105,30 @@ own doc comment rather than left for a reader to discover:
   would pass without reading any page table and prove nothing. All three addresses are inside Sv39's
   low half on purpose.
 
-### The one property that could not be translated honestly
+### The one property that could not be translated honestly, and was fixed rather than translated
 
 aarch64's `asid_tagging_keeps_address_spaces_apart_without_flushes` proves two things: distinct
 spaces get distinct ASIDs, **and** switching between them flushes nothing, so their TLB entries
 coexist.
 
-The second half is not true on RISC-V today, because `write_satp` follows every `csrw satp` with a
-bare `sfence.vma`, which discards the whole TLB. So the ASID is composed into `satp` and then made
-irrelevant on the very next instruction. An isolation test written here would pass with the ASID
-tagging removed entirely, which makes it a test that cannot fail for its stated reason.
+The second half was not true on RISC-V, because `write_satp` followed every `csrw satp` with a bare
+`sfence.vma`, which discards the whole TLB. So the ASID was composed into `satp` and then made
+irrelevant on the very next instruction. An isolation test written here would have passed with the
+ASID tagging removed entirely, which makes it a test that cannot fail for its stated reason.
 
-What shipped instead is `the_satp_carries_the_address_spaces_asid`, which proves the half that is
+What shipped instead is `the_satp_carries_the_address_spaces_asid`, which proves the half that was
 real: distinct nonzero ASIDs, placed at bits 59:44 where the hardware reads them, without disturbing
 the MODE field above or the root PPN below (they are packed with no slack, so a shift that is off by
-four lands in one or the other).
+four lands in one or the other). It is still there, and still earns its keep: it is the only test
+that would catch a wrong shift.
 
-**Follow-up, not done here:** dropping the unconditional `sfence.vma` from `write_satp` would make
-the aarch64 property true on RISC-V and would remove a full TLB flush from every context switch,
-which is a real cost the context-switch benchmark is currently paying. It is a change to the
-switching model rather than a test fix (it needs the ASID recycling and rollover story checked
-against `crates/asid`), so it is a decision to take deliberately, not a side effect of a test lane.
+**Milestone 58 closed it, and the shape of the fix is the point.** The follow-up this section used to
+describe (drop the flush and the aarch64 property becomes true here) was correct about the goal and
+understated the work: the flush was covering for the fact that `flush_asid` was local, because
+`sfence.vma` does not broadcast. So the order was the shootdown first, then the removal, gated on a
+runtime probe of `satp.ASID`'s implemented width. The witness now runs on both ISAs and a new
+portable test, `an_asid_flush_reaches_the_other_cores`, proves the broadcast half. See
+notes/riscv-tlb-shootdown.md.
 
 ## What has no RISC-V analogue
 
@@ -243,7 +246,7 @@ problems, and only the first was large.
    aarch64, two RISC-V) are gone, along with `exec`, the one-page raw-machine-code loader they
    needed, plus three duplicate copies of a nine-instruction stub the supervision tests already kept
    a portable pair of. The replacements are one new binary (`user/src/outlaw.rs`, two roles) and the
-   `spinner` milestone 24 had already built. The trick that made one program serve two ISAs was
+   `spinner` that §24's interrupt work had already built. The trick that made one program serve two ISAs was
    passing the forbidden **address** in a register instead of baking it into the code.
 
 2. **The fault-register assertions.** Roughly a third of the tests assert on `ESR`/`FAR` (that a

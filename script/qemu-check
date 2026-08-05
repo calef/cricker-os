@@ -19,6 +19,10 @@
 #      match locally would be a rule nobody could follow. Loud and non-fatal is the honest setting.
 #
 # Run it directly any time; `script/bootstrap` calls it after installing.
+#
+# Name: unrecorded. Introduced 2026-07-30. `-check` is an established suffix in this directory,
+# which the 2026-08-03 refusal of `script/sanitize` later cited as a reason the long form costs
+# nothing.
 
 set -e
 cd "$(dirname "$0")/.."

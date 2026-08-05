@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
+  and not just a number, and what `script/citations` can and cannot prove about it. The two older
+  gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the
+  author meant. Twenty-eight comments credited the `^C` work to a milestone about an aarch64 board
+  and no gate could see it.
+
 - [Naming things](naming.md): components, crates, scripts, branches, and which document goes
   where. Why nothing here is named `-d` any more (DECISIONS §39), why `§N` and "milestone N" are
   different numbers over the same integers (it has already produced a wrong citation), and
@@ -150,8 +156,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
-  rust-src, why the symlink farm was measured to fail, and the honest caveats (no create or truncate
-  verb, monotonic-only clock, non-crypto random, std-internals coupling).
+  rust-src, why the symlink farm was measured to fail, and the honest caveats (what the PAL still
+  refuses and why, and the std-internals coupling a nightly bump can break). The "no create or
+  truncate verb, monotonic-only clock, non-crypto random" caveats this line used to list are all
+  gone: milestone 31 phase 2 bound `CREATE` and `TRUNCATE`, milestone 51 gave `SystemTime` a real
+  wall clock, and milestone 56 put `std::random` on the entropy service.
+- [Somebody else's crate on cricker](crates-io-on-cricker.md): milestone 64's measurement phase:
+  fifty crates.io crates built against the patched `std` to find out what actually stops them. 35 of
+  50 build unchanged, and of the 15 failures **eight are one crate that is not part of std**
+  (`getrandom` has no `cricker` backend). The four failure classes, the prioritised gap list
+  milestones 99 and 66 consume, why five of the top gaps are **bindings rather than missing verbs**,
+  and the sting: `tempfile` compiles, links, and returns "not supported" from every call, which is
+  gitoxide's whole atomic-write path.
 - [Running a foreign language: the C seam](c-seam.md): milestone 36: memory-unsafe C, compiled by
   bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
   confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`
@@ -248,6 +264,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
   redirection is being written.
+- [`swish` the language](swish-language.md): milestone 67: quoting, sequencing, and the one design
+  fork inside them. **Quoting was an authority gap rather than a convenience**: a file called `my
+  notes.txt` could not be named, and a resource you cannot name is a resource you cannot grant. It
+  **delimits a word and never rewrites one**, because every token here is a slice of the line you
+  typed and a shell with no allocator has nothing to join pieces into, so there is no backslash
+  escape and `a"b"` is refused rather than misread. The one thing it does to authority is *narrow*:
+  it suppresses expansion, so `rm "*.txt"` hands over one name where `rm *.txt` hands over the set,
+  and it stops `-r` widening a directory grant into a subtree walk. Sequencing splits **outermost**,
+  which is bash's binding and also what keeps a pipeline region scoped to its segment. And the fork:
+  **a refusal is not an error and gets its own status**, because "did my command fail" and "was I
+  able to ask" are different questions and Unix cannot tell them apart.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
@@ -393,6 +420,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the
   measured caveat behind CodeQL's "0 alerts" and the reason `--auto` merging silently did nothing.
+- [Auditing the shared pages](shared-page-audit.md): the **second** security audit, with the lens the
+  first one lacked. Every service contract now moves bulk data through a page shared with its client,
+  so the question is whether a value a server **checks** and a value it **uses** are two reads of
+  memory somebody else can write in between. Seven findings, five fixed; the structural reason there
+  were not more (every length travels in a register, never in the page); and the two patterns that
+  recurred, a guarantee assumed from the wrong side of a boundary and half a discipline written by
+  instinct.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
@@ -507,6 +541,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The RISC-V TLB shootdown](riscv-tlb-shootdown.md): milestone 58: RISC-V carried an ASID it got
+  no benefit from, because every context switch threw the whole TLB away. Why `sfence.vma` needs a
+  distributed protocol (SBI RFENCE, and its acknowledgement) where `tlbi aside1is` needs one
+  instruction, why removing the flush is gated on a *measurement* of `satp.ASID`'s width rather than
+  on the specification, the test that fails without the shootdown, and the honest benchmark: the win
+  is invisible under icount and needs the board.
 - [init, and loading a program from userspace](init-and-loading.md): milestone 19d: the ELF
   parser leaves the kernel for init, an ordinary confined program. How init loads a child through
   the granular verbs (retype, copy-and-map each segment, endow, configure, start), why
@@ -601,7 +641,6 @@ in the code or the conversation doesn't make sense, it belongs here.
   reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
   the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
   it holds, and neither can name the other's files.
-- [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
 - [Extended attributes](xattr.md): milestone 57's attribute layer, on the critical path to
   milestone 55's backup target because Samba stores Apple's Time Machine metadata as opaque byte
   strings and RedoxFS has none. Four verbs, three limits with a reason each (255-byte names are
