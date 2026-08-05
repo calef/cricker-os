@@ -22,6 +22,193 @@ together" framing anywhere, it is stale; this file is the current word.
 proven piece (green tests first); push after green. You are building the demonstrator. Chris
 reviews architecture and outcomes, not every line.
 
+## Three principles, and what makes each one hold
+
+These are not aspirations. Each names a mechanism that keeps it true when nobody is watching, which
+is the only kind of principle a free software project can enforce: a volunteer cannot be made to
+care, so the work has to carry the standard on its own.
+
+### 1. The ranking function is the shortest path to a system Chris actually runs
+
+Milestone 55's block already says it, in its own first line: **"The actual goal, and probably the
+largest single piece of work in the project."** A Time Machine target the family's Macs back up to,
+served by this kernel, on hardware in this house. The roadmap has said that for weeks and has never
+used it to order anything.
+
+It should. **Dogfooding is the only test that cannot be gamed.** A benchmark can be chosen, a gate can
+be written to pass, a note can describe a system that no longer exists. A backup you depend on either
+works on a Tuesday or it does not, and the failure arrives as your own data missing rather than as a
+red check.
+
+What that means concretely, and it is a reordering rather than a slogan:
+
+- When two milestones are both ready, **the one on the dogfood path goes first.** As of 2026-08-05
+  that path is 54 (a network file service a Mac can mount) and 55, whose remaining gates are a
+  scoping decision and real concurrency, `MILESTONE 65` and `MILESTONE 107` having cleared.
+- A milestone that is not on the path is not thereby worthless. Verification, parity and the
+  analysis tooling are what make the demonstrator a demonstrator. But when they compete for a lane,
+  the tie breaks toward the thing that gets a real workload running.
+- **Security and performance are not separate goals; they are what "runs it" means.** Nobody
+  dogfoods a backup server they do not trust with the only copy, and nobody dogfoods one that takes
+  a week. That is why the audit cadence, the confinement claims and the benchmark tripwire are on
+  this path rather than beside it.
+- Naming is on this path too, and it is the least obvious member. A person using the system meets a
+  name before they meet anything else, and in a capability system the name is often the only thing
+  that says what a program may *do*.
+
+**The honest caveat: the system is not ready to dogfood and will not be for a while.** Saying the
+principle out loud now is what stops the roadmap drifting into a collection of interesting kernels.
+
+### 2. The method is a result, and it is currently undocumented
+
+Measured on 2026-08-05, from a first commit on 2026-07-12: **24 days, 63 milestones built of 117,
+43 crates, 54 user programs, ~124,000 lines of Rust, 112 Kani proof harnesses, 1,303 commits**, on
+two architectures, with a booting kernel, a shell, a filesystem, a network stack and a compositor.
+
+That is not a normal rate for one architect, and the reason is that the work is done by many agents
+in parallel lanes with one person reviewing architecture and outcomes. **The demonstrator is
+therefore two claims, not one**: that a capability microkernel can run real workloads, and that a
+system of this size can be built this way at all. The second is at least as interesting to a
+stranger, and nothing in this tree currently states it.
+
+**It has to be recorded the way everything else here is recorded, with the caveats attached**, or it
+is marketing:
+
+- The numbers above are **size and rate, not quality.** 63 built milestones is a count of blocks
+  marked BUILT, and this tree found nine of them misrecorded in a single sweep (§76). Take the number
+  as a scale, never as a claim about correctness.
+- **What makes it work is not speed.** It is the gates, the proofs, the honest `BUGS` sections and
+  the review discipline. The same method without them produces a great deal of code that nobody can
+  trust, faster. Every failure recorded in this file is evidence for that: the lane that squashed
+  against `origin/main` and staged four other lanes' files, the blind `sed` that rewrote the row
+  recording a name's refusal, the three agents that clobbered work with `git reset --hard` in one
+  day.
+- **The bottleneck moves, and pretending otherwise wastes the method.** On 2026-08-04 the constraint
+  stopped being how fast lanes could produce and became how fast one merge queue could land, and
+  eleven lanes made that worse rather than better.
+
+### 3. A newcomer must be able to succeed without asking anyone
+
+This is the principle that most of this file already serves without naming it, and it is the one that
+inverts hardest for a project like this one. In a company a high standard can be enforced through
+people, because they are paid and can be managed. **Here the only enforcement is that the work
+answers its own questions**, because a contributor who has to ask will simply leave, and will do so
+silently.
+
+So a standard that is not also generous produces an empty repository. That is why:
+
+- **The documentation standard is FreeBSD's**: task-oriented, in-tree, real `EXAMPLES`, and an honest
+  `BUGS` section next to the feature rather than in a tracker. A page without a worked example has
+  not finished explaining itself.
+- **`BUGS` sections are not modesty, they are the mechanism.** A newcomer who hits a limitation the
+  docs named will trust the docs. One who hits a limitation the docs hid will not trust anything
+  again, and there is no relationship to fall back on.
+- **A name is a claim, and the reader meets it first.** `script/names --unratified` is a worklist
+  rather than a wall precisely so that an unratified name never blocks anyone's build.
+- **Every decision has a written reason.** `design/decisions/` records why, including for decisions
+  that were refused, so a newcomer can disagree with an argument rather than with an authority.
+- **Anything that only works because someone knows it is a defect.** That is the previous section's
+  ladder, read from the newcomer's side.
+
+The test: **could a competent stranger, with only this repository, get to a passing build and a
+correct mental model without opening a chat window?** Where the answer is no, that is a bug in the
+tree and not in the stranger.
+
+## Nobody remembers, so build the mechanism that does not need them to
+
+Chris, 2026-08-04, after an evening in which three separate duties turned out to belong to whoever
+happened to notice, and none of them noticed. **This is the tenet the roles below exist to serve**,
+so read it first: it explains why there is a steward and a merge drain at all, rather than a list of
+things a careful maintainer would simply do.
+
+**Design for coordinating many, not for one attentive person.** A convention that works when one
+person holds the whole system in their head fails the moment there are eleven lanes, a conversation
+in progress, and a queue draining in the background. That is this project's normal condition, not its
+worst case.
+
+**The ladder, strongest first.** When something must not go wrong, reach for the highest rung that
+fits:
+
+1. **Make the wrong state unrepresentable.** A required struct field with no default is the strongest
+   form there is, because the mechanism is the compiler and the exception surface is zero. Milestone
+   50 turned `InputSpec::Required` from a unit variant into one carrying `writes_while_reading`, and
+   that single choice means a program which writes while it reads **cannot be declared without
+   saying so**. A pull request comment had been written to remind the integrator of the same thing;
+   the type made the reminder redundant.
+2. **A gate that fails loudly**, in `script/lint` or CI. Weaker, because somebody has to write it and
+   it can be wrong about the tree (§77 is a live example: the branch-prefix check rejects the
+   repository's second-commonest prefix). But it fires without being remembered.
+3. **A written record at the thing itself**, which is milestone 115's shape: provenance beside the
+   name, not in a registry. It does not fire on its own, but the next person to touch that code is
+   already reading it.
+4. **A note, a report, or a comment on a pull request.** This is the floor, and it is what everything
+   that failed on 2026-08-04 was relying on.
+
+**"Somebody will notice" is not a mechanism.** It is rung zero and it belongs on no list.
+
+**An exception is allowed and must say so.** Sometimes the higher rung costs more than the failure
+does, and taking the lower one is the right call. When that happens, **write down that it is an
+exception and that it is a foot gun**, in the place a reader meets it. An unmarked exception reads as
+a design, and the next person extends it.
+
+**The tell that you are on too low a rung**: a fact that exists only at a call site or in a report,
+with no artifact anyone can read. That shape recurred three times in one day, each wearing different
+clothes: roadmap status that was wrong in both records and invisible to the gate comparing them
+(§76), naming decisions that lived in one table cell nobody could find (milestone 115), and a
+merge-order coupling that only a lane's report mentioned. When you notice it, move up a rung.
+
+## Move fast on what can be undone; be methodical on what cannot
+
+Chris, 2026-08-05. The ladder above says how hard to make a thing hold. This says how much care to
+spend deciding it, and the two are not the same question: a cheap decision still deserves a
+mechanism, and an expensive one is not made safe by adding a gate afterwards.
+
+**Most decisions here are reversible and should be made quickly, by whoever is holding the problem.**
+Code, notes, roadmap wording, which milestone a lane takes, how a script is structured. Getting these
+wrong costs an hour. Deliberating them costs more than that, and deliberating them *with Chris* costs
+his attention, which is the scarcest thing in this project. `scripts/merge-drain.sh` was rewritten
+three times in one evening, each version wrong in a way the next one fixed, and that was cheaper than
+designing it correctly up front would have been.
+
+**A few decisions are expensive, and the expense is almost never the code.** It is the consequences
+that cannot be recalled:
+
+- **Anything two programs agree on.** A wire format, an opcode number, a packed word. The code is a
+  morning's work; the un-shipping is not.
+- **Names.** Trivial to change mechanically and expensive in every other way, because a name lands in
+  61 call sites, in a reader's head, and in the vocabulary people use to disagree. This is why names
+  are Chris's, and why a lane ships a **provisional** one instead of waiting.
+- **Dependencies** (§46), especially in the shipping graph. Adding one is a morning; removing one
+  after a subsystem is built on it is a project.
+- **The syscall surface** (§10, §16), which is a boundary rather than a habit, and which every
+  future program is written against.
+- **Facts that leave the machine**, and this is the truly irreversible category. A published claim, a
+  benchmark number a stranger quotes, a secret material once stored. §79 is the case: approving an
+  `NTOWFv2` beside an Argon2id tag was worth an hour of argument, because the decision cannot be
+  unmade by deleting the code.
+
+**The test is not "can I revert the commit". It is "who else has already acted on this".**
+
+**Two mechanisms here exist to widen a door that looks narrow, and both should be used rather than
+deliberated around.** A **provisional name** converts a naming decision from expensive to cheap by
+saying out loud that it is not settled. A **recorded limitation** in a `BUGS` section does the same
+for a design compromise, by making it a known cost rather than an implied promise. Reach for these
+instead of stalling.
+
+**And one thing changed the calculus, which this project is unusual in having to notice.** Agents
+made *code* dramatically more reversible: a subsystem can be rewritten in an hour, so the old
+instinct to design carefully before typing is now often the expensive choice. They made **records no
+more reversible at all.** Nobody can un-publish a decision, un-teach a reader a name, or un-store a
+secret. So the gap between the two categories is wider here than it is in ordinary projects, and the
+mistake to guard against is spending on the wrong side of it: **deliberating over code while
+committing quickly to a name.**
+
+The failures on record are both of that shape. A blind `sed` swept a rename across the tree and
+rewrote the very row recording that the name had been *refused*, which is a cheap edit destroying an
+expensive record. And a lane's provisional name went unquestioned by a maintainer who endorsed it,
+against a refusal that already existed and that nobody could find, which is milestone 115's whole
+reason for being.
+
 ## The three roles, and the one rule that keeps work moving
 
 Named 2026-08-04, after a night in which eleven agents shipped and the queue still went idle twice
@@ -74,8 +261,72 @@ than to findings.
 **Open decisions live in a file, not in a conversation.** A decision waiting on Chris that exists
 only in chat scrollback is in exactly the medium milestone 94 was written to abolish, and on
 2026-08-04 five of them accumulated there in one day while that milestone was being built. They go
-in `design/open-decisions.md` (name provisional), one entry each: what is being decided, the
-options, the recommendation with its reason, and what is blocked until it is answered.
+in `design/decisions/` with `**Status: PROPOSED.**`, one section each: what is being decided, the
+options, the recommendation with its reason, and what is blocked until it is answered. (They lived
+briefly in `design/open-decisions.md`; milestone 114 absorbed that file, and the numbering is the
+integrator's at merge like every other section number.)
+
+**And work waiting on Chris carries its own label and its own ask** (Chris, 2026-08-04). The same
+principle one level out: a pull request held for him is a decision, and a queue that exists only in
+a chat message is the medium above. Two things, both at the moment the decision to hold is made and
+not later, because the failure this prevents is the maintainer forgetting it is holding something:
+
+- **The `needs-architect` label**, so the queue is `gh pr list --label needs-architect` rather than
+  a paragraph somebody has to have read. **It names the role, not the person** (Chris, 2026-08-05):
+  he holds it today and would like a second architect tomorrow, and a mechanism that spells one
+  name has that name as its failure mode. Its description carries the reason a thing lands there at
+  all: outside standing merge authority, meaning the syscall surface, a new dependency, or a
+  `DECISIONS` section owed.
+- **A `## What I need from you` comment** naming the specific ask. Three properties make it worth
+  writing, and they are what separate it from a link to a diff. It should be **answerable without
+  reading the diff**, because the point is to spend Chris's attention on the decision rather than on
+  reconstructing it. It should **say what happens if he says no**, since a recommendation with no
+  stated downside is not a recommendation. And it should **separate what is blocking from what is
+  eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
+  gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
+
+**Lane count is set against merge-queue depth, not against how much work exists** (Chris delegated
+this on 2026-08-04, after the queue reached ten and the oldest pull request starved). A finished lane
+does not produce value; a *merged* lane does, and under the require-branches-up-to-date rule the
+queue lands **one thing at a time**. So lanes past that rate manufacture merge debt rather than
+progress:
+
+| open pull requests | concurrent lanes |
+|---|---|
+| 0 to 3 | 4 |
+| 4 to 6 | 2 |
+| 7 or more | 1 |
+
+The numbers are a starting point rather than arithmetic, and the rule that matters is the reason:
+**throughput is measured in merged work.** When the queue is deep the bottleneck is CI wall-clock and
+the honest move is fewer lanes, said out loud as a decision rather than by quietly not launching any,
+which is how it failed three times that evening.
+
+**Prune a lane's worktree the moment its pull request merges**, in the same breath as deleting the
+branch and relinking `cricker-dev`. Eight finished worktrees had accumulated by the time anyone
+looked, and one of them alone held 3.3 GB.
+
+**The maintainer starts the two watchers at the beginning of every session**, because both are
+ordinary loops that die with the session that started them, and a session that forgets has exactly
+the gap they were written to close:
+
+```sh
+scripts/merge-drain.sh &     # lands every PR not labelled needs-architect, one at a time
+scripts/trunk-health.sh &    # says when main goes red, and when it recovers
+```
+
+They exist because on 2026-08-04 three duties turned out to belong to whoever happened to notice: two
+green pull requests sat unmerged for hours, `main` went red with nobody assigned, and merging one
+pull request staled eight others that nothing picked back up. The steward was meant to cover this and
+did not, for a reason worth keeping: **it reported and never acted.** A stalled queue announced in a
+message is only useful if somebody reads the message. See notes/merge-queue.md, whose BUGS section is
+honest that neither script reports its own death.
+
+**Do not try to route this by requesting a review.** GitHub silently refuses a review request from
+the pull request's own author: `gh pr edit N --add-reviewer calef` **returns success and sets zero
+reviewers**, because every pull request here is authored under Chris's account by the `gh` token.
+That was tried on 2026-08-04 and the silent no-op looked exactly like a working queue, which is
+worse than an error. Assignees and labels do work; reviewers do not.
 
 **Stop and bring it to Chris only when it is genuinely his call:** a design fork not already
 decided, a test that will not pass after real effort, a hardware or external dependency, or the
