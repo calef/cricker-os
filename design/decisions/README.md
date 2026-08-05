@@ -135,6 +135,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 | 77 | PROPOSED | [The branch-prefix list does not describe the tree](77-branch-prefixes.md) |
 | 78 | PROPOSED | [Signed commits: worth doing, and not as a side effect](78-signed-commits.md) |
+| 79 | DECIDED | [Holding password-equivalent material, and what a session key release means](79-password-equivalent-material.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
