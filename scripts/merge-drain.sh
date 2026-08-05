@@ -30,15 +30,20 @@
 # naming the pull request, because both need a human decision and a loop that retries them just
 # burns CI.
 #
-# # Why one at a time, which is the part that looks wrong
+# # Arming is breadth-first; updating is one at a time
 #
-# Updating every stale branch at once would be faster in wall-clock terms and is the wrong thing.
-# Each update triggers a full CI run, `cpu matrix` is this tree's load-sensitive check
-# (notes/cpu-models.md), and eight concurrent QEMU-heavy runs manufacture their own failures. A
-# serial drain is slower and does not invent work.
+# These two are not the same operation and the first version of this script treated them as one,
+# which is the bug worth recording here rather than in a commit nobody re-reads. **Arming auto-merge
+# is free**: it is one API call and it changes nothing until the checks pass. **Updating a branch is
+# expensive**: it triggers a full CI run, `cpu matrix` is this tree's load-sensitive check
+# (notes/cpu-models.md), and several concurrent QEMU-heavy runs manufacture their own failures.
 #
-# Under the up-to-date rule this is inherently serial anyway: merging any pull request stales every
-# other one, so the queue can only ever move one at a time.
+# So every unheld pull request is armed on every pass, and only one is updated. Arming only the head
+# of the queue left #134 sitting CLEAN with all twelve checks green behind a lower-numbered pull
+# request that was still building, which is precisely the failure this script exists to end.
+#
+# Under the up-to-date rule the *updating* is inherently serial anyway: merging any pull request
+# stales every other one, so the queue can only ever move one at a time.
 #
 # Name: unrecorded. Provisional, minted 2026-08-04 and not yet put to Chris. Named for what it does
 # to the queue rather than for the mechanism, in the family of `qemu-bounded.sh`. It lives in
@@ -73,21 +78,34 @@ pass() {
 		return 1
 	fi
 
+	# Arm EVERY unheld pull request, not just the head of the queue. Arming and updating have very
+	# different costs and an earlier version of this script conflated them, which is the bug worth
+	# recording: arming is a free API call that changes no state until the checks pass, while
+	# updating triggers a full CI run. So arming is done breadth-first and updating is done one at a
+	# time. The version that armed only the head left #134 sitting CLEAN with all twelve checks green
+	# behind a lower-numbered pull request that was still building, which is exactly the "a green
+	# pull request sat unmerged because nobody armed it" failure this script was written to end.
+	for a in $(printf '%s' "$q" | jq -r '.[].number'); do
+		gh pr merge "$a" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
+	done
+
+	# Updating is the expensive half, so only the head of the queue gets it. Prefer a pull request
+	# that is already current: if one is CLEAN it needs nothing but its checks, and spending a CI
+	# cycle updating a different one first would only stale it again.
+	ready=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "CLEAN")] | .[0].number // empty')
+	if [ -n "$ready" ]; then
+		echo "merge-drain: #$ready is current and armed; leaving the queue alone until it lands"
+		return 0
+	fi
+
 	num=$(printf '%s' "$q" | jq -r '.[0].number')
 	state=$(printf '%s' "$q" | jq -r '.[0].mergeStateStatus')
 	title=$(printf '%s' "$q" | jq -r '.[0].title')
 
 	case "$state" in
-	CLEAN | BEHIND | UNKNOWN)
-		# Arm first, then update. Auto-merge fires on its own once the branch is current and green,
-		# so the loop does not have to be alive at the moment it lands.
-		gh pr merge "$num" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
-		if [ "$state" = "BEHIND" ]; then
-			echo "merge-drain: updating #$num against main ($title)"
-			gh api -X PUT "repos/$REPO/pulls/$num/update-branch" >/dev/null 2>&1 || true
-		else
-			echo "merge-drain: #$num armed and current, waiting on checks ($title)"
-		fi
+	BEHIND | UNKNOWN)
+		echo "merge-drain: updating #$num against main ($title)"
+		gh api -X PUT "repos/$REPO/pulls/$num/update-branch" >/dev/null 2>&1 || true
 		;;
 	DIRTY)
 		echo "merge-drain: STALLED. #$num has conflicts a person must resolve ($title)"

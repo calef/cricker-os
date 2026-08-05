@@ -41,10 +41,17 @@ It takes the open pull requests **without** the `needs-chris` label, lowest numb
 auto-merge on the head of that queue, and clicks "Update branch" if it is behind. Auto-merge is armed
 *before* the update so the merge lands whether or not the loop is still alive.
 
-**It works one at a time on purpose.** Updating every stale branch at once is faster in wall-clock
-terms and wrong: each update triggers a full CI run, `cpu matrix` is this tree's load-sensitive check
-(notes/cpu-models.md), and eight concurrent QEMU-heavy runs manufacture their own failures. Under the
-up-to-date rule the queue is serial anyway, because merging anything stales everything else.
+**Arming is breadth-first; updating is one at a time**, and the first version of this script treated
+them as one operation. That is worth stating plainly because it reproduced the exact failure the
+script was written to end. Arming auto-merge is **free**: one API call, nothing changes until the
+checks pass. Updating a branch is **expensive**: a full CI run, and `cpu matrix` is this tree's
+load-sensitive check (notes/cpu-models.md), so several concurrent QEMU-heavy runs manufacture their
+own failures.
+
+Arming only the head of the queue left **#134 sitting CLEAN with all twelve checks green**, behind a
+lower-numbered pull request that was still building. Chris found it, not the script. Now every unheld
+pull request is armed on every pass and only one is updated. Under the up-to-date rule the *updating*
+is serial anyway, because merging anything stales everything else.
 
 **It stops rather than guessing.** A conflict or a failing check ends the pass with the pull request
 named. Both need a human, and a loop that retries them just burns CI.
