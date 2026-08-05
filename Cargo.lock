@@ -122,6 +122,7 @@ name = "cred"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "ntlm",
  "subtle",
 ]
 
@@ -271,6 +272,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "intrusive"
 version = "0.1.0"
 
@@ -346,8 +356,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
+name = "md4"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da5ac363534dce5fabf69949225e174fbf111a498bf0ff794c8ea1fba9f3dda"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "measured_boot"
 version = "0.1.0"
+
+[[package]]
+name = "ntlm"
+version = "0.1.0"
+dependencies = [
+ "digest",
+ "hmac",
+ "md-5",
+ "md4",
+]
 
 [[package]]
 name = "ntp_proto"
