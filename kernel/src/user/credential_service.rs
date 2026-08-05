@@ -36,6 +36,12 @@ const _NO_CLIENT_BUDGET: () = ();
 pub const ROLE_HONEST: u64 = 0;
 pub const ROLE_ATTACKER: u64 = 1;
 pub const ROLE_PROVISIONER: u64 = 2;
+pub const ROLE_NTLM: u64 = 3;
+
+/// The flag bits a client packs into its report's third word; must match the same file.
+pub const F_CLEAN: u64 = 1 << 0;
+pub const F_SESSION_KEY: u64 = 1 << 1;
+pub const F_NO_KEY_ON_REFUSAL: u64 = 1 << 2;
 
 /// The report words `credentialer_test_client` and the service send, likewise.
 pub const RPT_DONE: u64 = 0x_c2ed_c11e_0000_0001;

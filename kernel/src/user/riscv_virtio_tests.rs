@@ -26,6 +26,11 @@ const NET_TEST_UDP_DNS: u64 = 1;
 const NET_TEST_TCP_ECHO: u64 = 2;
 const NET_TEST_TCP_REOPEN: u64 = 3;
 const NET_TEST_UDP_TFTP: u64 = 4;
+const NET_TEST_TCP_ACCEPT: u64 = 5;
+/// The one port the inbound gate is granted (milestone 107); the runners forward a host port to
+/// it. Both ISA legs use the same number and the same host port, because they run one after the
+/// other and never hold it at once.
+const NET_LISTEN_PORT: u16 = 7778;
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
@@ -398,8 +403,12 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
 /// the aarch64 twin for why the old DNS-based version was environment-dependent.
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_TFTP,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -413,8 +422,12 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
 /// The riscv UDP round trip over PCIe, behind the RISC-V IOMMU.
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_TFTP,
+        true,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -429,8 +442,12 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
 /// upstream is the host's resolver, so a non-answer is skipped and only a malformed reply fails.
 #[test_case]
 fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_DNS,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -452,8 +469,12 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
 /// send, receive the echo, close, the full round trip through the confined NIC.
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ECHO,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -467,8 +488,12 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
 /// The riscv TCP echo round trip over PCIe, behind the RISC-V IOMMU.
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ECHO,
+        true,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -483,9 +508,12 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
 /// ephemeral-port fix). See the aarch64 twin for the finding.
 #[test_case]
 fn a_reopened_socket_id_connects_again_over_tcp() {
-    let Some(report) =
-        virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false)
-    else {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_REOPEN,
+        false,
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -493,6 +521,31 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
     assert_eq!(
         verdict, NET_CLIENT_OK,
         "reopening a socket id and connecting again failed (client code {verdict:#x})",
+    );
+}
+
+/// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
+/// outside the stack's grant is refused as a matter of authority, the granted one binds and is
+/// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
+/// while the guest accepts, reads and answers each. See the aarch64 twin for the shape, for why
+/// both claims share one exchange, and for what the stage codes mean.
+#[test_case]
+fn a_host_process_connects_to_the_guest_and_is_answered() {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_TCP_ACCEPT,
+        false,
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+    let verdict = sched::ipc_recv(report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
+         port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
+         which is the host side",
     );
 }
 
