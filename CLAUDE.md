@@ -157,6 +157,58 @@ clothes: roadmap status that was wrong in both records and invisible to the gate
 (§76), naming decisions that lived in one table cell nobody could find (milestone 115), and a
 merge-order coupling that only a lane's report mentioned. When you notice it, move up a rung.
 
+## Move fast on what can be undone; be methodical on what cannot
+
+Chris, 2026-08-05. The ladder above says how hard to make a thing hold. This says how much care to
+spend deciding it, and the two are not the same question: a cheap decision still deserves a
+mechanism, and an expensive one is not made safe by adding a gate afterwards.
+
+**Most decisions here are reversible and should be made quickly, by whoever is holding the problem.**
+Code, notes, roadmap wording, which milestone a lane takes, how a script is structured. Getting these
+wrong costs an hour. Deliberating them costs more than that, and deliberating them *with Chris* costs
+his attention, which is the scarcest thing in this project. `scripts/merge-drain.sh` was rewritten
+three times in one evening, each version wrong in a way the next one fixed, and that was cheaper than
+designing it correctly up front would have been.
+
+**A few decisions are expensive, and the expense is almost never the code.** It is the consequences
+that cannot be recalled:
+
+- **Anything two programs agree on.** A wire format, an opcode number, a packed word. The code is a
+  morning's work; the un-shipping is not.
+- **Names.** Trivial to change mechanically and expensive in every other way, because a name lands in
+  61 call sites, in a reader's head, and in the vocabulary people use to disagree. This is why names
+  are Chris's, and why a lane ships a **provisional** one instead of waiting.
+- **Dependencies** (§46), especially in the shipping graph. Adding one is a morning; removing one
+  after a subsystem is built on it is a project.
+- **The syscall surface** (§10, §16), which is a boundary rather than a habit, and which every
+  future program is written against.
+- **Facts that leave the machine**, and this is the truly irreversible category. A published claim, a
+  benchmark number a stranger quotes, a secret material once stored. §79 is the case: approving an
+  `NTOWFv2` beside an Argon2id tag was worth an hour of argument, because the decision cannot be
+  unmade by deleting the code.
+
+**The test is not "can I revert the commit". It is "who else has already acted on this".**
+
+**Two mechanisms here exist to widen a door that looks narrow, and both should be used rather than
+deliberated around.** A **provisional name** converts a naming decision from expensive to cheap by
+saying out loud that it is not settled. A **recorded limitation** in a `BUGS` section does the same
+for a design compromise, by making it a known cost rather than an implied promise. Reach for these
+instead of stalling.
+
+**And one thing changed the calculus, which this project is unusual in having to notice.** Agents
+made *code* dramatically more reversible: a subsystem can be rewritten in an hour, so the old
+instinct to design carefully before typing is now often the expensive choice. They made **records no
+more reversible at all.** Nobody can un-publish a decision, un-teach a reader a name, or un-store a
+secret. So the gap between the two categories is wider here than it is in ordinary projects, and the
+mistake to guard against is spending on the wrong side of it: **deliberating over code while
+committing quickly to a name.**
+
+The failures on record are both of that shape. A blind `sed` swept a rename across the tree and
+rewrote the very row recording that the name had been *refused*, which is a cheap edit destroying an
+expensive record. And a lane's provisional name went unquestioned by a maintainer who endorsed it,
+against a refusal that already existed and that nobody could find, which is milestone 115's whole
+reason for being.
+
 ## The three roles, and the one rule that keeps work moving
 
 Named 2026-08-04, after a night in which eleven agents shipped and the queue still went idle twice
