@@ -608,20 +608,26 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // B.1): the check has to be the thing that decides whether a thread is created at all, not
     // something the new thread does to itself. `trust::require` halts on a mismatch, so past this
     // line the bytes are the ones this kernel image was built against.
-    let init_bytes = match crickerfs::Fs::parse(image) {
-        Ok(fs) => match fs.read(INIT_ROLES_ENTRY) {
-            Some(bytes) => bytes,
-            None => {
-                crate::println!("  boot archive has no '{INIT_ROLES_ENTRY}' program");
-                crate::arch::halt();
-            }
-        },
+    let boot_fs = match crickerfs::Fs::parse(image) {
+        Ok(fs) => fs,
         Err(e) => {
             crate::println!("  boot archive is not a crickerfs image: {e:?}");
             crate::arch::halt();
         }
     };
+    let init_bytes = match boot_fs.read(INIT_ROLES_ENTRY) {
+        Some(bytes) => bytes,
+        None => {
+            crate::println!("  boot archive has no '{INIT_ROLES_ENTRY}' program");
+            crate::arch::halt();
+        }
+    };
     crate::trust::require(INIT_ROLES_ENTRY, init_bytes);
+    // And the table init measures *its* loads against (milestone 104). The whole archive is about to
+    // be mapped into init, so this is the same decision one link down: what the kernel hands over
+    // has to be what this kernel image was built against, or the refusals init makes with it are
+    // worth nothing.
+    crate::trust::require_program_measurements(&boot_fs);
 
     // **The filesystem, for the boot role only** (milestone 50). Bring up the block server and the
     // FS server here, before init exists, and hand init the service endpoint and the page its
@@ -1011,6 +1017,11 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     // trust root, same place in the sequence as aarch64's `spawn_init`; the parity gate (§19) asks
     // for exactly that.
     crate::trust::require("init", init_bytes);
+    // The measurement table too (milestone 104). `builder` does not read it (it loads exactly one
+    // worker and is milestone 20's demo, not the interactive system), but the whole archive is
+    // mapped into it either way and the parity gate (§19) asks for the same check in the same place
+    // on both boards, not for the same check on the boot path that happens to use it.
+    crate::trust::require_program_measurements(&fs);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // init's address space: its own segments, a deep stack (it runs an ELF loader loop), and the
@@ -1187,6 +1198,10 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     // Measured boot (milestone 22 phase B.1): `system_initializer` is riscv's boot program, so it is in the
     // trust root under its own name and checked here, before its address space is built.
     crate::trust::require("system_initializer", init_bytes);
+    // And the table it measures the six boot components and every spawnable program against
+    // (milestone 104). This is the boot path that genuinely uses it: `crates/system_initializer` is
+    // the same code aarch64's init runs, so the two boards extend the chain by the same lines.
+    crate::trust::require_program_measurements(&fs);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // system_initializer's address space: its segments, a deep stack (it runs an ELF loader that builds three
