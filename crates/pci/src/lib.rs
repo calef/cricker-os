@@ -14,6 +14,11 @@
 //! (Base Address Registers, where the function's register blocks live in memory), and the
 //! capability list pointer. Everything virtio-modern needs beyond that lives in **vendor
 //! capabilities** in that list. See notes/pcie.md.
+//!
+//! Name: ratified 2026-08-01 (Chris, the naming tenet in CLAUDE.md). Named in the group of standard
+//! terms that are already right and must not be touched, because a name a reader knows from outside
+//! this project costs nothing to learn and renaming it would destroy the recognition the tenet
+//! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
 

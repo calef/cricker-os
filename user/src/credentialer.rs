@@ -73,6 +73,12 @@
 //! guess as fast as it can `CALL`, and each guess costs it one Argon2id derivation of the service's
 //! time. That cost is the only thing slowing an online attack down, and it is also a way to make
 //! the service unresponsive to everyone else.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `credential`. Refused `credential`
+//! (the plain resource noun, on the pattern `clock` and `entropy` follow). The argument for it was
+//! made twice and wrong twice: `credentialer` is a real profession rather than a coinage, and this
+//! service will never give you a credential, so naming it for the resource implies the one thing it
+//! exists to refuse.
 
 #![no_std]
 #![no_main]

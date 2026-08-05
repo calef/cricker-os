@@ -18,6 +18,9 @@
 # The specific knowledge it protects is the exclusion lists. Which crates are host-only and which are
 # bare-metal is a fact about the workspace, and a copy of that fact in a workflow file drifts
 # silently as the workspace changes. Keep it here, where it is one fact in one place.
+#
+# Name: unrecorded. Introduced 2026-07-31 to put the toolchain-drift commands where a developer can
+# run them.
 
 set -e
 cd "$(dirname "$0")/.."

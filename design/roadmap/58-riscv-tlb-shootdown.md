@@ -1,6 +1,6 @@
 # 58. RISC-V TLB shootdown, and the flush that makes ASIDs pointless
 
-**Status: NOT-STARTED.**
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/58-riscv-tlb-shootdown`.
 
 **Gate: NONE.** The precondition landed 2026-07-31: `mmu::asid_bits()` probes the hardware width
 and a test fails loudly below 8, which is what removing the flush has to be gated on. The order is

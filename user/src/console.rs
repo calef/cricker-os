@@ -13,6 +13,9 @@
 //! line of hello's code.
 //!
 //! The syscall runtime (`send`/`recv`) comes from the shared `user_rt` crate (19f.6).
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as always
+//! right.
 
 #![no_std]
 #![no_main]

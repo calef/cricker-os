@@ -4,6 +4,10 @@
 # Part of the "Scripts to Rule Them All" set (see notes/scripts.md). Idempotent: it checks
 # for what is already present and installs only what is missing, so it is cheap to re-run and
 # safe to call from script/setup, script/update, and script/ci-build.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md).
 
 set -e
 cd "$(dirname "$0")/.."

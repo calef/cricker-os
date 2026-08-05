@@ -54,6 +54,12 @@
 //!
 //! The granted directory's name and rights ride in the three `START` argument words exactly as
 //! `fs_subtree_caretaker`'s do.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `swarden`. Refused `swarden` and the
+//! `warden` family. A reader should predict exactly these names, in one directory. It survived the
+//! collapse this milestone was first drafted around, because it and `fs_subtree_caretaker` serve
+//! the same verbs by opposite means: this one filters names on every name-taking verb, where its
+//! sibling performs no checks at all.
 
 #![no_std]
 #![no_main]
