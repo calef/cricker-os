@@ -129,11 +129,12 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
 | 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
-| 73 | PROPOSED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
+| 73 | DECIDED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
 | 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
 | 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 | 77 | PROPOSED | [The branch-prefix list does not describe the tree](77-branch-prefixes.md) |
+| 78 | PROPOSED | [Signed commits: worth doing, and not as a side effect](78-signed-commits.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
