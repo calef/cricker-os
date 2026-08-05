@@ -37,9 +37,10 @@ merge-drain: updating #128 against main (Milestone 67: swish the language)
 merge-drain: queue empty; nothing open that does not need Chris
 ```
 
-It takes the open pull requests **without** the `needs-chris` label, lowest number first, arms
-auto-merge on the head of that queue, and clicks "Update branch" if it is behind. Auto-merge is armed
-*before* the update so the merge lands whether or not the loop is still alive.
+It takes the open pull requests **without** the `needs-chris` label, arms auto-merge on **every one
+of them**, and clicks "Update branch" on **one**. Auto-merge is armed *before* the update, so a merge
+lands whether or not the loop is still alive; the script should be an accelerator, never a
+dependency.
 
 **Arming is breadth-first; updating is one at a time**, and the first version of this script treated
 them as one operation. That is worth stating plainly because it reproduced the exact failure the
