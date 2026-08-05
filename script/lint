@@ -113,6 +113,100 @@ for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
 done
 
+# Every `unsafe fn` states its contract in a `# Safety` section (milestone 112).
+#
+# **Read what this does and does not claim, because the milestone it comes from is about exactly
+# that distinction.** It checks that a contract is WRITTEN. It cannot check that the contract is
+# true, that it is relevant, or that any caller met it. No gate here can: `undocumented_unsafe_blocks`
+# has the same limit one level down, and DECISIONS §61 carries the BUGS note about a generated pass
+# that produced a comment false at its first site. What this buys is that the reader of an
+# `unsafe fn` always has a sentence to judge, which is a low bar and is the bar that was missing.
+#
+# It earns its place because of the shape of this tree's unsafe code, measured in milestone 82: of
+# the tree's `unsafe fn`s, a third contain **no unsafe operation at all**. Their unsafety is a
+# contract about meaning rather than a memory operation a compiler can point at (`set_ttbr0` is
+# unsafe because `aarch64-cpu` hands `TTBR0_EL1.set` over as a safe call; `assume_no_stale_entry` is
+# named for its contract). For those, both unsafe lints have nothing to fire on and **the rustdoc
+# section is the only enforcement there is.** Nothing was checking that it existed.
+#
+# `clippy::missing_safety_doc` is already on via `-D warnings` and does NOT cover this: it only fires
+# on an EXPORTED function, and the interesting ones here are private to their module (`set_ttbr0`,
+# `write_satp`). This found one violation on its first run, `fs_server`'s `file_page`, whose contract
+# was written but spelled `SAFETY:` instead of `# Safety` and so rendered as ordinary prose.
+#
+# **Trait-impl methods are excluded, and that is correctness rather than convenience.** `GlobalAlloc`'s
+# `alloc` and RedoxFS's `Disk::read_at` are `unsafe fn` because the TRAIT declares them so; the
+# contract belongs to the trait's own documentation and an impl restating it would be a copy that can
+# drift. Twelve of the tree's `unsafe fn`s are this case, and clippy's own lint skips them for the
+# same reason. Without that exclusion this check is twelve false positives out of thirteen, which is
+# a nag rather than a gate.
+echo "==> unsafe fn contracts"
+python3 - <<'PY'
+import pathlib
+import re
+import sys
+
+# `unsafe fn`, at any visibility, but not `unsafe trait`, not `unsafe impl`, and not a bare `fn`.
+DECL = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?'
+    r'unsafe\s+(?:extern\s+"[^"]*"\s+)?fn\s+(\w+)')
+# An `impl ... for ...` header. `impl<T> Node for N` counts; `impl Fifo<T>` (inherent) does not.
+IMPL_FOR = re.compile(r'^\s*(?:unsafe\s+)?impl\b.*\bfor\b')
+
+total = 0
+in_trait_impl = 0
+missing = []
+
+for path in sorted(pathlib.Path('.').rglob('*.rs')):
+    parts = path.parts
+    if any(p in ('target', 'vendor', '.git', '.claude', 'patches') for p in parts):
+        continue
+    lines = path.read_text(errors='replace').split('\n')
+    # Brace depth, so "am I inside a trait impl" is answered by nesting rather than by guessing.
+    depth = 0
+    trait_impl_at = None
+    for i, line in enumerate(lines):
+        if trait_impl_at is None and IMPL_FOR.match(line):
+            trait_impl_at = depth
+        m = DECL.match(line)
+        if m:
+            total += 1
+            if trait_impl_at is not None:
+                in_trait_impl += 1
+            else:
+                # Walk up over attributes and comments to the doc block that belongs to this item.
+                j, doc = i - 1, []
+                while j >= 0:
+                    s = lines[j].strip()
+                    if s.startswith('///') or s.startswith('//!'):
+                        doc.append(s)
+                        j -= 1
+                    elif s.startswith(('#[', '#!', '//')):
+                        j -= 1
+                    else:
+                        break
+                if not any(re.search(r'#\s*Safety', d, re.I) for d in doc):
+                    missing.append(f'{path}:{i + 1}  {m.group(1)}')
+        depth += line.count('{') - line.count('}')
+        if trait_impl_at is not None and depth <= trait_impl_at:
+            trait_impl_at = None
+
+if missing:
+    print('lint: unsafe fn with no `# Safety` section in its rustdoc:', file=sys.stderr)
+    for entry in missing:
+        print(f'  {entry}', file=sys.stderr)
+    print('', file=sys.stderr)
+    print('For a third of this tree\'s unsafe fns the doc section is the ONLY enforcement there '
+          'is: they contain no unsafe operation, so neither unsafe lint has anything to fire on. '
+          'Spell it `# Safety` (a heading), not `SAFETY:` (a block comment): that is the form '
+          'rustdoc renders as the contract. See notes/unsafe-obligations.md.', file=sys.stderr)
+    sys.exit(1)
+
+print(f'unsafe fn contracts: {total} declarations '
+      f'({in_trait_impl} trait-impl methods, whose contract is the trait\'s), '
+      f'every other one has a `# Safety` section')
+PY
+
 # Rule 1, made mechanical (milestone 83): all architecture-specific code in the kernel lives under
 # kernel/src/arch/. This is the rule that makes the x86_64 port a new directory instead of a diff
 # across every file, and until now it was enforced by discipline alone; the discipline slipped once

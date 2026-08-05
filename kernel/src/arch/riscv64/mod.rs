@@ -219,13 +219,25 @@ pub fn sbi_send_ipi(target_hart: usize) {
     }
 }
 
+/// The SBI RFENCE extension id, "RFNC" in ASCII. Both remote-fence calls below live in it.
+const SBI_RFENCE_EID: usize = 0x5246_4E43;
+
+/// **What the RFENCE calls mean by "the whole thing".** SBI defines a remote fence as covering
+/// everything when `size` is all-ones (OpenSBI's `SBI_TLB_FLUSH_ALL`), and separately when `start`
+/// and `size` are *both* zero. The two are not the same request and the difference matters here:
+/// for [`sbi_remote_sfence_vma_asid`], all-ones is the one that reaches
+/// `sfence.vma x0, asid` (every address, that ASID), while `0, 0` makes OpenSBI fall back to
+/// `sfence.vma` with no operands and throw the entire TLB away on every target hart, which is
+/// precisely the sledgehammer milestone 58 removed. Passing the wrong one would still be *correct*
+/// and would silently undo the milestone on every other hart.
+const SBI_RFENCE_ALL: usize = usize::MAX;
+
 /// Shoot down a virtual-address translation on the harts in `hart_mask`, via the SBI RFENCE
 /// extension. The firmware IPIs those harts and each executes `sfence.vma start, ...` for the range.
 /// RISC-V has no hardware TLB broadcast (aarch64's `tlbi ..., is` does), so a kernel page-table change
 /// must be pushed to the other harts this way or a migrated thread faults on a stale translation. See
 /// `mmu::flush_tlb`.
 pub fn sbi_remote_sfence_vma(hart_mask: usize, start: usize, size: usize) {
-    const SBI_RFENCE_EID: usize = 0x5246_4E43; // "RFNC"
     const SBI_REMOTE_SFENCE_VMA_FID: usize = 1;
     // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0), a2/a3 =
     // the address range. The firmware returns in a0/a1 (ignored); nothing else is touched.
@@ -238,6 +250,59 @@ pub fn sbi_remote_sfence_vma(hart_mask: usize, start: usize, size: usize) {
             inout("a1") 0usize => _,
             in("a2") start,
             in("a3") size,
+            options(nostack),
+        );
+    }
+}
+
+/// **Discharge every translation tagged with `asid` on the harts in `hart_mask`**: the remote half
+/// of `mmu::flush_asid`, and the instruction that makes an ASID safe to hand to a new address space
+/// (milestone 58). Each target hart executes `sfence.vma x0, asid`.
+///
+/// # Why this has to exist at all
+///
+/// `sfence.vma` is a **local** instruction. It orders and invalidates for the hart that runs it and
+/// says nothing about any other, which is the single largest difference between the two ISAs'
+/// TLB maintenance: aarch64's `tlbi aside1is` broadcasts across the inner-shareable domain in
+/// hardware and needs no software protocol. So the ASID reuse contract (`crates/asid`: flush, then
+/// the number may tag someone else) is one instruction there and a distributed protocol here.
+///
+/// # What is ordered, and by whom
+///
+/// The acknowledgement the contract needs is **the return of this call**. SBI's RFENCE functions are
+/// synchronous: OpenSBI queues the request, sends the IPI, and spins in `sbi_tlb_sync` until every
+/// target hart has drained it, so by the time `ecall` returns no target holds an entry wearing this
+/// tag. Linux depends on the same guarantee (its `flush_tlb_mm` does no waiting of its own), which
+/// is the reason to believe it rather than a reading of ours.
+///
+/// The IPI is delivered as an **M-mode** software interrupt, so a target hart with S-mode interrupts
+/// masked still services it. That is not a detail: without it, any code that disables interrupts and
+/// spins would deadlock the flusher, and the kernel disables interrupts routinely.
+///
+/// # BUGS
+///
+/// - **A firmware that implemented RFENCE asynchronously would break this silently**, and S-mode has
+///   no way to detect it: the failure is a stale translation on another hart, arbitrarily far from
+///   the cause. The SBI spec's wording is "instructs the remote harts to execute", which OpenSBI
+///   reads as synchronous and a different implementation might not. `isa::the_firmware_implements_what_the_kernel_calls`
+///   checks the extension is present; nothing checks it is synchronous, because nothing can.
+/// - **`hart_mask` is a bitmap of hart ids relative to base 0**, so it only reaches harts 0..63 on
+///   rv64. Fine for `MAX_CPUS`, wrong for a machine with more harts than that, which is the same
+///   limitation `smp::bring_up_secondaries` documents for logical-id-equals-hart-id.
+pub fn sbi_remote_sfence_vma_asid(hart_mask: usize, asid: u16) {
+    const SBI_REMOTE_SFENCE_VMA_ASID_FID: usize = 2;
+    // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0), a2/a3 =
+    // the address range (all of it), a4 = the ASID. The firmware returns in a0/a1 (ignored).
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_RFENCE_EID,
+            in("a6") SBI_REMOTE_SFENCE_VMA_ASID_FID,
+            inout("a0") hart_mask => _,
+            inout("a1") 0usize => _,
+            in("a2") 0usize,
+            in("a3") SBI_RFENCE_ALL,
+            in("a4") asid as usize,
             options(nostack),
         );
     }

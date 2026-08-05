@@ -10,3 +10,7 @@ workspace = true
 [dependencies]
 argon2 = { version = "0.5.3", default-features = false, features = ["zeroize"] }
 subtle = { version = "2.6.1", default-features = false }
+# The NTLMv2 chain (milestone 65). A record holds an Argon2id tag *and* an NTOWFv2, because the
+# two are different functions of one password and a store that held only the first could not serve
+# an SMB server at all. See this crate's `ntlm_proof`.
+ntlm = { version = "0.1.0", path = "../ntlm" }

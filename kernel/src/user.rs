@@ -330,8 +330,9 @@ impl Drop for AddressSpace {
         // If we are the live address space, stop being it BEFORE the frames go back on the free
         // list. Otherwise the TTBR0 the CPU is walking points at memory the allocator has
         // already handed to somebody else, and the next low-half access reads whatever they put
-        // there. (`deactivate_user` flushes the TLB, which is the other half of the same
-        // problem: without it the stale translations survive the table.)
+        // there. This is about the *walker*, not the TLB: since milestone 58 neither ISA flushes
+        // anything on a root switch, and the cached translations are dealt with by the `flush_asid`
+        // at the bottom of this function, which is the half that has to reach the other cores.
         if mmu::current_user_root() == self.root.addr() {
             mmu::deactivate_user();
         }
@@ -2127,6 +2128,27 @@ mod redirection_tests;
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 #[cfg(test)]
 mod time_tests;
+
+/// **Quoting, sequencing and `$?` at a real prompt** (milestone 67, notes/swish-language.md).
+///
+/// The **same run** of the same script [`redirection_tests`] asserts about, whose tail milestone 67
+/// added: one shell, once. A seventh scripted shell would have been a seventh live process whose
+/// frames nothing reclaims, and wiring one put [`time_tests`] over the frame pool intermittently
+/// (`refused to load a user program: Unmappable(OutOfFrames)`). The wiring these lines need is
+/// [`redirection_tests`]'s exactly, so a second copy bought nothing but the failure.
+///
+/// It is still its own module, because what it claims is its own: the redirection tests are about
+/// where bytes go, and these are about what a word *is* and what a status means.
+///
+/// The assertions are pairs, which is [`redirection_tests`]'s shape and for the same reason. `echo
+/// "*.txt"` against `echo *.txt` is one line quoted and one not; `worker 3 && echo yes` against
+/// `worker && echo yes` is one connector against a refused left-hand side. A single line proving
+/// "it printed something" would pass on a shell that ignored quoting entirely.
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+#[cfg(test)]
+mod language_tests;
 
 /// **The sink contract, and the one behaviour it changed** (milestone 50, notes/sink-protocol.md).
 ///

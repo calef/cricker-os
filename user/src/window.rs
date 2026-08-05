@@ -156,7 +156,17 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
     // time a scene changed. It is still checked against the largest surface the contract allows,
     // because a control page claiming more than that describes memory we were not granted, and the
     // first thing that would happen is a fault while painting our own window.
-    if w == 0 || h == 0 || w * h * 4 > compositor::MAX_SURFACE_BYTES {
+    // **Checked arithmetic, because `w * h * 4` in `u32` wraps and the check is against values
+    // from a shared page** (milestone 43, notes/shared-page-audit.md finding 4). `w = h = 0x10000`
+    // multiplied out to exactly 0, sailed through the bound it was written to fail, and the paint
+    // loop below would then write 2^32 pixels past a two-frame surface. `display_terminal.rs`
+    // validates the same geometry by division for the same reason; this is the multiplication
+    // spelled so it cannot lie.
+    let bytes = w
+        .checked_mul(h)
+        .and_then(|px| px.checked_mul(4))
+        .unwrap_or(u32::MAX);
+    if w == 0 || h == 0 || bytes > compositor::MAX_SURFACE_BYTES {
         die(E_GEOMETRY);
     }
 
@@ -270,7 +280,11 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
             // rendezvous, and it is the flow control for a fast source.
             // SAFETY: `svc`/`ecall`; the kernel validated the Reply capability and consumes it.
             unsafe { invoke(reply_slot, abi::reply::REPLY, 0, 0, 0) };
-            let n = line_editor::proto::len(w0);
+            // Clamp to the eight bytes one word carries. `proto::len` is a full 32-bit field, so
+            // an unclamped count shifts past 63 at `k == 8` and spins up to 2^32 times.
+            // `display_terminal.rs` and `line_editor.rs` both clamp here; this was the one that
+            // did not (milestone 43, notes/shared-page-audit.md finding 4).
+            let n = line_editor::proto::len(w0).min(8);
             for k in 0..n {
                 count += 1;
                 send(REPORT, status::WIN_INPUT, (bytes >> (8 * k)) & 0xff, count);
