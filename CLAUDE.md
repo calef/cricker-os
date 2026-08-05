@@ -96,6 +96,22 @@ not later, because the failure this prevents is the maintainer forgetting it is 
   eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
   gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
 
+**The maintainer starts the two watchers at the beginning of every session**, because both are
+ordinary loops that die with the session that started them, and a session that forgets has exactly
+the gap they were written to close:
+
+```sh
+scripts/merge-drain.sh &     # lands every PR that is not labelled needs-chris, one at a time
+scripts/trunk-health.sh &    # says when main goes red, and when it recovers
+```
+
+They exist because on 2026-08-04 three duties turned out to belong to whoever happened to notice: two
+green pull requests sat unmerged for hours, `main` went red with nobody assigned, and merging one
+pull request staled eight others that nothing picked back up. The steward was meant to cover this and
+did not, for a reason worth keeping: **it reported and never acted.** A stalled queue announced in a
+message is only useful if somebody reads the message. See notes/merge-queue.md, whose BUGS section is
+honest that neither script reports its own death.
+
 **Do not try to route this by requesting a review.** GitHub silently refuses a review request from
 the pull request's own author: `gh pr edit N --add-reviewer calef` **returns success and sets zero
 reviewers**, because every pull request here is authored under Chris's account by the `gh` token.
