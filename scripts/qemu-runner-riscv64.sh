@@ -124,9 +124,18 @@ TFTPDIR="$(dirname "$0")/../target/tftp"
 mkdir -p "$TFTPDIR"
 printf 'cricker-tftp!' > "$TFTPDIR/cricker"
 
+# hostfwd, the inbound gate's mechanism (milestone 107) and the parity twin of the aarch64 runner's
+# block: QEMU listens on a host port and forwards into the guest's 10.0.2.15:7778, so a host process
+# can connect TO the guest. mmio NIC only, and only when xtask names a port; it binds a port on the
+# developer's machine, so it stays off every boot that is not the test suite. See the aarch64 runner.
+HOSTFWD=""
+if [ -n "$CRICKER_HOSTFWD_PORT" ]; then
+    HOSTFWD=",hostfwd=tcp:127.0.0.1:$CRICKER_HOSTFWD_PORT-10.0.2.15:7778"
+fi
+
 NET=""
 if [ -n "$CRICKER_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-gpu when CRICKER_GPU is set (milestone 29), the twin of the aarch64 runner's block. PCIe

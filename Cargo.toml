@@ -40,6 +40,7 @@ members = [
     "crates/intrusive",
     "crates/line_editor",
     "crates/measured_boot",
+    "crates/ntlm",
     "crates/ntp_proto",
     "crates/slots",
     "crates/user_heap",

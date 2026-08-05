@@ -64,9 +64,22 @@ fn read_satp() -> u64 {
 /// On a core that implements too few bits, [`asid_tagging_is_trusted`] is false and the flush stays.
 /// That is the honest degradation: correct and slow beats fast and silently wrong, and a panic would
 /// refuse to boot a machine that works.
-fn write_satp(satp: u64) {
-    // SAFETY: the caller guarantees `satp` names a well-formed Sv39 root containing the kernel high
-    // half, so the next instruction fetch resolves.
+///
+/// # Safety
+/// `satp` must name a well-formed, live Sv39 root that contains the kernel's high half. It is the
+/// whole address space on this ISA, so a root missing the kernel half faults on the very next
+/// instruction fetch, and a root whose frames have been freed hands this hart somebody else's
+/// memory. The table must stay live until some later write to `satp` replaces it.
+///
+/// **This is `unsafe fn` because aarch64's `set_ttbr0` is** (milestone 112). It used to be a safe
+/// fn carrying a `// SAFETY:` comment that discharged onto "the caller",
+/// which imposed the obligation on nobody: the same register write, the one that installs a user
+/// address space, was a contract on one architecture and an ordinary call on the other. Rule 5 is
+/// about capabilities shipping on every ISA; a *rule about the code* that differs by ISA is the same
+/// defect one level up.
+unsafe fn write_satp(satp: u64) {
+    // SAFETY: this function's own `# Safety` contract is exactly the one this write needs; it
+    // forwards, it does not weaken.
     unsafe { asm!("csrw satp, {}", in(reg) satp, options(nostack)) };
 
     if !asid_tagging_is_trusted() {
@@ -634,12 +647,17 @@ pub fn permit_kernel_access_to_user_pages(allowed: bool) -> bool {
 /// `satp` must name a well-formed Sv39 root that includes the kernel high-half (else the next
 /// instruction fetch faults); the caller owns that invariant, as on aarch64.
 pub unsafe fn activate_user(satp: u64) {
-    write_satp(satp);
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it
+    // forwards, it does not weaken.
+    unsafe { write_satp(satp) };
 }
 
 /// Remove the user address space from this hart: fall back to the kernel-only reserved root.
 pub fn deactivate_user() {
-    switch_user_root(reserved_root());
+    // SAFETY: `reserved_root()` composes `KERNEL_ROOT`, the fine map `init` built and stored, which
+    // is `'static` and contains the kernel high half by construction. Its low half is empty, so
+    // every user address faults, which is the point.
+    unsafe { switch_user_root(reserved_root()) };
 }
 
 /// Whether U-mode may read `va` in the installed address space. RISC-V has no address-translation
@@ -733,12 +751,19 @@ pub fn reserved_root() -> u64 {
 /// `satp` and threw away the hart's whole TLB for a switch that changed nothing. The comparison
 /// reads the register back, so it is against what the hardware is walking rather than against our
 /// record of it; `satp` carries the ASID in the same word, so "same address space" is one compare.
-pub fn switch_user_root(satp: u64) {
+///
+/// # Safety
+/// `satp` must be a value [`ttbr0_value`] composed over a **live** `AddressSpace`'s root, or
+/// [`reserved_root`]. Same contract as [`write_satp`]; see the aarch64 twin for why the liveness
+/// half of it cannot be carried by a type instead.
+pub unsafe fn switch_user_root(satp: u64) {
     if read_satp() == satp {
         return;
     }
-    // `satp` is already a composed value (from `ttbr0_value` or `reserved_root`); write it directly.
-    write_satp(satp);
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it
+    // forwards, it does not weaken. `satp` is already a composed value (from `ttbr0_value` or
+    // `reserved_root`), so it is written directly.
+    unsafe { write_satp(satp) };
 }
 
 /// Serializes edits to the kernel's live tables: two harts must not mutate them at once. Same role
