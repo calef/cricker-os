@@ -6,20 +6,20 @@
              # Updating this file is a statement that a performance change is intended and
              # understood; do it in the commit that causes the change. Checked by --check, a coarse
              # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
-yield_switch 179093 2000
-ipc_rtt 160318 1000
-relay_rtt 328529 1000
-call_reply 169282 1000
-broker_rtt 338015 1000
-spawn_reap 28524 64
-map_new 2363 64
-coremark 3654521 256
-null_syscall 65626 20000
-ctx_switch 471732 5000
-ipc_rtt_el0 1749227 5000
+yield_switch 179217 2000
+ipc_rtt 161467 1000
+relay_rtt 328683 1000
+call_reply 169319 1000
+broker_rtt 338143 1000
+spawn_reap 28502 64
+map_new 2362 64
+coremark 3654631 256
+null_syscall 65600 20000
+ctx_switch 477635 5000
+ipc_rtt_el0 1766199 5000
 # sink_throughput's second column is BYTES, not iterations: it is a throughput number
 # (`a | b` over one endpoint, sixteen bytes a rendezvous) and bytes is what a Unix pipe
 # can be compared against. See notes/pipes.md.
-sink_throughput 715446 80000
-map_el0 66011 500
-spawn_el0 302419 100
+sink_throughput 718365 80000
+map_el0 67400 500
+spawn_el0 303603 100

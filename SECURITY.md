@@ -59,9 +59,12 @@ reach past the boundaries the kernel enforces. Anything that breaks one of these
   kernel state, leaks kernel memory, or costs unbounded kernel time. The surface is deliberately
   narrow and every method is meant to validate its own inputs (DECISIONS §4 rule 3, §16).
 - **Time-of-check to time-of-use on shared pages.** Every service contract moves bulk data through a
-  page shared with the client, so a length or offset validated from a request word and then re-read
-  from the page is a live double-fetch. This is a known lens rather than a known bug, and it is the
-  one we would most like a second pair of eyes on (roadmap milestone 43).
+  page shared with the client, so a value validated by one party and then re-read by another is a
+  live double-fetch. notes/shared-page-audit.md is the sweep for this and says what it found, what
+  it cleared, and what it deliberately did not look at. Two things it left open are the best places
+  to start: the FS service memoises **one** frame for every client a boot wires (so the property
+  keeping them apart is who happens to be blocked, not a mapping), and no test in this tree can make
+  a virtio **device** misbehave, so the direction the IOMMU exists for has no negative control.
 - **The foreign-language and vendored seams.** The C component holds no capabilities and makes no
   syscalls; the vendored RedoxFS engine runs as a confined EL0 server. A way for either to reach
   authority it was not given is exactly the claim under test (DECISIONS §27, §31; notes/c-seam.md,
@@ -118,7 +121,9 @@ backport to. If a fix matters to you, it is a commit on `main`.
 
 ## What has already been looked at
 
-Two adversarial reviews are on the record, and reading them first will save you time:
+Three adversarial reviews are on the record, and reading them first will save you time. Each took a
+lens the previous one did not, deliberately, because the value of an audit is the lens the last one
+lacked:
 
 - **notes/security.md**: a four-part review after milestone 11, with the threat model, what held
   up, and four real bugs (a crafted ELF that could panic the kernel, a spawn flood that could, a
@@ -126,6 +131,12 @@ Two adversarial reviews are on the record, and reading them first will save you 
 - **notes/arch-audit.md**: a pass over the assembly and architecture layer that found three:
   an `eret`/`sret` privilege-escalation staging race, a stale `tp` corrupting cross-hart per-CPU
   data on RISC-V, and a lock-free read-modify-write in the PLIC driver.
+- **notes/shared-page-audit.md**: every page shared between two address spaces, asked whether a
+  value checked by one party is re-read by another. Seven findings, five fixed. It also records the
+  reason there were not more, which is a real property of the design rather than luck: **no contract
+  in this tree carries a length in the shared page**, so the classic form of the bug is absent by
+  construction. Its scope note says what it did not read, and that list is where an outside reviewer
+  has the most room.
 
 The machine-checked half is `script/verify` (Kani harnesses over the capability model, IPC, the MMU
 invariants, the DMA validator). notes/verification.md states what each proof covers and, more
