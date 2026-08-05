@@ -353,7 +353,13 @@ impl Prog {
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
                 output: OutputSpec::Bytes,
-                input: InputSpec::Required,
+                // **The barrier**, and the only one in this tree. `wc` prints nothing until end of
+                // stream, which is what lets this shell feed it and read it back with the one wait
+                // point a process has. See [`InputSpec::Required::writes_while_reading`]: a filter
+                // that answered as it read could not be run this way at all.
+                input: InputSpec::Required {
+                    writes_while_reading: false,
+                },
                 reports: true,
                 interruptible: false,
                 clock: false,
@@ -433,7 +439,25 @@ pub enum InputSpec {
     Forbidden,
     /// The program reads an input stream and cannot do anything without one. A line that gives it
     /// none is [`Refusal::InputRequired`] **at the prompt**, which is a check Unix cannot make.
-    Required,
+    Required {
+        /// **Whether this program's output may begin before its input has ended.**
+        ///
+        /// `wc` counts to end of stream and then prints one line, so it is `false`. A renderer or a
+        /// filter that transforms as it reads is `true`, and the difference is not a performance
+        /// note: it decides whether **this shell** can run the program at all.
+        ///
+        /// A sink message is a rendezvous `SEND` and a process has exactly one wait point (no
+        /// select, no poll, no timed receive: DECISIONS §51's fork is still open, and
+        /// design/roadmap/106 is NOT-STARTED). So a shell that is feeding a stage cannot also be
+        /// receiving from it, and a stage that writes while it reads blocks against a shell that is
+        /// still writing. Both stop, and the prompt never comes back.
+        ///
+        /// A program that declares `false` is a **barrier**: it absorbs the whole stream before it
+        /// answers, which lets the shell finish feeding before anything comes back. One barrier
+        /// anywhere in a chain is enough, which is why `doc page.md | wc` runs and `doc page.md`
+        /// does not. See [`check_chain`] and notes/pipes.md.
+        writes_while_reading: bool,
+    },
 }
 
 /// A program that takes no short options. Spelled once so a manifest reads as a declaration rather
@@ -787,6 +811,16 @@ pub struct Endowment {
     /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
     /// the per-job interrupt channel and runs the escalation policy while the job is foreground.
     pub interruptible: bool,
+    /// **Whether this stage may write before it has read to the end** (mirrors
+    /// [`InputSpec::Required::writes_while_reading`]; `false` for a program that reads nothing,
+    /// which cannot be fed and so cannot be the thing that blocks).
+    ///
+    /// It is carried on the endowment rather than looked up from `prog.manifest()` because
+    /// [`check_chain`] asks about a **whole planned line** and because [`plan_against_with`] can be
+    /// given an explicit manifest. That is what keeps the check live, tested logic rather than a
+    /// branch nothing reaches: no shipped program declares `true` yet, and the host tests plan one
+    /// that does, exactly as `FileSpec::Required` is exercised.
+    pub writes_while_reading: bool,
 }
 
 /// One resolved per-file grant: the directory it was resolved against, the name the command
@@ -1014,6 +1048,16 @@ pub enum Refusal {
     /// block on a receive forever; the manifest says so, so the prompt can. **The refusal Unix
     /// cannot produce**, because there fd 0 always exists.
     InputRequired,
+    /// **This shell would be both the writer and the reader of the line, and it can only wait on
+    /// one thing.** Every stage declares that it writes while it reads
+    /// ([`InputSpec::Required::writes_while_reading`]), so nothing in the chain absorbs the stream,
+    /// and the shell's feed would block against a stage that is blocked writing back.
+    ///
+    /// It is a fact about **this shell** rather than about the program, which is why the fix is to
+    /// put a reader after it (`| wc`) rather than to change anything the program does. See
+    /// [`check_chain`] and notes/pipes.md: with no select, no poll and no timed receive, one wait
+    /// point per process is the whole of the reason.
+    NoReaderButThisShell,
     /// **A builtin in a pipeline stage that the shell cannot supply.** `cd | wc` is the shape: a
     /// builtin rebinds what the shell holds and produces no stream. The producing builtins (`echo`,
     /// `ls`, `pwd`) are not this, because the shell writes their bytes into the pipe itself.
@@ -1136,6 +1180,13 @@ impl Refusal {
             }
             Refusal::NotAPipelineStage => {
                 "is a builtin that produces no stream, so it cannot be a stage of a pipeline"
+            }
+            // Phrased about the line rather than about the program, because it is true of neither
+            // one alone: the program is fine and the shell is fine, and what cannot be done is this
+            // shell feeding it and reading it at the same time.
+            Refusal::NoReaderButThisShell => {
+                "writes while it reads, and this shell can only wait on one thing at a time: give \
+                 it a reader that is not this shell, as in '| wc'"
             }
             // Milestone 67's. Each names what the line is missing rather than what it did wrong,
             // and the quoting pair say *why* the shape is the shape: a token here is a slice of
@@ -1564,7 +1615,7 @@ pub fn plan_against_with(
     // An explicit `<` wins, because it is the same designation said out loud: a line carrying both
     // has named its input twice, and the operand then has nowhere to go and is unplaceable below.
     let mut streams = streams;
-    if matches!(m.input, InputSpec::Required)
+    if matches!(m.input, InputSpec::Required { .. })
         && matches!(streams.source, Source::None)
         && let Some(&token) = pos.get(next)
     {
@@ -1619,6 +1670,12 @@ pub fn plan_against_with(
         diagnostics,
         reports: m.reports,
         interruptible: m.interruptible,
+        writes_while_reading: matches!(
+            m.input,
+            InputSpec::Required {
+                writes_while_reading: true
+            }
+        ),
     })
 }
 
@@ -1680,11 +1737,57 @@ fn check_streams(m: Manifest, streams: Streams) -> Result<line::Diagnostics, Ref
         (Some(_), Some((g, mode))) => line::Diagnostics::File(g, mode),
     };
     match (m.input, streams.source) {
-        (InputSpec::Required, Source::None) => Err(Refusal::InputRequired),
+        (InputSpec::Required { .. }, Source::None) => Err(Refusal::InputRequired),
         (InputSpec::Forbidden, Source::None) => Ok(diagnostics),
         (InputSpec::Forbidden, _) => Err(Refusal::InputForbidden),
-        (InputSpec::Required, _) => Ok(diagnostics),
+        (InputSpec::Required { .. }, _) => Ok(diagnostics),
     }
+}
+
+/// **Whether this shell can be at both ends of the chain it just planned**, which is the one
+/// question the operators cannot answer stage by stage.
+///
+/// `shell_feeds_head` is true when the bytes going into the first stage come from *this process*: a
+/// `<`, an input operand (`wc report.txt`), or a producing builtin at the head (`ls | wc`). When it
+/// is false there is a separate process on the far end of the head's input and none of this applies.
+///
+/// # The constraint, which is the kernel's and not the shell's
+///
+/// A process has **one wait point**. `SEND` blocks until a receiver takes the message, `RECV` blocks
+/// until one arrives, and there is no select, no poll and no timed wait (design/roadmap/106 is
+/// NOT-STARTED and is a kernel-surface fork). So a shell that is feeding a chain cannot also be
+/// receiving from it, and the two blocked processes have nothing that could wake either.
+///
+/// **No interleaving schedule fixes this**, which is worth stating because it is the first thing
+/// anybody reaches for. Alternating one send with one receive deadlocks whenever the stage reads
+/// twice before it writes; alternating the other way deadlocks whenever it writes twice before it
+/// reads. The shell cannot know which, because the whole point of the sink contract is that neither
+/// end knows anything about the other.
+///
+/// # What makes a line runnable anyway: one barrier
+///
+/// A stage that declares [`InputSpec::Required::writes_while_reading`] `false` absorbs the whole
+/// stream before it answers. One of those anywhere in the chain is enough: everything upstream of it
+/// can stream freely, the shell's feed completes, and only then does anything travel back. So
+/// `doc page.md | wc` runs and `doc page.md` is refused, with `| wc` being the fix the message names.
+///
+/// A line whose head is a builtin and which spawns nothing at all (`ls > out.txt`) is not a chain
+/// and is always `Ok`: there is no second process to deadlock against.
+pub fn check_chain(shell_feeds_head: bool, plans: &[Option<Endowment>]) -> Result<(), Refusal> {
+    if !shell_feeds_head {
+        return Ok(());
+    }
+    let mut spawned = false;
+    for e in plans.iter().flatten() {
+        spawned = true;
+        if !e.writes_while_reading {
+            return Ok(());
+        }
+    }
+    if spawned {
+        return Err(Refusal::NoReaderButThisShell);
+    }
+    Ok(())
 }
 
 /// **What one operand token designates**: the directory its leading path landed in, and the set of
@@ -2956,6 +3059,132 @@ mod tests {
         };
         assert!(!i.writable);
         assert!(o.writable);
+    }
+
+    // ---- milestone 50's draining lane: the input operand inside a pipeline, and the one wait
+    // point ----
+
+    /// **`wc report.txt | wc` names its input the way `wc report.txt` does**, and the planner is
+    /// the only thing that knows it: an input operand is a trailing positional at a program that
+    /// declares an input, not a token any grammar could classify.
+    ///
+    /// This is the fact the shell was dropping. It planned the stage correctly and then wired the
+    /// pipeline off the **line**, which has no `<` on it, so the head was spawned with an empty
+    /// input slot. A `recv` there answers `NoSuchSlot` rather than blocking and every reader reads
+    /// that as end of document, so the stage reported an empty stream: a wrong answer, not a hang,
+    /// which is why nothing caught it.
+    #[test]
+    fn an_input_operand_survives_a_pipeline() {
+        let (p, n) = plan_line(b"wc report.txt | wc", WITH_DIR).unwrap();
+        assert_eq!(n, 2);
+        let line::Source::File(g) = p[0].unwrap().source else {
+            panic!("the head stage's operand did not become a source")
+        };
+        assert_eq!(g.name.as_bytes(), b"report.txt");
+        assert!(!g.writable, "a stream is read, whatever the operator");
+        assert_eq!(p[0].unwrap().sink, line::Sink::Pipe);
+        // And the same name written out loud plans to the same thing, which is what makes the
+        // operand a spelling rather than a second mechanism.
+        let (explicit, _) = plan_line(b"wc < report.txt | wc", WITH_DIR).unwrap();
+        assert_eq!(p[0], explicit[0]);
+    }
+
+    /// A filter that answers while it reads: the manifest shape no shipped program declares yet.
+    /// Planned through [`plan_against_with`] so [`check_chain`] is live, tested logic rather than a
+    /// branch nothing reaches, exactly as [`READS_A_FILE`] keeps `FileSpec::Required` live.
+    const RENDERS_AS_IT_READS: Manifest = Manifest {
+        arg: ArgSpec::Forbidden,
+        mem: MemSpec::Forbidden,
+        file: FileSpec::Forbidden,
+        dir: DirSpec::Forbidden,
+        flags: NO_FLAGS,
+        output: OutputSpec::Bytes,
+        input: InputSpec::Required {
+            writes_while_reading: true,
+        },
+        reports: true,
+        interruptible: false,
+        clock: false,
+    };
+
+    /// Plan one stage against an explicit manifest, with the operators' answer folded in.
+    fn plan_as(m: Manifest, text: &[u8], streams: Streams) -> Endowment {
+        let Command::Run(r) = parse(text) else {
+            panic!()
+        };
+        plan_against_with(&r, Prog::Wc, m, WITH_DIR, Expansion::none(), streams).unwrap()
+    }
+
+    /// **The declaration reaches the endowment**, which is what lets a whole line be checked rather
+    /// than one stage. A program that answers while it reads says so; `wc` does not.
+    #[test]
+    fn writing_while_reading_is_a_declaration_the_plan_carries() {
+        let streams = Streams {
+            source: line::Source::File(FileGrant {
+                dir: nav::Cwd::root(),
+                name: Name::new(b"page.md").unwrap(),
+                writable: false,
+            }),
+            ..Streams::default()
+        };
+        assert!(plan_as(RENDERS_AS_IT_READS, b"wc", streams).writes_while_reading);
+        assert!(!plan_as(Prog::Wc.manifest(), b"wc", streams).writes_while_reading);
+    }
+
+    /// **One wait point, stated as a rule about a line.**
+    ///
+    /// The shell can be at one end of a chain or the other, never both, because a `SEND` blocks
+    /// until somebody receives and there is no select. So a line whose bytes all come from this
+    /// shell needs at least one stage that reads to the end before it writes; with one, the feed
+    /// completes before anything travels back, and with none, both processes stop.
+    #[test]
+    fn a_chain_this_shell_feeds_needs_one_stage_that_reads_to_the_end() {
+        let src = Streams {
+            source: line::Source::File(FileGrant {
+                dir: nav::Cwd::root(),
+                name: Name::new(b"page.md").unwrap(),
+                writable: false,
+            }),
+            ..Streams::default()
+        };
+        let piped = Streams {
+            sink: line::Sink::Pipe,
+            ..src
+        };
+        let renderer = plan_as(RENDERS_AS_IT_READS, b"wc", src);
+        let counter = plan_as(Prog::Wc.manifest(), b"wc", src);
+        let renderer_piped = plan_as(RENDERS_AS_IT_READS, b"wc", piped);
+
+        // `doc page.md`: this shell writes the file in and reads the render back. Nothing else is
+        // in the chain, so there is nobody either process could be waiting on but the other.
+        assert_eq!(
+            check_chain(true, &[Some(renderer)]),
+            Err(Refusal::NoReaderButThisShell),
+        );
+        // `doc page.md | wc`: the `wc` absorbs the whole stream, so the feed finishes first.
+        assert_eq!(
+            check_chain(true, &[Some(renderer_piped), Some(counter)]),
+            Ok(()),
+        );
+        // `wc page.md`: the barrier is the only stage, which is why this worked all along and why
+        // nobody noticed the rule until a second reader existed.
+        assert_eq!(check_chain(true, &[Some(counter)]), Ok(()));
+        // `something | doc`: a chain this shell does not feed is somebody else's rendezvous.
+        assert_eq!(check_chain(false, &[Some(renderer)]), Ok(()));
+        // `ls > out.txt`: the shell is the producer and no stage was spawned at all, so there is no
+        // second process for it to deadlock against.
+        assert_eq!(check_chain(true, &[None, None]), Ok(()));
+    }
+
+    /// The refusal names what a person can do about it, and it is about the **line**: the program
+    /// is fine, and so is the shell.
+    #[test]
+    fn the_both_ends_refusal_names_the_fix() {
+        assert!(
+            Refusal::NoReaderButThisShell
+                .message()
+                .contains("give it a reader that is not this shell"),
+        );
     }
 
     /// A builtin is not a pipeline stage the planner spawns, because it spawns nothing. The shell

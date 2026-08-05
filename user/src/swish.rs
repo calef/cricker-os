@@ -829,6 +829,12 @@ fn redirecting(rights: u64) -> ! {
         // The same designation with the operator left out (milestone 31's input operand). It has
         // to answer what the line above it answered, or one of the two opened something else.
         b"wc out.txt",
+        // **And the same designation inside a pipeline**, which is the line that used to answer
+        // nothing at all: the operand is resolved by the planner, and `pipeline` used to wire the
+        // head's input off the line instead of off the plan, so the stage was spawned with an empty
+        // input slot, where a `recv` answers `NoSuchSlot` rather than blocking: the stage counted
+        // an empty stream and said so. Its answer has to be the length of the line above it.
+        b"wc out.txt | wc",
         // The same unmodified `date`, twice, to two destinations.
         b"date",
         b"date > date.txt",
@@ -1409,7 +1415,7 @@ fn spawn(e: Endowment) {
 /// message queued, and the next command's single read would take it.
 fn drain_text() {
     print(b"  ");
-    for _ in 0..MAX_TEXT_CHUNKS {
+    for _ in 0..MAX_OUTPUT_CHUNKS {
         let (w0, w1, w2) = recv(RESULT);
         // Checked before decoding: init's sentinel is `u64::MAX`, whose top byte is an opcode this
         // contract does not define, so it would otherwise read as a malformed message rather than as
@@ -1474,7 +1480,7 @@ fn diag_endpoint() -> Option<u64> {
 fn drain_diagnostics(dest: &mut dyn ByteOut, writers: usize) {
     let Some(ep) = diag_endpoint() else { return };
     let mut done = 0usize;
-    for _ in 0..MAX_FILE_CHUNKS {
+    for _ in 0..MAX_OUTPUT_CHUNKS {
         if done == writers {
             break;
         }
@@ -1491,11 +1497,22 @@ fn drain_diagnostics(dest: &mut dyn ByteOut, writers: usize) {
     dest.finish();
 }
 
-/// The most 16-byte chunks one program's output may take before the shell stops reading. Generous
-/// (512 bytes), because the ceiling is not a policy about output length: it is there so a program
-/// that never announces end of stream costs a truncated answer instead of a prompt that never
-/// returns.
-const MAX_TEXT_CHUNKS: usize = 32;
+/// **The most 16-byte chunks one program's output may take before this shell stops reading**: 64
+/// KiB, and one number for every destination.
+///
+/// The ceiling is not a policy about how much a program may say. It is there so a program that
+/// never announces end of stream costs a truncated answer instead of a prompt that never returns,
+/// which is a bound on a **bug**, and a bug is not more tolerable when the bytes are going into a
+/// file. There were two numbers here until milestone 40's viewer met the smaller one: printing was
+/// capped at 32 chunks (512 bytes) while a `>` allowed 1024, so the same program's output was
+/// silently cut at the terminal and whole in a file, and nothing said which had happened. The
+/// reason on record for the split ("a file is where output goes when there is too much of it to
+/// read") is a policy about length, which the same comment disclaimed in its next sentence.
+///
+/// 64 KiB rather than 16, because the number's whole job is to be larger than anything a working
+/// program says and smaller than forever. A rendered manual page is tens of kilobytes; a few
+/// seconds of serial output is the cost of hitting it, against a prompt that never comes back.
+const MAX_OUTPUT_CHUNKS: usize = 4096;
 
 /// Report what the spawned program did, in terms of the grant it was given.
 fn outcome(e: Endowment, answer: u64) {
@@ -1638,6 +1655,24 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
         }
     }
 
+    // **The head stage's input file comes off the plan, not off the line**, and not reading it here
+    // was the bug milestone 40's viewer found: `doc page.md | wc` planned correctly, spawned the
+    // head with an empty input slot, where a `recv` answers `NoSuchSlot` rather than blocking, so
+    // the stage counted an empty stream and reported it. A wrong answer, not a hang.
+    //
+    // An input operand is a trailing positional at a program that declares an input
+    // (`grant_plan::plan_against_with`), which is the same rule that makes `wc report.txt` mean
+    // `wc < report.txt`. Only the planner knows it, because it needs the manifest; reading it off
+    // `Line` would be the shell classifying tokens the planner has already classified. `plans[0]`
+    // is `None` only for a producing builtin at the head, and a builtin has no operand.
+    let inp = match plans[0] {
+        Some(e) => match e.source {
+            Source::File(g) => Some(g),
+            _ => None,
+        },
+        None => inp,
+    };
+
     run_pipeline(nav, l, &plans, head_builtin, out, inp, diag_file);
 }
 
@@ -1664,6 +1699,28 @@ fn run_pipeline(
     diag_file: Option<(grant_plan::FileGrant, line::Mode)>,
 ) {
     let n = l.stage_count();
+
+    // **This shell can be at one end of a chain, never both** (`grant_plan::check_chain`,
+    // notes/pipes.md). It is the producer whenever the bytes going into the head come from here: a
+    // `<`, an input operand, or a producing builtin. It is always the consumer, because the tail's
+    // sink is this shell's result endpoint or a file this shell backs. With one wait point per
+    // process and no select, that only works if some stage reads to the end before it writes.
+    //
+    // **Before the files are opened**, which is the whole reason this is the first thing in the
+    // function: a `>` truncates, and a line that is not going to run must not have emptied a file.
+    if let Err(r) = grant_plan::check_chain(inp.is_some() || head_builtin, &plans[..n]) {
+        refused();
+        print(b"  ");
+        // Named after the first stage that answers while it reads, which is the one a person would
+        // reach for `| wc` about. The sentence itself is about the *line* and says so.
+        if let Some(e) = plans[..n].iter().flatten().find(|e| e.writes_while_reading) {
+            print(e.prog.name().as_bytes());
+            print(b": ");
+        }
+        print(r.message().as_bytes());
+        print(b"\n");
+        return;
+    }
 
     // The files first, before any process exists. A line whose file cannot be opened must not
     // half-run, and `>` truncates here, which is where a person expects it: `date > f` empties `f`
@@ -2163,7 +2220,7 @@ impl FileIn {
 /// the printing one puts a two-space prefix on the answer and this one must put nothing at all in
 /// the file that the program did not write.
 fn drain_into(f: &mut FileOut) {
-    for _ in 0..MAX_FILE_CHUNKS {
+    for _ in 0..MAX_OUTPUT_CHUNKS {
         let (w0, w1, w2) = recv(RESULT);
         if w0 == spawnproto::SPAWN_FAILED {
             failed();
@@ -2187,12 +2244,6 @@ fn drain_into(f: &mut FileOut) {
     f.finish();
     print(b"  (output truncated: that program never said it was finished)\n");
 }
-
-/// The ceiling on a redirected program's output, in sixteen-byte messages: 16 KiB. Larger than
-/// [`MAX_TEXT_CHUNKS`] because a file is where output goes when there is too much of it to read, and
-/// it is a ceiling for the same reason that one is: a program that never announces end of stream
-/// costs a truncated file rather than a prompt that never returns.
-const MAX_FILE_CHUNKS: usize = 1024;
 
 /// **Direct init to build one stage**, delegating whatever the operators put in its slots.
 ///
