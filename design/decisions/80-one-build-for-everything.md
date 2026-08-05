@@ -69,7 +69,7 @@ runs a program it did not write, the build splits whether anyone plans it or not
 is not here.
 
 That moment is already on the roadmap: milestone 64 (enough `std` to run somebody else's crate),
-milestone 99 (git, via gitoxide) and milestone 66 (Vaultwarden). What they need is what a split build
+milestone 99 (`git` on cricker-os) and milestone 66 (Vaultwarden). What they need is what a split build
 needs anyway, and the sequencing follows from that rather than from a size:
 
 - a **versioned** syscall ABI, rather than one the compiler happens to agree on today;
