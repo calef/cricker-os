@@ -76,8 +76,22 @@ const REPORT: u64 = 0;
 const PRESENT: u64 = 1;
 /// The endpoint it serves. **One**, for both classes of sender; see the module note.
 const TERM: u64 = 2;
+/// The untyped it spends on the page tables its own mappings need. [`MODE_DISPLAY`] only; see the
+/// note on [`SURFACE_FRAME`].
+const BUDGET: u64 = 3;
+/// The first of `gfx::SURFACE_FRAMES` consecutive slots holding the scanout, then one more for
+/// [`OUT_VA`]'s page. **[`MODE_DISPLAY`] only** (milestone 108).
+///
+/// The two wirings do not agree about this yet, and the asymmetry is deliberate rather than
+/// overlooked: milestone 108 migrated the disk and display paths, and rung two's compositor is not
+/// one of them. In [`MODE_WINDOW`] the surface, the output page and the control page still arrive as
+/// spawn-time mappings from `compositor_service`, which is why the `MAP` loop below is inside the
+/// `MODE_DISPLAY` arm.
+const SURFACE_FRAME: u64 = 4;
+const OUT_FRAME: u64 = SURFACE_FRAME + gfx::SURFACE_FRAMES as u64;
 
-/// Where the kernel maps what this process is given. Must match the wiring in kernel/src/user.rs.
+/// Where the scanout goes. In [`MODE_DISPLAY`] this process holds the frames and picks the address;
+/// in [`MODE_WINDOW`] the compositor's wiring maps it here.
 const SURFACE_VA: u64 = 0x0000_0000_0060_0000;
 /// The page an application writes the bytes of an `OP_WRITE` into. The terminal contract's
 /// "control by message, bulk by shared page" split (DECISIONS §10), the same one `fs_proto` makes.
@@ -92,6 +106,8 @@ const E_PRESENT: u64 = 0x03;
 const E_HELLO: u64 = 0x04;
 const E_MAGIC: u64 = 0x05;
 const E_MODE: u64 = 0x06;
+/// A frame this process holds would not map. [`MODE_DISPLAY`] only.
+const E_SURFACE: u64 = 0x07;
 
 /// **The grid lives in `.bss`, not on the stack.** A user process here gets one 4 KiB page of stack
 /// (`kernel/src/user.rs`, `USER_STACK_VA`), and a `Vt` is a kilobyte before the temporary a move
@@ -239,6 +255,17 @@ pub extern "C" fn _start(mode: u64, _arg1: u64, _arg2: u64) -> ! {
     // wrong shape the first time anything changed.
     let (w, h, stride) = match mode {
         MODE_DISPLAY => {
+            // The scanout and the application's output page are `Frame`s this process holds, and it
+            // maps them itself out of its own budget (milestone 108). Before the `INFO` call,
+            // because a terminal with nowhere to paint has no use for the geometry.
+            for k in 0..gfx::SURFACE_FRAMES as u64 {
+                if !user_rt::map_frame(SURFACE_FRAME + k, SURFACE_VA + k * 4096, true, BUDGET) {
+                    die(E_SURFACE);
+                }
+            }
+            if !user_rt::map_frame(OUT_FRAME, OUT_VA, true, BUDGET) {
+                die(E_SURFACE);
+            }
             let (r0, geometry) = call(PRESENT, gfx::req(gfx::display::INFO, 0), 0);
             if r0 as i64 != 0 {
                 die(E_INFO);

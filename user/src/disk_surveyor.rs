@@ -4,10 +4,15 @@
 //! A surveyor maps land they do not own, and that is exactly the shape of this program's
 //! endowment. It holds two things that look like one thing on every other operating system:
 //!
-//! - a **read-only mapping of the roster page**, which says what block devices exist
+//! - a **`READ`-only capability on the roster page**, which says what block devices exist
 //!   (`block_roster`); and
 //! - a **block-service endpoint**, which lets it read and write the blocks of **one** device
 //!   (`fs_proto::blk`).
+//!
+//! Since milestone 108 the roster is a `Frame` this program holds and maps itself, rather than a
+//! page the kernel wired into its address space before it started. The practical difference is at
+//! the top of [`probe`]: `READ` on the capability means a writable mapping cannot be *obtained*,
+//! where a read-only mapping only meant a write could not *land*.
 //!
 //! On Linux those are the same authority in practice: `/sys/block` is world-readable, `/dev/sda` is
 //! a path, and a tool that can see a disk can usually be pointed at it. `parted /dev/sda` as root
@@ -82,12 +87,24 @@ use user_rt::{call, send};
 /// Slot 0: where the verdict goes. An endpoint with `WRITE`.
 const REPORT: u64 = 0;
 /// Slot 1: the block service for the one disk this program was handed, `WRITE` (it `CALL`s).
+/// Empty in [`ROLE_PROBE`], which holds no disk.
 const BLK: u64 = 1;
+/// Slot 2: the untyped this program spends on the page tables its own mappings need.
+const BUDGET: u64 = 2;
+/// Slot 3: the page shared with the block server, `READ|WRITE` (a transfer goes both ways). Empty
+/// in [`ROLE_PROBE`].
+const BLK_FRAME: u64 = 3;
+/// Slot 4: the roster page, **`READ` and nothing else**. See [`ROLE_PROBE`].
+const ROSTER_FRAME: u64 = 4;
+/// Slot 5: the go-ahead endpoint, `READ`. Only [`ROLE_HOLDER`] has one.
+const RESUME: u64 = 5;
 
-/// Where the wiring maps the page shared with the block server. Must match
-/// `kernel/src/user/disk_service.rs`.
+/// Where this program puts the page it shares with the block server. **Its choice, not the
+/// kernel's**: it holds the frame and maps it, so the address is a local decision and nothing on
+/// the kernel side names it.
 const BLK_PAGE: u64 = 0x5000_0000;
-/// Where the wiring maps the roster, **read-only**. Must match `kernel/src/user/disk_service.rs`.
+/// Where this program puts the roster. `kernel/src/user/disk_service.rs` knows this one, because
+/// the probe's fault has to be asserted at an address the test can name.
 const ROSTER_VA: u64 = 0x5001_0000;
 
 /// The transfer unit of the block service: one filesystem block per request.
@@ -112,6 +129,7 @@ static mut BACKUP: [u8; BACKUP_BYTES] = [0; BACKUP_BYTES];
 // The roles, in `a0`. Must match kernel/src/user/disk_service.rs.
 const ROLE_SURVEY: u64 = 0;
 const ROLE_PROBE: u64 = 1;
+const ROLE_HOLDER: u64 = 2;
 
 // The report's first word: what this program managed to establish. Must match
 // kernel/src/user/disk_tests.rs.
@@ -134,17 +152,66 @@ pub const F_NAMES: u64 = 1 << 6;
 /// write being refused. Must match `kernel/src/user/disk_tests.rs`.
 pub const R_PROBING: u64 = 0x50_0B_11_46;
 
+/// The probe's second word: `Frame::MAP` refused it a writable window on the roster, one rung
+/// before the page permissions would have. Must match `kernel/src/user/disk_tests.rs`.
+pub const P_RW_REFUSED: u64 = 1 << 0;
+
+/// [`ROLE_HOLDER`]'s announcement: it has the roster mapped and here is the first word of it.
+/// ASCII `HOLDG`. Must match `kernel/src/user/disk_tests.rs`.
+pub const R_HOLDING: u64 = 0x_48_4F_4C_44_47;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
     match role {
         ROLE_SURVEY => survey(),
         ROLE_PROBE => probe(),
+        ROLE_HOLDER => holder(),
         _ => panic!(),
     }
 }
 
+/// **Hold the roster, then have it taken away** (milestone 108).
+///
+/// Maps the frame, reads its first word and reports it, waits for a go-ahead, and reads again. The
+/// second read is the whole point: between the two, the kernel revokes the frame, and a page a
+/// process mapped from a capability it holds *goes away* when that capability is revoked. So the
+/// second read faults.
+///
+/// **This role could not have existed before the migration.** A page wired in at spawn is in no
+/// mapping record, so `Frame::REVOKE` walks past it and the second read returns the same word as
+/// the first. There is no way to un-share a page a program was handed at birth, which is the cost
+/// the milestone was raised to pay off.
+fn holder() -> ! {
+    if !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, false, BUDGET) {
+        user_rt::exit()
+    }
+    // SAFETY: ROSTER_VA is mapped read-only from the frame in slot 4, on the line above.
+    let word = unsafe { core::ptr::read_volatile(ROSTER_VA as *const u64) };
+    send(REPORT, R_HOLDING, word, 0);
+
+    // The kernel revokes the frame while we are parked here.
+    user_rt::recv(RESUME);
+
+    // SAFETY: not safe any more, and that is the test. The page is gone.
+    let after = unsafe { core::ptr::read_volatile(ROSTER_VA as *const u64) };
+    // Unreachable in a working kernel. If the read did land, say so, so a silent pass is
+    // impossible: the test asserts on the fault, and this message is what it sees instead.
+    send(REPORT, R_HOLDING, after, 1);
+    user_rt::exit()
+}
+
 /// Enumerate, read the table, report. Two messages: the roster, then the table.
 fn survey() -> ! {
+    // **Put our own pages in our own address space** (milestone 108). Both are capabilities we
+    // hold; the tables to reach them come out of our own budget. A failure here is fatal and
+    // silent on purpose: this program's only channel is `REPORT`, and reporting through a page we
+    // failed to map is not a thing it can do.
+    if !user_rt::map_frame(BLK_FRAME, BLK_PAGE, true, BUDGET)
+        || !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, false, BUDGET)
+    {
+        user_rt::exit()
+    }
+
     // The roster first, because it is the cheaper authority and answers a different question.
     // A page that is not a roster reports as no devices AND no F_ROSTER, so "nobody wired me a
     // roster" never reads as "this machine has no disks" (DECISIONS §42).
@@ -259,8 +326,8 @@ fn read_span(span: Span, into: &mut [u8]) -> bool {
         if (call(BLK, req(blk::READ), span.first_block + i).0 as i64) < 0 {
             return false;
         }
-        // SAFETY: BLK_PAGE is a mapped page of exactly one block, and the destination window was
-        // bounds-checked against `into` on the line above.
+        // SAFETY: BLK_PAGE is a page this program mapped from a frame it holds, of exactly one
+        // block, and the destination window was bounds-checked against `into` on the line above.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 BLK_PAGE as *const u8,
@@ -272,14 +339,32 @@ fn read_span(span: Span, into: &mut [u8]) -> bool {
     true
 }
 
-/// **The negative control**: say where the roster is, then write to it.
+/// **The negative control**, and since milestone 108 it attacks two rungs instead of one.
 ///
-/// The mapping is read-only, so this faults and the kernel kills the process. Knowing the address
-/// buys nothing, which is the whole claim: enumeration is a listing and not a lever, and there is
-/// no address at which this write succeeds because the boundary is the page's permissions rather
-/// than anything this program could be persuaded to skip.
+/// First it asks `Frame::MAP` for a **writable** window on the roster. It holds the frame with
+/// `READ` alone, so the kernel refuses before it writes a page-table entry: there is no writable
+/// mapping of the roster anywhere in this address space to be found, because the capability could
+/// not produce one. Then it maps the page read-only, which it may, announces the address, and
+/// writes there anyway. That faults.
+///
+/// Knowing the address buys nothing at either rung, which is the whole claim: enumeration is a
+/// listing and not a lever, and there is no address at which this write succeeds because the
+/// boundary is a capability's rights and then a page's permissions, rather than anything this
+/// program could be persuaded to skip.
 fn probe() -> ! {
-    send(REPORT, R_PROBING, ROSTER_VA, 0);
+    // Rung one: a writable mapping, refused by the rights on the capability itself.
+    let rw_refused = !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, true, BUDGET);
+
+    // Rung two: the read-only mapping we are entitled to, and a write through it.
+    if !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, false, BUDGET) {
+        user_rt::exit()
+    }
+    send(
+        REPORT,
+        R_PROBING,
+        ROSTER_VA,
+        if rw_refused { P_RW_REFUSED } else { 0 },
+    );
     // SAFETY: not safe, and that is the test. The kernel refuses it.
     unsafe { core::ptr::write_volatile(ROSTER_VA as *mut u64, 0) };
     // Unreachable in a working kernel; if we get here the write was allowed and the test's
@@ -290,8 +375,9 @@ fn probe() -> ! {
 /// The roster page, read-only. Its contents are checked by `block_roster::Roster::read`, which
 /// refuses a page nobody wrote and a count larger than the page can hold.
 fn roster_page() -> &'static [u8] {
-    // SAFETY: a page the kernel mapped into this process at spawn, of exactly `fs_proto::PAGE`
-    // bytes, and never written by anybody after that (the roster is built once at wiring time).
+    // SAFETY: a page this program mapped read-only from a frame it holds `READ` on, of exactly
+    // `fs_proto::PAGE` bytes, and never written by anybody after that (the roster is built once at
+    // wiring time).
     unsafe { core::slice::from_raw_parts(ROSTER_VA as *const u8, fs_proto::PAGE) }
 }
 

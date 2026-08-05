@@ -35,6 +35,8 @@ const F_BACKUP: u64 = 1 << 4;
 const F_CRICKER: u64 = 1 << 5;
 const F_NAMES: u64 = 1 << 6;
 const R_PROBING: u64 = 0x50_0B_11_46;
+const P_RW_REFUSED: u64 = 1 << 0;
+const R_HOLDING: u64 = 0x_48_4F_4C_44_47;
 
 /// The layout `sgdisk` 1.0.10 wrote into the fixture the test image is built from
 /// (`crates/gpt/tests/real_disks.rs` has the exact commands). Three partitions on a 64 MiB disk,
@@ -137,9 +139,18 @@ fn the_roster_is_a_listing_and_not_a_lever() {
     let faults = USER_FAULTS.load(Ordering::Relaxed);
     let report = disk_service::start_probe(surveyor_image());
 
-    let [tag, va, ..] = crate::sched::ipc_recv(report);
+    let [tag, va, how, ..] = crate::sched::ipc_recv(report);
     assert_eq!(tag, R_PROBING, "the probe never reached its write");
     assert_eq!(va, disk_service::ROSTER_VA);
+
+    // **The rung the migration added** (milestone 108). The probe holds the roster as a `Frame`
+    // with `READ` alone, so it asked `Frame::MAP` for a writable window first and was refused
+    // before a page-table entry was written. When the roster was a spawn-time mapping there was
+    // nothing to refuse: the only boundary was the permission bit the fault below trips.
+    assert!(
+        how & P_RW_REFUSED != 0,
+        "a frame held READ-only produced a WRITABLE mapping of the roster",
+    );
 
     assert!(
         wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
@@ -150,6 +161,56 @@ fn the_roster_is_a_listing_and_not_a_lever() {
     assert_eq!(
         crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
         Some(disk_service::ROSTER_VA),
+    );
+}
+
+/// **A page a driver holds can be taken back; a page it was handed at birth cannot.**
+///
+/// This is milestone 108's claim, and it is the one assertion in the disk suite that fails on the
+/// code as it stood the day before. The surveyor's roster used to arrive through `Spawn::maps`: the
+/// kernel wrote it into the new address space before the first instruction, and recorded nothing.
+/// `revoke::revoke_frame` works off the mapping database, so it walked straight past that page.
+/// There was no `Frame` capability to delete either. **A spawn-time mapping is permanent by
+/// construction**, and "the driver's buffer is revocable" was a property the system could not have.
+///
+/// So: the program maps the frame it holds, reads the first word and reports it, and parks. The
+/// kernel checks that word against its own read of the same physical page through the direct map,
+/// which is what says the mapping was real and was of *this* page. Then it revokes the frame and
+/// lets the program go. The second read faults, at the address it faults at, and the program's
+/// "the read landed" message never arrives.
+///
+/// Run it against the old wiring and the second read returns the same word as the first.
+#[test_case]
+fn the_roster_can_be_revoked_out_from_under_its_holder() {
+    let faults = USER_FAULTS.load(Ordering::Relaxed);
+    let w = disk_service::start_holder(surveyor_image());
+
+    let [tag, word, ..] = crate::sched::ipc_recv(w.report);
+    assert_eq!(tag, R_HOLDING, "the holder never mapped its roster frame");
+    assert_eq!(
+        word,
+        w.first_word(),
+        "the holder read something other than the roster frame the kernel granted it",
+    );
+    // The roster's first word is its magic. Asserting it (rather than "not zero") is what makes the
+    // second read's absence meaningful: a page of zeroes would read the same before and after.
+    assert_eq!(word, block_roster::MAGIC);
+
+    // Take the page back. Every capability to it is deleted and it is unmapped from every address
+    // space that recorded a mapping of it, the holder's included.
+    crate::revoke::revoke_frame(w.roster_phys);
+    crate::sched::ipc_send(w.resume, [0, 0, 0]);
+
+    assert!(
+        wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+        "a program read a frame that had been revoked out from under it, at {:#x}, and was NOT \
+         stopped: the mapping outlived the capability",
+        disk_service::ROSTER_VA,
+    );
+    assert_eq!(
+        crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+        Some(disk_service::ROSTER_VA),
+        "the fault was somewhere other than the revoked page",
     );
 }
 
