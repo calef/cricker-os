@@ -42,8 +42,13 @@ pub fn verify(name: &str, bytes: &[u8]) -> Result<(), measured_boot::VerifyError
     measured_boot::verify(TRUST_ROOT, name, bytes)
 }
 
-/// **Measure the boot program, or halt.** Called with the archive entry's bytes immediately before
-/// the kernel builds its address space and drops to EL0/U-mode at its entry.
+/// **Measure an archive entry, or halt.** Called with the entry's bytes immediately before the
+/// kernel builds init's address space and drops to EL0/U-mode at its entry.
+///
+/// Two entries reach it: the boot program itself, and (since milestone 104) the measurement table
+/// init loads everything else against, through [`require_program_measurements`]. The wording of the
+/// diagnostics is deliberately about *entries* rather than *programs*, because one of them is not a
+/// program.
 ///
 /// A mismatch is not recoverable and must not be recovered from: there is no second init to fall
 /// back to, and running the wrong one is precisely the thing being prevented. So this prints what it
@@ -57,7 +62,7 @@ pub fn require(name: &str, bytes: &[u8]) {
         Err(measured_boot::VerifyError::Unmeasured) => {
             crate::println!();
             crate::println!(
-                "  MEASURED BOOT REFUSED: no measurement for the boot program '{name}'"
+                "  MEASURED BOOT REFUSED: no measurement for the archive entry '{name}'"
             );
             crate::println!("    measured sha256 {}", Hex(&measured));
             crate::println!(
@@ -65,19 +70,55 @@ pub fn require(name: &str, bytes: &[u8]) {
                 TRUST_ROOT.len()
             );
             crate::println!("    build's measurement step, so it can vouch for nothing.");
-            crate::println!("  halting rather than entering an unverified init.");
+            crate::println!("  halting rather than handing the archive to init.");
             crate::arch::halt();
         }
         Err(measured_boot::VerifyError::Mismatch) => {
             crate::println!();
             crate::println!(
-                "  MEASURED BOOT REFUSED: '{name}' is not the program this kernel runs"
+                "  MEASURED BOOT REFUSED: '{name}' is not what this kernel image was built against"
             );
             if let Some(want) = measured_boot::expected(TRUST_ROOT, name) {
                 crate::println!("    expected sha256 {}", Hex(&want));
             }
             crate::println!("    measured sha256 {}", Hex(&measured));
-            crate::println!("  halting rather than entering an unverified init.");
+            crate::println!("  halting rather than handing the archive to init.");
+            crate::arch::halt();
+        }
+    }
+}
+
+/// **Vouch for the table init measures its own loads against** (milestone 104), which is the whole
+/// of the kernel's part in extending the chain past init.
+///
+/// The kernel loads one program and measures it. Everything else in the archive is init's to load,
+/// and until this existed those bytes were unchecked, so the chain of trust stopped at init's entry.
+/// The fix belongs in userspace (init decides what to do about a mismatch, the same way §26's
+/// supervisor decides what to do about a fault), and it needs exactly one thing from here: a table
+/// init can trust as much as the kernel trusts init.
+///
+/// **Why the kernel measures a file it never reads.** init's own table cannot be compiled into init,
+/// because init is *in* the archive it would be measuring; generating it would mean building
+/// userspace twice with an invariant holding the chain up. So the build packs the table as an
+/// ordinary archive entry, [`measured_boot::PROGRAM_MEASUREMENTS`], and this hashes it beside init.
+/// Nothing here parses it or acts on it: the kernel gains one digest in its trust root and no
+/// policy at all, which is the line DECISIONS §26 draws and notes/trusted-init.md's rejected
+/// alternative (hashing the whole 14 MB archive in the kernel) crosses.
+///
+/// A **missing** table halts, for [`require`]'s reason one level down: an init that cannot vouch for
+/// what it loads must not be handed the archive at all.
+#[cfg_attr(feature = "bench", allow(dead_code))]
+pub fn require_program_measurements(fs: &crickerfs::Fs<'_>) {
+    let name = measured_boot::PROGRAM_MEASUREMENTS;
+    match fs.read(name) {
+        Some(bytes) => require(name, bytes),
+        None => {
+            crate::println!();
+            crate::println!("  MEASURED BOOT REFUSED: the archive carries no '{name}' table");
+            crate::println!(
+                "    init could not vouch for anything it loads, so it is not started."
+            );
+            crate::println!("  halting rather than entering an init that measures nothing.");
             crate::arch::halt();
         }
     }

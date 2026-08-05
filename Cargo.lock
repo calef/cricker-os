@@ -529,6 +529,7 @@ dependencies = [
  "elf",
  "grant_plan",
  "line_editor",
+ "measured_boot",
  "sink_proto",
  "supervision_proto",
  "user_rt",

@@ -1,13 +1,8 @@
 # 104. The measurement continues past init
 
-**Status: NOT-STARTED.** Raised 2026-08-04. Milestone 22 (trusted init) is BUILT, so the sentence it
+**Status: BUILT** 2026-08-05 (PR #138). Raised 2026-08-04. Milestone 22 (trusted init) is BUILT, so the sentence it
 left behind is no longer a gap in work-in-progress; it is a permanent property of the shipped system
 with nobody assigned to it.
-
-**Gate: NONE.** The design content is one question the lane answers on the record, what init does
-with a mismatch. This gated on milestone 96 because `build_child` existed twice and measuring in two
-places is measuring twice; **96 landed on 2026-08-04**, so `supervision_proto::build_child` is now
-the tree's only loader and there is one place to measure.
 
 **The finding, in the words of the note that owns it** (`notes/trusted-init.md`, "Not covered,
 deliberately"): "The kernel measures the program **it** loads. Every other program in the archive
