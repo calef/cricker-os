@@ -78,29 +78,47 @@ pass() {
 		return 1
 	fi
 
-	# Arm EVERY unheld pull request, not just the head of the queue. Arming and updating have very
-	# different costs and an earlier version of this script conflated them, which is the bug worth
-	# recording: arming is a free API call that changes no state until the checks pass, while
-	# updating triggers a full CI run. So arming is done breadth-first and updating is done one at a
-	# time. The version that armed only the head left #134 sitting CLEAN with all twelve checks green
-	# behind a lower-numbered pull request that was still building, which is exactly the "a green
-	# pull request sat unmerged because nobody armed it" failure this script was written to end.
-	for a in $(printf '%s' "$q" | jq -r '.[].number'); do
-		gh pr merge "$a" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
-	done
-
-	# Updating is the expensive half, so only the head of the queue gets it. Prefer a pull request
-	# that is already current: if one is CLEAN it needs nothing but its checks, and spending a CI
-	# cycle updating a different one first would only stale it again.
+	# **At most one merge in flight.** This is the third shape this loop has had, and the reasoning is
+	# worth keeping because each earlier one failed in a way that looked like the opposite bug.
+	#
+	# Arming only the head left #134 sitting CLEAN with twelve green checks behind a lower-numbered
+	# pull request that was still building. So the next version armed everything, and that starved
+	# the head instead: under the up-to-date rule a merge stales every other branch, so a small
+	# doc-only pull request goes green during a big one's thirty-minute cycle, merges, and sends the
+	# big one back to the start. #117 was re-updated twice that way before anyone noticed.
+	#
+	# Both failures are one fact seen from two sides: **a merge is exclusive**, so the queue can only
+	# land one thing at a time and the only real question is which. Pick exactly one target, arm
+	# exactly that one, leave the rest alone until it lands.
+	#
+	# Order: anything already CLEAN wins, because it needs nothing but its checks and lands in
+	# minutes rather than in a cycle. Otherwise the lowest-numbered, which is the oldest, and which
+	# is what keeps a big pull request from starving behind a stream of small ones.
 	ready=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "CLEAN")] | .[0].number // empty')
 	if [ -n "$ready" ]; then
-		echo "merge-drain: #$ready is current and armed; leaving the queue alone until it lands"
+		gh pr merge "$ready" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
+		echo "merge-drain: #$ready is current and armed; waiting for it to land"
+		return 0
+	fi
+
+	# Nothing is current. If something is already mid-flight, wait for it rather than starting a
+	# second cycle that the first one's merge would only throw away.
+	flying=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "BLOCKED")] | .[0].number // empty')
+	if [ -n "$flying" ]; then
+		failed=$(gh pr view "$flying" --repo "$REPO" --json statusCheckRollup \
+			-q '[.statusCheckRollup[] | select(.conclusion == "FAILURE") | .name] | join(", ")' 2>/dev/null)
+		if [ -n "$failed" ]; then
+			echo "merge-drain: STALLED. #$flying is failing $failed"
+			return 1
+		fi
+		gh pr merge "$flying" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
 		return 0
 	fi
 
 	num=$(printf '%s' "$q" | jq -r '.[0].number')
 	state=$(printf '%s' "$q" | jq -r '.[0].mergeStateStatus')
 	title=$(printf '%s' "$q" | jq -r '.[0].title')
+	gh pr merge "$num" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
 
 	case "$state" in
 	BEHIND | UNKNOWN)

@@ -42,17 +42,27 @@ of them**, and clicks "Update branch" on **one**. Auto-merge is armed *before* t
 lands whether or not the loop is still alive; the script should be an accelerator, never a
 dependency.
 
-**Arming is breadth-first; updating is one at a time**, and the first version of this script treated
-them as one operation. That is worth stating plainly because it reproduced the exact failure the
-script was written to end. Arming auto-merge is **free**: one API call, nothing changes until the
-checks pass. Updating a branch is **expensive**: a full CI run, and `cpu matrix` is this tree's
-load-sensitive check (notes/cpu-models.md), so several concurrent QEMU-heavy runs manufacture their
-own failures.
+**At most one merge in flight**, and this loop took three shapes to get there. Each earlier one
+failed in a way that looked like the opposite bug, which is why the reasoning is here rather than
+only in a commit.
 
-Arming only the head of the queue left **#134 sitting CLEAN with all twelve checks green**, behind a
-lower-numbered pull request that was still building. Chris found it, not the script. Now every unheld
-pull request is armed on every pass and only one is updated. Under the up-to-date rule the *updating*
-is serial anyway, because merging anything stales everything else.
+1. **Arm the head only.** #134 sat CLEAN with twelve green checks behind a lower-numbered pull
+   request that was still building. Chris found it, not the script.
+2. **Arm everything.** That starved the head instead. Under the up-to-date rule a merge stales every
+   other branch, so a small doc-only pull request goes green during a big one's thirty-minute cycle,
+   merges, and sends the big one back to the start. **#117 was re-updated twice that way.**
+3. **One target.** Both failures are one fact from two sides: a merge is exclusive, so the queue can
+   only land one thing at a time and the only question is which.
+
+So: pick exactly one target, arm exactly that one, leave the rest alone until it lands. Anything
+already CLEAN wins, because it needs nothing but its checks and lands in minutes rather than in a
+cycle; otherwise the lowest-numbered, which is the oldest, which is what stops a big pull request
+starving behind a stream of small ones. If something is already mid-flight, the pass waits quietly
+rather than starting a second cycle the first one's merge would throw away.
+
+Arming and updating still have very different costs and that is why only the target is updated:
+arming is one API call that changes nothing until the checks pass, while updating triggers a full CI
+run, and `cpu matrix` is this tree's load-sensitive check (notes/cpu-models.md).
 
 **It stops rather than guessing.** A conflict or a failing check ends the pass with the pull request
 named. Both need a human, and a loop that retries them just burns CI.
