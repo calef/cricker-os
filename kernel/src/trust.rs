@@ -110,7 +110,9 @@ pub fn require_program_measurements(fs: &crickerfs::Fs<'_>) {
         None => {
             crate::println!();
             crate::println!("  MEASURED BOOT REFUSED: the archive carries no '{name}' table");
-            crate::println!("    init could not vouch for anything it loads, so it is not started.");
+            crate::println!(
+                "    init could not vouch for anything it loads, so it is not started."
+            );
             crate::println!("  halting rather than entering an init that measures nothing.");
             crate::arch::halt();
         }

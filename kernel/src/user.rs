@@ -615,12 +615,9 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::arch::halt();
         }
     };
-    let init_bytes = match boot_fs.read(INIT_ROLES_ENTRY) {
-        Some(bytes) => bytes,
-        None => {
-            crate::println!("  boot archive has no '{INIT_ROLES_ENTRY}' program");
-            crate::arch::halt();
-        }
+    let Some(init_bytes) = boot_fs.read(INIT_ROLES_ENTRY) else {
+        crate::println!("  boot archive has no '{INIT_ROLES_ENTRY}' program");
+        crate::arch::halt();
     };
     crate::trust::require(INIT_ROLES_ENTRY, init_bytes);
     // And the table init measures *its* loads against (milestone 104). The whole archive is about to

@@ -66,7 +66,54 @@
 //! owner, which is whoever split it). Before that, a spawned job's memory was spent for the life of
 //! the boot.
 //!
+//! # What it refuses to load (milestone 104)
+//!
+//! The kernel measures the one program *it* loads, which is this one. Everything else in the
+//! archive is loaded here, and those bytes used to be unchecked, so the chain of trust stopped at
+//! init's entry. It does not now. The build packs a table of digests into the archive
+//! ([`measured_boot::PROGRAM_MEASUREMENTS`]), the kernel's trust root vouches for that table exactly
+//! as it vouches for this program's own bytes, and [`boot`] looks every program up in it before
+//! loading it.
+//!
+//! **One rule: init runs nothing it cannot vouch for.** A digest that does not match is a refusal,
+//! and so is a name the table does not mention, for the reason the kernel's empty trust root is
+//! refused: a check that passes when there is nothing to check against is not a check.
+//!
+//! What a refusal *costs* is not a second policy. It falls out of what the program was for, which is
+//! a question this crate already had to answer for an archive entry that is simply missing, so a
+//! refused program is treated exactly as a missing one:
+//!
+//! - **console, input, `line_editor`, swish, `job_undertaker`.** The system is made of these, so not
+//!   running one and not having a system are the same outcome. init prints which one it refused and
+//!   traps, which is `kernel::trust::require`'s decision one link down.
+//! - **`terminal_sink_caretaker`.** Already optional: a boot without an adapter comes up and a
+//!   declared second stream finds an empty slot. A refused adapter costs that same feature.
+//! - **The spawnable programs.** Left out of the table [`spawn_service`] indexes, so the prompt
+//!   answers "could not spawn" for them and everything else still works. Halting a running machine
+//!   because `wc` changed would turn a build defect into an unbootable system, and it buys nothing:
+//!   the guarantee is that nothing unvouched-for runs, and not spawning it is that guarantee.
+//!
+//! Recording a mismatch and loading anyway was considered and refused. There is no audit log to put
+//! a record in, and a measurement that changes nothing about what runs is theatre; a chain whose
+//! second link is advisory is not a chain.
+//!
 //! # BUGS
+//!
+//! **A refused `console` or `line_editor` stops in silence.** Those two are what carry init's
+//! output, so a refusal of either has no route to a person: init traps and the operator sees the
+//! kernel's fault line for init and nothing else, indistinguishable from any other early init
+//! failure. Everything refused after them is named on the console. There is no debug-print syscall
+//! (the kernel-served `Console` object went away at milestone 8) and driving the UART from here
+//! would be a second copy of the console driver, per ISA, inside the process the drivers exist to
+//! keep small.
+//!
+//! **An absent required component still traps with no message**, unchanged from before this
+//! existed. That is a build that did not pack it rather than bytes somebody swapped, and it has
+//! never had one.
+//!
+//! **The measurement is of the archive, not of memory over time.** It is checked once, when the
+//! program is loaded. Nothing re-measures a running process, and nothing measures the pages init
+//! wrote into a child after `build_child` copied them.
 //!
 //! The return of pages is **LIFO** (§16, `crates/regions`): a job region that is not at the top of
 //! the budget's watermark when it is reclaimed returns nothing, and its run is a hole until this
@@ -373,7 +420,11 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     let unvouched: [&str; 3] = [
         if in_elf.unvouched { "input" } else { "" },
         if sh_elf.unvouched { "swish" } else { "" },
-        if reaper_elf.unvouched { "job_undertaker" } else { "" },
+        if reaper_elf.unvouched {
+            "job_undertaker"
+        } else {
+            ""
+        },
     ];
     if unvouched.iter().any(|n| !n.is_empty()) {
         // The shell's output page, in our own space, so the refusal can be read. The giveaway below

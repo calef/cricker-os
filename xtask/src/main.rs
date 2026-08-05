@@ -3588,6 +3588,25 @@ fn shell_check_leg(riscv: bool) -> bool {
                     .to_string(),
             );
         }
+        // **And init measured every program it loaded** (milestone 104), which is the line that
+        // keeps the second link of the chain from evaporating. A kernel built without the
+        // measurement step refuses to boot at all, but a *table* that stopped naming things would
+        // leave a system that boots, prompts, and vouches for nothing, and it would look exactly
+        // like a healthy one. So init says which way it went either way, and the affirmative
+        // sentence is what this gate reads. The other branch names the programs it refused, so a
+        // boot that quietly stopped spawning half the prompt's commands fails here.
+        if !seen
+            .lock()
+            .expect("transcript lock")
+            .contains("every program measured against the archive table")
+        {
+            failed.push(
+                "init never reported measuring the programs it loads: either the archive's \
+                 measurement table stopped naming them, or init refused some (it prints the names \
+                 in that case)"
+                    .to_string(),
+            );
+        }
         for (line, _) in SHELL_CHECK_SCRIPT {
             if !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
                 failed.push(format!(
