@@ -222,8 +222,16 @@ impl Disk for IpcDisk {
 /// The file-service pages, as slices. The FS server reads a name (open) or file bytes (write) from
 /// [`FILE_PAGE`] and writes read results back into it.
 ///
-/// SAFETY: FILE_PAGE is a mapped, writable page of 4096 bytes shared with the one client bound to
-/// this endpoint; `len` is clamped to the page below before either is used.
+/// # Safety
+/// `len` must be at most 4096. `FILE_PAGE` is a mapped, writable page of 4096 bytes shared with the
+/// one client bound to this endpoint, and every call site clamps to it before this runs. The
+/// returned slice is `'static` and aliases that page, so no two live slices from here may overlap
+/// in a way that outlives one request.
+///
+/// (The contract was already written, spelled `SAFETY:` in the doc comment rather than as a
+/// `# Safety` section, which is the form rustdoc renders as the contract and the form
+/// `clippy::missing_safety_doc` recognises. Milestone 112's `script/lint` check is what found it:
+/// it was the only one of 46 `unsafe fn`s in the tree without the section.)
 unsafe fn file_page(len: usize) -> &'static mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(FILE_PAGE as *mut u8, len) }
 }
