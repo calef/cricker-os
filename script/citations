@@ -74,6 +74,12 @@
 #
 #   script/citations           report: every citation, classified
 #   script/citations --check   validate; non-zero on a problem (wired into script/lint)
+#
+# Name: unrecorded. Provisional, minted by milestone 97's lane on 2026-08-04 and not yet put to
+# Chris. Named for the thing it reads rather than for the act, in the family of `script/roadmap`,
+# `script/decisions` and `script/names`. This block was added at merge rather than by that lane: the
+# provenance gate arrived from milestone 115 in a *different* pull request, so both were green apart
+# and red together, and `main` was briefly red until it was noticed. See notes/naming.md.
 
 set -e
 
