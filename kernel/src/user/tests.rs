@@ -38,9 +38,9 @@ fn outlaw_image() -> &'static [u8] {
     program("outlaw").expect("no outlaw program in the initrd archive")
 }
 
-/// The `spinner` program's ELF bytes: a `_start` that is nothing but a loop. Milestone 24 built
-/// it for the shell's forcible-interrupt tier, and it is exactly the hostile binary DECISIONS §5
-/// describes, so the preemption test uses it rather than a second copy of the same idea.
+/// The `spinner` program's ELF bytes: a `_start` that is nothing but a loop. It was built for the
+/// shell's forcible-interrupt tier (DECISIONS §24), and it is exactly the hostile binary
+/// DECISIONS §5 describes, so the preemption test uses it rather than a second copy of the same idea.
 fn spinner_image() -> &'static [u8] {
     program("spinner").expect("no spinner program in the initrd archive")
 }

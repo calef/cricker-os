@@ -1,10 +1,7 @@
 # 113. The proofs' own unsafe code is ungated
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by milestone 82's lane, recorded in
+**Status: BUILT** 2026-08-04 (PR #109). Raised 2026-08-04 by milestone 82's lane, recorded in
 `notes/unsafe-obligations.md`'s BUGS as the second of three things neither unsafe lint can reach.
-
-**Gate: NONE.** Fourteen blocks is the whole population, and the block asks for both candidate
-gates to be measured over the tree before either is proposed.
 
 **The finding.** `cfg(kani)` is set by the model checker and by nothing else. `script/lint` never
 compiles those modules, so `clippy::undocumented_unsafe_blocks` and `unsafe_op_in_unsafe_fn` cannot

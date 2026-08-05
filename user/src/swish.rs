@@ -55,6 +55,14 @@
 //! directory ([`DIR_TERMINAL`], slot 4, when this boot has a filesystem) and the clock page, whose
 //! slot arrives in `x2` because it sits after the filesystem pair and a boot with no disk has one
 //! fewer capability under it. See [`CLOCK_SLOT`].
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `shell`. Refused `shell` (a category
+//! rather than a name: `bash`, `zsh`, `fish` and `rc` are identities), `capsh` (Linux's libcap
+//! ships `capsh(1)`, a capability shell wrapper, so a reader from Linux would assume ours is that
+//! tool) and `sheesh` (it carries a 2020-21 timestamp where `bash` and `fish` are era-neutral, and
+//! it is an interjection of exasperation, while refusing things is this shell's most characteristic
+//! behaviour by design). A swish is the shot that goes through the net touching nothing, which is
+//! least authority in one word.
 
 #![no_std]
 #![no_main]
@@ -1142,7 +1150,7 @@ fn run(nav: &mut Nav, cmd: &[u8], spec: RunSpec) {
     };
     match grant_plan::plan(&spec, holdings(nav), expanded) {
         Err(refusal) => refuse(spec, refusal),
-        // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
+        // A supervised job runs under the two-tier ^C path (DECISIONS §24); a fast job is simply
         // spawned and waited on.
         Ok(endow) if endow.interruptible => spawn_interruptible(endow),
         // **`wc report.txt`**, which is `wc < report.txt` with the operator left out: the planner
@@ -1398,7 +1406,7 @@ fn untyped_split(pages: u64) -> Option<u64> {
     if r < 0 { None } else { Some(r as u64) }
 }
 
-// ---- the two-tier interrupt path (milestone 24, DECISIONS §24) ----
+// ---- the two-tier interrupt path (DECISIONS §24) ----
 
 // ---- the operators: `>`, `<` and `|` (milestone 50, notes/pipes.md) ----
 

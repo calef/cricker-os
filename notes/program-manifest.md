@@ -34,7 +34,7 @@ struct Manifest {
     mem:     MemSpec,   // Forbidden | Required { min, max }  -- a memory grant, in pages?
     file:    FileSpec,  // Forbidden | Required { writable }  -- one file (phase 2)
     reports: bool,      // is it endowed the shared result endpoint?
-    interruptible: bool,// does ^C reach it (milestone 24)?
+    interruptible: bool,// does ^C reach it (DECISIONS §24)?
 }
 ```
 

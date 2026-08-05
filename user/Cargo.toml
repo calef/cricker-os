@@ -76,7 +76,7 @@ path = "src/budgeter.rs"
 test = false
 bench = false
 
-# The heeder (milestone 24): a long-running job that heeds the cooperative ^C, polling a shared flag
+# The heeder (DECISIONS §24): a long-running job that heeds the cooperative ^C, polling a shared flag
 # between work units and exiting cleanly when the shell sets it. The cooperative interrupt tier.
 [[bin]]
 name = "heeder"
@@ -84,7 +84,7 @@ path = "src/heeder.rs"
 test = false
 bench = false
 
-# The spinner (milestone 24): a runaway that ignores the interrupt; only the forcible tier (the shell
+# The spinner (DECISIONS §24): a runaway that ignores the interrupt; only the forcible tier (the shell
 # tearing its region down) ends it. The case the second ^C exists for.
 [[bin]]
 name = "spinner"

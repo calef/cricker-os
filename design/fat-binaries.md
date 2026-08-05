@@ -1,6 +1,6 @@
 # Design proposal: microarchitecture-variant binaries
 
-**Status:** open idea. Not decided. Revisit at milestone 6 (SMP) and milestone 7 (ELF
+**Status:** open idea. Not decided. Revisit at §6 (SMP) and milestone 7 (ELF
 loader).
 
 **Owner:** Chris

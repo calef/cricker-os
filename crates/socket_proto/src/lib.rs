@@ -66,6 +66,9 @@
 //! backlog is **one connection deep** per listener (see `net_stack`'s `OP_ACCEPT`, which re-arms
 //! immediately), so a second connection arriving while a first is un-accepted is refused by TCP
 //! rather than queued.
+//! Name: ratified 2026-08-01 (Chris, the naming tenet), which names `socket_proto` among the
+//! standard terms that are already right. It graduated from a module inside `net_stack` to a crate
+//! on 2026-07-31 under rule 7, taking the spelling the suffix rule already required.
 
 /// Operations. The opcode is the low byte of the request word; the socket id is the next byte.
 pub const OP_ATTACH_FRAME: u64 = 1; // SEND_CAP: delegate the shared frame for this socket id

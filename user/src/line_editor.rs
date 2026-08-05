@@ -28,6 +28,12 @@
 //! reply endpoints (slots 1 and 2), the console's shared page (write), the client's output page
 //! (read) and input page (write). No UART, no interrupt: the discipline touches no hardware,
 //! which is exactly why it did not exist until the drivers did.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46) for the word and again
+//! 2026-08-01 (milestone 63) for the spelling, replacing `termd` and then `lineedit`. Refused
+//! `termd` (the `-d` claim) and `linedisc`, the correct Unix term of art, which is the second half
+//! of §39: Chris did not recognise the phrase, and he built this system, which is evidence about
+//! the name rather than about him.
 
 #![no_std]
 #![no_main]
@@ -70,7 +76,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     // stays blocked (that is CALL's contract) while we serve everyone else.
     let mut pending: Option<u64> = None;
     // How many ^C we have seen since boot. The shell reads this (OP_INTRCOUNT) to sense interrupts
-    // while a foreground job runs and no read is parked to fail (milestone 24, DECISIONS §24). A
+    // while a foreground job runs and no read is parked to fail (DECISIONS §24). A
     // monotonic counter, so the shell learns of a ^C by the count advancing, never missing one.
     let mut intr_count: u64 = 0;
 
@@ -93,7 +99,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
                             // ^C: the discipline discarded the edit line. We discard the type-ahead
                             // and fail a pending read (case 1, the shell is at the prompt). And we
                             // bump the interrupt count, which the shell polls (OP_INTRCOUNT) when a
-                            // foreground job is running and no read is parked (case 2, milestone 24,
+                            // foreground job is running and no read is parked (case 2,
                             // DECISIONS §24). One ^C, both effects; whichever the shell is watching.
                             intr_count = intr_count.wrapping_add(1);
                             queue.clear();
@@ -155,7 +161,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
             }
             proto::OP_INTRCOUNT => {
                 // The shell's ^C sensor: reply immediately with the running count. Never blocks, so
-                // the shell can busy-poll it while watching a foreground job (milestone 24).
+                // the shell can busy-poll it while watching a foreground job (DECISIONS §24).
                 reply(slot, intr_count, 0);
             }
             _ => {

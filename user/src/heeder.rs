@@ -1,4 +1,4 @@
-//! The heeder: a long-running job that heeds the cooperative interrupt (milestone 24).
+//! The heeder: a long-running job that heeds the cooperative interrupt (DECISIONS §24).
 //!
 //! It works forever, one small unit at a time, and between units it reads a single word in a page
 //! it shares with the shell: the interrupt flag. When the shell sets it (on the first `^C`), the
@@ -15,6 +15,10 @@
 //! - the shared job frame, mapped read/write at [`JOB_FRAME_VA`] (init maps it; the shell holds the
 //!   other view). The heeder reads [`jobframe::INTERRUPT`] and writes the rest. No capabilities: it
 //!   touches only this page and exits. Its whole authority is one shared page.
+//!
+//! Name: unrecorded. Introduced 2026-07-28 with the cooperative interrupt tier: the program that
+//! heeds an interrupt request rather than being killed by one. An agent noun in a family milestone
+//! 63 later named, with no record of the choice.
 
 #![no_std]
 #![no_main]

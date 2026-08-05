@@ -108,6 +108,9 @@
 //! assert_eq!(Civil::new(2026, 2, 29, 0, 0, 0), Err(Error::BadDay));
 //! assert!(Civil::new(2024, 2, 29, 0, 0, 0).is_ok());
 //! ```
+//!
+//! Name: unrecorded. Introduced 2026-07-30 for milestone 51's `date`. DECISIONS §46 records the
+//! decision to write it rather than vendor it; nothing records the choice of word.
 
 #![no_std]
 

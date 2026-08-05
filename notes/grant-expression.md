@@ -437,7 +437,7 @@ position on the wire after all. There is no program asking for it, so it is reco
   design fork, not built here. The manifest is the userspace stand-in, and for the shell's purpose
   (what would this command grant?) it is the right answer anyway: the authority is the command, and
   the command is on the screen.
-## The interrupt grant (milestone 24)
+## The interrupt grant (DECISIONS §24)
 
 A foreground job the user can `^C` is another grant the command line expresses, and it flows the
 same way: the manifest marks a program `interruptible`, and the shell endows a supervised job with

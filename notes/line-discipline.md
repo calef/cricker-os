@@ -44,7 +44,8 @@ why the two live candidates did not fit.
   process.
 
 What we would reuse if the requirement grew: a mature VT engine on the *output* side is a real
-port candidate for milestone 29 (libghostty-vt or `vte`), because a full grid-and-scrollback
+port candidate for milestone 29 (a display terminal), where libghostty-vt or `vte` would
+serve, because a full grid-and-scrollback
 state machine is genuinely worth not writing. The input-side line editor, by contrast, is a few
 hundred lines of well-understood logic with an unusual lifecycle requirement, and owning it kept
 the sans-IO testability and the always-on behavior that the candidates fought.

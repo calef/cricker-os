@@ -22,6 +22,13 @@
 //! - arg2: the **listen grant** (milestone 107), the port range clients of this stack may bind.
 //!   Zero, the default, means no port anywhere: a stack serves inbound connections only when
 //!   whoever spawned it said which ports it may serve them on.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `netd`, and
+//! respelled from `netstack` on 2026-08-01 (milestone 63) because `net` is already this tree's word
+//! and the two halves are separate concepts. Refused `netd`, the name DECISIONS §39 was written
+//! about: it holds five explicit capabilities, cannot name its own callers, is supervised, and can
+//! be reaped by something that lacks the authority to build it, which is about as far from the
+//! model that suffix claims as a long-running process gets.
 
 #![no_std]
 #![no_main]

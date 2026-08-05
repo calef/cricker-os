@@ -925,7 +925,7 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
 //
 //   - aarch64 `hello`, riscv `USER_HELLO` (yield, yield)  -> `outlaw`, role `OUTLAW_ROUND_TRIP`
 //   - aarch64 `outlaw`  (read a kernel address)           -> `outlaw`, role `OUTLAW_READ_KERNEL`
-//   - aarch64 `spin`    (loop, no syscall, no stack)      -> the `spinner` binary (milestone 24)
+//   - aarch64 `spin`    (loop, no syscall, no stack)      -> the `spinner` binary (DECISIONS §24)
 //   - riscv `USER_REPORTER` (invoke a cap, SEND a word)   -> `riscv_worker_demo`, which builds a
 //     process from the same parts and runs a real ELF through them
 //

@@ -31,6 +31,10 @@
 # Only tracked files are compared, so a stray `target/` from building the vendored crate in place is
 # correctly ignored: the question is what we committed, not what is lying around. See
 # notes/scripts.md and design/roadmap/42-supply-chain-and-fuzzing.md.
+#
+# Name: unrecorded. Introduced 2026-07-30 to prove the RedoxFS pin is upstream plus our patches. It
+# reads as a verb phrase and sits beside `script/verify`, which is a different thing; nothing
+# records either choice.
 
 set -e
 

@@ -9,6 +9,10 @@
 # keeps the CI job a one-liner. It also lints each kernel boot-mode feature (shell/bench/initboot)
 # separately, because each compiles different code and a warning can hide in a configuration the
 # default build never compiles. See notes/scripts.md.
+#
+# Name: unrecorded. Introduced 2026-07-22 with the Scripts to Rule Them All adoption, though it is
+# not one of the canonical names; "lint" is the field's word, which is the guard rail the tenet
+# keeps.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -208,8 +212,8 @@ fi
 # marker words are matched with the punctuation attached rather than as bare words.
 #
 # **Markdown is out of scope, and that is a self-consistency exemption rather than a gap.** Prose
-# that explains this convention has to spell the forbidden shape (CLAUDE.md does, and so does
-# design/roadmap/94-untracked-work.md); the em-dash gate below dodges the same problem by building
+# that explains this convention has to spell the forbidden shape (design/roadmap/94-untracked-work.md
+# does); the em-dash gate below dodges the same problem by building
 # its character out of UTF-8 bytes, and a TODO marker cannot be disguised that way without making
 # the sentence unreadable. Prose is also where a *historical* marker legitimately lives: notes/uart.md
 # quotes a milestone-5 TODO that was resolved five milestones ago, as history, not as intent. Code
@@ -279,6 +283,18 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/C
 # trust prose. See script/decisions, including what it still cannot check.
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
+
+# The third citation gate, and the one that reads what a citation points AT (milestone 97). The two
+# above prove a `§N` or a `milestone N` resolves to SOME entry; neither can prove it resolves to the
+# RIGHT one, and both say so in their own headers. Twenty-eight comments credited the two-tier `^C`
+# work to "milestone 24" (a second aarch64 board) rather than to §24, wrong from the day it was
+# written, and both gates reported clean throughout because both numbers exist.
+#
+# This compares a citation's parenthetical gloss against the record's own title or body, and checks
+# that an attributed block quote still exists in the file it names. See notes/citations.md for the
+# tolerance rule and for the honest list of what it still cannot see.
+echo "==> citations"
+"$(dirname "$0")/citations" --check
 
 # The script/ front door is documented in exactly one comprehensive place, and the README's list is a
 # deliberate SUBSET of it. Two checks, because they fail in opposite directions: a script nobody
@@ -451,8 +467,30 @@ if [ -n "$doc_name_bad" ]; then
     exit 1
 fi
 
+# 7. **Every crate, program and script/ entry point carries a provenance block** (milestone 115).
+#    A name in this tree is Chris's call, and until now nothing recorded that a call had been made.
+#    The failure was concrete: a lane proposed `system_builder`, the maintainer endorsed it, and
+#    Chris overruled it, and only afterwards did anyone find that milestone 63 had ALREADY refused
+#    that exact name for a reason still true. The refusal sat in one table cell inside one milestone
+#    block, and a blind rename later swept the old name out of that very row.
+#
+#    Presence, not content. This can check that a name carries a reason; it cannot check that the
+#    reason is still true, that a date is right, that a `recorded` citation leads anywhere, or that
+#    an `unrecorded` entry is honest rather than lazy. That is the same limit script/decisions
+#    records for §N citations, and it is not closeable by a script, because a reason is prose and
+#    prose is checked by reading.
+#
+#    **Presence of a STATE, never the state `ratified`**, and that is deliberate rather than a
+#    weakness to tighten later. The three states are `ratified`, `recorded` (the tree argues the
+#    name, Chris never ruled) and `unrecorded`, and 54 of 126 names are not ratified today. A gate
+#    keyed on ratification would hold every unrelated merge behind a review queue nobody can hurry,
+#    which is a wall this milestone was written specifically not to build. `script/names
+#    --unratified` is how the queue gets worked; the lint only insists a name say which it is.
+"$(dirname "$0")/names" --check
+
 echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised,"
-echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated"
+echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated,"
+echo "        every name carries its provenance"
 
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero

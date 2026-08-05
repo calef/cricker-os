@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
+  and not just a number, and what `script/citations` can and cannot prove about it. The two older
+  gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the
+  author meant. Twenty-eight comments credited the `^C` work to a milestone about an aarch64 board
+  and no gate could see it.
+
 - [Naming things](naming.md): components, crates, scripts, branches, and which document goes
   where. Why nothing here is named `-d` any more (DECISIONS §39), why `§N` and "milestone N" are
   different numbers over the same integers (it has already produced a wrong citation), and
@@ -600,7 +606,6 @@ in the code or the conversation doesn't make sense, it belongs here.
   reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
   the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
   it holds, and neither can name the other's files.
-- [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
 - [Extended attributes](xattr.md): milestone 57's attribute layer, on the critical path to
   milestone 55's backup target because Samba stores Apple's Time Machine metadata as opaque byte
   strings and RedoxFS has none. Four verbs, three limits with a reason each (255-byte names are

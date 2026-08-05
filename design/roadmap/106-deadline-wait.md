@@ -30,7 +30,7 @@ server sleeps through the backoff instead of spinning. There is **no timed wait 
 kernel**: the syscall surface is `EXIT`, `YIELD`, `INVOKE` and `CAP_DELETE`, and `sched.rs` twice
 calls out its own no-timeout limitation.
 
-**This is milestone 51's fork, and it should be decided once.** §51 (wall-clock time) records three
+**This is milestone 51's fork, and it should be decided once.** Milestone 51 (wall-clock time) records three
 candidate shapes and the argument between them:
 
 | shape | the case for it | the case against |

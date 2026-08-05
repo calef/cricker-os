@@ -20,6 +20,10 @@
 //! Fully portable: it names no architecture. `user_rt` supplies the `ecall`/`svc` ABI, and the one
 //! device-specific fact (the NS16550 register layout) is the driver's own knowledge, which is exactly
 //! what a driver is for.
+//!
+//! Name: unrecorded, and the vaguest name on this surface. It is the UART interrupt driver, and the
+//! word could label a dozen programs in a tree that has several drivers. Introduced 2026-07-27 when
+//! the UART interrupt moved to userspace; nothing records the choice.
 
 #![no_std]
 #![no_main]

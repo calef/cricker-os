@@ -33,6 +33,11 @@
 //! layout switching, no mouse or tablet (a `virtio-tablet-pci` presents the same PCI id, which is
 //! recorded in `crates/pci` rather than guessed at), and no configuration-space query: it drives the
 //! event queue and nothing else. The honest limits are in notes/glyphs.md.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as always
+//! right: an abbreviation that is the ordinary name of the thing. It is also why `script/lint`'s
+//! `-d` check starts at four characters, since a three-letter abbreviation is not a claim about a
+//! process model.
 
 #![no_std]
 #![no_main]

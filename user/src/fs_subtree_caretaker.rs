@@ -51,6 +51,13 @@
 //! The granted name and the requested rights arrive in the three `START` argument words
 //! ([`fs_proto::grant`], whose spec word carries a rights mask of any width), so a subtree grant
 //! costs no extra frame.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `dwarden`, which is the name that
+//! made the case for the whole naming tenet: it was named for what it **holds** while both siblings
+//! are named for what they **serve**, and all three hold a directory, so the old name distinguished
+//! nothing. Refused `dwarden`, the `warden` family, and bare `subtree`, because subtree already
+//! means three things here (the supervision tree, this repository, and git's own `subtree`);
+//! carrying the disambiguation in the name beats carrying it in the doc comment.
 
 #![no_std]
 #![no_main]
