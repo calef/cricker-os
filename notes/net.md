@@ -93,6 +93,75 @@ authorization instead of a path lookup.
 Synthesis: seL4's endpoint-plus-dataport data plane, Fuchsia's socket-is-a-capability control plane.
 Neither is novel here; both are what this kernel's primitives already point at.
 
+### Prior art for the *inbound* half: who may claim a listening port
+
+Read for milestone 107, after the contract above was already built. The outbound question ("how does
+a process reach a stack") and the inbound one ("who decides this program may serve port 80") turn out
+to have almost disjoint prior art, which is itself worth knowing.
+
+**POSIX, Linux and the BSDs: ambient above 1024.** Any process binds any free port. Below 1024 needs
+`CAP_NET_BIND_SERVICE` on Linux, or historically root, and that is a **privilege rather than a
+designation**: it says "this process may bind low ports", never *which* ones. Linux later added
+`net.ipv4.ip_unprivileged_port_start` to move the line, which is the same knob in a different place.
+`SO_REUSEPORT` lets several sockets share one port, so even exclusivity is opt-out.
+
+**systemd socket activation, and `inetd` before it: the closest mainstream precedent, and it does not
+enforce.** The service manager binds the port and passes the listening descriptor to the service
+(`LISTEN_FDS`); the service never calls `bind`. That is exactly this milestone's shape: whoever
+spawns you decides what you may serve. **The difference is enforcement.** Nothing stops a systemd
+service binding port 9999 itself afterwards, because the pre-bound descriptor is a convenience rather
+than a boundary. Here `NO_LISTEN_GRANT` means the server *cannot*, because the grant is checked at
+the only place a port can be claimed. Read as: the mainstream pattern with the hole closed.
+
+**Capsicum (FreeBSD): the same instinct, taken further.** After `cap_enter()` a process cannot `bind`
+at all and must receive pre-bound sockets. Capsicum's answer to "which ports may this program serve"
+is "none, ever, only what it is handed". That is stricter than ours and it is the honest upper bound
+on this design.
+
+**seL4: silent, and the silence is the finding.** The kernel models no ports, no sockets and no TCP;
+networking is a userspace component (CAmkES/lwIP, later Rust). Whatever a net server implements *is*
+the policy. So there is no seL4 answer to diverge from here, and any claim that "seL4 does X" means
+"some unverified seL4 component does X", since seL4's proofs cover the kernel and a port policy is
+outside them. **The same is true of us**: nothing in `crates/socket_proto` is machine-checked, and
+this grant is ordinary code.
+
+**Plan 9: authority by namespace.** You write `announce 80` into `/net/tcp/clone`, and what
+constrains you is whether `/net/tcp` is in your namespace at all. Restriction is by what you can
+*see* rather than by an explicit grant, which is the counter-design already recorded above.
+
+### Where this differs from seL4, and what it costs
+
+The data plane here **is** seL4's, deliberately (see the synthesis above). The difference is one level
+up, in how a component gets its authority:
+
+**seL4 systems wire statically.** CAmkES describes the whole system at build time (components,
+endpoints, dataports, connections) and generates the glue; seL4 Microkit does the same with protection
+domains and channels in a system description. There is no "spawn a net server and hand it port 7778
+because somebody just asked". The topology is fixed before the machine boots.
+
+**This tree grants at spawn, at run time.** `wire_net_server(..., listen_grant(7778, 7778))` is a
+decision taken while the system runs, by whoever holds the authority to take it.
+
+**What that buys**: authority that moves during operation, which is the whole of milestone 47's
+caretakers and the shell's grant model. A static system cannot express a user handing a program a
+port range it was never declared with.
+
+**What it costs, and this is the honest half.** A static topology is checkable *as a whole*: a CAmkES
+spec can be read to see every channel that will ever exist. Our grant is a `u64` computed at a call
+site, so "which components may serve inbound ports?" has no artifact anyone can read. That is a real
+loss against seL4, not a tie, and it is the same weakness this tree keeps meeting in other forms: a
+fact that exists only at a call site (compare §76's roadmap status, and `script/names`' reason for
+existing).
+
+### One correction to the claim below
+
+The section on listeners says POSIX "conflates" a listener and a connection. That is imprecise and
+the sharper version is worth having: POSIX's `accept()` already returns a **new** descriptor, so the
+two are distinct objects there too. What POSIX does is make them the same *type*, with hidden state
+deciding which calls are valid on which. The claim that survives is narrower and stronger: here they
+are distinct **authorities**, because a listener carries no frame and therefore structurally cannot
+move bytes, where a POSIX listening descriptor is a `read`/`write`-shaped thing that merely fails.
+
 ## The socket contract (resolved: DECISIONS §25)
 
 The roadmap sketched "an endpoint plus shared frames per connection; no ambient network." The
@@ -373,6 +442,8 @@ connects into the guest** and gets an answer the guest composed. Two design ques
 verbs, and neither was copied from POSIX.
 
 ### A listener is not a connection, because they are not the same authority
+
+(Prior art and one correction to the wording below: see "Prior art for the *inbound* half" above.)
 
 POSIX makes a listening socket and an accepted one both file descriptors; the only difference is
 which calls happen to work on each. That conflation is why "give this program port 80" and "give this
