@@ -19,6 +19,16 @@
 //! - slot 3: an untyped budget, for the heap and for mapping clients' shared frames
 //! - slot 4: the `Stack` endpoint (READ), where clients' requests arrive
 //! - arg1: the DMA page's physical address
+//! - arg2: the **listen grant** (milestone 107), the port range clients of this stack may bind.
+//!   Zero, the default, means no port anywhere: a stack serves inbound connections only when
+//!   whoever spawned it said which ports it may serve them on.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `netd`, and
+//! respelled from `netstack` on 2026-08-01 (milestone 63) because `net` is already this tree's word
+//! and the two halves are separate concepts. Refused `netd`, the name DECISIONS §39 was written
+//! about: it holds five explicit capabilities, cannot name its own callers, is supervised, and can
+//! be reaped by something that lacks the authority to build it, which is about as far from the
+//! model that suffix claims as a long-running process gets.
 
 #![no_std]
 #![no_main]
@@ -47,8 +57,15 @@ const IRQ: u64 = 1;
 const UNTYPED: u64 = 3;
 const STACK: u64 = 4;
 
-/// The heap smoltcp allocates against, capped well under the granted budget.
-const HEAP_MAX: u64 = 128 * 4096;
+/// The heap smoltcp allocates against, capped under the granted budget.
+///
+/// **96 pages, down from 128** (milestone 107), and the two numbers are a pair: the spawn service
+/// grants `NET_SERVER_BUDGET_PAGES = 128`, and the difference is what pays for the heap's page
+/// tables and for mapping clients' shared frames. The budget came down because ten `net_stack`
+/// regions are held for the whole boot and never reclaimed, and the aarch64 suite ran out of memory
+/// when an eleventh net test arrived; see `kernel/src/user/virtio_service.rs` for the measurement.
+/// If either number moves, both must.
+const HEAP_MAX: u64 = 96 * 4096;
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
@@ -84,12 +101,18 @@ fn a_w16(va: u64, v: u16) {
 
 /// One open socket: its smoltcp handle, whether it is TCP, where its shared frame is mapped, and the
 /// ephemeral local port it was assigned.
+///
+/// `listen_port` is nonzero on a **listener** and zero on everything else, which is the whole of the
+/// distinction inside the server: a listener holds a smoltcp socket parked in `Listen` state, has no
+/// shared frame (`va == 0`, and it never needs one, because no bytes cross on a listener), and its
+/// port is the one it was granted rather than one the allocator handed out.
 #[derive(Clone, Copy)]
 struct Sock {
     handle: SocketHandle,
     is_tcp: bool,
     va: u64,
     local_port: u16,
+    listen_port: u16,
 }
 
 /// The private ephemeral-port range `net_stack` allocates local ports from, and a **rotating** allocator
@@ -134,17 +157,22 @@ const SOCK_BUF: usize = 2048;
 
 /// Entry role 0 is the net server; any other role runs the socket-contract client (the same
 /// binary, so the initrd stays under its 15-file directory limit).
+///
+/// `a2` is the server's **listen grant** (milestone 107, `socket_proto::listen_grant`): the port
+/// range clients of this stack may bind. Whoever spawns the server decides it; a server spawned
+/// without one (`NO_LISTEN_GRANT`, which every outbound-only test uses) can be asked to listen and
+/// will refuse every port. The client half ignores it.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(role: u64, dma_phys: u64, _a2: u64) -> ! {
+pub extern "C" fn _start(role: u64, dma_phys: u64, a2: u64) -> ! {
     if role == 0 {
-        server(dma_phys)
+        server(dma_phys, a2)
     } else {
         socket_test_client::run(role)
     }
 }
 
 /// The net server: bring the NIC up, run DHCP, then serve the socket contract.
-fn server(dma_phys: u64) -> ! {
+fn server(dma_phys: u64, listen_grant: u64) -> ! {
     HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
 
     let mut dev = net_transport::VirtioNet::bring_up(dma_phys);
@@ -225,6 +253,7 @@ fn server(dma_phys: u64) -> ! {
                     is_tcp: false,
                     va: frame_va[sid],
                     local_port,
+                    listen_port: 0,
                 });
                 reply(cap_slot, REP_OK, 0);
             }
@@ -241,6 +270,7 @@ fn server(dma_phys: u64) -> ! {
                     is_tcp: true,
                     va: frame_va[sid],
                     local_port,
+                    listen_port: 0,
                 });
                 reply(cap_slot, REP_OK, 0);
             }
@@ -289,6 +319,31 @@ fn server(dma_phys: u64) -> ! {
                     sockets.remove(sk.handle);
                 }
                 reply(cap_slot, REP_OK, 0);
+            }
+
+            OP_LISTEN => {
+                let rep = tcp_listen(&mut sockets, &mut socks, sid, w1, listen_grant);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_ACCEPT => {
+                // The target id's frame must already be attached: an accepted connection carries
+                // bytes, so it needs the resource a listener never did.
+                let target_va = if w1 < MAX_SOCKETS as u64 {
+                    frame_va[w1 as usize]
+                } else {
+                    0
+                };
+                let rep = tcp_accept(
+                    &mut iface,
+                    &mut dev,
+                    &mut sockets,
+                    &mut socks,
+                    sid,
+                    w1,
+                    target_va,
+                );
+                reply(cap_slot, rep, 0);
             }
 
             _ => {
@@ -482,6 +537,149 @@ fn tcp_connect(
         tcp::State::Established => CONNECT_ESTABLISHED,
         _ => CONNECT_REFUSED,
     }
+}
+
+/// Park a fresh TCP socket in `Listen` state on `port`. `None` if smoltcp refuses the port (only
+/// port 0 does that), in which case the socket is removed rather than left in the set as a
+/// `Closed` socket nothing owns.
+fn arm_listener(sockets: &mut SocketSet, port: u16) -> Option<SocketHandle> {
+    let s = tcp::Socket::new(
+        tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
+        tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
+    );
+    let handle = sockets.add(s);
+    if sockets.get_mut::<tcp::Socket>(handle).listen(port).is_err() {
+        sockets.remove(handle);
+        return None;
+    }
+    Some(handle)
+}
+
+/// **`LISTEN`: claim a port, if this stack was granted it** (milestone 107).
+///
+/// Three refusals, and they are deliberately distinguishable (`socket_proto`): outside the grant is
+/// a refusal of *authority* and no retry will fix it; already-listening is a collision on an
+/// exclusive name and another port would work; `REP_ERR` is the client asking on a socket id it is
+/// already using, which is its own bookkeeping bug.
+///
+/// A listener gets no shared frame. That is the contract's claim that a listener and a connection
+/// are different objects, made concrete: there is nothing to map, because nothing is carried.
+fn tcp_listen(
+    sockets: &mut SocketSet,
+    socks: &mut [Option<Sock>; MAX_SOCKETS],
+    sid: usize,
+    port_word: u64,
+    grant: u64,
+) -> u64 {
+    if socks[sid].is_some() {
+        return REP_ERR;
+    }
+    // Not truncated to 16 bits: a request for 65536 is a request for a port no grant can name, and
+    // silently turning it into port 0 would answer a question nobody asked.
+    if port_word > u16::MAX as u64 {
+        return LISTEN_DENIED;
+    }
+    let port = port_word as u16;
+    if !grant_allows(grant, port) {
+        return LISTEN_DENIED;
+    }
+    if socks.iter().flatten().any(|s| s.listen_port == port) {
+        return LISTEN_IN_USE;
+    }
+    let Some(handle) = arm_listener(sockets, port) else {
+        return REP_ERR;
+    };
+    socks[sid] = Some(Sock {
+        handle,
+        is_tcp: true,
+        va: 0,
+        local_port: port,
+        listen_port: port,
+    });
+    LISTEN_GRANTED
+}
+
+/// **`ACCEPT`: block until a peer connects, then hand the connection to its own socket id.**
+///
+/// The listener keeps its id and its port; what moves is the smoltcp socket that just completed a
+/// handshake, which becomes the *connection* at `target_word`, and the listener is immediately
+/// re-armed with a fresh socket parked on the same port. That re-arm is the difference between a
+/// server that accepts a connection and a server that accepts **one** connection, and it happens
+/// before this function returns, so the client can be busy serving the first exchange while the
+/// second handshake completes underneath it in the poll loop.
+///
+/// Refusing `target_word == lsid` is the contract enforcing itself: POSIX would let a listening
+/// descriptor become the connection in place, and that conflation is exactly what makes "give this
+/// program port 80" and "give this program this connection" the same kind of grant there.
+///
+/// **BUGS.** The backlog is one connection deep, because smoltcp has no accept queue: a second peer
+/// arriving in the window between a handshake completing and this call re-arming gets a RST rather
+/// than a wait. Bounded by `service_until`'s 15 s, so an `ACCEPT` nobody ever connects to returns
+/// `REP_ERR` instead of holding the server forever.
+fn tcp_accept(
+    iface: &mut Interface,
+    dev: &mut net_transport::VirtioNet,
+    sockets: &mut SocketSet,
+    socks: &mut [Option<Sock>; MAX_SOCKETS],
+    lsid: usize,
+    target_word: u64,
+    target_va: u64,
+) -> u64 {
+    if target_word >= MAX_SOCKETS as u64 {
+        return REP_ERR;
+    }
+    let target = target_word as usize;
+    if target == lsid || socks[target].is_some() || target_va == 0 {
+        return REP_ERR;
+    }
+    let Some(listener) = socks[lsid] else {
+        return REP_ERR;
+    };
+    if listener.listen_port == 0 {
+        return REP_ERR;
+    }
+    let handle = listener.handle;
+    let port = listener.listen_port;
+
+    // `Listen` means no SYN yet and `SynReceived` means the handshake is in flight; any other state
+    // means it either landed or was aborted, and both of those end the wait.
+    service_until(iface, dev, sockets, |s| {
+        !matches!(
+            s.get_mut::<tcp::Socket>(handle).state(),
+            tcp::State::Listen | tcp::State::SynReceived
+        )
+    });
+    let landed = !matches!(
+        sockets.get_mut::<tcp::Socket>(handle).state(),
+        tcp::State::Listen | tcp::State::SynReceived | tcp::State::Closed
+    );
+
+    // Re-arm whatever happened, including the aborted case: the listener's authority did not expire
+    // because one peer sent a RST, and a client that gets `REP_ERR` should be able to accept again.
+    match arm_listener(sockets, port) {
+        Some(fresh) => {
+            socks[lsid] = Some(Sock {
+                handle: fresh,
+                ..listener
+            });
+        }
+        None => {
+            socks[lsid] = None;
+            return REP_ERR;
+        }
+    }
+    if !landed {
+        sockets.remove(handle);
+        return REP_ERR;
+    }
+    socks[target] = Some(Sock {
+        handle,
+        is_tcp: true,
+        va: target_va,
+        local_port: port,
+        listen_port: 0,
+    });
+    REP_OK
 }
 
 fn tcp_send(

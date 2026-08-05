@@ -93,6 +93,75 @@ authorization instead of a path lookup.
 Synthesis: seL4's endpoint-plus-dataport data plane, Fuchsia's socket-is-a-capability control plane.
 Neither is novel here; both are what this kernel's primitives already point at.
 
+### Prior art for the *inbound* half: who may claim a listening port
+
+Read for milestone 107, after the contract above was already built. The outbound question ("how does
+a process reach a stack") and the inbound one ("who decides this program may serve port 80") turn out
+to have almost disjoint prior art, which is itself worth knowing.
+
+**POSIX, Linux and the BSDs: ambient above 1024.** Any process binds any free port. Below 1024 needs
+`CAP_NET_BIND_SERVICE` on Linux, or historically root, and that is a **privilege rather than a
+designation**: it says "this process may bind low ports", never *which* ones. Linux later added
+`net.ipv4.ip_unprivileged_port_start` to move the line, which is the same knob in a different place.
+`SO_REUSEPORT` lets several sockets share one port, so even exclusivity is opt-out.
+
+**systemd socket activation, and `inetd` before it: the closest mainstream precedent, and it does not
+enforce.** The service manager binds the port and passes the listening descriptor to the service
+(`LISTEN_FDS`); the service never calls `bind`. That is exactly this milestone's shape: whoever
+spawns you decides what you may serve. **The difference is enforcement.** Nothing stops a systemd
+service binding port 9999 itself afterwards, because the pre-bound descriptor is a convenience rather
+than a boundary. Here `NO_LISTEN_GRANT` means the server *cannot*, because the grant is checked at
+the only place a port can be claimed. Read as: the mainstream pattern with the hole closed.
+
+**Capsicum (FreeBSD): the same instinct, taken further.** After `cap_enter()` a process cannot `bind`
+at all and must receive pre-bound sockets. Capsicum's answer to "which ports may this program serve"
+is "none, ever, only what it is handed". That is stricter than ours and it is the honest upper bound
+on this design.
+
+**seL4: silent, and the silence is the finding.** The kernel models no ports, no sockets and no TCP;
+networking is a userspace component (CAmkES/lwIP, later Rust). Whatever a net server implements *is*
+the policy. So there is no seL4 answer to diverge from here, and any claim that "seL4 does X" means
+"some unverified seL4 component does X", since seL4's proofs cover the kernel and a port policy is
+outside them. **The same is true of us**: nothing in `crates/socket_proto` is machine-checked, and
+this grant is ordinary code.
+
+**Plan 9: authority by namespace.** You write `announce 80` into `/net/tcp/clone`, and what
+constrains you is whether `/net/tcp` is in your namespace at all. Restriction is by what you can
+*see* rather than by an explicit grant, which is the counter-design already recorded above.
+
+### Where this differs from seL4, and what it costs
+
+The data plane here **is** seL4's, deliberately (see the synthesis above). The difference is one level
+up, in how a component gets its authority:
+
+**seL4 systems wire statically.** CAmkES describes the whole system at build time (components,
+endpoints, dataports, connections) and generates the glue; seL4 Microkit does the same with protection
+domains and channels in a system description. There is no "spawn a net server and hand it port 7778
+because somebody just asked". The topology is fixed before the machine boots.
+
+**This tree grants at spawn, at run time.** `wire_net_server(..., listen_grant(7778, 7778))` is a
+decision taken while the system runs, by whoever holds the authority to take it.
+
+**What that buys**: authority that moves during operation, which is the whole of milestone 47's
+caretakers and the shell's grant model. A static system cannot express a user handing a program a
+port range it was never declared with.
+
+**What it costs, and this is the honest half.** A static topology is checkable *as a whole*: a CAmkES
+spec can be read to see every channel that will ever exist. Our grant is a `u64` computed at a call
+site, so "which components may serve inbound ports?" has no artifact anyone can read. That is a real
+loss against seL4, not a tie, and it is the same weakness this tree keeps meeting in other forms: a
+fact that exists only at a call site (compare §76's roadmap status, and `script/names`' reason for
+existing).
+
+### One correction to the claim below
+
+The section on listeners says POSIX "conflates" a listener and a connection. That is imprecise and
+the sharper version is worth having: POSIX's `accept()` already returns a **new** descriptor, so the
+two are distinct objects there too. What POSIX does is make them the same *type*, with hidden state
+deciding which calls are valid on which. The claim that survives is narrower and stronger: here they
+are distinct **authorities**, because a listener carries no frame and therefore structurally cannot
+move bytes, where a POSIX listening descriptor is a `read`/`write`-shaped thing that merely fails.
+
 ## The socket contract (resolved: DECISIONS §25)
 
 The roadmap sketched "an endpoint plus shared frames per connection; no ambient network." The
@@ -246,10 +315,16 @@ transports, on aarch64 and riscv64:
   outlives QEMU, so the whole round trip, handshake through bidirectional data to teardown, is in the
   committed gate with zero host setup. Verified against QEMU 11.0.2.
 
-**Not proven by the gate:** inbound connections. A `LISTEN`/`accept` verb plus a QEMU `hostfwd` (host
-port -> guest) is the way to test the guest accepting a connection, and that is future work; the
-contract has no listen verb yet. The concurrency model above is the other limit: one synchronous
-exchange at a time, no overlapping connections.
+**Not proven by the gate, when this was written:** inbound connections. A `LISTEN`/`accept` verb
+plus a QEMU `hostfwd` (host port -> guest) is the way to test the guest accepting a connection, and
+that is future work; the contract has no listen verb yet. The concurrency model above is the other
+limit: one synchronous exchange at a time, no overlapping connections.
+
+**Milestone 107 built exactly that**, and the paragraph above is kept as the record of the gap
+rather than edited away. See "The inbound half" below for the verbs, the two design questions they
+raised, and what the gate proves now. The concurrency sentence still stands, with one qualification
+the accept work earned: a single listener now serves connections one after another without dropping
+the next, which is not the same as serving two at once.
 
 This binds milestone 27's `std::net` PAL, replacing its `Unsupported`. Scope discipline held: TCP,
 UDP, DHCP, no sockets-API mimicry beyond what the PAL needs.
@@ -354,3 +429,254 @@ loudly.
 
 The PCIe DNS variant is gone, not lost: UDP over the PCIe transport is now covered by the TFTP gate's
 PCIe twin, deterministically.
+
+## The inbound half: the guest can be connected to (milestone 107)
+
+Everything above is the guest as a client. The TCP gate connects out to a slirp `guestfwd` peer, the
+UDP gate sends a request, DHCP is a client protocol. cricker-os could reach the network and could not
+be reached, and the contract had no listen verb to fix that with.
+
+Milestone 107 adds `LISTEN` and `ACCEPT` (`crates/socket_proto`, opcodes 9 and 10, **names
+provisional**), the smoltcp side in `user/src/net_stack.rs`, and a gate in which a **host process
+connects into the guest** and gets an answer the guest composed. Two design questions came with the
+verbs, and neither was copied from POSIX.
+
+### A listener is not a connection, because they are not the same authority
+
+(Prior art and one correction to the wording below: see "Prior art for the *inbound* half" above.)
+
+POSIX makes a listening socket and an accepted one both file descriptors; the only difference is
+which calls happen to work on each. That conflation is why "give this program port 80" and "give this
+program this connection" are the same kind of grant there, and it is not a shape this tree should
+inherit.
+
+Here they are two objects:
+
+- A **listener** names a port. It is exclusive (two programs cannot both hold 80) and it carries **no
+  shared frame at all**, because no bytes ever cross on it.
+- A **connection** names a peer. It is the object `CONNECT` already produced, reached from the other
+  direction, and the shared frame is its real granted resource exactly as §25 says.
+
+The frame is what makes this more than a naming preference. §25 already decided that the per-socket
+shared frame is the granted thing and the socket id is bookkeeping; a listener has no frame, so under
+that decision it has nothing to grant, and the split falls out rather than being imposed. This is the
+tree's existing habit of splitting authority by what a holder can *do* rather than by what it names,
+which is `Frame` versus `DeviceFrame` and `WRITE` versus `GRANT` on one object.
+
+So `ACCEPT` carries the socket id to install the connection at (`CALL(req(OP_ACCEPT, lsid),
+target_sid)`), the client must have attached a frame there first, and **`target_sid == lsid` is
+refused**: the contract will not let a listener become a connection in place. The listener keeps its
+id, its port, and its authority.
+
+The client-side proof costs nothing and is worth having: `TEST_TCP_LISTEN_GRANT` in
+`user/src/socket_test_client.rs` attaches no frame anywhere and still listens, binds and collides.
+
+### Who binds the port: the spawn service grants a range, the client does not ask
+
+Outbound needs no permission beyond the `Stack` capability, and that is not laxity: an ephemeral
+local port is allocated by `net_stack`'s own rotating allocator and contended by nobody, so there is
+nothing to arbitrate. **Inbound is different in kind.** A listening port is a claim on an exclusive
+name in a shared namespace, which is the same property that makes a directory a capability here
+rather than a path (milestone 32's FS server) and the same reason `bind` (§50) is a grant.
+
+So the port is not the client's to pick. `wire_net_server` spawns `net_stack` with a **listen
+grant**, an inclusive range packed by `socket_proto::listen_grant` and carried in the spawn's `arg2`;
+`LISTEN` outside it replies `LISTEN_DENIED`. Every outbound test passes `NO_LISTEN_GRANT`, which is
+also the default, so **a net server that was never told which ports it may serve refuses all of
+them**: inbound authority is granted, never assumed. `LISTEN_DENIED` is deliberately a different
+reply from `LISTEN_IN_USE`, because "you were not granted this" and "somebody else has it" call for
+opposite responses from a client.
+
+**The honest limit, and it is the interesting one.** The grant's granularity is the `Stack` endpoint,
+not the client, because an endpoint carries no sender identity: `net_stack` cannot tell two callers
+apart, so two clients sharing an endpoint share its grant. In this tree each stack endpoint has
+exactly one client today, so nothing is wrong yet, but a real multi-client net server needs a
+**minted endpoint per client** and the grant then rides on that. That is the same deferred step §25
+already recorded for socket identity, arriving from a second direction, which is itself the finding:
+the thing that would make a socket an unforgeable object is the same thing that would make a port
+grant per-client. If that step is ever taken, it should be taken once, for both.
+
+### The concurrency model, and what "accept" had to mean to be worth shipping
+
+The roadmap block warned that adding `LISTEN` to a stack handling one exchange at a time produces a
+server that accepts a connection and then cannot accept the next one. smoltcp has no accept queue: a
+`tcp::Socket` in `Listen` state *becomes* the established connection, and there is no separate
+listener object to accept from again.
+
+The answer is that `ACCEPT` **re-arms**. It hands the established socket to the target id and
+immediately creates a fresh `tcp::Socket` parked in `Listen` on the same port under the listener's
+id, before returning. Two smoltcp sockets then share a local port, one established and one listening,
+which is safe because smoltcp's dispatch refuses to hand an ACK-bearing segment to a `Listen`-state
+socket and refuses a segment from the wrong peer to an established one.
+
+What that buys, honestly stated:
+
+- A listener serves connections **one after another**, indefinitely, and does not go deaf after one.
+- A handshake that arrives while the client is busy on an earlier connection **completes underneath
+  it**, because `net_stack` drives the poll loop inside every blocking operation, and is waiting when
+  the client next calls `ACCEPT`.
+- The backlog is **one connection deep**. A second peer arriving in the window between a handshake
+  completing and `ACCEPT` re-arming gets a RST rather than a wait.
+- Two connections cannot be served *simultaneously*, because the client blocks in one `CALL` at a
+  time. That is the phase-one limit recorded above, unchanged.
+
+For milestone 54's file service that is the difference between usable and not: a Mac mounting a share
+opens connections in sequence. For milestone 55's SMB3, which uses several at once, the remaining
+step is real concurrency (userspace threads, or a select-shaped wait), not another verb.
+
+### EXAMPLES: serving a port, end to end
+
+**Spawn side.** Whoever wires the pair decides the inbound authority, and the client never asks for
+it. `socket_proto::listen_grant(lo, hi)` packs an inclusive range into the one word `arg2` carries:
+
+```rust
+// A stack whose client may listen on 7778 and nothing else.
+let report = virtio_service::start_net_stack(
+    image,
+    NET_TEST_TCP_ACCEPT,                                    // which exchange the client drives
+    false,                                                  // mmio, not PCIe
+    socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+)?;
+
+// A stack that serves nobody inbound, which is every other net test in the tree.
+let report = virtio_service::start_net_stack(image, NET_TEST_TCP_ECHO, false,
+                                             socket_proto::NO_LISTEN_GRANT)?;
+```
+
+**Client side.** Bind the port, then accept into a *different* socket id that already has a frame.
+The listener never gets a frame, and `ACCEPT` refuses to install a connection at the listener's own
+id:
+
+```rust
+// 1. Bind. No frame is attached anywhere yet, because a listener carries no bytes.
+match call(STACK, req(OP_LISTEN, LISTEN_SID), 7778).0 {
+    LISTEN_GRANTED => {}
+    LISTEN_DENIED  => /* this stack was never granted 7778: ask the spawner, not again */,
+    LISTEN_IN_USE  => /* somebody already holds it: pick another port */,
+    _ => unreachable!(),
+}
+
+// 2. The connection id is what carries data, so it is what gets the frame.
+attach_frame(CONN_SID);
+
+// 3. Accept, use, close, repeat. The listener re-arms inside ACCEPT, so this loop keeps working.
+loop {
+    if call(STACK, req(OP_ACCEPT, LISTEN_SID), CONN_SID).0 != REP_OK { break; }
+    let (len, _) = call(STACK, req(OP_RECV, CONN_SID), 0);
+    // ... read the request out of the frame at FRAME_VA + OFF_PAYLOAD, write the answer back ...
+    let _ = call(STACK, req(OP_SEND, CONN_SID), reply_len);
+    let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);   // the listener is untouched by this
+}
+```
+
+`user/src/socket_test_client.rs::tcp_accept_inbound` is that sequence with the assertions in it.
+
+**Running the gate.** It is part of the ordinary suite and needs no host setup; xtask picks a free
+loopback port, hands it to the runner as `CRICKER_HOSTFWD_PORT`, and runs the prober thread itself:
+
+```console
+$ script/test                                  # both ISAs, inbound gate included
+$ cargo xtask test --arch aarch64              # just the aarch64 leg
+```
+
+A plain `cargo xtask run` sets no `CRICKER_HOSTFWD_PORT`, so nothing binds a port on your machine
+outside a test run.
+
+### The gate: a host process connects to the guest, twice
+
+`hostfwd` is `guestfwd`'s mirror, so this costs no host setup: QEMU listens on a loopback port and
+forwards connections to the guest's `10.0.2.15:7778`. The runners add it to the **mmio** NIC only,
+and only when `CRICKER_HOSTFWD_PORT` is set, which is the test flow and nothing else. That flag is
+the one thing here that **binds a port on the developer's machine**, so it stays off a plain
+`cargo xtask run` and off the benchmark boot, both of which share the runner.
+
+The port is chosen by xtask, from the OS (`free_loopback_port`), rather than fixed. A fixed port
+collides every time two lanes run the suite at once on one machine; an asked-for one collides only if
+it is taken between the ask and QEMU's bind, and that failure is loud (QEMU refuses to start).
+
+The host side is `InboundProber`, a thread beside the scanout referee and there for the same reason:
+**nothing inside the guest can open a connection to the guest from outside it.** It connects, sends
+`cricker-in!`, and requires `cricker-out!` back. The two strings differ on purpose: an echo would pass
+even if the guest were only reflecting our bytes, and the claim is that the guest *composed* an
+answer to a connection it did not make. It retries for the whole run, because nothing on the host
+knows when the accept test starts; a connection that lands while another net test holds the NIC finds
+no listener and is reset by smoltcp, which costs nothing.
+
+It requires **two** completed connections, and the second is the load-bearing one. A listener that
+accepts once and goes deaf would pass a one-connection gate, and is exactly what a file server cannot
+use.
+
+**A host prober must never abandon a connection because it is slow**, which the first green run
+taught by failing in the most instructive way available: the guest passed and the prober reported
+serving *zero*. A `connect` to a `hostfwd` port succeeds the moment QEMU accepts the host side; slirp
+only then starts the guest side, and nothing answers that SYN until the guest is inside an operation
+that polls smoltcp. Dropping the connection on a read timeout does **not** take back the payload
+already written: slirp keeps the guest-side connection, completes the handshake whenever the guest
+next polls, and delivers those bytes to a socket whose host end has gone. One retry every 100 ms for
+a whole boot builds a queue of those, and the guest cheerfully served both of its rounds from
+abandoned connections while the prober timed out on its own live one.
+
+The fix is a rule rather than a longer timeout: a **timeout is not a reason to give up** (keep
+reading the same connection until it answers, dies, or the run ends), while a **hard error is**, and
+a cheap one, because a RST means the guest had no listener and consumed nothing. The general shape is
+worth remembering for any host-side actor: an abandoned request may still be executed, so "I gave up
+waiting" and "it did not happen" are different claims.
+
+Both halves assert. The guest reports `OK` only if both rounds arrived with the right bytes and its
+answers were sent (`a_host_process_connects_to_the_guest_and_is_answered`, both ISAs); the prober
+fails the leg if what came back was not the guest's answer. The guest's half covers "somebody
+connected"; the host's covers "and got the right answer", which the guest cannot know.
+
+The **grant** half rides in the same exchange, ahead of the first connection: 8080 is refused as a
+matter of authority, 7778 binds, and asking for 7778 again on a second socket id reports
+`LISTEN_IN_USE`. No frame is attached until all of that has passed, which is the two-object claim
+proved by construction rather than by assertion.
+
+### The aarch64 test boot has run out of memory, and this is the receipt
+
+That grant half wanted a test of its own, and could not have one. A second `net_stack` spawn costs a
+**192-page untyped region that nothing ever reclaims** (`NET_SERVER_BUDGET_PAGES`), because the
+server blocks in its serve loop forever and no supervisor reaps it. With two extra net servers in the
+boot, a later test asking for 128 contiguous pages found **137 free frames and no run that long**;
+the failure surfaced far away, as `time_tests` reporting "no swish program in the initrd archive, or
+no memory to wire one", which reads like a packaging bug and is not one.
+
+**The fix taken here was to stop over-provisioning.** `NET_SERVER_BUDGET_PAGES` was 192 on the
+recorded reasoning that `net_stack` caps its heap at 128 pages "so 192 leaves headroom without being
+unbounded", which is a margin nobody measured. It is now **128**, with `net_stack`'s `HEAP_MAX`
+lowered to **96** so the budget still covers the heap's declared worst case with 32 pages for page
+tables and clients' frame mappings. Ten net servers per boot at 64 pages saved each is **640 frames**
+returned, which is six times what the new gate spends. The suite is what proves 96 is enough.
+
+Three facts worth carrying forward, because milestones 54, 55 and 66 will all want more net tests:
+
+- **RAM is pinned at 128 MiB and asserted.** `memory_map_came_from_the_device_tree` fails on any
+  other size, deliberately, because a wrong number there means a misparsed `reg`. So "give QEMU more
+  memory" is a decision with a test attached, not a knob.
+- **The margin before this milestone was about 315 frames**, 1.3 MiB, at the end of the aarch64
+  boot. One net test spends ~208 of them permanently (192 for the server, 16 for the client), so the
+  suite could afford exactly one more net test and not two.
+- **It is exhaustion, and it was measured, not inferred.** A temporary instrument in
+  `untyped::create` printed `free=107, largest_run>=96` at the failing allocation, which settles the
+  question a total-free number alone leaves open. Worth repeating if this bites again: the
+  instrument is four lines and it turned "somebody's test is flaky" into a number in one run.
+
+The fix is the same one `virtio::MAX_DEVICES` has now asked for eight times: reclaim what a dead or
+finished service held. It is one piece of work that would relieve both ceilings, and it is
+increasingly what stands between this suite and the next network milestone.
+
+### What is still not proven, and what is deliberately out of scope
+
+- **`std::net::TcpListener` is still `Unsupported`.** The block asked whether the PAL binding lands
+  here or in milestone 27's follow-on, and the answer taken was: not here. The contract had to settle
+  first, and it now has, so the PAL work is small and mechanical: `TcpListener::bind` is `OP_LISTEN`
+  on a client-allocated socket id, `accept` is `OP_ACCEPT` into another one the PAL allocates and
+  attaches a frame to, and the std client's stack must be spawned with a listen grant instead of
+  `NO_LISTEN_GRANT`. `start_net_std` passes no grant today for exactly that reason: granting ports to
+  a client that cannot spend them would be a lie in the capability graph.
+- **Only the mmio transport carries the inbound gate.** A PCIe twin would need a second host port,
+  and the transport is orthogonal to the accept path, which the outbound gates already prove over
+  both buses. This is the same reasoning that retired the PCIe DNS variant.
+- **No inbound UDP.** A UDP socket already binds a local port, but it binds an *ephemeral* one from
+  the allocator, so nothing can address it from outside. A server-side UDP bind is a third use of the
+  listen grant and is not built.

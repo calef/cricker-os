@@ -9,6 +9,13 @@
 //! validator confines it exactly as it does the disk. The page is small, so the MTU is small
 //! (`MTU`); a demonstrator with a single-page DMA region cannot post full 1514-byte buffers, and
 //! that is a recorded caveat, not a bug (see notes/net.md).
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `vnet`. Refused `vnet` (an
+//! abbreviation) and `virtio_net` (`crates/virtio` also drives net, so the device-class name would
+//! collide). Named for its role: the adapter that presents smoltcp's `phy::Device` so frames can
+//! cross the virtqueue, which is a different job from the driver underneath. This file is a
+//! single-consumer `#[path]` module rather than a `[[bin]]`, which is why rule 7's check leaves it
+//! alone.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -98,9 +105,12 @@ fn w8(off: u64, v: u8) {
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u8, v) }
 }
 fn w16(off: u64, v: u16) {
-    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
-    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
-    // bad slot or method; it gets an error back.
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
+    //
+    // Milestone 112 found this comment describing `invoke` and capability validation, pasted from
+    // `mr`/`mw` below onto a `write_volatile` into the DMA page. It said nothing about the operation
+    // it sat over, and both unsafe lints were satisfied throughout, because a comment exists and
+    // that is the entire property `undocumented_unsafe_blocks` checks.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u16, v) }
 }
 
@@ -254,7 +264,30 @@ impl VirtioNet {
         let slot = (self.rx_seen % QSIZE) as u64;
         let id = r32(RX_USED + 4 + slot * 8) as usize; // descriptor head = buffer index
         let total = r32(RX_USED + 4 + slot * 8 + 4) as u64; // bytes written incl the virtio header
-        let frame_len = total.saturating_sub(NET_HDR_LEN);
+
+        // **Both of those are 32-bit values the DEVICE wrote, and neither is ours to trust**
+        // (notes/shared-page-audit.md, finding 6). The IOMMU and `crates/dma_validator` confine
+        // where the device may *touch*; they say nothing about what it may *say*, and the used
+        // ring is inside this driver's own DMA page, which the device is entitled to write.
+        //
+        // An unchecked `id` walks `rx_buf(id) = 0x400 + id * 0x2C0` clean out of the one-page DMA
+        // region: `id = 4` is already past it, and `id` near 1.5 million lands on this process's
+        // heap, so a lying device makes us copy our own memory into a frame and hand it to
+        // smoltcp, which may put it on the wire. An unchecked `total` reads past the buffer and
+        // asks the allocator for up to 4 GiB. Neither needs a race; the device simply lies once.
+        //
+        // Fail closed: a completion naming a buffer we never posted is consumed and dropped, and
+        // one claiming more bytes than a buffer holds is truncated to the buffer. `entropy.rs`
+        // already clamps its length this way; this driver and `kbd.rs` were the two that did not.
+        //
+        // The dropped completion's buffer is NOT re-posted, because a bogus `id` does not say
+        // which buffer it was. That costs a receive buffer per lie, which is the right trade: a
+        // device that lies has already stopped being a network card.
+        if id >= RX_BUFS {
+            self.rx_seen = self.rx_seen.wrapping_add(1);
+            return None;
+        }
+        let frame_len = total.saturating_sub(NET_HDR_LEN).min(BUF - NET_HDR_LEN);
 
         let base = rx_buf(id) + NET_HDR_LEN;
         let mut v = vec![0u8; frame_len as usize];

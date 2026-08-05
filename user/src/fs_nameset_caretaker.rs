@@ -54,6 +54,12 @@
 //!
 //! The granted directory's name and rights ride in the three `START` argument words exactly as
 //! `fs_subtree_caretaker`'s do.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `swarden`. Refused `swarden` and the
+//! `warden` family. A reader should predict exactly these names, in one directory. It survived the
+//! collapse this milestone was first drafted around, because it and `fs_subtree_caretaker` serve
+//! the same verbs by opposite means: this one filters names on every name-taking verb, where its
+//! sibling performs no checks at all.
 
 #![no_std]
 #![no_main]
@@ -197,6 +203,13 @@ fn serve(dir: u64, set: &[u8]) -> ! {
                 reply(reply_slot, reply_err(ENOENT));
                 continue;
             }
+            // **Write the checked name back before forwarding** (milestone 43,
+            // notes/shared-page-audit.md finding 2). The check above is made against a copy on
+            // this stack; the FS server then does its OWN read of the same shared page and
+            // resolves whatever is there *then*. Two reads, one check. Re-staging makes the bytes
+            // the server resolves the bytes the filter approved, so the set is a namespace rather
+            // than a race. On the honest path it rewrites the identical bytes.
+            put_at(0, &buf[..n]);
         }
 
         let r: i64 = if code == fs::CLOSE {
@@ -232,6 +245,13 @@ fn serve(dir: u64, set: &[u8]) -> ! {
             let dst_handle = table.get(fs::dst_handle(w1));
             let src_ok = !filtered || nameset::contains(set, &src[..sn]);
             let dst_ok = dst_handle != Some(dir) || nameset::contains(set, &dst[..dn]);
+            // Re-stage both halves, for the reason above: the destination is the load-bearing one,
+            // because renaming a matched name onto a substituted one destroys a name this
+            // capability was never granted.
+            if src_ok && dst_ok {
+                put_at(0, &src[..sn]);
+                put_at(len, &dst[..dn]);
+            }
             match dst_handle {
                 _ if !(src_ok && dst_ok) => reply_err(ENOENT),
                 Some(d) => forward(

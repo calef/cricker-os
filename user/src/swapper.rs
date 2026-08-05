@@ -38,6 +38,9 @@
 //! built and endowed with everything *except* the device, and receives the registers on the far
 //! side of the revoke. What had to move is the endowment, not the build, which is why the down
 //! window is still four syscalls wide. Recorded rather than quietly reordered.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `swapd`.
+//! Refused `swapd` (the `-d` claim).
 
 #![no_std]
 #![no_main]

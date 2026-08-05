@@ -56,6 +56,15 @@
 //! operation sequence against nodes it holds valid by construction; it answers "is the ordering
 //! right", never "did a caller free a queued node". Neither tool covers that, and a reader should
 //! know it rather than infer safety from two green checkmarks.
+//!
+//! Name: recorded (this crate's own header, above). It does not argue the word against a
+//! candidate, and it does something better: it defines the term and grounds it in the prior art
+//! this project learns from, Linux's `list_head` and seL4's TCB queues. That is the "a standard
+//! term is already right" guard rail, made in the file rather than in the tenet, which is why a
+//! reader who meets `intrusive` here is not left guessing. What is missing is only the signature:
+//! the word is not on the tenet's protected list (`elf`, `pci`, `dtb`, `gpt`, `ipc`, `paging`,
+//! `glob`, `asid`, `socket_proto`) and Chris has never ruled on it. Introduced 2026-07-23 when the
+//! run queues and inboxes went intrusive.
 
 #![cfg_attr(not(test), no_std)]
 

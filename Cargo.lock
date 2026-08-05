@@ -366,6 +366,7 @@ dependencies = [
  "regions",
  "sink_proto",
  "slots",
+ "socket_proto",
  "spin",
  "steal_request",
  "tock-registers",

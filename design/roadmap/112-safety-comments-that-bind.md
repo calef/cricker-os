@@ -1,6 +1,6 @@
 # 112. The SAFETY comments that bind nobody
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by milestone 82's lane, which set out to burn down
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/112-safety-comments`. Raised 2026-08-04 by milestone 82's lane, which set out to burn down
 `unsafe fn` violations, found **zero** of them, and reported this instead. Recorded in
 `notes/unsafe-obligations.md`'s BUGS. It is a change to the kernel's soundness surface, which is why
 82 deliberately did not take it on a lint milestone.

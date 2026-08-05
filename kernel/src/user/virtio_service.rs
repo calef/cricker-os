@@ -143,9 +143,21 @@ pub fn start_net_pci(image: &'static [u8]) -> Option<EpId> {
 }
 
 /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
-/// transmit buffers, and caches, plus the program's own page tables. `net_stack` caps its heap at 128
-/// pages, so 192 leaves headroom without being unbounded.
-const NET_SERVER_BUDGET_PAGES: u64 = 192;
+/// transmit buffers, and caches, plus the page tables for the heap and for clients' shared frames.
+///
+/// **128, down from 192, because 192 was never measured and the boot could not afford it**
+/// (milestone 107). A `net_stack` is spawned ten times over the aarch64 suite and none of those
+/// regions is ever reclaimed (the server blocks in its serve loop forever, and nothing reaps it), so
+/// this number is multiplied by ten and held until reboot. Adding one more net test took the boot's
+/// free frames down to **107**, and the shell-timing test then asked for 128 contiguous pages and
+/// could not have them; the failure surfaced as "no swish program in the initrd archive", which
+/// reads like a packaging bug and is not one.
+///
+/// The invariant that makes 128 safe rather than lucky: `net_stack::HEAP_MAX` caps the heap at **96**
+/// pages, lowered in the same change, so the budget covers the heap's worst case with 32 pages left
+/// for page tables and clients' frame mappings. Both numbers are stated on both sides; if one moves,
+/// the other must. The suite is what proves 96 is enough for smoltcp's socket set and buffers.
+const NET_SERVER_BUDGET_PAGES: u64 = 128;
 /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
 /// the poll loop clear (`allocator_exerciser` needed three for `alloc` collections; smoltcp asks more).
 const NET_SERVER_STACK_PAGES: u64 = 8;
@@ -165,6 +177,7 @@ pub fn start_net_server(image: &'static [u8]) -> Option<EpId> {
             },
             dev.intid,
             None,
+            socket_proto::NO_LISTEN_GRANT, // a DHCP bring-up serves nobody inbound
         )
         .0,
     )
@@ -179,6 +192,7 @@ pub fn start_net_server_pci(image: &'static [u8]) -> Option<EpId> {
             crate::virtio::Transport::pci(&d),
             d.intid,
             Some(d.rid),
+            socket_proto::NO_LISTEN_GRANT,
         )
         .0,
     )
@@ -194,6 +208,7 @@ fn wire_net_server(
     transport: crate::virtio::Transport,
     intid: u32,
     rid: Option<u32>,
+    listen_grant: u64,
 ) -> (EpId, EpId) {
     use crate::cap::untyped_cap;
 
@@ -247,7 +262,7 @@ fn wire_net_server(
             Spawn {
                 arg0: 0, // net_stack is its own binary; no role selector
                 arg1: dma,
-                arg2: 0,
+                arg2: listen_grant, // which ports this stack's clients may listen on, if any
                 grants: &[
                     endpoint_cap(report, Rights::WRITE), // slot 0: report the acquired address
                     irq_cap(intid),                      // slot 1: WAIT / ACK the interrupt
@@ -275,7 +290,19 @@ const NET_CLIENT_BUDGET_PAGES: u64 = 16;
 /// `WRITE` (it requests). The client also gets its own untyped (to mint and delegate the shared
 /// frame) and a report endpoint. `cli_arg` selects which exchange the client drives (UDP DNS or
 /// TCP echo). Returns the client's report endpoint, or `None` if no NIC is attached.
-pub fn start_net_stack(image: &'static [u8], cli_arg: u64, pci: bool) -> Option<EpId> {
+///
+/// `listen_grant` is the **inbound authority** this stack hands its client (milestone 107,
+/// `socket_proto::listen_grant`): the port range a `LISTEN` may bind, and
+/// [`socket_proto::NO_LISTEN_GRANT`] for every outbound exchange, which is most of them. The grant
+/// is decided *here*, by whoever spawns the pair, and not by the client asking: that is the answer
+/// to "who binds the port", and it is the same shape as handing a program a directory capability
+/// rather than letting it name a path.
+pub fn start_net_stack(
+    image: &'static [u8],
+    cli_arg: u64,
+    pci: bool,
+    listen_grant: u64,
+) -> Option<EpId> {
     use crate::cap::untyped_cap;
 
     let (transport, intid, rid) = if pci {
@@ -292,7 +319,7 @@ pub fn start_net_stack(image: &'static [u8], cli_arg: u64, pci: bool) -> Option<
         )
     };
 
-    let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid);
+    let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid, listen_grant);
 
     // The client: WRITE on the shared stack endpoint, its own untyped, a report endpoint. Two
     // extra stack pages cover its DNS-query building and IPC; it links no heap.
@@ -369,7 +396,16 @@ pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
     };
-    let (net_stack_report, stack) = wire_net_server(net_stack_image, transport, dev.intid, None);
+    // No listen grant: `std::net`'s PAL binds `TcpStream` and `UdpSocket` today, not `TcpListener`
+    // (milestone 107's scope note), so a stack that granted ports would be granting authority
+    // nothing on the other side can spend.
+    let (net_stack_report, stack) = wire_net_server(
+        net_stack_image,
+        transport,
+        dev.intid,
+        None,
+        socket_proto::NO_LISTEN_GRANT,
+    );
 
     let report = crate::sched::create_endpoint();
     let heap = crate::untyped::create(STD_NET_HEAP_PAGES).expect("no untyped for the std net heap");

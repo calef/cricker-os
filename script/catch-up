@@ -34,6 +34,11 @@
 #
 # Read-only and offline: it runs `git show`, `git log`, `git diff` and `script/roadmap`, and writes
 # nothing.
+#
+# Name: ratified 2026-08-04 (Chris). Refused `brief`, which collides with briefing a developer, a
+# term of art this tree minted the same afternoon; and `since` and `repo-updates-since`, for which
+# only the refusal is on record and not the reason. A derived view rather than a maintained log, in
+# the family of `script/roadmap`, `script/decisions` and `script/drift`.
 
 set -e
 

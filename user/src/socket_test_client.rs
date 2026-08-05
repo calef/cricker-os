@@ -18,6 +18,10 @@
 //!     response still fails, because that would be our bug. See notes/net.md.
 //!   - `TEST_TCP_ECHO`: a full TCP round trip to slirp's guestfwd echo peer (10.0.2.9:7777 -> a
 //!     `/bin/cat`): connect (handshake), send, receive the echo, close (teardown).
+//!   - `TEST_TCP_ACCEPT`: **the inbound half** (milestone 107), and the only exchange here that is
+//!     not the guest as a client. A port outside the stack's listen grant is refused as a matter of
+//!     authority, the granted one binds and is exclusive, and then a *host* process connects to it
+//!     through QEMU's `hostfwd` twice, which proves the listener re-arms.
 //!
 //! On success it reports `OK`; any failure reports a stage code, so the kernel test fails loudly
 //! with a hint rather than hanging.
@@ -30,6 +34,10 @@
 //! - slot 0: the report endpoint (WRITE)
 //! - slot 1: the `Stack` endpoint (WRITE)
 //! - slot 2: an untyped budget (to mint and map the shared frame)
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `netcli`. Refused `netcli` (squished)
+//! and `socket_client`, which belongs to the real clients milestone 54 will need. This file is a
+//! single-consumer `#[path]` module rather than a `[[bin]]`.
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use socket_proto::*;
@@ -44,6 +52,7 @@ pub const TEST_UDP_DNS: u64 = 1;
 pub const TEST_TCP_ECHO: u64 = 2;
 pub const TEST_TCP_REOPEN: u64 = 3;
 pub const TEST_UDP_TFTP: u64 = 4;
+pub const TEST_TCP_ACCEPT: u64 = 5;
 const OK: u64 = 1;
 /// Reported when an exchange could not be completed **for an environmental reason** rather than a
 /// defect in our stack: today only the real-DNS check, whose upstream is the host's resolver. The
@@ -64,6 +73,24 @@ const ECHO_IP: [u8; 4] = [10, 0, 2, 9];
 const ECHO_PORT: u16 = 7777;
 
 const DNS_TXID: u16 = 0x1234;
+
+/// **The inbound half** (milestone 107). The guest listens on `LISTEN_PORT`; the host reaches it
+/// because the runners add a QEMU `hostfwd` from a host port to this one, the mirror of the
+/// `guestfwd` the outbound gate uses. `DENIED_PORT` is deliberately *outside* the listen grant the
+/// spawn service hands this stack, so asking for it proves the grant refuses rather than that
+/// nothing happened to bind.
+const LISTEN_PORT: u64 = 7778;
+const DENIED_PORT: u64 = 8080;
+/// The listener's socket id and the accepted connection's. Two ids, because they are two objects:
+/// the listener never carries a byte and never gets a frame, and the connection is where the frame
+/// is. Keeping them apart is the contract, not a convenience.
+const LISTEN_SID: u64 = 0;
+const CONN_SID: u64 = 1;
+/// What the host sends in and what the guest answers with. Different strings on purpose: an echo
+/// would pass even if the guest were somehow reflecting the host's own bytes, and the point of this
+/// gate is that the guest *composed* an answer to a connection it did not make.
+const IN_MSG: &[u8] = b"cricker-in!";
+const OUT_MSG: &[u8] = b"cricker-out!";
 
 /// The fixture the runners put in slirp's TFTP directory, and its exact contents. Both sides are
 /// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner-*.sh).
@@ -350,6 +377,92 @@ fn tcp_reopen() -> ! {
     done(OK);
 }
 
+/// **The inbound gate: a granted port, and the guest connected TO through it, twice** (milestone
+/// 107).
+///
+/// Everything else in this file is the guest as a client. Here it is the server: listen on a port it
+/// was granted, accept a connection a *host* process opened through QEMU's `hostfwd`, read what
+/// arrived, answer it, and then do the whole thing again on the same listener. The second round is
+/// the load-bearing one: a listener that can accept exactly one connection is a listener a file
+/// server cannot use, and nothing but a second accept proves the re-arm.
+///
+/// **The grant checks ride in the same exchange rather than in a test of their own, and that is the
+/// machine's call, not a preference.** A second net server costs a 192-page untyped region that is
+/// never reclaimed (nothing unregisters a transport or reaps `net_stack`), and the aarch64 test boot
+/// has no room for one: with two, a later test asking for 128 contiguous pages found 137 free frames
+/// and no run that long. So one spawn proves both halves, with distinct stage codes standing in for
+/// the separate test names.
+///
+/// The frame is attached to the *connection* id and never to the listener, and it is attached only
+/// after the listener is bound. That ordering is the two-object split made visible: the whole grant
+/// half runs with no shared frame anywhere, because a listener carries no bytes.
+fn tcp_accept_inbound() -> ! {
+    // A port outside the grant is refused as a matter of AUTHORITY, which is a different answer from
+    // "somebody has it" and calls for a different response from a client.
+    match call(STACK, req(OP_LISTEN, LISTEN_SID), DENIED_PORT).0 {
+        LISTEN_DENIED => {}
+        LISTEN_GRANTED => done(0xE050), // bound a port nothing granted: the whole point, lost
+        LISTEN_IN_USE => done(0xE051),
+        _ => done(0xE052),
+    }
+
+    // The granted one binds, and this listener is the one the rest of the exchange accepts on.
+    match call(STACK, req(OP_LISTEN, LISTEN_SID), LISTEN_PORT).0 {
+        LISTEN_GRANTED => {}
+        LISTEN_DENIED => done(0xE053), // the spawn service granted the wrong range
+        LISTEN_IN_USE => done(0xE054),
+        _ => done(0xE055),
+    }
+
+    // And it is exclusive, which is the property that makes a port grantable rather than merely a
+    // number. Asking again on a second socket id must collide.
+    match call(STACK, req(OP_LISTEN, CONN_SID), LISTEN_PORT).0 {
+        LISTEN_IN_USE => {}
+        LISTEN_GRANTED => done(0xE056), // two listeners on one port
+        _ => done(0xE057),
+    }
+
+    // Only now a frame, and only for the connection.
+    attach_frame(CONN_SID);
+
+    // Two connections in a row, each with its own stage codes so a failure names which one.
+    serve_one_inbound(0xE060);
+    serve_one_inbound(0xE070);
+
+    let _ = call(STACK, req(OP_CLOSE, LISTEN_SID), 0);
+    done(OK);
+}
+
+/// Accept one inbound connection, check what the host sent, answer it, and close. Reports through
+/// `done` on any failure, so `base` distinguishes the first connection from the second.
+fn serve_one_inbound(base: u64) {
+    if call(STACK, req(OP_ACCEPT, LISTEN_SID), CONN_SID).0 != REP_OK {
+        done(base); // nobody connected within the server's bounded wait
+    }
+
+    let (rlen, _) = call(STACK, req(OP_RECV, CONN_SID), 0);
+    if rlen != IN_MSG.len() as u64 {
+        done(base + 1);
+    }
+    for (i, &b) in IN_MSG.iter().enumerate() {
+        if r8(FRAME_VA + OFF_PAYLOAD + i as u64) != b {
+            done(base + 2); // something connected and said something else
+        }
+    }
+
+    for (i, &b) in OUT_MSG.iter().enumerate() {
+        w8(FRAME_VA + OFF_PAYLOAD + i as u64, b);
+    }
+    let (sent, _) = call(STACK, req(OP_SEND, CONN_SID), OUT_MSG.len() as u64);
+    if sent != OUT_MSG.len() as u64 {
+        done(base + 3);
+    }
+
+    if call(STACK, req(OP_CLOSE, CONN_SID), 0).0 != REP_OK {
+        done(base + 4);
+    }
+}
+
 /// Run the selected client exchange. Entered from `net_stack`'s `_start` when the entry role is nonzero.
 pub fn run(test: u64) -> ! {
     match test {
@@ -357,6 +470,7 @@ pub fn run(test: u64) -> ! {
         TEST_UDP_TFTP => udp_tftp(),
         TEST_TCP_ECHO => tcp_echo(),
         TEST_TCP_REOPEN => tcp_reopen(),
+        TEST_TCP_ACCEPT => tcp_accept_inbound(),
         _ => done(0xE0FF),
     }
 }

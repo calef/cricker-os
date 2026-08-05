@@ -12,6 +12,10 @@
 //! `iters` always yields the same CRC (a test pins it), which is the correctness check; the *score*
 //! is `iters` divided by the wall-clock the caller measures around it. The dataset is a few kilobytes
 //! (CoreMark's small-memory profile), so it stays cache-resident and fits a small userspace stack.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63) as a proper noun: EEMBC's industry benchmark.
+//! Recorded there as explicitly not a counter-example to the agent-noun rule that made `elbench`
+//! into `os_primitives_benchmarker`.
 
 #![no_std]
 

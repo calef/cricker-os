@@ -17,6 +17,9 @@
 #
 # Idempotent: if the prefix already holds the wanted version (a warm cache), it does nothing, which is
 # what makes it cheap to call unconditionally.
+#
+# Name: unrecorded. Introduced 2026-07-30. It follows `ci-build`'s hyphenated shape, which milestone
+# 63 later made a rule, but nothing records the choice.
 
 set -e
 cd "$(dirname "$0")/.."

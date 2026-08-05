@@ -49,6 +49,9 @@
 //! substitutes a pseudo-random stand-in. If the device produces nothing at all across
 //! [`REFILL_TRIES`] attempts, the reply is [`entropy_proto::NO_ENTROPY`] and the caller finds out,
 //! because a caller who cannot be given randomness must not be told otherwise (DECISIONS §42).
+//!
+//! Name: unrecorded. Introduced 2026-07-30 with milestone 56, on the resource-name pattern `clock`
+//! also follows.
 
 #![no_std]
 #![no_main]

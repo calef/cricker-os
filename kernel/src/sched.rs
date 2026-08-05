@@ -929,7 +929,14 @@ pub fn schedule() {
         // by everybody, and a thread that resumes at EL0 in the previous thread's low half is
         // running a stranger's code. (No-ops, including no TLB flush, when the root is already
         // right, which is every switch between two kernel threads.)
-        crate::arch::mmu::switch_user_root(next_root);
+        //
+        // SAFETY: `next_root` is `reserved_root()`, or the composed value of the `AddressSpace`
+        // owned by thread `next`, which the block above popped off this core's run queue and marked
+        // `Running` with `on_cpu` set before releasing `SCHED`. No other core can pick it up in that
+        // state and nothing reaps a thread that is on a CPU, so the root is still live here even
+        // though the lock is not held. The lock is released on purpose (rule 1, above), which is
+        // exactly why this obligation cannot be a borrow and has to be a sentence.
+        unsafe { crate::arch::mmu::switch_user_root(next_root) };
 
         // SAFETY: both pointers name live `Context`s owned by boxed `Thread`s in the map, and
         // interrupts are masked so nothing can reorder underneath us.
@@ -2052,7 +2059,10 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
             .space = Some(space);
     }
 
-    crate::arch::mmu::switch_user_root(ttbr);
+    // SAFETY: `ttbr` is the composed value of the `AddressSpace` the block above just moved into
+    // the *current* thread's slot. The current thread is the one executing this line, so it is on a
+    // CPU and cannot be reaped, and the space it now owns is live until that thread's `Drop` runs.
+    unsafe { crate::arch::mmu::switch_user_root(ttbr) };
 }
 
 /// The top of the current thread's kernel stack: **where its `TrapFrame` belongs.**
@@ -2216,7 +2226,11 @@ pub fn scan_live_thread_stacks() {
     };
     for t in sched.threads.iter_mut() {
         if let Some(s) = t.stack.as_ref() {
-            crate::stack::note_thread_stack_use(crate::stack::high_water(s.bottom(), s.top()));
+            // SAFETY: a `KernelStack` this thread still owns, so its pages are mapped until its
+            // `Drop` runs, and `KernelStack::new` painted the whole span. `SCHED` is held, so the
+            // thread cannot be reaped out from under the scan.
+            let used = unsafe { crate::stack::high_water(s.bottom(), s.top()) };
+            crate::stack::note_thread_stack_use(used);
         }
     }
 }

@@ -63,6 +63,11 @@
 //!   one and notes/gpt.md says why. That is milestone 57's remaining half and it is a decision
 //!   rather than a task; see design/roadmap/57-partitioning-and-xattrs.md.
 //! - **No hot plug.** The roster is written once at wiring time and never again.
+//!
+//! Name: ratified 2026-08-03 (Chris, milestone 57). The lane shipped it provisionally and Chris
+//! approved it by name. A surveyor maps land they do not own, which is this program's endowment
+//! exactly: a read-only mapping of the roster page that says what devices exist, plus a
+//! block-service endpoint for one of them.
 
 #![no_std]
 #![no_main]
