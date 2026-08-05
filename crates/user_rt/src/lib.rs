@@ -316,7 +316,15 @@ pub fn reply(slot: u64, r0: u64, r1: u64) -> i64 {
 pub fn map_frame(frame_slot: u64, va: u64, writable: bool, untyped_slot: u64) -> bool {
     // SAFETY: `svc`/`ecall`. The kernel validates the frame capability, the rights, the address and
     // the untyped before it touches a page table.
-    unsafe { invoke(frame_slot, abi::frame::MAP, va, writable as u64, untyped_slot) == 0 }
+    unsafe {
+        invoke(
+            frame_slot,
+            abi::frame::MAP,
+            va,
+            writable as u64,
+            untyped_slot,
+        ) == 0
+    }
 }
 
 /// Give up the CPU (`SYS_YIELD`). Returns when the scheduler runs this thread again; if another

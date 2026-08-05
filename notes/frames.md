@@ -89,10 +89,125 @@ zero, not the sentinel. Reading the sentinel can only mean it mapped the produce
 it can fail: stub the `WRITE` check in `Frame::MAP` and the read-only view becomes writable, so the
 confinement assertion trips.
 
-## What this unlocks, and what is left
+## Three ways a page gets into an address space, and one of them is invisible
 
-The static shared-buffer wiring in the console and virtio paths (a page the kernel maps into both
-sides at spawn) is now a special case of something general: a `Frame` one side holds and delegates.
-Rewiring those drivers to use frame capabilities instead of spawn-time mappings is the follow-on
-refactor, not done here. This note builds the object and proves it; migrating the existing users to
-it is separate work.
+This is the finding milestone 108 turned up, and it is the reason that milestone existed. There
+were, and are, three routes:
+
+| Route | Who calls it | In the mapping database? |
+|---|---|---|
+| `Frame::MAP` | a process, for a frame it holds | **yes** |
+| `Aspace::MAP_INTO` | a userspace loader, into a space it is building | **yes** (`user_aspace_map`) |
+| `Spawn::maps` | the kernel, before the process's first instruction | **no** |
+
+The first two go through `revoke::record_mapping`, and an unrecordable mapping is refused rather
+than made, at the mapper's own expense. The third is `AddressSpace::map_physical`, which maps and
+returns; there is nothing to record it against, because the process does not exist yet.
+
+So a page delivered by `Spawn::maps` **cannot be revoked**. `Frame::REVOKE` deletes every capability
+naming the page (there is none) and unmaps it from every space that recorded it (this one did not),
+and the holder's mapping survives untouched. That is not a bug in `revoke`; it is the honest
+consequence of a mapping that no capability ever stood behind. **A spawn-time mapping is permanent by
+construction.**
+
+It also cannot be narrowed by anyone downstream, because the kernel picked the permissions at spawn
+and there is no object to attenuate, and it cannot be handed on, because there is nothing to hand.
+
+## The migration (milestone 108)
+
+The disk and display paths now hold their pages as `Frame` capabilities and map them themselves.
+Each migrated program gained two things in its cspace: the frames, and an **untyped** to draw the
+page tables from, because `Frame::MAP` retypes intermediate tables out of a region the caller names
+and the kernel allocates nothing.
+
+Migrated: `disk_surveyor` (the block-shared page and the roster), the roster probe, `disk_partitioner`,
+`mkfs`, the virtio-gpu driver (its whole DMA region), `painter` (the surface), and `display_terminal`
+in its whole-screen mode (the surface and the application's output page).
+
+**The stack is the floor.** It is still a `Spawn::maps` entry and has to be: a program cannot map its
+own stack, because it needs a stack before it can make the syscall that would map one. Everything
+else a process touches can be a capability; that one page cannot.
+
+### EXAMPLES
+
+The wiring side, from `kernel/src/user/disk_service.rs`. The roster goes in with `READ` and nothing
+else, and the program is handed a budget to reach it with:
+
+```rust
+crate::sched::grant_at(SURVEY_SLOT_BUDGET, untyped_cap(budget))?;
+crate::sched::grant_at(SURVEY_SLOT_ROSTER, frame_cap(roster_phys, Rights::READ))?;
+run(surveyor_image, Spawn { arg0: ROLE_SURVEY, grants: &[], maps: &stack, .. })
+```
+
+The program side, from `user/src/disk_surveyor.rs`. It picks its own address, because it owns the
+page now and the kernel has no opinion:
+
+```rust
+if !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, /* writable */ false, BUDGET) {
+    user_rt::exit()
+}
+```
+
+And the negative control, which gained a rung it could not have had before. Under the old wiring the
+only boundary was the page permission, so the only thing the probe could do wrong was write. Now it
+cannot even obtain a writable window:
+
+```rust
+// Rung one: refused by the rights on the capability, before a page-table entry is written.
+let rw_refused = !user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, true, BUDGET);
+// Rung two: the read-only mapping we are entitled to, and a write through it. This faults.
+user_rt::map_frame(ROSTER_FRAME, ROSTER_VA, false, BUDGET);
+unsafe { core::ptr::write_volatile(ROSTER_VA as *mut u64, 0) };
+```
+
+### What the migration proves that the object alone did not
+
+`disk_tests::the_roster_can_be_revoked_out_from_under_its_holder`. A program maps the roster frame,
+reads its first word and reports it, and parks. The kernel checks that word against its own read of
+the same physical page through the direct map (so the mapping was real, and was of *that* page),
+revokes the frame, and lets the program go. The second read faults, at the address it faults at.
+
+**Verified it can fail**, which is the point of writing it: put the roster back as a `Spawn::maps`
+entry and the test trips its own assertion, "a program read a frame that had been revoked out from
+under it, at 0x50010000, and was NOT stopped: the mapping outlived the capability". That was the
+state of the world for every driver in the tree the day before.
+
+## BUGS
+
+- **A `Frame` names one page, and a DMA region is a run of them.** The virtio-gpu driver's region is
+  nine contiguous pages, so it holds **nine capabilities** and issues nine `MAP` calls for memory
+  that is adjacent in physics, adjacent in its address space, and covered as a single range by the
+  IOMMU domain the kernel programmed for it. That is slots 5 through 13 of a sixteen-slot cspace
+  (`cap::CSPACE_SLOTS`), one of which is reserved for the fault endpoint: it fits with **one slot
+  spare**, and a wider scanout would not fit at all. `display_service::DRIVER_SLOT_DMA` carries a
+  `const` assertion so that someone who widens the surface fails the build rather than the boot.
+
+  The milestone's scope note called this out in advance ("if the migration finds the object short of
+  something a real driver needs, that is a finding worth recording, and it is a design fork rather
+  than a quiet addition"), so it is recorded and not fixed. **The fork is whether a `Frame` should be
+  able to name a run of pages** (seL4 has no answer to copy here: it retypes N frames and you hold N
+  capabilities, and its cspaces are radix trees rather than sixteen slots, so the pressure lands
+  somewhere else). Growing `CSPACE_SLOTS` is a one-number change paid in TCB size, and is the other
+  half of the same question.
+
+- **Not everything migrated.** The console is deliberately last (a bootstrap that needs a capability
+  service to print cannot report its own failure, so it is its own decision with its own argument),
+  and the compositor path is not in this milestone at all: `display_terminal` therefore maps its own
+  frames in `MODE_DISPLAY` and still receives spawn-time mappings in `MODE_WINDOW`. `date` keeps its
+  `Spawn::maps` clock page in the kernel's test wiring, and it is the one place in the tree where
+  both mechanisms appear in a single spawn literal (a `frame_cap` whose only job is to be probed for
+  presence, beside a `Mapping` that does the actual work). Migrating it means touching the shell's
+  spawn path and §67's grant manifest, which is a bigger change than the wart. Note that the *shell*
+  spawns `date` through `Aspace::MAP_INTO`, which is recorded, so the revocability gap there is in
+  the test wiring rather than in the real path.
+
+- **Each migrated program costs one more untyped region.** `untyped::create` takes a contiguous run
+  from the frame allocator and holds it for the process's life, and the region table has a finite
+  number of slots. Eight pages apiece is negligible next to what these programs already reserve
+  (`mkfs` takes 384), and a small contiguous request is easy where milestone 107's 128-page one was
+  not, but it is a reservation added to a machine whose frame pool that milestone found at the edge.
+
+- **The mapping records cost the process, not the kernel.** Every `Frame::MAP` writes a record into a
+  log page retyped from the *address space's* own backing region (not the untyped named in the call,
+  which pays only for page tables). That is 255 records per page and `AS_OVERHEAD` is sixteen pages
+  of slack, so nothing here comes close; a program that maps thousands of frames would notice.

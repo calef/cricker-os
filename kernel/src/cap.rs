@@ -223,9 +223,6 @@ pub fn reply_cap(tid: crate::thread::Tid) -> Cap {
     }
 }
 
-/// A capability naming a physical page. `READ` lets the holder map it read-only, `WRITE` lets it
-/// map it read/write, `GRANT` lets it pass the page on. A freshly retyped frame gets all three;
-/// delegation narrows them (a read-only, non-lendable view is `READ` alone).
 /// A capability naming a device's MMIO page (milestone 19d.2). `WRITE` lets the holder map it
 /// (device access is read/write by nature); minted by the kernel for a known device. Same
 /// disposition as [`Object::DeviceFrame`]: riscv mints one only in the `shell` boot mode.
@@ -237,6 +234,17 @@ pub fn device_frame_cap(phys: u64, rights: Rights) -> Cap {
     }
 }
 
+/// A capability naming a physical page. `READ` lets the holder map it read-only, `WRITE` lets it
+/// map it read/write, `GRANT` lets it pass the page on. A freshly retyped frame gets all three;
+/// delegation narrows them (a read-only, non-lendable view is `READ` alone).
+///
+/// (This doc comment was attached to [`device_frame_cap`] until milestone 108, so `frame_cap` had
+/// none and the device one appeared to have two. A correction, not a rewrite.)
+///
+/// The kernel mints one directly when it owns a page a program should hold: a driver's DMA region,
+/// a shared buffer, the clock page. Since milestone 108 that is how the disk and display paths hand
+/// a driver its memory, in place of a `Spawn::maps` entry that no capability stood behind. See
+/// notes/frames.md.
 pub fn frame_cap(phys: u64, rights: Rights) -> Cap {
     Cap {
         object: Object::Frame(phys),

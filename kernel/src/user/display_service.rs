@@ -12,7 +12,7 @@
 //! it also holds. **This is where the object shows its edge**, and the milestone's scope note asked
 //! for exactly this finding: a `Frame` names *one page*, so the driver's nine-page DMA region is
 //! nine capabilities in nine consecutive slots of a sixteen-slot cspace. It fits, with one slot
-//! spare, and it would not fit a larger surface. The `const` assertion on [`DRIVER_SLOT_DMA`] is
+//! spare, and it would not fit a larger surface. The `const` assertion on `DRIVER_SLOT_DMA` is
 //! there so that a scanout somebody widens fails the build rather than the boot.
 //!
 //! What stays wired at spawn is nothing at all here: these programs have no extra stack pages, so
@@ -48,7 +48,7 @@ const DRIVER_SLOT_BUDGET: u64 = 4;
 /// a larger surface would not fit at all. See notes/frames.md's BUGS.
 const DRIVER_SLOT_DMA: u64 = 5;
 const _: () = assert!(
-    DRIVER_SLOT_DMA + DMA_FRAMES <= crate::cap::CSPACE_SLOTS as u64 - 1,
+    DRIVER_SLOT_DMA + DMA_FRAMES <= abi::fault::FAULT_EP_SLOT,
     "the display driver's DMA region no longer fits its cspace beside the fault slot: a Frame \
      names one page and this region is a run of them",
 );
@@ -96,8 +96,11 @@ pub fn start(driver_image: &'static [u8], client_image: &'static [u8]) -> Option
     let client_report = crate::sched::create_endpoint();
     let budget = crate::untyped::create(MAP_BUDGET_PAGES).expect("no map budget for the client");
     crate::sched::spawn(move || {
-        crate::sched::grant_at(CLIENT_SLOT_REPORT, endpoint_cap(client_report, Rights::WRITE))
-            .expect("client slot 0 was occupied");
+        crate::sched::grant_at(
+            CLIENT_SLOT_REPORT,
+            endpoint_cap(client_report, Rights::WRITE),
+        )
+        .expect("client slot 0 was occupied");
         crate::sched::grant_at(CLIENT_SLOT_DISPLAY, endpoint_cap(display_ep, Rights::WRITE))
             .expect("client slot 1 was occupied");
         crate::sched::grant_at(CLIENT_SLOT_BUDGET, untyped_cap(budget))
@@ -194,10 +197,14 @@ fn wire_driver(driver_image: &'static [u8], role: u64, arg2: u64) -> Option<(EpI
     let budget = crate::untyped::create(MAP_BUDGET_PAGES).expect("no map budget for the driver");
     let intid = d.intid;
     crate::sched::spawn(move || {
-        crate::sched::grant_at(DRIVER_SLOT_REPORT, endpoint_cap(driver_report, Rights::WRITE))
-            .expect("driver slot 0 was occupied");
+        crate::sched::grant_at(
+            DRIVER_SLOT_REPORT,
+            endpoint_cap(driver_report, Rights::WRITE),
+        )
+        .expect("driver slot 0 was occupied");
         // The completion IRQ.
-        crate::sched::grant_at(DRIVER_SLOT_IRQ, irq_cap(intid)).expect("driver slot 1 was occupied");
+        crate::sched::grant_at(DRIVER_SLOT_IRQ, irq_cap(intid))
+            .expect("driver slot 1 was occupied");
         // The confined transport.
         crate::sched::grant_at(DRIVER_SLOT_VIRTIO, virtio_cap(vid))
             .expect("driver slot 2 was occupied");
@@ -210,9 +217,9 @@ fn wire_driver(driver_image: &'static [u8], role: u64, arg2: u64) -> Option<(EpI
         run(
             driver_image,
             Spawn {
-                arg0: role, // 0 = the display driver; 1 = the escape attempt
-                arg1: dma,  // the DMA region's PHYSICAL base: descriptors speak physical
-                arg2,       // the escape role's victim frame; unused (0) by the display driver
+                arg0: role,  // 0 = the display driver; 1 = the escape attempt
+                arg1: dma,   // the DMA region's PHYSICAL base: descriptors speak physical
+                arg2,        // the escape role's victim frame; unused (0) by the display driver
                 grants: &[], // every one of them is placed above, at its own slot
                 maps: &[],
             },
