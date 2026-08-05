@@ -718,6 +718,36 @@ a process blocked in a rendezvous send, so the prompt is gone until the machine 
 door `FileSpec::Required` has been kept alive through. Milestone 40's `doc` is the first declarer
 and needs one field set.
 
+### Verified against the viewer, on a branch that is not merged
+
+This lane's gates run without a streaming filter, because there is not one on `main`. So it was
+also run against milestone 40's branch merged in, with `doc`'s manifest declaring
+`writes_while_reading: true` and nothing else changed. **Both ISAs, at a real prompt, through the
+real init.** The `motd` file on the fixture image is 70 bytes of markdown:
+
+```text
+$ wc motd
+  1 12 70
+$ doc motd | wc
+  1 12 72
+$ doc motd
+  doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+  reader that is not this shell, as in '| wc'
+$ doc motd > page.txt
+  doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+  reader that is not this shell, as in '| wc'
+```
+
+The second line is the whole claim, and the two numbers are the assertion rather than the fact that
+it ran: the same 70 bytes went in and 72 came out, because the renderer wrapped a paragraph and put
+a newline where the source had none. `0 0 0` is what that line answered before, and a viewer that
+rendered nothing would still say it. The first line is the control: `wc` is the barrier, so the
+same operand at the head of the same pipeline worked all along.
+
+The third and fourth are the wall, said out loud instead of hung on. A person who wants a page on
+the screen still cannot have one; what they get is a sentence naming what to type instead, which is
+worse than a pager and far better than a prompt that has to be rebooted.
+
 ### The two ways out, and both are somebody's decision
 
 Neither is taken here. Both are recorded because the refusal above is a wall and not an answer, and
