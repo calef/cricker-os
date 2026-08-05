@@ -100,6 +100,45 @@ Stated so the next person can check rather than re-argue:
 - **The shared 51% shrinking.** If the 20 crates both sides use ever became a small fraction, a real
   seam would exist where today there is none. That is the structural signal, and a better one than
   any line count.
+
+### The trend this architecture predicts, and the number that would show it
+
+Chris, 2026-08-05: a microkernel should see the kernel plateau while userland grows, so the ratio
+drifts toward less kernel as functionality is added. That is right, and it is close to the
+definition: the kernel holds mechanisms and userspace holds policy, so new capability is new
+userspace.
+
+**Measured against the wrong number it will look false for a while**, which is why the number is
+recorded here. `kernel/` is 39,901 lines, and it decomposes:
+
+| | lines |
+|---|---|
+| `arch/`, two ISAs | 7,854 (19%) |
+| test files | 10,907 (27%) |
+| remainder | 21,140, of which 7,887 (37%) are comments |
+
+So the kernel's actual logic is roughly **13,000 lines**, which is in seL4's neighbourhood and a
+plausible plateau size. The comment density is deliberate (CLAUDE.md).
+
+**The confound is parity, and it is a multiplier on the kernel specifically.** Rule 1 puts all
+architecture-specific code under `kernel/src/arch/` and §19 makes parity a gate, so **x86_64, which is
+declared and not started, will add a third expression of the same mechanisms**. Several thousand
+kernel lines representing no new capability at all. The ratio can therefore drift toward *more*
+kernel while the microkernel thesis stays exactly intact.
+
+**So the number to watch is non-arch, non-test kernel logic.** That is the thing that should plateau.
+Arch lines are a parity tax, not kernel growth, and counting them into the trend makes the
+architecture look like it is failing when it is doing what it claims.
+
+The kernel is also not finished growing: milestone 106's deadline wait, milestone 108's frame
+capabilities for drivers, and above all **reclaiming what a finished service held** (milestone 107's
+binding constraint, and a §16 fork about what a capability *is* when its holder dies) are all
+mechanisms, so they belong in the kernel *by* the thesis rather than despite it.
+
+Where the prediction is clearest is what comes after: milestone 55's SMB3 server, 66's Vaultwarden,
+99's git, 40's documentation service, 65's secrets service. Every one is pure userspace, and 55 alone
+is described as probably the largest single piece of work in the project. **None of them adds a kernel
+line**, and that is the claim the architecture is making.
 - **A single program large enough to dominate a rebuild.** gitoxide or Vaultwarden could do this
   alone, which is another reason the ownership threshold and the size threshold arrive together.
 - **`build + test` becoming the long pole.** It is 3 minutes against `verify`'s 28 to 36. If milestone
