@@ -54,11 +54,15 @@ only in a commit.
 3. **One target.** Both failures are one fact from two sides: a merge is exclusive, so the queue can
    only land one thing at a time and the only question is which.
 
-So: pick exactly one target, arm exactly that one, leave the rest alone until it lands. Anything
-already CLEAN wins, because it needs nothing but its checks and lands in minutes rather than in a
-cycle; otherwise the lowest-numbered, which is the oldest, which is what stops a big pull request
-starving behind a stream of small ones. If something is already mid-flight, the pass waits quietly
-rather than starting a second cycle the first one's merge would throw away.
+4. **Whatever is in flight finishes first.** The third shape preferred a CLEAN pull request on the
+   reasoning that it lands in minutes. Wrong: merging the cheap one **stales the one in flight**, so a
+   five-minute merge costs a thirty-minute one a whole further cycle and saves nothing, because the
+   cheap one would have landed straight afterwards anyway. **#120 paid three cycles** while #137 and
+   #139 went past it.
+
+So: pick exactly one target, arm exactly that one, leave the rest alone until it lands. Order the two
+operations by **what they cost the queue, not by what they cost themselves** — in flight first, then
+anything already current, then the oldest.
 
 Arming and updating still have very different costs and that is why only the target is updated:
 arming is one API call that changes nothing until the checks pass, while updating triggers a full CI

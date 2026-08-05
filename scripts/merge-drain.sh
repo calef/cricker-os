@@ -94,15 +94,14 @@ pass() {
 	# Order: anything already CLEAN wins, because it needs nothing but its checks and lands in
 	# minutes rather than in a cycle. Otherwise the lowest-numbered, which is the oldest, and which
 	# is what keeps a big pull request from starving behind a stream of small ones.
-	ready=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "CLEAN")] | .[0].number // empty')
-	if [ -n "$ready" ]; then
-		gh pr merge "$ready" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
-		echo "merge-drain: #$ready is current and armed; waiting for it to land"
-		return 0
-	fi
-
-	# Nothing is current. If something is already mid-flight, wait for it rather than starting a
-	# second cycle that the first one's merge would only throw away.
+	# **Whatever is already in flight finishes first, even ahead of one that is ready.** This is the
+	# fourth shape and it corrects the third, which preferred a CLEAN pull request on the reasoning
+	# that it lands in minutes. That reasoning is wrong under the up-to-date rule: merging the cheap
+	# one *stales the one in flight*, so a five-minute merge costs a thirty-minute one a whole
+	# further cycle and saves nothing, because the cheap one would have landed straight afterwards
+	# anyway. #120 paid three cycles that way while #137 and #139 went past it.
+	#
+	# Order the two operations by what they cost the queue, not by what they cost themselves.
 	flying=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "BLOCKED")] | .[0].number // empty')
 	if [ -n "$flying" ]; then
 		failed=$(gh pr view "$flying" --repo "$REPO" --json statusCheckRollup \
@@ -112,6 +111,15 @@ pass() {
 			return 1
 		fi
 		gh pr merge "$flying" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
+		return 0
+	fi
+
+	# Nothing in flight. A pull request that is already current needs only its checks, so it goes
+	# next and nothing else is touched until it lands.
+	ready=$(printf '%s' "$q" | jq -r '[.[] | select(.mergeStateStatus == "CLEAN")] | .[0].number // empty')
+	if [ -n "$ready" ]; then
+		gh pr merge "$ready" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
+		echo "merge-drain: #$ready is current and armed; waiting for it to land"
 		return 0
 	fi
 
