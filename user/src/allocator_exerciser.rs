@@ -14,6 +14,12 @@
 //! # Capability contract (notes/abi.md §4)
 //! - slot 0: the untyped budget the heap draws from
 //! - slot 1: the report endpoint (WRITE)
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `allocdemo`. Refused `allocdemo`
+//! (`alloc` is the crate it uses; the allocator is what it proves) and `demo` as a suffix anywhere:
+//! "exercise" is this tree's own verb, it is real systems vocabulary (memory, bus and disk
+//! exercisers have meant this for decades), and it is more precise, since a demo shows something
+//! off where an exerciser puts a subsystem under load and sees whether it holds.
 
 #![no_std]
 #![no_main]

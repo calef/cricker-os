@@ -1,9 +1,6 @@
 # 82. `unsafe_op_in_unsafe_fn`: the obligation moves inside the fn
 
-**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
-
-**Gate: NONE.** A bounded burn-down of 33 `unsafe fn`s: the fixes are the milestone and the
-one-line `[workspace.lints.rust]` addition lands last.
+**Status: BUILT** 2026-08-04 (PR #92). **The premise below was wrong and that is the finding**: zero violations existed, because every owned package is edition 2024 where this lint is warn-by-default and `script/lint` runs `-D warnings`, so it had been a hard gate since the edition bump with nobody having written it down. The lint is enabled explicitly anyway, and the bounded burn-down described below had no items. Raised 2026-08-03, same survey as 79.
 
 An `unsafe fn` body is one implicit unsafe block, so a function with three distinct unsafe
 operations carries three distinct invariants under a single signature, and milestone 68's

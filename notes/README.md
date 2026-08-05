@@ -617,7 +617,6 @@ in the code or the conversation doesn't make sense, it belongs here.
   reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
   the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
   it holds, and neither can name the other's files.
-- [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
 - [Extended attributes](xattr.md): milestone 57's attribute layer, on the critical path to
   milestone 55's backup target because Samba stores Apple's Time Machine metadata as opaque byte
   strings and RedoxFS has none. Four verbs, three limits with a reason each (255-byte names are

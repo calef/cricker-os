@@ -9,6 +9,10 @@
 # (~a minute of download) that the kernel build does not need. This script installs it on first run,
 # the same self-install pattern script/coverage uses. Not one of the canonical scripts. See
 # notes/verification.md.
+#
+# Name: ratified 2026-08-03 (Chris), retroactively and as a pattern: it runs Kani and does not say
+# so, which is why swapping Kani for Verus someday would cost nothing. Introduced 2026-07-23 with
+# the first capability-model proofs.
 
 set -e
 cd "$(dirname "$0")/.."

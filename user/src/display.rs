@@ -36,6 +36,9 @@
 //!
 //! No fonts, no VT state, no scrollback, no input. Those are later increments and they arrive as
 //! *clients* of the contract this serves, not as code in here.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `gpud`.
+//! Refused `gpud` (the `-d` claim).
 
 #![no_std]
 #![no_main]

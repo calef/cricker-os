@@ -28,6 +28,13 @@
 //! `Frame::REVOKE` on the device capability (DECISIONS §41) between quiescing the old instance and
 //! endowing the new one. The old instance is asked to touch them one more time afterwards, and the
 //! kernel's fault message is the receipt.
+//!
+//! Name: recorded (milestone 46, and notes/naming.md's crate section). The wire contract was
+//! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
+//! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
+//! rule plus the service the stem names produces this name, which is the whole of what `recorded`
+//! claims: Chris ruled on the rule, and never on this crate.
+//! The stem is milestone 23's word for live replacement, which no record weighs against another.
 
 use user_rt::invoke;
 

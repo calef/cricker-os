@@ -32,6 +32,9 @@
 //!   *can* enumerate and screenshot, and it reports a digest the kernel checks against the picture it
 //!   computed itself. Then it tries to write the screen and dies, which is the other half of the
 //!   grant: a screenshot tool cannot deface what it can read.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as always
+//! right.
 
 #![no_std]
 #![no_main]
