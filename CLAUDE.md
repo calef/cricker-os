@@ -96,6 +96,27 @@ not later, because the failure this prevents is the maintainer forgetting it is 
   eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
   gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
 
+**Lane count is set against merge-queue depth, not against how much work exists** (Chris delegated
+this on 2026-08-04, after the queue reached ten and the oldest pull request starved). A finished lane
+does not produce value; a *merged* lane does, and under the require-branches-up-to-date rule the
+queue lands **one thing at a time**. So lanes past that rate manufacture merge debt rather than
+progress:
+
+| open pull requests | concurrent lanes |
+|---|---|
+| 0 to 3 | 4 |
+| 4 to 6 | 2 |
+| 7 or more | 1 |
+
+The numbers are a starting point rather than arithmetic, and the rule that matters is the reason:
+**throughput is measured in merged work.** When the queue is deep the bottleneck is CI wall-clock and
+the honest move is fewer lanes, said out loud as a decision rather than by quietly not launching any,
+which is how it failed three times that evening.
+
+**Prune a lane's worktree the moment its pull request merges**, in the same breath as deleting the
+branch and relinking `cricker-dev`. Eight finished worktrees had accumulated by the time anyone
+looked, and one of them alone held 3.3 GB.
+
 **The maintainer starts the two watchers at the beginning of every session**, because both are
 ordinary loops that die with the session that started them, and a session that forgets has exactly
 the gap they were written to close:
