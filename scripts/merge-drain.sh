@@ -22,7 +22,7 @@
 #
 # # What it will not do
 #
-# **It never merges anything labelled `needs-chris`.** That label means the work is outside standing
+# **It never merges anything labelled `needs-architect`.** That label means the work is outside standing
 # merge authority: it touches the syscall surface, adds a dependency, or owes a `DECISIONS` section.
 # CLAUDE.md describes the label and the `## What I need from you` comment that must accompany it.
 #
@@ -55,7 +55,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 REPO="calef/cricker-os"
-HELD_LABEL="needs-chris"
+HELD_LABEL="needs-architect"
 once=""
 [ "$1" = "--once" ] && once=1
 

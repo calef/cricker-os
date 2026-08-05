@@ -271,8 +271,10 @@ principle one level out: a pull request held for him is a decision, and a queue 
 a chat message is the medium above. Two things, both at the moment the decision to hold is made and
 not later, because the failure this prevents is the maintainer forgetting it is holding something:
 
-- **The `needs-chris` label**, so the queue is `gh pr list --label needs-chris` rather than a
-  paragraph somebody has to have read. Its description carries the reason a thing lands there at
+- **The `needs-architect` label**, so the queue is `gh pr list --label needs-architect` rather than
+  a paragraph somebody has to have read. **It names the role, not the person** (Chris, 2026-08-05):
+  he holds it today and would like a second architect tomorrow, and a mechanism that spells one
+  name has that name as its failure mode. Its description carries the reason a thing lands there at
   all: outside standing merge authority, meaning the syscall surface, a new dependency, or a
   `DECISIONS` section owed.
 - **A `## What I need from you` comment** naming the specific ask. Three properties make it worth
@@ -309,7 +311,7 @@ ordinary loops that die with the session that started them, and a session that f
 the gap they were written to close:
 
 ```sh
-scripts/merge-drain.sh &     # lands every PR that is not labelled needs-chris, one at a time
+scripts/merge-drain.sh &     # lands every PR not labelled needs-architect, one at a time
 scripts/trunk-health.sh &    # says when main goes red, and when it recovers
 ```
 

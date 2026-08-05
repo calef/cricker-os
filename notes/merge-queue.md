@@ -37,7 +37,7 @@ merge-drain: updating #128 against main (Milestone 67: swish the language)
 merge-drain: queue empty; nothing open that does not need Chris
 ```
 
-It takes the open pull requests **without** the `needs-chris` label, arms auto-merge on **every one
+It takes the open pull requests **without** the `needs-architect` label, arms auto-merge on **every one
 of them**, and clicks "Update branch" on **one**. Auto-merge is armed *before* the update, so a merge
 lands whether or not the loop is still alive; the script should be an accelerator, never a
 dependency.
