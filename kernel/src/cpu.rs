@@ -113,12 +113,17 @@ pub struct PerCpu {
     /// under the inbox lock by whoever changed it (the remote pusher, or this core's drain).
     inbox_len: AtomicUsize,
 
-    /// **A pending work-steal request from an idle core** (§28's message-shaped stealing): `0` for
-    /// none, otherwise the requesting core's id plus one. An idle core CASes this from 0 and pokes
-    /// this core with the reschedule SGI; this core, at its next scheduler entry, hands one runnable
-    /// thread back to the requester's inbox and clears the slot. One outstanding request at a time
-    /// (the CAS), so a thundering herd of idle cores collapses to one steal per victim per round.
-    pub steal_request: AtomicU32,
+    /// **A pending work-steal request from an idle core** (§28's message-shaped stealing). An idle
+    /// core claims this slot and pokes this core with the reschedule SGI; this core, at its next
+    /// scheduler entry, hands one runnable thread back to the requester's inbox and clears the
+    /// slot. One outstanding request at a time, so a thundering herd of idle cores collapses to one
+    /// steal per victim per round.
+    ///
+    /// **The one lock-free cross-core protocol in the scheduler**, and therefore the one place a
+    /// weak-memory bug could hide where no lock would catch it. Milestone 80 lifted it into
+    /// [`steal_request`] so loom can explore every interleaving of it on the host; this field is
+    /// the checked type itself, not a copy of it. See notes/interleaving.md.
+    pub steal_request: steal_request::Slot,
 
     /// **How many threads this core has adopted out of its own inbox**, monotonic since boot.
     ///
@@ -160,7 +165,7 @@ impl PerCpu {
             inbox: IrqSafeMutex::new(rank::INBOX, Fifo::new()),
             runq_len: AtomicUsize::new(0),
             inbox_len: AtomicUsize::new(0),
-            steal_request: AtomicU32::new(0),
+            steal_request: steal_request::Slot::new(),
             adopted: AtomicU64::new(0),
             rng: AtomicU32::new(1), // reseeded per core in init_this_cpu; never left 0 (xorshift)
         }

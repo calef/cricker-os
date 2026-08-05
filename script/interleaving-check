@@ -1,0 +1,43 @@
+#!/bin/sh
+# script/interleaving-check: the hand-rolled atomic protocols under loom, which explores EVERY
+# thread interleaving and every reordering the C11 memory model permits (milestone 80). See
+# notes/interleaving.md.
+#
+# The gap this fills. CLAUDE.md's fourth rule is "assume weak memory ordering", and until this
+# script existed nothing in the tree could falsify a violation of it. QEMU's TCG executes guest
+# atomics conservatively and explores almost none of the orderings aarch64 and riscv64 permit, so an
+# acquire that should have been an acquire-release passes script/test, the CPU matrix and every CI
+# leg, then fails on real silicon at a rate and a location that will not reproduce under emulation.
+# Kani proves single-threaded properties and says so (notes/verification.md); Miri checks aliasing,
+# not orderings; the HVF leg runs real orderings but samples them. Loom searches them.
+#
+# **What it covers is one protocol, on purpose.** `crates/steal_request`, the work-steal handshake,
+# is the only lock-free cross-core protocol in the kernel; everything else that looks concurrent is
+# under an IrqSafeMutex. The note carries the survey that establishes that, and what a second
+# protocol would have to look like to be worth the retrofit.
+#
+# **Loom models C11, not ARM and not RISC-V.** It narrows the gap rather than closing it: a bug it
+# finds is real, and a clean run is not a proof about the silicon. Milestone 81's HVF leg is the
+# complementary evidence. The note says this at more length; it is the caveat to repeat.
+#
+# Not in script/test or script/gates, on purpose, for the same reason as
+# script/undefined-behavior-check: this searches a state space where the host tests check a value.
+# Extra args go to `cargo test`, so `script/interleaving-check a_relaxed_pairing` runs one harness.
+
+set -e
+cd "$(dirname "$0")/.."
+
+# --cfg loom is what swaps the crate's atomics for loom's instrumented ones AND what activates the
+# `[target.'cfg(loom)'.dependencies]` table that makes loom available at all. It has to reach the
+# crate under test, so it goes in RUSTFLAGS rather than on the cargo invocation.
+#
+# -D warnings because script/lint cannot see this code. `cfg(loom)` is set here and nowhere else, so
+# every harness in the tree is invisible to the clippy gate, which is exactly the blind spot
+# milestone 113 found in the Kani harnesses and built a shim to close. Here it costs one flag: this
+# script compiles the harnesses anyway, so it may as well be the thing that lints them.
+#
+# --release because the search is compute-bound and an unoptimised loom run is minutes where an
+# optimised one is seconds. Nothing here depends on debug assertions.
+echo "==> loom: the hand-rolled atomic protocols, every interleaving"
+RUSTFLAGS="--cfg loom -D warnings" cargo test --release \
+    -p steal_request -p clock_proto --lib "$@"
