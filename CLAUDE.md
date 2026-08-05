@@ -22,6 +22,49 @@ together" framing anywhere, it is stale; this file is the current word.
 proven piece (green tests first); push after green. You are building the demonstrator. Chris
 reviews architecture and outcomes, not every line.
 
+## Nobody remembers, so build the mechanism that does not need them to
+
+Chris, 2026-08-04, after an evening in which three separate duties turned out to belong to whoever
+happened to notice, and none of them noticed. **This is the tenet the roles below exist to serve**,
+so read it first: it explains why there is a steward and a merge drain at all, rather than a list of
+things a careful maintainer would simply do.
+
+**Design for coordinating many, not for one attentive person.** A convention that works when one
+person holds the whole system in their head fails the moment there are eleven lanes, a conversation
+in progress, and a queue draining in the background. That is this project's normal condition, not its
+worst case.
+
+**The ladder, strongest first.** When something must not go wrong, reach for the highest rung that
+fits:
+
+1. **Make the wrong state unrepresentable.** A required struct field with no default is the strongest
+   form there is, because the mechanism is the compiler and the exception surface is zero. Milestone
+   50 turned `InputSpec::Required` from a unit variant into one carrying `writes_while_reading`, and
+   that single choice means a program which writes while it reads **cannot be declared without
+   saying so**. A pull request comment had been written to remind the integrator of the same thing;
+   the type made the reminder redundant.
+2. **A gate that fails loudly**, in `script/lint` or CI. Weaker, because somebody has to write it and
+   it can be wrong about the tree (§77 is a live example: the branch-prefix check rejects the
+   repository's second-commonest prefix). But it fires without being remembered.
+3. **A written record at the thing itself**, which is milestone 115's shape: provenance beside the
+   name, not in a registry. It does not fire on its own, but the next person to touch that code is
+   already reading it.
+4. **A note, a report, or a comment on a pull request.** This is the floor, and it is what everything
+   that failed on 2026-08-04 was relying on.
+
+**"Somebody will notice" is not a mechanism.** It is rung zero and it belongs on no list.
+
+**An exception is allowed and must say so.** Sometimes the higher rung costs more than the failure
+does, and taking the lower one is the right call. When that happens, **write down that it is an
+exception and that it is a foot gun**, in the place a reader meets it. An unmarked exception reads as
+a design, and the next person extends it.
+
+**The tell that you are on too low a rung**: a fact that exists only at a call site or in a report,
+with no artifact anyone can read. That shape recurred three times in one day, each wearing different
+clothes: roadmap status that was wrong in both records and invisible to the gate comparing them
+(§76), naming decisions that lived in one table cell nobody could find (milestone 115), and a
+merge-order coupling that only a lane's report mentioned. When you notice it, move up a rung.
+
 ## The three roles, and the one rule that keeps work moving
 
 Named 2026-08-04, after a night in which eleven agents shipped and the queue still went idle twice
