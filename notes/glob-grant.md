@@ -404,6 +404,18 @@ file. What the guest displayed is what disappeared.
 
 Known limitations, next to the feature rather than only in a tracker.
 
+- **The set filter and the FS server read the name twice, out of one page, and only the first read
+  is checked** (milestone 43's audit, notes/shared-page-audit.md findings 1 and 2). The caretaker
+  copies the name off the shared page, compares it against the set, and forwards a request carrying
+  only the length; the FS server then does its own read of that same page. The caretaker now writes
+  the checked bytes back before forwarding, which makes the server resolve what the filter approved,
+  and **that narrows the window rather than closing it**: the FS service memoises **one** frame for
+  every client a boot wires, so any other holder can still land between the caretaker's store and
+  the server's load. Nothing can reach it on `main` today, because in the interactive boot the shell
+  is the only holder and confined programs hold no budget with which to start a second thread. It
+  becomes live the day the shell can ask init to build a caretaker, which is the next step this note
+  already anticipates. A frame per client channel is the fix and is proposed as its own milestone.
+
 - **The bound is eight names, and an unbatched line over it is still refused.** A directory with nine
   matching files cannot be handed to one invocation; the answer is a refusal, not a partial grant.
   `xargs` sweeps it instead (milestone 109, above), and that is opt-in on purpose. Lifting the number

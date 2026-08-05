@@ -3413,7 +3413,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 28] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 37] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -3527,15 +3527,52 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 28] = [
         "xargs caps rm globmany/m-*.txt",
         Some("the directory holding m-08.txt m-09.txt m-10.txt"),
     ),
+    // **Quoting, at the one interface a human touches** (milestone 67). The gap it closes is an
+    // authority one: a file called `my notes.txt` could not be *named* before this, so it could not
+    // be granted, in a shell whose whole thesis is that naming a resource is granting it.
+    //
+    // Three lines, and the third is the one that makes the pair a claim. The `>` writes twelve bytes
+    // plus a newline into a name only quoting can express; the `<` reads them back; and `wc "my
+    // notes.txt"` is the same designation with the operator left out, so if the two disagree, one of
+    // them opened something else. That is `gate.txt`'s trio above, asked of a name with a space in
+    // it.
+    ("echo hello world > \"my notes.txt\"", None),
+    ("wc < \"my notes.txt\"", Some("1 2 12")),
+    ("wc \"my notes.txt\"", Some("1 2 12")),
+    // **And the one thing quoting does to authority**: it suppresses expansion, so the same four
+    // characters are one name quoted and a set unquoted. `echo` prints what a grant would move, so
+    // this line is the narrowing made visible before anything moves. Unquoted, the same pattern is
+    // the refusal five lines up.
+    ("echo \"*.txt\"", Some("*.txt")),
+    // And the preview names it, which is the pairing `caps` exists for: what the line designates is
+    // on the screen before anything moves, and a name with a space in it is now something that
+    // sentence can be about.
+    ("caps wc \"my notes.txt\"", Some("input    my notes.txt")),
+    // **Sequencing and the status** (milestone 67). `worker 3` runs and `worker` alone is refused at
+    // the prompt for the integer its manifest requires, so these three lines cover both arms of the
+    // condition table with real commands rather than with a branch written for a gate.
+    ("worker 3 && echo yes", Some("yes")),
+    ("worker || echo no", Some("no")),
+    // **The decision this milestone settled, read at a prompt.** `worker` alone is refused, and a
+    // refusal is not an error: nothing was spawned, nothing was opened, and the status says so with
+    // its own number. Unix cannot draw this line, because there `127` and a program's own `exit(1)`
+    // are the same kind of integer.
+    //
+    // The bare `worker` is here because the *first* draft of this gate put `echo $?` straight after
+    // `worker || echo no` and got `0`, which was the shell being right: the last thing that ran was
+    // the `echo`. `$?` is the previous **command**, not the previous line, and that is bash's rule
+    // and this shell's.
+    ("worker", Some("needs an integer argument")),
+    ("echo $?", Some("2")),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
-    // **Nine spawns above plus these six are fifteen jobs through a six-job pool**, so a boot where
-    // nothing collected would answer "could not spawn (init is out of memory)" somewhere in here
-    // rather than the arithmetic. (Eleven when milestone 22 wrote this line, `2>` added two more
-    // spawning lines above and milestone 86's `time` added two more; the count is a fact about the
-    // whole script, so it is taken at the merge and not from any one lane.) Six distinct arguments
-    // rather than one repeated, because the
+    // **Twelve spawns above plus these six are eighteen jobs through a six-job pool**, so a boot
+    // where nothing collected would answer "could not spawn (init is out of memory)" somewhere in
+    // here rather than the arithmetic. (Eleven when milestone 22 wrote this line, `2>` added two
+    // more spawning lines above, milestone 86's `time` added two more, and milestone 67's quoting
+    // added three; the count is a fact about the whole script, so it is taken at the merge and not
+    // from any one lane.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
     ("worker 3", Some("3*3 = 9")),
@@ -3731,6 +3768,15 @@ fn shell_check_leg(riscv: bool) -> bool {
     }
 
     let transcript = seen.lock().expect("transcript lock").clone();
+    // The transcript is printed on failure below, because that is when somebody needs it. This
+    // prints it on success too, and it exists because the notes in this tree quote real prompt
+    // sessions: `CRICKER_SHOW_TRANSCRIPT=1 script/shell-check --arch aarch64` is where the EXAMPLES
+    // in notes/swish-language.md and notes/pipes.md come from, rather than from somebody retyping
+    // what they remember the shell saying.
+    if std::env::var_os("CRICKER_SHOW_TRANSCRIPT").is_some() {
+        eprintln!("--- shell-check ({arch}) transcript ---");
+        eprintln!("{transcript}");
+    }
     if failed.is_empty() {
         // Walked in order with a moving cursor, not searched. The script types `wc < gate.txt`
         // twice on purpose and the two answers are the whole point of the append arm, so a search
@@ -3764,9 +3810,10 @@ fn shell_check_leg(riscv: bool) -> bool {
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
              file to a reader, read the clock, timed a command with a clock of its own, kept \
              a declared second stream off the redirection, swept a match too large to hand \
-             over in batches whose authority is exactly what each was designated, and ran \
-             fifteen jobs through init's six-job pool after init gave its construction budget \
-             away"
+             over in batches whose authority is exactly what each was designated, named a file \
+             whose name has a space in it, ran a && past a command that succeeded and not past \
+             one it refused, and ran eighteen jobs through init's six-job pool after init gave \
+             its construction budget away"
         );
         return true;
     }
