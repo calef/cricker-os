@@ -330,8 +330,9 @@ impl Drop for AddressSpace {
         // If we are the live address space, stop being it BEFORE the frames go back on the free
         // list. Otherwise the TTBR0 the CPU is walking points at memory the allocator has
         // already handed to somebody else, and the next low-half access reads whatever they put
-        // there. (`deactivate_user` flushes the TLB, which is the other half of the same
-        // problem: without it the stale translations survive the table.)
+        // there. This is about the *walker*, not the TLB: since milestone 58 neither ISA flushes
+        // anything on a root switch, and the cached translations are dealt with by the `flush_asid`
+        // at the bottom of this function, which is the half that has to reach the other cores.
         if mmu::current_user_root() == self.root.addr() {
             mmu::deactivate_user();
         }

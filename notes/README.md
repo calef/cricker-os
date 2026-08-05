@@ -519,6 +519,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The RISC-V TLB shootdown](riscv-tlb-shootdown.md): milestone 58: RISC-V carried an ASID it got
+  no benefit from, because every context switch threw the whole TLB away. Why `sfence.vma` needs a
+  distributed protocol (SBI RFENCE, and its acknowledgement) where `tlbi aside1is` needs one
+  instruction, why removing the flush is gated on a *measurement* of `satp.ASID`'s width rather than
+  on the specification, the test that fails without the shootdown, and the honest benchmark: the win
+  is invisible under icount and needs the board.
 - [init, and loading a program from userspace](init-and-loading.md): milestone 19d: the ELF
   parser leaves the kernel for init, an ordinary confined program. How init loads a child through
   the granular verbs (retype, copy-and-map each segment, endow, configure, start), why
