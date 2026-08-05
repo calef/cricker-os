@@ -61,7 +61,7 @@ only in a commit.
    #139 went past it.
 
 So: pick exactly one target, arm exactly that one, leave the rest alone until it lands. Order the two
-operations by **what they cost the queue, not by what they cost themselves** — in flight first, then
+operations by **what they cost the queue, not by what they cost themselves**: in flight first, then
 anything already current, then the oldest.
 
 Arming and updating still have very different costs and that is why only the target is updated:
