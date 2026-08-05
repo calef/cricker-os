@@ -1388,6 +1388,12 @@ fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
         unsafe { core::ptr::write_volatile((base + i as u64) as *mut u8, b) };
     }
     // The bytes must be visible to the terminal before the request that names them.
+    //
+    // PAIR: no acquire fence, and none is needed. The terminal is blocked in `recv_cap` and the
+    // `ipc_call` below is what wakes it, so the kernel's release of the `SCHED` lock and the
+    // terminal's acquire of it are the pair (`spin::Mutex` locks `Acquire` and unlocks `Release`).
+    // Redundant, kept: it is one `dmb` on a path that prints a line, and the contract does not
+    // forbid a terminal that polls its page instead of blocking. See notes/memory-ordering.md.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     let w0 = line_editor::proto::req(line_editor::proto::OP_WRITE, text.len() as u64);
     let r = crate::sched::ipc_call(ep, [w0, 0]);

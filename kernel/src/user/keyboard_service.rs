@@ -111,6 +111,10 @@ impl Wiring {
         // SAFETY: inside the ring frame this kernel allocated and shares with the driver.
         let tail = unsafe { core::ptr::read_volatile((base + ring::TAIL) as *const u32) };
         // The tail is published after the bytes it advertises; read it before them.
+        //
+        // PAIR: `ring_publish`'s `fence(SeqCst)` in user/src/kbd.rs. Milestone 43's audit named this
+        // reader as the one that gets it right, against `user/src/compositor.rs`'s `drain_input`,
+        // which reads the same contract and had no fence at all.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         let mut n = 0;
         while self.head != tail && n < out.len() {
