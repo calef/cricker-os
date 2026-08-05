@@ -28,6 +28,9 @@
 //! it would be able to park itself in `RECV_CAP` and take the client's requests. It cannot: its
 //! capability carries `WRITE` and not `READ`, and the same object handed out with different rights
 //! is a one-way pipe in whichever direction each holder was trusted with. It reports the refusal.
+//!
+//! Name: unrecorded. Introduced 2026-07-30 with milestone 23's live replacement, as a fixture
+//! rather than a component.
 
 #![no_std]
 #![no_main]

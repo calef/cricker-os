@@ -19,6 +19,11 @@
 //! queue, so a thread only queues when nobody was waiting for it. Every operation is proved to
 //! preserve it, now over the real intrusive queues (the `Fifo`'s own FIFO correctness is proved
 //! separately, in its crate; here we prove the *decisions* made over it).
+//!
+//! Name: ratified 2026-08-01 (Chris, the naming tenet in CLAUDE.md). Named in the group of standard
+//! terms that are already right and must not be touched, because a name a reader knows from outside
+//! this project costs nothing to learn and renaming it would destroy the recognition the tenet
+//! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
 

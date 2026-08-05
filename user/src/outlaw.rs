@@ -14,6 +14,9 @@
 //! process that reads a forbidden address on purpose has no business sharing an image with init.
 //! Keeping it separate also keeps it tiny, which the frame-accounting test cares about: it spawns
 //! this program five times and asserts every frame comes back exactly.
+//!
+//! Name: unrecorded. Introduced 2026-07-31 as a fixture: a program that does what it is not
+//! permitted to do, so the kernel's refusal has a witness.
 
 #![no_std]
 #![no_main]

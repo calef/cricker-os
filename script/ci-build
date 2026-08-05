@@ -5,6 +5,13 @@
 # what the workflow's test job runs, so CI exercises the same bootstrap a developer does. The
 # lint and format checks are separate CI jobs (script/lint, script/fmt) so they fail fast and in
 # parallel. See notes/scripts.md and .github/workflows/ci.yml.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md). Respelled from
+# `cibuild` on 2026-08-01 (milestone 63) under the rule that shell entry points are hyphenated,
+# because an underscore or a squash in a command name reads as a mistake next to `apt-get` and
+# `pkg-config`.
 
 set -e
 cd "$(dirname "$0")/.."

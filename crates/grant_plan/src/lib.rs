@@ -58,6 +58,15 @@
 //! [`spawnproto`] is the word layout for the shell-to-init spawn protocol, the capability-shell
 //! analogue of `line_editor::proto`. It is a userspace protocol (DECISIONS §21's shape): the kernel
 //! routes the words and never reads them.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `capsh`. Refused `capsh` (Linux's
+//! libcap ships `capsh(1)`, a capability shell wrapper, so a reader arriving from Linux would
+//! assume ours is that tool); `designation`, `designate` and `designator` together (the user
+//! designates by typing a name, and this crate's work starts after that, so all three put it in a
+//! role it does not hold); and the grant synonyms `endow`, `award`, `confer`, `bestow`, `allot` and
+//! `furnish` (grant is already this tree's word and a synonym is a decoder ring, and `endow` is
+//! additionally taken by `supervision_proto::Endow`). Deliberately not named for `swish`: seven
+//! things use it, so naming it for one consumer would repeat `dwarden`'s defect.
 
 #![no_std]
 

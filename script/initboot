@@ -3,6 +3,10 @@
 # init brings up the console (and, in the interactive build, input and the shell) out of its own
 # budget through the granular verbs; the kernel stops wiring services itself. Add --hvf for the
 # real Apple Silicon core. See design/init-and-granular-spawn.md.
+#
+# Name: unrecorded, and it is the one entry point in this directory that does not follow the tree's
+# own separator rule: two words run together, where milestone 63 made `script/` names hyphenated.
+# Introduced 2026-07-25 with milestone 19d.2c.
 set -e
 cd "$(dirname "$0")/.."
 exec cargo xtask initboot "$@"

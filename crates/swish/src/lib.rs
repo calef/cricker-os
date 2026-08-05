@@ -69,6 +69,14 @@
 //!   around a choice between two spawn paths. Lifting it would have moved the spawn decision away
 //!   from the code that can act on it and bought no new coverage.
 //! - `spawn`, `pipeline` and everything below them, which is capability movement and nothing else.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `shell`. Refused `shell` (a category
+//! rather than a name: `bash`, `zsh`, `fish` and `rc` are identities), `capsh` (Linux's libcap
+//! ships `capsh(1)`) and `sheesh` (it carries a 2020-21 timestamp where `bash` and `fish` are
+//! era-neutral, and it is an interjection of exasperation, while this shell's most characteristic
+//! behaviour is refusing things by design). A swish is the shot that goes through the net touching
+//! nothing, which is least authority in one word. The crate takes the program's name because the
+//! crate is that program's logic (DECISIONS §63); it was lifted out on 2026-08-02 by milestone 70.
 
 #![no_std]
 

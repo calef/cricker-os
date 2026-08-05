@@ -15,6 +15,14 @@
 //! The transport is **modern virtio-mmio (version 2)**: separate physical addresses for the
 //! descriptor table and the two rings, negotiated through the registers below. See the virtio
 //! 1.x spec, sections 4.2 (MMIO) and 5.2 (block).
+//!
+//! Name: unrecorded, and the tree comes one clause short of recording it. notes/naming.md's BUGS
+//! says "the crate keeps its name, which is right, but the sentence under it is wrong", which
+//! asserts the conclusion and never gives the reason, so a reader learns that somebody agreed
+//! rather than why. Milestone 63 treats the name as claimed territory from the other side, refusing
+//! `virtio_net` for the transport adapter because "`crates/virtio` also drives net". It is the
+//! device family's own name from the specification and would sit in the tenet's protected group if
+//! anyone had filed it there; nobody has. Introduced 2026-07-14 with milestone 9's block driver.
 
 use abi::irq;
 use fs_proto::blk;

@@ -66,6 +66,11 @@
 //! assert_eq!(Frame::containing(0x4000_0FFF).addr(), 0x4000_0000);
 //! assert_eq!(Frame::containing(0x4000_1000).addr(), 0x4000_1000);
 //! ```
+//!
+//! Name: unrecorded, and flagged. The naming tenet names it among the crate names that are generic
+//! words which could label almost anything in an operating system (`compose`, `measure`, `regions`,
+//! `slots`, `caps`, `frames`); three of those six were settled on 2026-08-01 and this one was not.
+//! Nothing records who chose it.
 
 #![cfg_attr(not(test), no_std)]
 

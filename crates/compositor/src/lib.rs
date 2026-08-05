@@ -57,6 +57,12 @@
 //! No GPU acceleration (rung four, milestone 34), no fonts or text (rung three), no window
 //! management (the scene is fixed; see [`SCENE`]), and no alpha blending: windows are opaque and
 //! composition is a copy in stacking order. The honest limits are listed in notes/compositor.md.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `compose`. Refused `compose` (a verb,
+//! where the tenet says a namespace is a thing; the crate's own first line already said
+//! compositor), `compositor_proto` (promises a wire definition and delivers an algorithm) and
+//! `scene` (undersells the clipping and damage arithmetic). Sharing the program's name is the point
+//! rather than a collision: the crate is that program's logic, lifted out to be host-testable.
 
 #![no_std]
 

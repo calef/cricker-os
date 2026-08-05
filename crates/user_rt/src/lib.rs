@@ -25,6 +25,14 @@
 //! the first argument register (`x0` / `a0`). The kernel reconciles the two in `TrapFrame`
 //! (DECISIONS §17); here we simply select the right asm at compile time. Every function's signature,
 //! semantics, and the `abi` constants are identical across both.
+//!
+//! Name: unrecorded, and half-argued in the way that keeps it that way. Milestone 63 treats
+//! `user_` as settled precedent while renaming `uheap`: "the `u` was *userspace*, and `user_rt`
+//! already establishes `user_` as the prefix for it." So the prefix is on the record because this
+//! crate established it, which is a circle rather than a reason. The `rt` half is an
+//! **abbreviation**, the first of the naming tenet's three failure modes, and nothing weighs it
+//! against `runtime`. Introduced 2026-07-25 when the shared EL0 runtime was lifted out; the
+//! decision here is worth more than one name, because half a convention rests on it.
 
 #![no_std]
 
