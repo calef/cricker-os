@@ -23,6 +23,33 @@ including all 54 programs in about three minutes.
 So splitting the programs out would attack **the smallest slice of the cheapest check**. The
 bottleneck is one prover (milestone 119), and no amount of build separation moves it.
 
+### That 17% is a thin number, and the honest one is larger
+
+Chris pushed on it the same day: what fraction of the crates serve user programs? Measured from the
+dependency graph rather than by inspection, **30 of 43 crates are reachable from `user`** and 33 from
+`kernel`. None is reachable from neither.
+
+| | crates | lines | share of `crates/` |
+|---|---|---|---|
+| user only | 10 | 11,325 | 23% |
+| kernel only | 13 | 12,782 | 26% |
+| **shared** | **20** | **24,702** | **51%** |
+
+Attributed generously, userland is `user/`'s 17,991 plus its exclusive crates, **29,316 lines against
+the kernel's 52,683**, so roughly **36% of the owned tree rather than 17%**. The smaller figure counts
+only `user/src/`, which is the thin IO shell of programs whose logic was deliberately lifted into
+crates so it could be host-tested and Kani-reachable. **This project's own method is what makes the
+naive measurement misleading**, and the correction belongs here rather than in a conversation.
+
+**It does not change the conclusion, and the reason is the 51%.** A build split has to cut somewhere,
+and the natural line, "userland builds separately", runs straight through 20 crates both sides use,
+`abi` among them. That is not a seam; it is the thing holding the syscall agreement together at rung
+one. The split would run *across* the shared code rather than *between* the two halves.
+
+The user-only list is instructive about what would be orphaned: `supervision_proto`,
+`system_initializer`, `swap_proto`, `virtio`, `c_seam`. Those are the spawn path, the init path and
+the driver transport. **Userland-only by reachability, load-bearing by function.**
+
 ## What one build buys, which is the part worth defending
 
 `crates/abi` is shared, so **the compiler enforces that programs and the kernel agree about the
@@ -67,8 +94,12 @@ network line, and it is the lane worth spending on this pressure.
 
 Stated so the next person can check rather than re-argue:
 
-- **`user/` growing past roughly the size of `crates/`**, which would make the three-minute build a
-  real number. It is 17,991 lines against 48,809 today.
+- **Userland growing past the kernel.** Compare like with like: 29,316 against 52,683 today, counting
+  each side's exclusive crates. `user/src/` alone against all of `crates/` is the wrong comparison and
+  was the first one taken here.
+- **The shared 51% shrinking.** If the 20 crates both sides use ever became a small fraction, a real
+  seam would exist where today there is none. That is the structural signal, and a better one than
+  any line count.
 - **A single program large enough to dominate a rebuild.** gitoxide or Vaultwarden could do this
   alone, which is another reason the ownership threshold and the size threshold arrive together.
 - **`build + test` becoming the long pole.** It is 3 minutes against `verify`'s 28 to 36. If milestone
