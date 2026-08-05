@@ -1236,6 +1236,7 @@ mod tests {
             },
             reports: true,
             interruptible: false,
+            writes_while_reading: false,
         }
     }
 
