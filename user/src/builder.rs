@@ -21,6 +21,12 @@
 //! it, built its address space, and started it. That is the init-as-system-builder model, proven on
 //! RISC-V. It shares the `user` crate's `link.ld` and the `user_rt` syscall runtime; every syscall
 //! it makes (retype, map, configure, start) crosses the same `ecall` ABI the worker uses.
+//!
+//! Name: unrecorded, and load-bearing anyway. `builder.rs`'s own header calls it "a minimal init:
+//! the system builder", and that phrase is why `system_builder` was refused for a crate twice, on
+//! 2026-08-01 and again on 2026-08-04. Its archive entry is `init`, the one deliberate exception to
+//! "the binary, the source file and the archive entry are the same string" (notes/naming.md),
+//! because `init` is the entry the kernel loads by name.
 
 #![no_std]
 #![no_main]

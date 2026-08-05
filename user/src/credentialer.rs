@@ -111,6 +111,18 @@
 //! object through which a record could be removed, which is the same property that makes the seal
 //! worth having. Rotating a secret means restarting the service and reprovisioning, so a
 //! deployment that needs finer granularity runs more than one. See notes/credentials.md.
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `credential`. Refused `credential`
+//! (the plain resource noun, on the pattern `clock` and `entropy` follow). The argument for it was
+//! made twice and wrong twice: `credentialer` is a real profession rather than a coinage, and this
+//! service will never give you a credential, so naming it for the resource implies the one thing it
+//! exists to refuse.
+//!
+//! **That ratification predates what this program became.** Milestone 65 turned it from a
+//! credential service into a **secrets service**: it now holds an `NTOWFv2` beside the
+//! Argon2id tag and answers `NTLM_PROOF`, so the argument above ("this service will never
+//! give you a credential") still holds while the noun no longer describes the scope. A
+//! rename is owed, and it is Chris's, not a lane's; `cred`, `cred_proto` and
+//! `credentialer_test_client` are in the same boat. Recorded here rather than acted on.
 
 #![no_std]
 #![no_main]

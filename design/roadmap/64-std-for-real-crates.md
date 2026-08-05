@@ -1,6 +1,16 @@
 # 64. Enough `std` to run somebody else's crate
 
-**Status: NOT-STARTED.** Raised 2026-08-01, from a question with a number behind it: does milestone
+**Status: PARTIAL** since 2026-08-04 (PR #113). The measurement phase is done and its deliverable,
+the prioritised gap list that milestones 99 and 66 consume, is in `notes/crates-io-on-cricker.md`:
+**50 crates.io crates, 35 built with no change, 15 failed**, and the gaps are ranked by demand
+rather than by the function counts below. Five ranks turned out to be bindings rather than verbs
+(`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename` were all dispatched by the FS
+server since milestones 47 and 48; only the client refused) and this milestone bound them. **What
+remains is the ranked list**: a `getrandom` backend (rank 1, and honestly not a `std` gap at
+all but an ecosystem one), the `std::os::unix` fallthrough (rank 2), `thread::spawn` (rank 3) and
+`env::var` (rank 4). The sting the measurement found is the one worth carrying forward: **a green
+build is not evidence.** `tempfile` compiles, links, and returns "operation not supported" at run
+time. Raised 2026-08-01, from a question with a number behind it: does milestone
 27 mean ordinary Rust programs run here?
 
 **Gate: NONE.** The block's own sequencing is to run the measurement phase first and independently:

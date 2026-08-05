@@ -10,6 +10,10 @@
 # --real is single-hart by default so the primitive magnitudes are per-core (the cross-OS comparison
 # reads them that way); --smp boots the whole machine for the aggregate-throughput bench.
 # See design/roadmap/21-benchmarks.md and notes/benchmarks.md.
+#
+# Name: unrecorded. Introduced 2026-07-23 with milestone 21. It is not one of the Scripts to Rule
+# Them All names and nothing records the choice; `bench/` is also a directory holding the committed
+# baselines, so the word does two jobs in this tree.
 
 set -e
 cd "$(dirname "$0")/.."

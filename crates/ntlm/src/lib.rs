@@ -5,6 +5,13 @@
 //! source and its tests run in milliseconds. The store that holds the key is `cred`; the wire
 //! contract is `cred_proto`; the service is `user/src/credentialer.rs`.
 //!
+//! Name: unrecorded. Provisional, minted by milestone 65's lane on 2026-08-04 and not yet put to
+//! Chris. It is a standard term of art, in the family the naming tenet says are already right
+//! (`elf`, `pci`, `dtb`, `gpt`): a reader who knows what NTLM is needs no decoder, and respelling
+//! it would cost the recognition the tenet exists to buy. The narrower question is whether the
+//! crate should say *which* NTLM it implements, since it is v2 only and deliberately holds no v1
+//! path. See notes/naming.md and notes/ntlm.md.
+//!
 //! # Why this exists as a separate thing from a password verifier
 //!
 //! **NTLMv2 does not verify a presented secret.** The client never sends the password, and the

@@ -20,6 +20,10 @@
 //!
 //! - slot 0: the result endpoint (SEND: report the page count).
 //! - slot 1: an untyped budget (the delegated `--mem` grant). Absent when `--mem` was 0.
+//!
+//! Name: unrecorded. Introduced 2026-07-28 with the grant expression. It is an agent noun in the
+//! `broker`/`spawner`/`painter` family milestone 63 later named as a family, but nothing records
+//! the choice.
 
 #![no_std]
 #![no_main]

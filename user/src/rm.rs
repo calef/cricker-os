@@ -34,6 +34,10 @@
 //! The name and the options ride in the three `START` argument words, packed by
 //! [`fs_proto::grant`] exactly as a per-file grant's name is, so this program costs no extra frame
 //! and holds nothing that names an init, a terminal, or the filesystem above its grant.
+//!
+//! Name: unrecorded. Introduced 2026-07-31. The Unix command's own name, which the tenet's guard
+//! rail would keep anyway; the tenet also makes a short name for a typed command a choice its
+//! author makes rather than a convention, so there was no rule to apply.
 
 #![no_std]
 #![no_main]

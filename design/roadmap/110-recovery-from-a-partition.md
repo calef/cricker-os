@@ -1,11 +1,7 @@
 # 110. The recovery tool takes a device and a partition
 
-**Status: NOT-STARTED.** Raised 2026-08-04 from `notes/host-recovery.md:263`. Milestone 57
+**Status: BUILT** 2026-08-04 (PR #103). Raised 2026-08-04 from `notes/host-recovery.md:263`. Milestone 57
 (partitioning and formatting a real drive) is BUILT, so this is its residual, and it is small.
-
-**Gate: NONE.** Both halves exist, `crates/gpt` and the recovery verbs, and the join is twenty
-lines written in the wrong place. The acceptance evidence is `blank_check_after_run` calling the
-tool with a partition index instead of slicing a temp file.
 
 **The finding.** `tools/redoxfs_host` reads a filesystem out of an **image file**, not off a device.
 `open_ro` hands a `DiskFile` straight to `FileSystem::open` with no offset, so the bytes at offset

@@ -26,6 +26,10 @@
 #
 # Not part of script/gates or script/test, on purpose: both are gates a developer waits on, and this
 # is neither fast nor a gate.
+#
+# Name: ratified 2026-08-03 (Chris), replacing `mutants`. Refused `mutants` (it names the tool,
+# cargo-mutants, rather than the function). The directory it sits in had already made the argument:
+# `verify`, `fuzz` and `coverage` all name the function and none names its tool.
 
 set -e
 cd "$(dirname "$0")/.."

@@ -30,6 +30,10 @@
 //! - slot 0: the report endpoint (WRITE)
 //! - slot 1: the `Stack` endpoint (WRITE)
 //! - slot 2: an untyped budget (to mint and map the shared frame)
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `netcli`. Refused `netcli` (squished)
+//! and `socket_client`, which belongs to the real clients milestone 54 will need. This file is a
+//! single-consumer `#[path]` module rather than a `[[bin]]`.
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use socket_proto::*;

@@ -7,6 +7,9 @@
 //! That shape is deliberate, because it exercises **both** halves of the fault endpoint (DECISIONS
 //! §26) against a real supervisor: a crash that must be restarted, and a clean exit that must not be.
 //! A program that only crashed would prove the restart but not the policy.
+//!
+//! Name: unrecorded. Introduced 2026-07-29 as a supervision fixture: a program that fails on
+//! purpose so a restart policy has something to restart.
 
 #![no_std]
 #![no_main]

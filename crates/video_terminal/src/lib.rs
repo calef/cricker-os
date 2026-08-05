@@ -43,6 +43,13 @@
 //! columns, no mouse, and no reporting sequences at all: this engine never writes to its input,
 //! which is what "sans-IO" means here and what keeps it a *value*. The honest limits are listed in
 //! notes/glyphs.md.
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `vt`. Refused `vt` (two letters that
+//! read as *vector table* in a kernel), `virtual_terminal` (wrong twice: that is not what VT stood
+//! for, and "virtual terminal" already names Linux's virtual consoles) and `screen_grid` (the crate
+//! carries 63 escape-sequence references, so the grid is the output and interpreting the protocol
+//! is the work). Deliberately not the program's name: this crate is named for the protocol it
+//! implements (DEC's Video Terminals) and `display_terminal` for its role.
 
 #![no_std]
 
