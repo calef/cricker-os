@@ -6,6 +6,12 @@
 //! allocator on the path a confined program takes. `user/src/doc.rs` is the program; this is what
 //! it computes.
 //!
+//! Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-04 and not yet put to
+//! Chris. Named for what a reader is looking for rather than for what the code does, in the family
+//! of `elf` and `pci`, terms a reader already knows from outside this project. The lane split this
+//! name from the program's on purpose: `crates/doc` would be ungreppable against rustdoc's
+//! vocabulary and collides with `cargo doc` in conversation. See notes/naming.md.
+//!
 //! # The renderer is a stream, not a parser
 //!
 //! [`Renderer::feed`] takes whatever bytes arrived and writes whatever output they completed. It
