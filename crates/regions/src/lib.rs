@@ -48,6 +48,11 @@
 //! // And a wrap would forge budget out of arithmetic.
 //! assert_eq!(split_new_watermark(100, 40, u64::MAX), None);
 //! ```
+//!
+//! Name: unrecorded, and flagged. The naming tenet names it among the crate names that are generic
+//! words which could label almost anything in an operating system (`compose`, `measure`, `regions`,
+//! `slots`, `caps`, `frames`); three of those six were settled on 2026-08-01 and this one was not.
+//! Nothing records who chose it.
 
 #![no_std]
 

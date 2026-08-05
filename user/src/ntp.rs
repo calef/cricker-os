@@ -86,6 +86,9 @@
 //! slirp answers UDP 123, and pointing the gate at a public server would make it depend on somebody
 //! else's network. The honest summary is that the client is proven against a server we wrote, over a
 //! network we wrote, and the parts we did not write are proven elsewhere.
+//!
+//! Name: unrecorded. Introduced 2026-07-31 with milestone 55; the protocol's own name, which would
+//! put it in the tenet's protected group had anyone filed it there.
 
 #![no_std]
 #![no_main]

@@ -58,6 +58,10 @@
 //!   thing with a missing requirement: it says so and stops.
 //! - **The device tree can lie**, or firmware can describe a machine it is not. Tier 2 exists for
 //!   that, and on RISC-V it currently covers exactly one fact (the ASID width).
+//!
+//! Name: unrecorded. Introduced 2026-08-03, one record per architecture for what the machine
+//! actually is. A standard acronym (instruction set architecture), but not one the tenet's
+//! protected list names, and nothing records the choice.
 
 #![no_std]
 

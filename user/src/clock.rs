@@ -32,6 +32,11 @@
 //! serve exactly one endpoint, and a design that wanted `set` and `propose` to both be messages
 //! would have needed two servers. Making `set` a page write instead is not a workaround; it is
 //! what "set the offset outright" already means (DECISIONS §43).
+//!
+//! Name: unrecorded. Introduced 2026-07-30. Milestone 63 weighed the plain resource noun against
+//! the agent noun for the credential service and chose `credentialer` there, on the ground that the
+//! service will never hand you a credential; this program keeps the resource name and no record
+//! says whether the same question was asked of it.
 
 #![no_std]
 #![no_main]

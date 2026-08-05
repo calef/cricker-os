@@ -38,6 +38,16 @@
 //! No fonts, no glyph cache, no VT state, no input. Rung one puts pixels in a scanout and proves
 //! they got there; the terminal on top is a later increment and slots in as another client of this
 //! same contract (see notes/framebuffer-contract.md, "The seams left open").
+//!
+//! Name: unrecorded, and it is one of two `*_proto` crates that are. The suffix is settled and
+//! checked (milestone 46, 2026-07-30), so its seven siblings are `recorded`: the rule plus the
+//! service the stem names produces the whole name. It does not here. `gfx` is an **abbreviation**,
+//! which is the first of the three failure modes the naming tenet lists for crate names, and the
+//! rule that picks `<graphics>_proto` does not pick which word goes in front of the underscore.
+//! Nothing weighs `gfx` against `graphics`, and the sibling case is instructive: milestone 63
+//! expanded `credcli` and spelled the service `credentialer` in full while leaving `cred`. So the
+//! research is still owed here, not just the ruling. Introduced 2026-07-29 with virtio-gpu
+//! enumeration.
 
 #![no_std]
 

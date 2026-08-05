@@ -2,6 +2,10 @@
 # script/test: run the test suite (host-logic crates in milliseconds, then the kernel under
 # QEMU). The fast inner-loop command; it assumes script/setup has been run once. Extra args are
 # forwarded to `cargo xtask test`. See notes/scripts.md.
+#
+# Name: ratified 2026-07-22 by adopting Scripts to Rule Them All. The canonical set keeps its
+# standard names even where a more descriptive word exists, because the entire value is that the
+# command is the same in every repository that follows the pattern (notes/naming.md).
 
 set -e
 cd "$(dirname "$0")/.."

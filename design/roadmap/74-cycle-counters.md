@@ -31,11 +31,17 @@ The thesis claim is a cross-OS comparison, and **the literature it is compared a
 in cycles**, not nanoseconds. notes/benchmarks.md already does the conversion by hand and draws the
 honest conclusion:
 
-> At ~3.2 GHz, 705 ns is ~2,200 cycles round trip, where an L4-lineage fastpath does 300 to 600. Per
-> cycle we are 4 to 7 times heavier, and honestly so.
+> At ~3.2 GHz, 350 ns is roughly 960 to 1,420 cycles round trip, against seL4's 413 + 426 = ~839 for
+> the one-way pair. Per cycle we are about 1.1x to 1.7x heavier.
 
-That paragraph is currently arithmetic performed on a nanosecond measurement using an assumed clock
-rate. Measuring cycles directly turns the project's most-cited number from a derived figure into a
+**That quotation was corrected on 2026-08-04 and the earlier one is retracted.** Milestone 101
+re-measured and found three errors in the old arithmetic, and this file quoted its "4 to 7 times
+heavier" conclusion as current long enough to be worth naming: a prose block quote of another
+document is a citation that no gate can check, because `script/decisions --check` only resolves
+`§N`. See notes/benchmarks.md and milestone 97.
+
+The figure above is still arithmetic performed on a nanosecond measurement using an assumed clock
+rate, which is the whole point of this milestone. Measuring cycles directly turns the project's most-cited number from a derived figure into a
 read one, and it is the number a reader from the L4 world will look for first.
 
 ## Two things block on it

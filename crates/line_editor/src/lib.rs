@@ -38,6 +38,14 @@
 //!
 //! The echo this engine emits and the sequences it understands are the terminal contract's
 //! wire half; the IPC framing is `proto`. Both documented in notes/terminal-contract.md.
+//!
+//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46) for the word and again
+//! 2026-08-01 (milestone 63) for the spelling, replacing `linedisc` and then `lineedit`. Refused
+//! `linedisc` (the correct Unix term of art, which the person who built this system did not
+//! recognise, and which imports vocabulary from exactly the model this OS rejects),
+//! `line_discipline` (overclaims: that term covers echo, canonical mode, signals and flow control,
+//! and this crate is narrower) and `line_edit` (a verb phrase where its sibling `video_terminal` is
+//! a noun).
 
 #![no_std]
 

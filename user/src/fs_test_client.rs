@@ -13,6 +13,11 @@
 //!   `CALL`s here).
 //! - **slot 1**: the report endpoint, `WRITE`.
 //! - **[`FILE_VA`]**: the page shared with the FS server (a name out, file bytes both ways).
+//!
+//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `fsclient`. Refused `fsclient`
+//! (squished) and `fs_client` (any program that wants files is an FS client, so that name belongs
+//! to the real thing; it also predicts "a client of the FS service" rather than "the program the
+//! kernel spawns to prove the FS contract holds").
 
 #![no_std]
 #![no_main]

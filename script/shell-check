@@ -11,6 +11,12 @@
 #
 # It is not part of script/test, because it builds a second kernel (`--features shell`) and boots it
 # twice. Run it when you touch init, the shell, or what the boot grants them.
+#
+# Name: unrecorded, and audibly collided with. It boots the kernel's `--features shell`
+# configuration and types at the prompt; `shellcheck`, the shell linter this tree runs inside
+# `script/lint`, is one hyphen away. The boot mode it names is itself a stale word, since
+# notes/naming.md's BUGS records that `shell` no longer names any program (the shell is `swish`).
+# Introduced 2026-08-02.
 
 set -e
 cd "$(dirname "$0")/.."

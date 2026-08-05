@@ -51,6 +51,12 @@
 //! a.free(first);
 //! assert!(a.alloc().is_some());
 //! ```
+//!
+//! Name: ratified 2026-08-01 (Chris, the naming tenet in CLAUDE.md). Named in the group of standard
+//! terms that are already right and must not be touched, because a name a reader knows from outside
+//! this project costs nothing to learn and renaming it would destroy the recognition the tenet
+//! exists to buy. It is also the entry in `script/lint`'s `-d` allow-list, with its expansion
+//! (Address Space IDentifier) as the reason.
 
 #![cfg_attr(not(test), no_std)]
 

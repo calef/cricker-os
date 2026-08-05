@@ -59,6 +59,13 @@
 //!                                       │
 //!                                       └── Reject: the response is not an answer to our question
 //! ```
+//!
+//! Name: recorded (milestone 46, and notes/naming.md's crate section). The wire contract was
+//! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
+//! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
+//! rule plus the service the stem names produces this name, which is the whole of what `recorded`
+//! claims: Chris ruled on the rule, and never on this crate.
+//! The stem is RFC 5905's own name for the protocol, so there was nothing to choose.
 
 #![no_std]
 
