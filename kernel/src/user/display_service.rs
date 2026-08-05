@@ -1,17 +1,86 @@
-use super::*;
-use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
-use crate::sched::EpId;
+//! **The display seam's wiring**: a confined virtio-gpu driver, the client that paints through it,
+//! and the terminal that took the client's place (milestones 29, 33; notes/framebuffer-contract.md).
+//!
+//! # The pixels are capabilities now (milestone 108, notes/frames.md)
+//!
+//! Everything here used to arrive as `Spawn::maps`: the kernel wrote the DMA region into the
+//! driver's address space and the surface into the client's, at addresses the kernel picked, before
+//! either program's first instruction. Nothing in either cspace said the memory was there, and
+//! nothing could narrow it, hand it on, or take it back.
+//!
+//! Each program now holds its pages as `Frame` capabilities and maps them itself, out of an untyped
+//! it also holds. **This is where the object shows its edge**, and the milestone's scope note asked
+//! for exactly this finding: a `Frame` names *one page*, so the driver's nine-page DMA region is
+//! nine capabilities in nine consecutive slots of a sixteen-slot cspace. It fits, with one slot
+//! spare, and it would not fit a larger surface. The `const` assertion on [`DRIVER_SLOT_DMA`] is
+//! there so that a scanout somebody widens fails the build rather than the boot.
+//!
+//! What stays wired at spawn is nothing at all here: these programs have no extra stack pages, so
+//! the only page the kernel still places is the one `load` gives every process.
 
-/// Where the driver maps its whole DMA region. Must match user/src/display.rs `DMA_VA`.
-const DMA_VA: u64 = 0x0000_0000_0090_0000;
-/// Where the client maps the surface. Must match user/src/painter.rs `SURFACE_VA`.
-const SURFACE_VA_CLIENT: u64 = 0x0000_0000_0060_0000;
+use super::*;
+use crate::cap::{Rights, endpoint_cap, frame_cap, irq_cap, untyped_cap, virtio_cap};
+use crate::sched::EpId;
 
 /// The DMA region, in frames: one for the rings and control buffers, then the surface.
 const DMA_FRAMES: u64 = 1 + gfx_proto::SURFACE_FRAMES as u64;
 
 /// The driver binary's escape-attempt role; must match user/src/display.rs `ROLE_BACKING_ESCAPE`.
 const ROLE_BACKING_ESCAPE: u64 = 1;
+
+/// **The budget every program on this path draws its page tables from** (milestone 108). The same
+/// eight pages the disk path uses and for the same reason: every mapping here lands inside one
+/// 2 MiB window, so the real cost is one L3 and the levels above it.
+const MAP_BUDGET_PAGES: u64 = 8;
+
+// The driver's cspace. Must match user/src/display.rs.
+const DRIVER_SLOT_REPORT: u64 = 0;
+const DRIVER_SLOT_IRQ: u64 = 1;
+const DRIVER_SLOT_VIRTIO: u64 = 2;
+const DRIVER_SLOT_DISPLAY: u64 = 3;
+const DRIVER_SLOT_BUDGET: u64 = 4;
+/// The first of [`DMA_FRAMES`] consecutive slots holding the DMA region, frame by frame.
+///
+/// **This is the milestone's honest cost, and it is worth saying out loud.** A `Frame` names one
+/// page, so a nine-page DMA region is nine capabilities and nine `MAP` calls, and slots 5 through
+/// 13 of a sixteen-slot cspace (`cap::CSPACE_SLOTS`, one of which is reserved for the fault
+/// endpoint) go to naming one contiguous run of memory. It fits, with one slot spare. A driver with
+/// a larger surface would not fit at all. See notes/frames.md's BUGS.
+const DRIVER_SLOT_DMA: u64 = 5;
+const _: () = assert!(
+    DRIVER_SLOT_DMA + DMA_FRAMES <= crate::cap::CSPACE_SLOTS as u64 - 1,
+    "the display driver's DMA region no longer fits its cspace beside the fault slot: a Frame \
+     names one page and this region is a run of them",
+);
+
+// The painting client's cspace. Must match user/src/painter.rs.
+const CLIENT_SLOT_REPORT: u64 = 0;
+const CLIENT_SLOT_DISPLAY: u64 = 1;
+const CLIENT_SLOT_BUDGET: u64 = 2;
+/// The first of `gfx_proto::SURFACE_FRAMES` consecutive slots holding the scanout.
+const CLIENT_SLOT_SURFACE: u64 = 3;
+
+// The display terminal's cspace. Must match user/src/display_terminal.rs.
+const TERM_SLOT_REPORT: u64 = 0;
+const TERM_SLOT_DISPLAY: u64 = 1;
+const TERM_SLOT_TERM: u64 = 2;
+const TERM_SLOT_BUDGET: u64 = 3;
+/// The first of `gfx_proto::SURFACE_FRAMES` consecutive slots holding the scanout, then one more
+/// for the page an application writes text into.
+const TERM_SLOT_SURFACE: u64 = 4;
+const TERM_SLOT_OUT: u64 = TERM_SLOT_SURFACE + gfx_proto::SURFACE_FRAMES as u64;
+
+/// Grant `count` frames of the contiguous run at `base` into consecutive slots from `first`,
+/// read/write. The counterpart of the `MAP` loop each of these programs runs at startup.
+fn grant_run(first: u64, base: u64, count: u64, what: &str) {
+    for k in 0..count {
+        crate::sched::grant_at(
+            first + k,
+            frame_cap(base + k * FRAME_SIZE, Rights::READ.union(Rights::WRITE)),
+        )
+        .unwrap_or_else(|_| panic!("{what}: slot {} was occupied", first + k));
+    }
+}
 
 /// **Wire and spawn the display driver and the painting client.** Returns
 /// `(driver report, client report)`, or `None` if no virtio-gpu function is on the bus.
@@ -25,27 +94,28 @@ pub fn start(driver_image: &'static [u8], client_image: &'static [u8]) -> Option
 
     // --- the client: an endpoint and the pixels. Nothing else, which is the point. ---
     let client_report = crate::sched::create_endpoint();
-    let mut client_maps = [Mapping {
-        va: 0,
-        phys: 0,
-        flags: Flags::user_data(),
-    }; gfx_proto::SURFACE_FRAMES as usize];
-    for (k, m) in client_maps.iter_mut().enumerate() {
-        m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
-        m.phys = surface + k as u64 * FRAME_SIZE;
-    }
+    let budget = crate::untyped::create(MAP_BUDGET_PAGES).expect("no map budget for the client");
     crate::sched::spawn(move || {
+        crate::sched::grant_at(CLIENT_SLOT_REPORT, endpoint_cap(client_report, Rights::WRITE))
+            .expect("client slot 0 was occupied");
+        crate::sched::grant_at(CLIENT_SLOT_DISPLAY, endpoint_cap(display_ep, Rights::WRITE))
+            .expect("client slot 1 was occupied");
+        crate::sched::grant_at(CLIENT_SLOT_BUDGET, untyped_cap(budget))
+            .expect("client slot 2 was occupied");
+        grant_run(
+            CLIENT_SLOT_SURFACE,
+            surface,
+            gfx_proto::SURFACE_FRAMES as u64,
+            "the painting client",
+        );
         run(
             client_image,
             Spawn {
                 arg0: 0,
                 arg1: 0, // no physical address: a client has no business knowing one
                 arg2: 0,
-                grants: &[
-                    endpoint_cap(client_report, Rights::WRITE), // slot 0: its verdict
-                    endpoint_cap(display_ep, Rights::WRITE),    // slot 1: CALL the driver
-                ],
-                maps: &client_maps,
+                grants: &[], // every one of them is placed above, at its own slot
+                maps: &[],
             },
         )
     })
@@ -119,30 +189,32 @@ fn wire_driver(driver_image: &'static [u8], role: u64, arg2: u64) -> Option<(EpI
     let driver_report = crate::sched::create_endpoint();
 
     // --- the driver: the confined transport, the interrupt, the whole DMA region, and the
-    // display endpoint's serving half. ---
-    let mut driver_maps = [Mapping {
-        va: 0,
-        phys: 0,
-        flags: Flags::user_data(),
-    }; DMA_FRAMES as usize];
-    for (k, m) in driver_maps.iter_mut().enumerate() {
-        m.va = DMA_VA + k as u64 * FRAME_SIZE;
-        m.phys = dma + k as u64 * FRAME_SIZE;
-    }
+    // display endpoint's serving half. The region is DMA_FRAMES separate `Frame` capabilities, one
+    // per page, because that is the granularity the object has (see [`DRIVER_SLOT_DMA`]). ---
+    let budget = crate::untyped::create(MAP_BUDGET_PAGES).expect("no map budget for the driver");
+    let intid = d.intid;
     crate::sched::spawn(move || {
+        crate::sched::grant_at(DRIVER_SLOT_REPORT, endpoint_cap(driver_report, Rights::WRITE))
+            .expect("driver slot 0 was occupied");
+        // The completion IRQ.
+        crate::sched::grant_at(DRIVER_SLOT_IRQ, irq_cap(intid)).expect("driver slot 1 was occupied");
+        // The confined transport.
+        crate::sched::grant_at(DRIVER_SLOT_VIRTIO, virtio_cap(vid))
+            .expect("driver slot 2 was occupied");
+        // Serve clients.
+        crate::sched::grant_at(DRIVER_SLOT_DISPLAY, endpoint_cap(display_ep, Rights::READ))
+            .expect("driver slot 3 was occupied");
+        crate::sched::grant_at(DRIVER_SLOT_BUDGET, untyped_cap(budget))
+            .expect("driver slot 4 was occupied");
+        grant_run(DRIVER_SLOT_DMA, dma, DMA_FRAMES, "the display driver");
         run(
             driver_image,
             Spawn {
                 arg0: role, // 0 = the display driver; 1 = the escape attempt
                 arg1: dma,  // the DMA region's PHYSICAL base: descriptors speak physical
                 arg2,       // the escape role's victim frame; unused (0) by the display driver
-                grants: &[
-                    endpoint_cap(driver_report, Rights::WRITE), // slot 0: status
-                    irq_cap(d.intid),                           // slot 1: the completion IRQ
-                    virtio_cap(vid),                            // slot 2: the confined transport
-                    endpoint_cap(display_ep, Rights::READ),     // slot 3: serve clients
-                ],
-                maps: &driver_maps,
+                grants: &[], // every one of them is placed above, at its own slot
+                maps: &[],
             },
         )
     })
@@ -161,10 +233,6 @@ fn wire_driver(driver_image: &'static [u8], role: u64, arg2: u64) -> Option<(EpI
 pub fn start_driver(driver_image: &'static [u8]) -> Option<(EpId, EpId, u64)> {
     wire_driver(driver_image, 0, 0)
 }
-
-/// Where the display terminal maps the page an application writes text into. Must match
-/// `user/src/display_terminal.rs` `OUT_VA`.
-const OUT_VA_TERM: u64 = 0x0000_0000_0068_0000;
 
 /// What the kernel keeps after wiring a display terminal onto the scanout.
 pub struct TerminalWiring {
@@ -225,39 +293,35 @@ pub fn start_terminal(
 
     let term_report = crate::sched::create_endpoint();
     let term = crate::sched::create_endpoint();
-
-    let mut maps = [Mapping {
-        va: 0,
-        phys: 0,
-        flags: Flags::user_data(),
-    }; gfx_proto::SURFACE_FRAMES as usize + 1];
-    for (k, m) in maps
-        .iter_mut()
-        .take(gfx_proto::SURFACE_FRAMES as usize)
-        .enumerate()
-    {
-        m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
-        m.phys = surface + k as u64 * FRAME_SIZE;
-    }
-    maps[gfx_proto::SURFACE_FRAMES as usize] = Mapping {
-        va: OUT_VA_TERM,
-        phys: out,
-        flags: Flags::user_data(),
-    };
+    let budget = crate::untyped::create(MAP_BUDGET_PAGES).expect("no map budget for the terminal");
 
     crate::sched::spawn(move || {
+        crate::sched::grant_at(TERM_SLOT_REPORT, endpoint_cap(term_report, Rights::WRITE))
+            .expect("terminal slot 0 was occupied");
+        // CALL the driver.
+        crate::sched::grant_at(TERM_SLOT_DISPLAY, endpoint_cap(display_ep, Rights::WRITE))
+            .expect("terminal slot 1 was occupied");
+        // Serve the terminal.
+        crate::sched::grant_at(TERM_SLOT_TERM, endpoint_cap(term, Rights::READ))
+            .expect("terminal slot 2 was occupied");
+        crate::sched::grant_at(TERM_SLOT_BUDGET, untyped_cap(budget))
+            .expect("terminal slot 3 was occupied");
+        grant_run(
+            TERM_SLOT_SURFACE,
+            surface,
+            gfx_proto::SURFACE_FRAMES as u64,
+            "the display terminal",
+        );
+        // The page an application writes text into.
+        grant_run(TERM_SLOT_OUT, out, 1, "the display terminal");
         run(
             term_image,
             Spawn {
                 arg0: video_terminal::status::MODE_DISPLAY,
                 arg1: 0, // no physical address: a terminal has no business knowing one
                 arg2: 0,
-                grants: &[
-                    endpoint_cap(term_report, Rights::WRITE), // slot 0: status
-                    endpoint_cap(display_ep, Rights::WRITE),  // slot 1: CALL the driver
-                    endpoint_cap(term, Rights::READ),         // slot 2: serve the terminal
-                ],
-                maps: &maps,
+                grants: &[], // every one of them is placed above, at its own slot
+                maps: &[],
             },
         )
     })
