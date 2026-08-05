@@ -75,6 +75,7 @@ pub mod jobframe;
 pub mod line;
 pub mod nav;
 pub mod spawnproto;
+pub mod word;
 
 use expand::{Expansion, Name, NameSet};
 use line::{Sink, Source};
@@ -718,11 +719,23 @@ pub struct RunSpec<'a> {
     /// anything is spawned. A letter no manifest declares is [`Refusal::NoSuchOption`] there.
     opts: [u8; MAX_FLAGS],
     nopts: usize,
+    /// Which of [`positionals`](RunSpec::positionals) were quoted, in the same order. A quoted word
+    /// is **never a pattern**, whatever bytes are in it, which is the one authority-visible thing
+    /// quoting does: `rm "*.txt"` designates one name and `rm *.txt` designates a set.
+    posq: [bool; MAX_POSITIONALS],
     /// A token nothing can place: a flag-shaped token that is not `--mem`, or one past
     /// [`MAX_POSITIONALS`]. Kept so the shell refuses it rather than silently ignoring authority the
     /// user thought they were granting. A **flag** that fell through to the file position would be
     /// the one way a typo could turn into a capability transfer, so it never reaches that position.
     pub unexpected: Option<&'a [u8]>,
+    /// **The line's quotes do not make sense** ([`Refusal::UnclosedQuote`] or
+    /// [`Refusal::PartlyQuoted`]), carried rather than returned because [`parse_run`] has no error
+    /// channel and because this is a fact about the *line*, not about any program.
+    ///
+    /// [`plan_against_with`] answers it **before** it resolves the program, which is the one place
+    /// the ordering matters: a line whose words cannot be read has no reliable first word either, so
+    /// "no such program" would be a true sentence about a name nobody typed.
+    pub misquoted: Option<Refusal>,
 }
 
 impl<'a> RunSpec<'a> {
@@ -735,6 +748,15 @@ impl<'a> RunSpec<'a> {
     /// The short-option letters typed, in order. Meaningless until a manifest says which exist.
     pub fn options(&self) -> &[u8] {
         &self.opts[..self.nopts]
+    }
+
+    /// **Whether positional `i` was quoted**, which is the whole of what quoting decides about
+    /// authority: a quoted word designates itself and is never expanded, so `rm "*.txt"` hands over
+    /// one name where `rm *.txt` hands over a set.
+    ///
+    /// `false` for an index past the end, because a word that is not there was not quoted.
+    pub fn quoted(&self, i: usize) -> bool {
+        i < self.npos && self.posq[i]
     }
 }
 
@@ -994,7 +1016,13 @@ pub enum Refusal {
     /// See notes/pipes.md: refusing the other order is what keeps a stage's text a slice of the
     /// line in a shell with no allocator.
     WordAfterRedirect,
-    /// **A pipeline stage with no command in it** (`| wc`, `a |`, `a || b`).
+    /// **A pipeline stage with no command in it** (`| wc`, `a |`).
+    ///
+    /// **This listed `a || b` until milestone 67 and no longer can**: `||` is a connector now, and
+    /// the shell splits on it before [`line::split`] ever sees the line, so that spelling is two
+    /// commands rather than a pipeline with a hole in it. A `||` still reaches this function in a
+    /// direct call, which is why the sequence splitter has to run first rather than merely usually
+    /// running first.
     EmptyStage,
     /// **More stages than one line may carry** ([`line::MAX_STAGES`]). A ceiling on processes and
     /// endpoints, not on a buffer.
@@ -1039,6 +1067,26 @@ pub enum Refusal {
     /// file a program is granted. Refused rather than ignored, so authority the user thought they
     /// were granting never silently evaporates.
     Unexpected,
+    // ---- milestone 67's quoting and sequencing. Both are facts about the *line*, decided before
+    // any manifest is consulted, which is why they sit at the end rather than beside the grant
+    // refusals above.
+    /// **A quote that never closes** (`wc 'my notes.txt`). The line is refused whole rather than
+    /// run to the last complete word, because a line missing its end designates something nobody
+    /// typed. See [`word`].
+    UnclosedQuote,
+    /// **A quote that wraps part of a word** (`a"b"`, `'it''s'`). Every token here is a slice of
+    /// the line you typed, so two quoted pieces cannot be joined into one word; the alternative is
+    /// a byte buffer this shell has no allocator for. Refused rather than misread, because both
+    /// readings (join them, or take the quotes literally) would be silently wrong. See [`word`].
+    PartlyQuoted,
+    /// **A connector with nothing on one side of it** (`&& date`, `date &&`). The mirror of
+    /// [`EmptyStage`](Refusal::EmptyStage) one level out: `&&` asks about a command that ran, and
+    /// there is no command.
+    EmptySegment,
+    /// **More commands on one line than the shell will sequence.** A ceiling like
+    /// [`TooManyStages`](Refusal::TooManyStages), and a line that wants more is better written as
+    /// several lines than silently truncated.
+    TooManySegments,
 }
 
 /// The kind of capability a command designated but the shell cannot back. Phase 1 has one; the
@@ -1140,6 +1188,16 @@ impl Refusal {
                 "writes while it reads, and this shell can only wait on one thing at a time: give \
                  it a reader that is not this shell, as in '| wc'"
             }
+            // Milestone 67's. Each names what the line is missing rather than what it did wrong,
+            // and the quoting pair say *why* the shape is the shape: a token here is a slice of
+            // what you typed, so there is nothing to join pieces into.
+            Refusal::UnclosedQuote => "a quote here is never closed, so the line ends mid-name",
+            Refusal::PartlyQuoted => {
+                "quote a whole word: this shell hands a name over as the bytes you typed, so it \
+                 cannot join pieces of one"
+            }
+            Refusal::EmptySegment => "a connector with no command on one side of it",
+            Refusal::TooManySegments => "that is more commands than one line sequences (at most 8)",
         }
     }
 }
@@ -1148,15 +1206,24 @@ impl Refusal {
 /// the filled prefix. A tiny `no_std` tokenizer: no allocation, bounded by `out.len()`. Tokens
 /// past `out.len()` are dropped (a command line with more than a handful of tokens is a mistake,
 /// not a workload).
+///
+/// **Whitespace inside quotes is not a separator** (milestone 67). The quotes stay on the token,
+/// because this function's job is where a token ends and [`word::read`]'s is what it means; a
+/// caller that wants the name rather than the spelling asks for it. That split is what lets
+/// [`parse_run`] refuse `a"b"` in one place instead of every scanner having to.
 pub fn tokenize<'a, 'b>(line: &'a [u8], out: &'b mut [&'a [u8]]) -> &'b [&'a [u8]] {
     let mut n = 0;
     let mut i = 0;
+    let mut c = word::Cursor::new();
     while i < line.len() && n < out.len() {
-        while i < line.len() && line[i].is_ascii_whitespace() {
+        // A whitespace byte can never open or close a quote, so the cursor's state cannot change
+        // while it is being skipped and this loop does not have to step it.
+        while i < line.len() && !c.open() && line[i].is_ascii_whitespace() {
             i += 1;
         }
         let start = i;
-        while i < line.len() && !line[i].is_ascii_whitespace() {
+        while i < line.len() && !(!c.open() && line[i].is_ascii_whitespace()) {
+            c.step(line[i]);
             i += 1;
         }
         if i > start {
@@ -1186,6 +1253,14 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         return Command::Empty;
     }
     let (first, rest) = split_first_word(trimmed);
+    // **A quoted builtin name still names the builtin**, because quoting decides what a word *is*
+    // and this match is about what the word says. A first word whose quotes do not make sense falls
+    // through to [`parse_run`], which is the one place a quoting refusal is raised; raising it here
+    // as well would be a second copy of the same sentence.
+    let first = match word::read(first) {
+        Ok(w) => w.text,
+        Err(_) => return Command::Run(parse_run(trimmed)),
+    };
     match first {
         b"help" => Command::Help,
         b"echo" => Command::Echo(rest),
@@ -1229,27 +1304,46 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
     let mut mem = None;
     let mut prog: &[u8] = b"";
     let mut pos = [&b""[..]; MAX_POSITIONALS];
+    let mut posq = [false; MAX_POSITIONALS];
     let mut npos = 0;
     let mut opts = [0u8; MAX_FLAGS];
     let mut nopts = 0;
     let mut unexpected = None;
+    let mut misquoted = None;
     let mut have_prog = false;
 
     let mut i = 0;
     while i < toks.len() {
-        let t = toks[i];
-        if t == b"--mem" {
+        // **The quotes come off before anything is classified** (milestone 67), because what a
+        // token *is* is what it says: `"--mem"` is a name and `--mem` is an option, and deciding
+        // that after the flag check would make a quoted name into a flag.
+        let (t, quoted) = match word::read(toks[i]) {
+            Ok(w) => (w.text, w.quoted),
+            Err(r) => {
+                if misquoted.is_none() {
+                    misquoted = Some(r);
+                }
+                i += 1;
+                continue;
+            }
+        };
+        if !quoted && t == b"--mem" {
             // The next token is the page count. A missing or non-numeric value leaves mem None,
             // which the plan turns into MemRequired for a program that needs it.
             if i + 1 < toks.len() {
-                mem = parse_u64(toks[i + 1]);
+                // Unquoted first, so `--mem "16"` is the same grant as `--mem 16`. Quoting decides
+                // what a word is and this one has to be a number either way.
+                mem = word::read(toks[i + 1]).ok().and_then(|w| parse_u64(w.text));
                 i += 2;
             } else {
                 i += 1;
             }
             continue;
         }
-        if t.first() == Some(&b'-') {
+        // A quoted token is never an option, which is the same rule one line up: `rm "-r"` names a
+        // file called `-r`, and reading it as the flag that widens a directory grant into a subtree
+        // walk would be the loudest possible version of a typo becoming a capability transfer.
+        if !quoted && t.first() == Some(&b'-') {
             // A cluster of short options (`-r`, `-rf`), kept for the manifest to check. Anything
             // else shaped like a flag is refused: it never becomes a program name and never reaches
             // the file position, because an unknown flag silently designating a file is exactly the
@@ -1270,6 +1364,7 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
             have_prog = true;
         } else if npos < MAX_POSITIONALS {
             pos[npos] = t;
+            posq[npos] = quoted;
             npos += 1;
         } else if unexpected.is_none() {
             unexpected = Some(t);
@@ -1281,10 +1376,12 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
         prog,
         mem,
         pos,
+        posq,
         npos,
         opts,
         nopts,
         unexpected,
+        misquoted,
     }
 }
 
@@ -1331,6 +1428,11 @@ pub fn plan_stage(
     expanded: Expansion,
     streams: Streams,
 ) -> Result<Endowment, Refusal> {
+    // Ahead of resolving the program, for the reason [`RunSpec::misquoted`] states: a line whose
+    // words cannot be read has no reliable first word either.
+    if let Some(r) = run.misquoted {
+        return Err(r);
+    }
     let prog = Prog::from_name(run.prog).ok_or(Refusal::NoSuchProgram)?;
     plan_against_with(run, prog, prog.manifest(), holds, expanded, streams)
 }
@@ -1381,6 +1483,14 @@ pub fn plan_against_with(
     expanded: Expansion,
     streams: Streams,
 ) -> Result<Endowment, Refusal> {
+    // **A line whose quotes do not make sense is answered before anything else** (milestone 67),
+    // because every other refusal below is a sentence about a word, and this is the one that says
+    // the words could not be read. Ordering it after "no such program" would name a program the
+    // user did not type.
+    if let Some(r) = run.misquoted {
+        return Err(r);
+    }
+
     // A flag nothing knows, or a token past what any manifest could hold. Nothing about this
     // program's declaration can rescue it, so it is answered before the slots are filled.
     if run.unexpected.is_some() {
@@ -1790,12 +1900,11 @@ pub fn trim(s: &[u8]) -> &[u8] {
 }
 
 /// Split off the first whitespace-delimited word; return `(word, rest)` where `rest` keeps its
-/// internal spacing (so `echo` can print it verbatim).
+/// internal spacing (so `echo` can print it verbatim). The word keeps its quotes if it had any;
+/// [`parse`] takes them off, because whether the word is a builtin is a question about what it
+/// says rather than about how it was spelled.
 fn split_first_word(s: &[u8]) -> (&[u8], &[u8]) {
-    let mut i = 0;
-    while i < s.len() && !s[i].is_ascii_whitespace() {
-        i += 1;
-    }
+    let mut i = word::span(s, 0, &|b| b.is_ascii_whitespace());
     let word = &s[..i];
     while i < s.len() && s[i].is_ascii_whitespace() {
         i += 1;
@@ -1950,6 +2059,78 @@ mod tests {
 
         let mut two = [&b""[..]; 2];
         assert_eq!(tokenize(b"a b c", &mut two), [&b"a"[..], &b"b"[..]]);
+    }
+
+    /// **Whitespace inside quotes is not a separator** (milestone 67), which is what makes a name
+    /// with a space in it a single token and therefore a single designation.
+    #[test]
+    fn a_quoted_span_is_one_token_however_many_spaces_are_in_it() {
+        let mut out = [&b""[..]; 8];
+        assert_eq!(
+            tokenize(b"wc \"my notes.txt\"", &mut out),
+            [&b"wc"[..], &b"\"my notes.txt\""[..]],
+        );
+        // The quotes stay on here: what a token *means* is `word::read`'s question, and keeping the
+        // two apart is what lets one place refuse `a"b"` for every scanner.
+        assert_eq!(
+            tokenize(b"echo 'a  b' c", &mut out),
+            [&b"echo"[..], &b"'a  b'"[..], &b"c"[..]],
+        );
+    }
+
+    /// The parser takes the quotes off, and what is left is the designation.
+    #[test]
+    fn a_quoted_operand_designates_the_bytes_between_the_quotes() {
+        let r = parse_run(b"wc \"my notes.txt\"");
+        assert_eq!(r.prog, b"wc");
+        assert_eq!(r.positionals(), [&b"my notes.txt"[..]]);
+        assert!(r.quoted(0), "the flag is what stops it being expanded");
+        assert_eq!(r.misquoted, None);
+        // A bare operand is unchanged, so nothing about an ordinary line moved.
+        assert!(!parse_run(b"wc notes.txt").quoted(0));
+    }
+
+    /// **A quoted token is never an option**, which is the sharpest edge quoting has here: `-r` is
+    /// what widens `rm`'s grant from one name to a subtree walk, and a quoted `-r` is a file name.
+    #[test]
+    fn quoting_keeps_a_dash_from_widening_a_grant() {
+        let r = parse_run(b"rm \"-r\"");
+        assert_eq!(r.options(), b"");
+        assert_eq!(r.positionals(), [&b"-r"[..]]);
+        // And unquoted it is still the option it always was.
+        assert_eq!(parse_run(b"rm -r x").options(), b"r");
+        // Same rule for `--mem`, which is an option that moves memory.
+        let r = parse_run(b"budgeter \"--mem\" 16");
+        assert_eq!(r.mem, None);
+        assert_eq!(r.positionals(), [&b"--mem"[..], &b"16"[..]]);
+        // ... while a quoted *value* is still the number it says.
+        assert_eq!(parse_run(b"budgeter --mem \"16\"").mem, Some(16));
+    }
+
+    /// A builtin's name is a word like any other, so quoting it still names it. Nothing about
+    /// authority turns on this; what turns on it is that a reader can quote anything without
+    /// wondering which words are exempt.
+    #[test]
+    fn a_quoted_builtin_name_still_names_the_builtin() {
+        assert!(matches!(parse(b"\"help\""), Command::Help));
+        assert!(matches!(parse(b"'echo' hi"), Command::Echo(b"hi")));
+    }
+
+    /// **A line whose quotes do not make sense is refused before a program is named**, because
+    /// otherwise "no such program" would be a true sentence about a word nobody typed.
+    #[test]
+    fn a_misquoted_line_is_refused_ahead_of_everything_else() {
+        let r = parse_run(b"wc 'my notes.txt");
+        assert_eq!(r.misquoted, Some(Refusal::UnclosedQuote));
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::UnclosedQuote));
+        // Even when the program does not exist, so the ordering is real rather than incidental.
+        let r = parse_run(b"nosuchprog 'x");
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::UnclosedQuote));
+        // And the joining case.
+        assert_eq!(
+            parse_run(b"wc a\"b\"").misquoted,
+            Some(Refusal::PartlyQuoted)
+        );
     }
 
     /// `--mem` at the very end of the line reads no value, and reads no memory past the token

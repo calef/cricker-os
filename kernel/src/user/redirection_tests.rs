@@ -9,11 +9,19 @@ const DONE: &[u8] = b"== redirections done\n";
 /// The script's transcript, run **once** and shared by every assertion below, for
 /// [`pipeline_tests`]'s reason: the assertions are about one run of one script, and re-running
 /// it per test would be the same measurement four times rather than four measurements.
-static TRANSCRIPT: spin::Mutex<Option<([u8; 3072], usize)>> = spin::Mutex::new(None);
+static TRANSCRIPT: spin::Mutex<Option<([u8; TRANSCRIPT_MAX], usize)>> = spin::Mutex::new(None);
+
+/// How much of the script's transcript the assertions read. Level with
+/// `pipeline_service::TRANSCRIPT`, because a smaller number here would truncate the answers that
+/// come **last**, silently, and the last answers are milestone 67's (see [`language_tests`]).
+pub(super) const TRANSCRIPT_MAX: usize = 8192;
 
 /// Run the script if nothing has yet, and hand back everything the shell printed. `None` when
 /// this boot has no RedoxFS disk attached, which is the same skip every FS test takes.
-fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
+/// Shared with [`language_tests`], which asserts about the tail of this same script: **one shell
+/// runs it, once**, and a second module wiring its own would be a second live process for no new
+/// coverage.
+pub(super) fn transcript(out: &mut [u8; TRANSCRIPT_MAX]) -> Option<usize> {
     let mut cache = TRANSCRIPT.lock();
     if cache.is_none() {
         let dir = fs_service::narrow_dir(
@@ -27,7 +35,7 @@ fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
         let Some(w) = pipeline_service::start_redirecting(dir, dir::ALL) else {
             panic!("no swish program in the initrd archive, or no memory to wire one");
         };
-        let mut buf = [0u8; 3072];
+        let mut buf = [0u8; TRANSCRIPT_MAX];
         let n = pipeline_service::transcript(&w, DONE, &mut buf);
         *cache = Some((buf, n));
     }
@@ -75,7 +83,7 @@ fn listing_counts(printed: &[u8]) -> (u64, u64, u64) {
 /// and not a sink process's.
 #[test_case]
 fn one_builtin_two_destinations_and_the_same_bytes() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -122,7 +130,7 @@ fn one_builtin_two_destinations_and_the_same_bytes() {
 /// `fs_file_caretaker` serves. See notes/grant-expression.md.
 #[test_case]
 fn naming_a_file_to_a_reader_is_the_operator_left_out() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -181,7 +189,7 @@ fn a_named_file_reaches_the_head_of_a_pipeline() {
 /// byte count `wc` reports for the file has to be the length of what was printed.
 #[test_case]
 fn one_program_two_destinations_and_the_same_bytes() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -233,7 +241,7 @@ fn one_program_two_destinations_and_the_same_bytes() {
 /// file, which is the property `>>` exists to be the opposite of.
 #[test_case]
 fn append_keeps_what_truncate_throws_away() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -283,7 +291,7 @@ fn append_keeps_what_truncate_throws_away() {
 /// program with bytes and not a shell with a directory.
 #[test_case]
 fn a_redirection_that_cannot_be_backed_is_still_refused() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
