@@ -291,7 +291,10 @@ pub fn bring_up_secondaries() {
     for id in 0..MAX_CPUS {
         if id != cpu::id() {
             let (b, t) = secondary_stack_span(id);
-            crate::stack::paint(b, t);
+            // SAFETY: a secondary's stack slot is `.bss`, mapped by the kernel's own image, and no
+            // `CPU_ON` has been issued yet, so nothing has ever run on it. The `id != cpu::id()`
+            // skips the boot core, which is on the linker-script stack and is live right now.
+            unsafe { crate::stack::paint(b, t) };
         }
     }
 

@@ -105,9 +105,12 @@ fn w8(off: u64, v: u8) {
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u8, v) }
 }
 fn w16(off: u64, v: u16) {
-    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
-    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
-    // bad slot or method; it gets an error back.
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
+    //
+    // Milestone 112 found this comment describing `invoke` and capability validation, pasted from
+    // `mr`/`mw` below onto a `write_volatile` into the DMA page. It said nothing about the operation
+    // it sat over, and both unsafe lints were satisfied throughout, because a comment exists and
+    // that is the entire property `undocumented_unsafe_blocks` checks.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u16, v) }
 }
 
