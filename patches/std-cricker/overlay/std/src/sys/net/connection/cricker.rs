@@ -14,8 +14,12 @@
 //! can hold several sockets (up to `MAX_SOCKETS`) but can only ever have one operation in flight.
 //!
 //! ## What is honestly Unsupported, and why
-//! - **`TcpListener`.** The contract has no LISTEN/accept verb yet (notes/net.md: inbound
-//!   connections are future work). `bind` returns `Unsupported`.
+//! - **`TcpListener`.** The contract **does** have LISTEN and ACCEPT since milestone 107, and this
+//!   is now a gap in the PAL rather than in the contract: `bind` still returns `Unsupported`. What
+//!   it needs is small and mechanical (`bind` -> `OP_LISTEN` on a socket id this PAL allocates,
+//!   `accept` -> `OP_ACCEPT` into a second id with a frame attached), plus a **listen grant** on the
+//!   stack this program is spawned with, since a net server refuses every port it was not granted.
+//!   See notes/net.md, "The inbound half".
 //! - **Non-blocking mode and read/write timeouts.** The contract is blocking-only; there is no
 //!   poll verb. `set_nonblocking(true)` and `set_*_timeout(Some(..))` return `Unsupported`;
 //!   `set_nonblocking(false)` and the `None` timeouts (which mean "block") succeed.
@@ -545,7 +549,8 @@ impl fmt::Debug for TcpStream {
     }
 }
 
-// --- TcpListener: no LISTEN verb in the contract (notes/net.md) -------------------------------
+// --- TcpListener: the contract has LISTEN/ACCEPT (milestone 107); this PAL does not bind them yet.
+// --- See the Unsupported list at the top for what binding them takes. (notes/net.md) ------------
 
 pub struct TcpListener(!);
 

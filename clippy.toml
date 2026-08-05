@@ -39,6 +39,11 @@ doc-valid-idents = [
     "SMMUv3",
     "GICv2",
     "NTPv4",
+    # [MS-NLMP]'s name for the protocol itself (milestone 65). The values inside it
+    # (`NTOWFv2`, `NTProofStr`, `SessionBaseKey`) are backticked in the source instead: they name
+    # fields a reader can look up in the specification, which is the identifier side of this
+    # file's own distinction, where the protocol's name is the proper-noun side.
+    "NTLMv2",
     "INTx",
     "AArch64",
     "SError",

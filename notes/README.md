@@ -343,8 +343,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   operation (this kernel has one wait point, so the provision endpoint is deleted at both ends
   rather than guarded), why we depend on RustCrypto's `argon2` rather than write or vendor one and
   run the RFC 9106 vectors to prove it, the debug-build overflow panic our exhaustive corruption
-  test found inside that dependency, and an honest list of what this does not protect against,
-  starting with the fact that it cannot serve NTLMv2 and why.
+  test found inside that dependency, and an honest list of what this does not protect against.
+- [NTLM](ntlm.md): milestone 65, the other half of the same store: **hold the key, expose the
+  operation, never the key.** NTLMv2 does not verify a presented secret, so "secret in, boolean
+  out" does not describe it: the server holds a key and computes a MAC, which is why this needed a
+  milestone rather than another opcode. Why the store holds `NTOWFv2` rather than the NT hash (the
+  account name and domain are bound at provisioning, so a caller cannot choose half the key
+  derivation), what crosses the shared frame and what never does, why the `SessionBaseKey` is
+  released only against a proof that verified, and why the client-side operation the roadmap named
+  is deliberately absent. Also three broken primitives shipped on purpose with their blast radius
+  stated, the published vectors from RFC 1320, RFC 2202 and [MS-NLMP] §4.2.4 that pin them, the
+  four-zero transcription error the machine caught, and an honest `BUGS` list starting with
+  revocation being per holder rather than per secret.
 - [The framebuffer contract](framebuffer-contract.md): milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the
@@ -483,7 +493,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   other candidate (`-D warnings` on `script/verify`) finds **none** of what is there, `cargo kani`
   driving a rustc where no `clippy::` lint exists. It found 26 warnings in 9 crates, 13 of them
   undocumented `unsafe` (the hand count of 11 had missed two `unsafe impl`s) and 13 with nothing to
-  do with unsafe at all.
+  do with unsafe at all. The four safe fns are **decided** by milestone 112: three become `unsafe fn`
+  and `virtio::pread` does not, because it is private and the compiler closes its caller set, which
+  is what a module invariant is. The test that separates them is not "does the comment say caller"
+  but **could the parameter have been produced without meeting the obligation** (`endpoint_of` takes
+  `&Scheduler`, which only the lock guard can mint, so its identical-sounding sentence binds). A
+  newtype cannot rescue the context switch: the dangerous half of the obligation is liveness and a
+  `Copy` wrapper launders it. Taking `pread`'s comment seriously found a **real bug**, a userspace
+  driver able to ring a virtio queue it never set up and make the kernel store through
+  `phys_to_virt(0)`. The honest verdict on the headline question is that it **cannot be a gate**
+  (33 real hits, 19 of them legitimate, and the pattern misses "as above" and the passive voice); the
+  adjacent property that can be is now one: every `unsafe fn` has a `# Safety` section, checked in
+  `script/lint`, which found one violation.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,

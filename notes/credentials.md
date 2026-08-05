@@ -7,6 +7,15 @@ it for every salt it uses.
 The contract is `crates/cred_proto`, the logic is `crates/cred`, the service is
 `user/src/credentialer.rs`, and its clients are `user/src/credentialer_test_client.rs`.
 
+**Milestone 65 generalised this into a secrets service, in place.** The same process now holds two
+kinds of secret and serves an operation for each: a password verifier, described here, and an NTLM
+key, described in [NTLM](ntlm.md). It happened in place rather than in a new program because the
+milestone's own rule is that the credentialer becomes *an operation in* the secrets service, and a
+second process holding secrets is precisely what the design exists to avoid. The program's **name
+lags its job** as a result, and a rename is Chris's call. Where this file says "the credential
+service", read "the secrets service"; where it describes the phases, the seal and the wipe, it is
+still exactly right.
+
 ## The problem this exists to solve
 
 Milestone 55 wants a Mac to authenticate against an SMB share. SMB requires an identity and a
@@ -33,6 +42,7 @@ operation, not by object**.
 | 56 | the virtio-rng | **obtain** bytes, without reaching the device |
 | 56 | the credential store | **use** a credential, without reading it |
 | 56 | the credential store | **write** it, only during a phase that ends |
+| 65 | an NTLM key | **compute a proof** with it, without reading it |
 
 ## The shape
 
@@ -50,7 +60,8 @@ Two endpoints. Two phases. The second phase never ends and the first one never c
    salt drawn from the entropy service. `SEAL` ends the phase.
 2. **Delete.** The service `cap_delete`s its receive end. The provisioner drops its send end.
    Between them, nothing in the system can name the object any more.
-3. **Verify.** The service blocks on the verify endpoint, forever. One opcode. Yes or no.
+3. **Serve.** The service blocks on the verify endpoint, forever. Two opcodes since milestone 65,
+   one per kind of secret. Yes or no, and on an NTLM yes, a session key in the shared page.
 
 ### Why two phases and not two operations
 
@@ -312,21 +323,30 @@ Guest tests (`kernel::user::credential_tests`, on aarch64 **and** riscv64, same 
 Named here rather than in a tracker, because a reader who meets the feature should meet its limits
 in the same place.
 
+- **Revocation is per holder, not per secret.** Destroying a client's endpoint ends its access,
+  which is the thing this design buys and a stored hash could never offer. Revoking one *secret* is
+  a different question and this service cannot answer it: the store is sealed, so there is no
+  object through which a record could be removed, which is the same property that makes the seal
+  worth having (see "why two phases and not two operations" above). Rotating one secret means
+  restarting the service and reprovisioning, which restarts every other secret with it. A
+  deployment needing finer granularity runs more than one service.
 - **Nothing survives a reboot.** The store is memory only, provisioned at boot. Secrets at rest is
   the open question and it is the same chicken-and-egg as milestone 51's NTS problem: encrypted
   under what key, held where? `cred::Record` has a versioned encoding with a round-trip test
   precisely so that question has a starting point, but nothing in the tree writes one to a disk and
   this note does not imply a durability we do not have.
-- **This cannot serve NTLMv2, and that is a real gap rather than a detail.** NTLMv2's
-  challenge-response requires the server to hold the **NT hash** (MD4 of the UTF-16LE password) and
-  compute HMAC-MD5 over it. An Argon2id tag cannot produce that; the two derivations are different
-  functions of the same password. So milestone 55 needs the credential service to hold a *second*
-  derivation and serve a *second* operation ("here is a challenge, give me the response"), which is
-  the use-not-read pattern this file is built for but is not code that exists yet. It also means
-  shipping MD4 and MD5, known-broken primitives, on purpose and for wire compatibility. **That is
-  the next piece of this milestone and it was deliberately not started here**, because the
-  credential primitive and the SMB compatibility layer are separable and only one of them requires
-  choosing to ship a broken hash.
+- ~~**This cannot serve NTLMv2.**~~ **Closed by milestone 65**, and the gap turned out to be
+  shaped differently than this entry predicted. The prediction was a second operation of the form
+  "here is a challenge, give me the response"; what shipped folds the comparison in, because the
+  thing needing it is an SMB *server* and a server that gets the expected proof can compare it
+  itself. A record now carries an `NTOWFv2` beside its Argon2id tag, `put_ntlm` derives both from
+  one password, and MD4 and MD5 are in the tree on purpose. See [NTLM](ntlm.md) for what crosses
+  the boundary, what never does, and the cost of storing a password-equivalent key at all.
+- **The store holds six secrets**, three logins and three shares, and that is a compiled-in
+  constant rather than a policy anything reads. It is sized to the requirement
+  (design/roadmap/56-secrets-and-entropy.md's three family members, each of whom also has a Time
+  Machine share), which is what makes "the seventh is refused" a thing the tests show rather than a
+  branch nothing reaches. A real deployment with a fourth person edits a constant and rebuilds.
 - **One verify page means one client at a time.** The page is per service, not per channel, so two
   clients sharing the endpoint would share the frame each writes its presented secret into. Nothing
   detects that. `fs_proto`'s answer (one page per channel) is the shape to copy when a second client
