@@ -42,8 +42,13 @@ pub fn verify(name: &str, bytes: &[u8]) -> Result<(), measured_boot::VerifyError
     measured_boot::verify(TRUST_ROOT, name, bytes)
 }
 
-/// **Measure the boot program, or halt.** Called with the archive entry's bytes immediately before
-/// the kernel builds its address space and drops to EL0/U-mode at its entry.
+/// **Measure an archive entry, or halt.** Called with the entry's bytes immediately before the
+/// kernel builds init's address space and drops to EL0/U-mode at its entry.
+///
+/// Two entries reach it: the boot program itself, and (since milestone 104) the measurement table
+/// init loads everything else against, through [`require_program_measurements`]. The wording of the
+/// diagnostics is deliberately about *entries* rather than *programs*, because one of them is not a
+/// program.
 ///
 /// A mismatch is not recoverable and must not be recovered from: there is no second init to fall
 /// back to, and running the wrong one is precisely the thing being prevented. So this prints what it
@@ -57,7 +62,7 @@ pub fn require(name: &str, bytes: &[u8]) {
         Err(measured_boot::VerifyError::Unmeasured) => {
             crate::println!();
             crate::println!(
-                "  MEASURED BOOT REFUSED: no measurement for the boot program '{name}'"
+                "  MEASURED BOOT REFUSED: no measurement for the archive entry '{name}'"
             );
             crate::println!("    measured sha256 {}", Hex(&measured));
             crate::println!(
@@ -65,19 +70,19 @@ pub fn require(name: &str, bytes: &[u8]) {
                 TRUST_ROOT.len()
             );
             crate::println!("    build's measurement step, so it can vouch for nothing.");
-            crate::println!("  halting rather than entering an unverified init.");
+            crate::println!("  halting rather than handing the archive to init.");
             crate::arch::halt();
         }
         Err(measured_boot::VerifyError::Mismatch) => {
             crate::println!();
             crate::println!(
-                "  MEASURED BOOT REFUSED: '{name}' is not the program this kernel runs"
+                "  MEASURED BOOT REFUSED: '{name}' is not what this kernel image was built against"
             );
             if let Some(want) = measured_boot::expected(TRUST_ROOT, name) {
                 crate::println!("    expected sha256 {}", Hex(&want));
             }
             crate::println!("    measured sha256 {}", Hex(&measured));
-            crate::println!("  halting rather than entering an unverified init.");
+            crate::println!("  halting rather than handing the archive to init.");
             crate::arch::halt();
         }
     }
