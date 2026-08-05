@@ -795,8 +795,8 @@ fn redirecting(rights: u64) -> ! {
         // **And the same designation inside a pipeline**, which is the line that used to answer
         // nothing at all: the operand is resolved by the planner, and `pipeline` used to wire the
         // head's input off the line instead of off the plan, so the stage was spawned with an empty
-        // input slot and blocked on a receive forever. Its answer has to be the length of the line
-        // above it.
+        // input slot, where a `recv` answers `NoSuchSlot` rather than blocking: the stage counted
+        // an empty stream and said so. Its answer has to be the length of the line above it.
         b"wc out.txt | wc",
         // The same unmodified `date`, twice, to two destinations.
         b"date",
@@ -1520,7 +1520,8 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
 
     // **The head stage's input file comes off the plan, not off the line**, and not reading it here
     // was the bug milestone 40's viewer found: `doc page.md | wc` planned correctly, spawned the
-    // head with an empty input slot, and left it blocked on a receive nobody would ever answer.
+    // head with an empty input slot, where a `recv` answers `NoSuchSlot` rather than blocking, so
+    // the stage counted an empty stream and reported it. A wrong answer, not a hang.
     //
     // An input operand is a trailing positional at a program that declares an input
     // (`grant_plan::plan_against_with`), which is the same rule that makes `wc report.txt` mean

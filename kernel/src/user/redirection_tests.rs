@@ -144,8 +144,12 @@ fn naming_a_file_to_a_reader_is_the_operator_left_out() {
 /// `wc out.txt | wc` puts the operand on the **head** of a pipeline. The name is resolved by the
 /// planner (deciding that a trailing positional is a stream needs the manifest), and the shell used
 /// to wire the head's input off the `Line`, which has no `<` on it. So the planned source was
-/// thrown away, the stage was spawned with an empty input slot, and it blocked on a receive nobody
-/// was ever going to answer.
+/// thrown away and the stage was spawned with an **empty** input slot.
+///
+/// It did not hang, which is what made it hard to see. A `recv` on an empty slot answers
+/// `NoSuchSlot` rather than blocking, the error word decodes as `sink_proto::Msg::Malformed`, and
+/// every reader in this tree treats a malformed message as the end of the document. So the stage
+/// ran to completion over nothing and reported an honest count of an empty stream.
 ///
 /// The assertion is derived from the line above it rather than from a constant: the second `wc`
 /// counts what the first one printed, so its byte total is the length of that answer with the

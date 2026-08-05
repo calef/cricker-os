@@ -607,7 +607,7 @@ it did three things and none of them showed a page:
 
 | line | what happened | what it was |
 |---|---|---|
-| `doc page.md \| wc` | `0 0 0` | a bug: the named file never reached the stage |
+| `doc page.md \| wc` | `0 0 0` | a bug, and a **silent wrong answer** rather than a failure |
 | `doc page.md > out.txt` | `0 0 0` | the same bug |
 | `doc page.md` | the prompt never came back | **not a bug** |
 
@@ -620,8 +620,21 @@ operator left out, and the resolution is the **planner's**, because deciding tha
 positional is a stream needs the manifest (`InputSpec::Required` plus a bare token, in
 `grant_plan::plan_against_with`). `run` read that answer off the plan. `pipeline` did not: it wired
 the head's input off the `Line`, which has no `<` on it, so a planned `Source::File` was thrown away
-and the stage was spawned with an empty input slot. It then blocked on a receive nobody was ever
-going to answer, and `wc` at the far end faithfully reported zero of everything.
+and the stage was spawned with an **empty** input slot.
+
+**It did not hang, and that is the part worth keeping.** A `recv` on an empty slot answers
+`NoSuchSlot` rather than blocking; the error word's top byte is an opcode `sink_proto` does not
+define, so it decodes as `Msg::Malformed`; and every reader in this tree treats a malformed message
+as the end of the document, because a page silently missing a paragraph is worse than a page that
+stops. Three correct local decisions compose into a stage that runs to completion over nothing and
+reports an honest count of an empty stream. `doc page.md | wc` answering `0 0 0` is not a viewer
+that failed to render, it is a viewer that rendered the empty document it was given.
+
+That is why nothing caught it, and it is the shape to recognise: **an empty capability slot on a
+byte stream reads as an empty stream**, everywhere, by construction. There is no reader in this
+system that can tell "nobody granted me an input" from "the input was empty", because the sink
+contract deliberately gives a reader nothing to ask with. The check that can tell them apart is the
+shell's, at plan time, which is where `InputSpec` already lives.
 
 Nothing caught it because the only line anybody had typed with an operand *and* an operator on it
 was `wc out.txt`, which is one stage and goes down `run`. `wc out.txt | wc` is now in the guest test
@@ -1025,9 +1038,23 @@ $ wc gate.txt | wc
   1 3 7
 ```
 
-The failure it replaces is the one worth recognising, because it does not look like a failure: the
-head stage was spawned with an empty input slot and blocked on a receive, so this line used to print
-`0 0 0`. A pipeline that reports zero of everything is a pipeline in which nothing was ever fed.
+The failure it replaces is the one worth recognising, because it does not look like a failure. The
+head stage was spawned with an empty input slot, a `recv` there answers `NoSuchSlot` instead of
+blocking, and that reads as end of document, so this line used to print `0 0 0` and mean it. **A
+pipeline that reports zero of everything is a pipeline in which nothing was ever fed**, and it is
+the only symptom an empty input slot has.
+
+Three stages, to show the operand is the *head*'s and travels no further (`1 12 70` plus a newline
+is eight bytes, and `1 3 8` plus a newline is six):
+
+```text
+$ wc motd
+  1 12 70
+$ wc motd | wc
+  1 3 8
+$ wc motd | wc | wc
+  1 3 6
+```
 
 ## What the guest test proves, on both ISAs
 

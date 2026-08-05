@@ -2889,7 +2889,9 @@ mod tests {
     ///
     /// This is the fact the shell was dropping. It planned the stage correctly and then wired the
     /// pipeline off the **line**, which has no `<` on it, so the head was spawned with an empty
-    /// input slot and blocked on a receive that nothing was ever going to answer.
+    /// input slot. A `recv` there answers `NoSuchSlot` rather than blocking and every reader reads
+    /// that as end of document, so the stage reported an empty stream: a wrong answer, not a hang,
+    /// which is why nothing caught it.
     #[test]
     fn an_input_operand_survives_a_pipeline() {
         let (p, n) = plan_line(b"wc report.txt | wc", WITH_DIR).unwrap();
