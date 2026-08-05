@@ -270,6 +270,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
   redirection is being written.
+- [`swish` the language](swish-language.md): milestone 67: quoting, sequencing, and the one design
+  fork inside them. **Quoting was an authority gap rather than a convenience**: a file called `my
+  notes.txt` could not be named, and a resource you cannot name is a resource you cannot grant. It
+  **delimits a word and never rewrites one**, because every token here is a slice of the line you
+  typed and a shell with no allocator has nothing to join pieces into, so there is no backslash
+  escape and `a"b"` is refused rather than misread. The one thing it does to authority is *narrow*:
+  it suppresses expansion, so `rm "*.txt"` hands over one name where `rm *.txt` hands over the set,
+  and it stops `-r` widening a directory grant into a subtree walk. Sequencing splits **outermost**,
+  which is bash's binding and also what keeps a pipeline region scoped to its segment. And the fork:
+  **a refusal is not an error and gets its own status**, because "did my command fail" and "was I
+  able to ask" are different questions and Unix cannot tell them apart.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
@@ -525,6 +536,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The RISC-V TLB shootdown](riscv-tlb-shootdown.md): milestone 58: RISC-V carried an ASID it got
+  no benefit from, because every context switch threw the whole TLB away. Why `sfence.vma` needs a
+  distributed protocol (SBI RFENCE, and its acknowledgement) where `tlbi aside1is` needs one
+  instruction, why removing the flush is gated on a *measurement* of `satp.ASID`'s width rather than
+  on the specification, the test that fails without the shootdown, and the honest benchmark: the win
+  is invisible under icount and needs the board.
 - [init, and loading a program from userspace](init-and-loading.md): milestone 19d: the ELF
   parser leaves the kernel for init, an ordinary confined program. How init loads a child through
   the granular verbs (retype, copy-and-map each segment, endow, configure, start), why
