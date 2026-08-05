@@ -122,6 +122,13 @@ fn commit(seq: &mut u32, damage: compositor::Rect) {
     // The sequence bump must be visible after the pixels and the rectangle it describes, or the
     // compositor could composite a frame we have not finished writing. A release fence, portable
     // across both ISAs, rather than arch-specific asm in a userspace program.
+    //
+    // PAIR: `serve_frame` in user/src/compositor.rs, which reads `SEQ` and then the four damage
+    // fields. Milestone 43's audit found that reader had no fence at all (finding 7), and **this is
+    // the one publish in the subsystem the IPC rendezvous does not cover**: the doorbell is shared,
+    // so `serve_frame` rescans *every* client's control page on any client's `COMMIT`, and only the
+    // caller is blocked. A second window mid-`commit` on another core is read with nothing ordering
+    // the compositor's own loads. See notes/memory-ordering.md.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     wr32(CTL_VA + ctl::SEQ, *seq);
     if ring(compositor::proto::COMMIT) != 0 {

@@ -229,6 +229,12 @@ impl ClockPage {
             let off = self.word(W_OFFSET).load(Ordering::Relaxed);
             // Keep the two data loads above the second sequence load. Without this the compiler or
             // the machine may reorder them after it, and the check would validate nothing.
+            //
+            // PAIR: the writer's `W_SEQ.store(claimed + 2, Ordering::Release)` at the end of
+            // `publish`, below in this file. **The only protocol in the tree where both halves must
+            // be here**, because a reader is in a different address space and reaches this page with
+            // no syscall at all: there is no IPC rendezvous underneath to supply the edge the way
+            // there is for every other shared page (notes/memory-ordering.md).
             fence(Ordering::Acquire);
             if self.word(W_SEQ).load(Ordering::Relaxed) == s1 {
                 return Reading {

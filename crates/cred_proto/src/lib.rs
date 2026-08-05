@@ -219,6 +219,12 @@ pub fn wipe(page: &mut [u8]) {
         // SAFETY: `b` is a live, unique, aligned reference to one byte of the caller's slice.
         unsafe { core::ptr::write_volatile(b, 0) };
     }
+    // PAIR: none, deliberately, and that is the point of saying so here. This is a **compiler**
+    // fence: it emits no instruction and orders nothing between cores, so it has no acquire side and
+    // wants none. Its job is to stop the optimiser sinking the wipe below whatever the caller does
+    // next; the `write_volatile` above is what stops the wipe being deleted outright. What orders
+    // this page against the other party is the `CALL` rendezvous, not this line. A reader who took
+    // it for `fence(SeqCst)` would credit it with cross-core ordering it does not have.
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
