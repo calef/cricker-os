@@ -139,13 +139,22 @@ pub enum Prog {
     /// out, resolved by [`plan_against_with`] into a [`line::Source::File`]. See that function for
     /// why what the child holds is narrower than a per-file capability rather than the same thing.
     Wc,
+    /// **Render markdown for a terminal** (milestone 40, `user/src/doc.rs`, notes/manual.md).
+    ///
+    /// The same manifest as [`Prog::Wc`]: a stream in, a stream out, and nothing else. `doc
+    /// notes/glob.md` reads like Unix's `man` and is not: the name is a designation the *shell*
+    /// resolves against the directory it holds, and what arrives at the program is bytes. A viewer
+    /// that opened the page it renders would be a viewer that could open any page.
+    ///
+    /// **Provisional name.**
+    Doc,
 }
 
 /// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
 /// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
 /// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
 /// can be written against one number.
-pub const PROG_COUNT: usize = 7;
+pub const PROG_COUNT: usize = 8;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
@@ -164,6 +173,7 @@ impl Prog {
             // first.
             b"rm" => Some(Prog::Rm),
             b"wc" => Some(Prog::Wc),
+            b"doc" => Some(Prog::Doc),
             _ => None,
         }
     }
@@ -178,6 +188,7 @@ impl Prog {
             Prog::Date => "date",
             Prog::Rm => "rm",
             Prog::Wc => "wc",
+            Prog::Doc => "doc",
         }
     }
 
@@ -191,6 +202,7 @@ impl Prog {
             Prog::Date => 4,
             Prog::Rm => 5,
             Prog::Wc => 6,
+            Prog::Doc => 7,
         }
     }
 
@@ -204,6 +216,7 @@ impl Prog {
             4 => Some(Prog::Date),
             5 => Some(Prog::Rm),
             6 => Some(Prog::Wc),
+            7 => Some(Prog::Doc),
             _ => None,
         }
     }
@@ -347,6 +360,23 @@ impl Prog {
             // it is empty: no argument, no memory, no file, no directory, no options. What it does
             // is entirely decided by what is in its input slot, which is the point of having it.
             Prog::Wc => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                output: OutputSpec::Bytes,
+                input: InputSpec::Required,
+                reports: true,
+                interruptible: false,
+                clock: false,
+            },
+            // **The viewer**, and the second program whose whole manifest is "a stream in, a stream
+            // out". That it is identical to `wc`'s is the finding rather than a coincidence: a
+            // documentation viewer is the program a reader most expects to go and fetch things, and
+            // this one is handed bytes like every other stage. No memory grant, because the renderer
+            // never allocates.
+            Prog::Doc => Manifest {
                 arg: ArgSpec::Forbidden,
                 mem: MemSpec::Forbidden,
                 file: FileSpec::Forbidden,

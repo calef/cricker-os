@@ -10,6 +10,11 @@ workspace = true
 
 [dependencies]
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+# The documentation store (milestone 40). The index is built HERE, on a host with a heap and no
+# constraints, because the guest has neither: there is no directory iteration in this system, so
+# "what pages exist" cannot be discovered at runtime and has to be computed at image time. Only the
+# writer is behind the `builder` feature; the reader that runs confined allocates nothing.
+manual = { version = "0.1.0", path = "../crates/manual", features = ["builder"] }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 # The partition table (milestone 57's write half): the post-run check reads the table the GUEST
 # wrote, from outside the guest, with the same parser the guest used and the same one whose host

@@ -251,6 +251,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   runs against a **third**: `user/src/terminal_sink_caretaker.rs` makes the terminal a sink, which is a
   separate process for a capability reason (its endpoint also carries `OP_READLINE`) and which
   needed a register-only `OP_PRINT`, because `OP_WRITE` reads from the one client page init maps.
+- [The manual](manual.md): milestone 40's documentation service. A streaming markdown renderer that
+  allocates nothing, because `doc` reads its input as sixteen-byte sink messages and a renderer that
+  held a document would need a memory grant to do it. Why the roadmap's `pulldown-cmark` was
+  reversed (it is not `no_std`, and a std program on this system has no stdin and no argv, so it
+  could neither page nor be told which page to show), and what replaces a conformance suite when the
+  corpus is closed and in-tree: every letter of every note reaching the output, in order, checked on
+  the real files. The viewer designates **nothing** (its manifest is byte-identical to `wc`'s), the
+  index is host-built because enumeration is authority, and its layout is bent around a reader that
+  holds exactly one 4 KiB page. The costs are measured and one of them is unflattering: the index is
+  1.55x the markdown it indexes.
 - [Pipes and redirection](pipes.md): milestone 50's operators lane: `>`, `<` and `|` at the prompt,
   which turn out to be one substitution rather than three features. The grammar and its three
   non-Unix refusals; the input slot's shape, decided as *the sink contract received rather than
