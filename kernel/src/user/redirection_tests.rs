@@ -139,6 +139,37 @@ fn naming_a_file_to_a_reader_is_the_operator_left_out() {
     assert_eq!(operand, listing_counts(answer(t, b"ls")));
 }
 
+/// **A named file reaches a stage of a pipeline**, which is the fix this lane exists for.
+///
+/// `wc out.txt | wc` puts the operand on the **head** of a pipeline. The name is resolved by the
+/// planner (deciding that a trailing positional is a stream needs the manifest), and the shell used
+/// to wire the head's input off the `Line`, which has no `<` on it. So the planned source was
+/// thrown away, the stage was spawned with an empty input slot, and it blocked on a receive nobody
+/// was ever going to answer.
+///
+/// The assertion is derived from the line above it rather than from a constant: the second `wc`
+/// counts what the first one printed, so its byte total is the length of that answer with the
+/// prompt's two-space indent taken off. A head stage fed nothing would report `0 0 0`, which is
+/// exactly what milestone 40's viewer got and what made the bug look like a viewer bug.
+#[test_case]
+fn a_named_file_reaches_the_head_of_a_pipeline() {
+    let mut buf = [0u8; 3072];
+    let Some(n) = transcript(&mut buf) else {
+        crate::println!("    (no RedoxFS disk attached; skipping)");
+        return;
+    };
+    let t = &buf[..n];
+    let printed = &answer(t, b"wc out.txt")[2..];
+    let piped = counts(&answer(t, b"wc out.txt | wc")[2..]);
+    assert_eq!(
+        piped,
+        (1, 3, printed.len() as u64),
+        "the head stage counted {:?} rather than {:?}",
+        piped,
+        core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+    );
+}
+
 /// **And the same claim for a program's output**, which is the half `>` shares with `|`.
 ///
 /// `date` is spawned twice from the same ELF. The first time the shell prints what arrives on

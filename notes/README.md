@@ -263,7 +263,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   destinations. And the finding that finished it: the file behind a `>` is **the shell's own
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
-  redirection is being written.
+  redirection is being written. Since 2026-08-04 it also holds the constraint the second reader
+  found: **a process has one wait point**, so a shell that feeds a stage cannot also receive from
+  it, and a line whose bytes all come from the shell needs one stage that reads to the end. No
+  interleaving schedule fixes that, and the two shapes that would (a pull-based source, a buffering
+  component) are both design forks and are weighed there.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the

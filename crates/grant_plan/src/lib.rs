@@ -2926,7 +2926,9 @@ mod tests {
 
     /// Plan one stage against an explicit manifest, with the operators' answer folded in.
     fn plan_as(m: Manifest, text: &[u8], streams: Streams) -> Endowment {
-        let Command::Run(r) = parse(text) else { panic!() };
+        let Command::Run(r) = parse(text) else {
+            panic!()
+        };
         plan_against_with(&r, Prog::Wc, m, WITH_DIR, Expansion::none(), streams).unwrap()
     }
 

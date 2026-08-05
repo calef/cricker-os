@@ -792,6 +792,12 @@ fn redirecting(rights: u64) -> ! {
         // The same designation with the operator left out (milestone 31's input operand). It has
         // to answer what the line above it answered, or one of the two opened something else.
         b"wc out.txt",
+        // **And the same designation inside a pipeline**, which is the line that used to answer
+        // nothing at all: the operand is resolved by the planner, and `pipeline` used to wire the
+        // head's input off the line instead of off the plan, so the stage was spawned with an empty
+        // input slot and blocked on a receive forever. Its answer has to be the length of the line
+        // above it.
+        b"wc out.txt | wc",
         // The same unmodified `date`, twice, to two destinations.
         b"date",
         b"date > date.txt",
