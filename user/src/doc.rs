@@ -39,21 +39,39 @@
 //!
 //! # EXAMPLES
 //!
-//! ```text
-//! $ echo # The terminal contract | doc
-//!   THE TERMINAL CONTRACT
-//! $ doc gate.md
-//!   TITLE
+//! On the host, where the same renderer runs over the same bytes:
 //!
-//!     Body text, wrapped to eighty columns.
-//! $ doc gate.md | wc
-//!   4 12 87
+//! ```text
+//! $ cargo xtask manual capability
+//! search: capability
+//!      7  The manual: documentation as a system service  notes/manual.md
+//!     31  Pipes and redirection: `>`, `<` and `|` are one   notes/pipes.md
+//! ```
+//!
+//! At the prompt, this is the whole of what works today, and `BUGS` says why:
+//!
+//! ```text
 //! $ doc
 //!   doc: reads an input stream: name a file, redirect with '<', or pipe into it
 //! ```
 //!
 //! # BUGS
 //!
+//! - **`doc <page>` on its own deadlocks at the interactive prompt, and needs a `|` or a `>` after
+//!   it.** This is a property of the shell rather than of this program, found by running it: `swish`
+//!   sends a stage its **whole** input and only then drains the stage's output, and `sink_proto` is
+//!   a rendezvous `SEND`. So a program that writes while it is still reading blocks against a shell
+//!   that is still writing, and both stop. `wc` never meets this because it produces nothing until
+//!   end of stream; a renderer cannot work that way without holding the document, which is the
+//!   memory grant this program exists without. With anything downstream the reader is a separate
+//!   process and the deadlock is gone. `swish`'s `MAX_TEXT_CHUNKS = 32` is the second half of the
+//!   same problem: even without the deadlock the prompt would print only the first 512 bytes.
+//! - **And neither workaround for that deadlock delivers the file.** `doc gate.txt | wc` and
+//!   `doc gate.txt > page.txt` both answer `0 0 0`, which is this program rendering an *empty*
+//!   input: the named file reaches a stage only on the plain `doc gate.txt` path, the one that
+//!   deadlocks. So today there is no line a person can type that shows a rendered page. All three
+//!   limitations are the shell's, they are one lane's work, and the renderer underneath is proven
+//!   on this repository's own pages by `every_character_survives`.
 //! - **No pager, and the reason is authority rather than effort.** Paging needs a keypress, a
 //!   keypress needs `line_editor::proto::OP_READLINE`, and that opcode rides on the terminal
 //!   endpoint whose read side *is* the keyboard. The spawn protocol has no way to hand a child the

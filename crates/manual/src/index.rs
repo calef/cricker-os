@@ -588,7 +588,10 @@ mod tests {
     #[cfg(feature = "builder")]
     #[test]
     fn a_title_is_the_first_level_one_heading() {
-        assert_eq!(title_of(b"intro\n\n# The title\n\n## no\n"), Some("The title"));
+        assert_eq!(
+            title_of(b"intro\n\n# The title\n\n## no\n"),
+            Some("The title")
+        );
         assert_eq!(title_of(b"## only a section\n"), None);
     }
 }

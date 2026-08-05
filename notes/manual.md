@@ -175,6 +175,29 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 
 ## BUGS
 
+- **`doc <page>` on its own deadlocks at the interactive prompt.** Found by running it, and it is a
+  property of the shell rather than of the viewer. `swish` sends a spawned stage its **whole** input
+  and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a program
+  that writes while it is still reading blocks against a shell that is still writing. `wc` never
+  meets this because it produces nothing until end of stream; a renderer cannot do that without
+  holding the whole document, which is exactly the memory grant this design exists without. So `doc
+  page.md | wc` and `doc page.md > out.txt` work and `doc page.md` hangs.
+
+  `MAX_TEXT_CHUNKS = 32` in `user/src/swish.rs` is the second half of it: even with no deadlock the
+  prompt would print only the first 512 bytes of a rendered page. **A shell that can show a document
+  is a lane of its own**, and it is a scheduling change (drain while writing) rather than a
+  capability one.
+- **Neither workaround for that deadlock delivers the file.** `doc gate.txt | wc` and
+  `doc gate.txt > page.txt` both run and both answer `0 0 0`, which is the viewer rendering an
+  *empty* input: the named file reaches a stage only on the plain `doc gate.txt` path, the one that
+  deadlocks. So there is currently **no line a person can type that shows a rendered page**, and the
+  boot gate asserts only what is true: `doc` is in the image, is spawnable, and is refused at the
+  prompt when given no stream.
+
+  All three of these are the shell, not the viewer, and they are one lane: teach `swish` to drain a
+  stage while it is still writing to it, raise `MAX_TEXT_CHUNKS`, and carry the file source into a
+  pipeline and a redirection. The renderer underneath is proven on 100+ real pages by
+  `every_character_survives` and does not change.
 - **No pager, and the reason is authority rather than effort.** Paging needs a keypress; a keypress
   needs `line_editor::proto::OP_READLINE`; and that opcode rides on the terminal endpoint whose read
   side *is* the keyboard. The spawn protocol has no way to hand a child the right to read one line
