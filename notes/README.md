@@ -264,6 +264,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
   redirection is being written.
+- [`swish` the language](swish-language.md): milestone 67: quoting, sequencing, and the one design
+  fork inside them. **Quoting was an authority gap rather than a convenience**: a file called `my
+  notes.txt` could not be named, and a resource you cannot name is a resource you cannot grant. It
+  **delimits a word and never rewrites one**, because every token here is a slice of the line you
+  typed and a shell with no allocator has nothing to join pieces into, so there is no backslash
+  escape and `a"b"` is refused rather than misread. The one thing it does to authority is *narrow*:
+  it suppresses expansion, so `rm "*.txt"` hands over one name where `rm *.txt` hands over the set,
+  and it stops `-r` widening a directory grant into a subtree walk. Sequencing splits **outermost**,
+  which is bash's binding and also what keeps a pipeline region scoped to its segment. And the fork:
+  **a refusal is not an error and gets its own status**, because "did my command fail" and "was I
+  able to ask" are different questions and Unix cannot tell them apart.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
@@ -419,6 +430,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the
   measured caveat behind CodeQL's "0 alerts" and the reason `--auto` merging silently did nothing.
+- [Auditing the shared pages](shared-page-audit.md): the **second** security audit, with the lens the
+  first one lacked. Every service contract now moves bulk data through a page shared with its client,
+  so the question is whether a value a server **checks** and a value it **uses** are two reads of
+  memory somebody else can write in between. Seven findings, five fixed; the structural reason there
+  were not more (every length travels in a register, never in the page); and the two patterns that
+  recurred, a guarantee assumed from the wrong side of a boundary and half a discipline written by
+  instinct.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
@@ -471,7 +489,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   other candidate (`-D warnings` on `script/verify`) finds **none** of what is there, `cargo kani`
   driving a rustc where no `clippy::` lint exists. It found 26 warnings in 9 crates, 13 of them
   undocumented `unsafe` (the hand count of 11 had missed two `unsafe impl`s) and 13 with nothing to
-  do with unsafe at all.
+  do with unsafe at all. The four safe fns are **decided** by milestone 112: three become `unsafe fn`
+  and `virtio::pread` does not, because it is private and the compiler closes its caller set, which
+  is what a module invariant is. The test that separates them is not "does the comment say caller"
+  but **could the parameter have been produced without meeting the obligation** (`endpoint_of` takes
+  `&Scheduler`, which only the lock guard can mint, so its identical-sounding sentence binds). A
+  newtype cannot rescue the context switch: the dangerous half of the obligation is liveness and a
+  `Copy` wrapper launders it. Taking `pread`'s comment seriously found a **real bug**, a userspace
+  driver able to ring a virtio queue it never set up and make the kernel store through
+  `phys_to_virt(0)`. The honest verdict on the headline question is that it **cannot be a gate**
+  (33 real hits, 19 of them legitimate, and the pattern misses "as above" and the passive voice); the
+  adjacent property that can be is now one: every `unsafe fn` has a `# Safety` section, checked in
+  `script/lint`, which found one violation.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
@@ -522,6 +551,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The RISC-V TLB shootdown](riscv-tlb-shootdown.md): milestone 58: RISC-V carried an ASID it got
+  no benefit from, because every context switch threw the whole TLB away. Why `sfence.vma` needs a
+  distributed protocol (SBI RFENCE, and its acknowledgement) where `tlbi aside1is` needs one
+  instruction, why removing the flush is gated on a *measurement* of `satp.ASID`'s width rather than
+  on the specification, the test that fails without the shootdown, and the honest benchmark: the win
+  is invisible under icount and needs the board.
 - [init, and loading a program from userspace](init-and-loading.md): milestone 19d: the ELF
   parser leaves the kernel for init, an ordinary confined program. How init loads a child through
   the granular verbs (retype, copy-and-map each segment, endow, configure, start), why

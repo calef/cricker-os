@@ -1086,8 +1086,12 @@ reader would look. The symptom is always a data abort one word below the lowest 
 - **No here-document, and `<<` says the wrong thing about why.** It is refused as "a redirection
   needs a name", because the second `<` is read as the operator it is. The refusal is right and the
   sentence is about the wrong thing.
-- **No quoting anywhere in this shell**, so a file whose name contains `>` cannot be named. That is
-  a gap in the tokenizer, not in the operators.
+- ~~**No quoting anywhere in this shell**, so a file whose name contains `>` cannot be named.~~
+  **Closed by milestone 67** (notes/swish-language.md): `date > "my out.txt"` writes to a name with a
+  space in it and `echo "a > b"` has no redirection on it, because a quoted operator is an ordinary
+  byte. The residual is that quoting **delimits and never rewrites**, so there is no backslash escape
+  and `a"b"` is refused rather than joined; a shell whose tokens are slices of the line has nothing
+  to join pieces into.
 - **`wc` has no `-l`, `-w` or `-c`.** It prints all three, because selecting among them is
   formatting and formatting belongs downstream.
 - **A `date` whose reader stopped early stays parked.** `date`'s end-of-stream message is a
