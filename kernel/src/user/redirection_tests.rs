@@ -165,7 +165,7 @@ fn naming_a_file_to_a_reader_is_the_operator_left_out() {
 /// exactly what milestone 40's viewer got and what made the bug look like a viewer bug.
 #[test_case]
 fn a_named_file_reaches_the_head_of_a_pipeline() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
