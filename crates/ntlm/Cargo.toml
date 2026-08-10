@@ -16,7 +16,7 @@ workspace = true
 md4 = { version = "0.10", default-features = false }
 md-5 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
-digest = { version = "0.10", default-features = false }
+digest = { version = "0.11", default-features = false }
 
 # cargo-machete (script/lint) reports `md-5` unused here and is wrong, the same way it is wrong
 # about `redox_syscall` in fs_server: the crate's LIB name is `md5` and its PACKAGE name is `md-5`,
