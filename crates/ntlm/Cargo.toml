@@ -14,7 +14,7 @@ workspace = true
 # applies unchanged (depend, do not vendor, so cargo-deny and cargo-audit can see the graph), and
 # so does its discipline: the specification's own test vectors are this crate's tests.
 md4 = { version = "0.10", default-features = false }
-md-5 = { version = "0.10", default-features = false }
+md-5 = { version = "0.11", default-features = false }
 hmac = { version = "0.12", default-features = false }
 digest = { version = "0.10", default-features = false }
 
