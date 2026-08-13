@@ -37,7 +37,24 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
+      # **Why a token other than the default `GITHUB_TOKEN`.** A push or a PR made with the
+      # workflow's own `GITHUB_TOKEN` deliberately does NOT trigger further workflow runs (GitHub's
+      # anti-recursion rule, which names `push` and `pull_request` explicitly). So when this job
+      # force-pushed the bump branch and opened the PR with `github.token`, the CI workflow never
+      # ran on it: the PR sat with only CodeQL reported and every required check stuck on "Expected",
+      # permanently unmergeable. That is the whole point of proposing a bump, defeated, and it recurred
+      # silently every day.
+      #
+      # The fix is to act as an identity that is not the ephemeral `GITHUB_TOKEN`. `TOOLCHAIN_BUMP_PAT`
+      # is a fine-grained PAT (or a GitHub App installation token) with `contents: write` and
+      # `pull-requests: write` on this repo; pushes and PR events it creates trigger CI like a human's.
+      # The `|| github.token` fallback keeps this workflow working (it still opens the PR) when the
+      # secret is absent, so adding the secret is what turns the gate back on rather than a thing that
+      # can break the job by its absence. Until the secret exists, the daily PR still needs CI kicked
+      # by hand (close and reopen it).
       - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.TOOLCHAIN_BUMP_PAT || github.token }}
 
       - name: Work out whether there is anything to do
         id: plan
@@ -117,7 +134,9 @@ jobs:
       - name: Open or update the pull request
         if: steps.install.outcome == 'success' && steps.plan.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Same identity as the checkout above: the PAT (or App token) when present so the PR events
+          # this step creates trigger CI, falling back to the default token so the job still runs.
+          GH_TOKEN: ${{ secrets.TOOLCHAIN_BUMP_PAT || github.token }}
           TARGET: ${{ steps.plan.outputs.target }}
           CURRENT: ${{ steps.plan.outputs.current }}
           BUILD: ${{ steps.build.outcome }}
