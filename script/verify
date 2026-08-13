@@ -64,6 +64,23 @@ needed, inert, todo = [], [], []
 for f in changed:
     if DOC.match(f):
         inert.append((f, "documentation"))
+    elif f.startswith("script/"):
+        # A script/ entry point is not an input to `cargo kani`, by exactly the argument the
+        # workflow-file case below already makes: the proofs are a function of the harness crates
+        # and their dependency closure, and `cargo kani` never invokes script/lint, script/test or
+        # any other front door. script/verify itself is the exception, because it *is* the wiring,
+        # so a change to it should be exercised by it.
+        #
+        # Measured cost of not having this: on 2026-08-04 a one-line comment added to
+        # script/citations ran the full 40-minute suite, because a script/ file belongs to no crate
+        # and fell through to the not-attributable default below. That was the fix for a red trunk,
+        # so the delay was on the critical path, and it landed the same day the repository started
+        # requiring branches to be up to date before merging, which makes every re-run cost this
+        # again.
+        if f == "script/verify":
+            needed.append((f, "the proofs' own wiring"))
+        else:
+            inert.append((f, "a script/ entry point; not an input to cargo kani"))
     elif f.startswith(".github/"):
         if f == ".github/workflows/verify.yml":
             needed.append((f, "the proofs' own wiring"))
