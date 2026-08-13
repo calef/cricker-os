@@ -13,26 +13,35 @@ updates:
       prefix: "deps"
     # Fold routine minor/patch bumps into a single PR so the queue stays quiet; a major bump
     # (which can break the build) still gets its own PR to review on its own.
+    #
+    # **The exception is a set of crates that only builds as a set.** `digest`, `hmac`, `md-5` and
+    # `md4` (crates/ntlm's NTLMv2 primitives) ship as one coordinated RustCrypto release: `digest`
+    # 0.11 pulls `hmac` 0.13, `md-5` 0.11 and `md4` 0.11 with it. So the default one-PR-per-major
+    # rule proposes four pull requests that are each **unbuildable by construction**, because no
+    # single one of them can produce a consistent graph. That is exactly what happened on
+    # 2026-08-10: PRs #144-147 each went red on `build + test`, `clippy` and the supply-chain job,
+    # and were re-proposed every week.
+    #
+    # Grouping the majors is the fix rather than ignoring them, and the difference matters. An
+    # `ignore` here would suppress the churn by **foreclosing the upgrade**, freezing the crypto
+    # stack until somebody hand-edited this file; that is a standing policy decision and it belongs
+    # to Chris, not to a CI cleanup. A group suppresses the same churn and keeps the door open: one
+    # pull request bumping all four together, which builds once `crates/ntlm` is migrated to the new
+    # `Digest`/`Mac` APIs, on whatever schedule that migration is worth.
+    #
+    # The algorithms themselves are frozen and always will be (NTLMv2 mandates MD4 and MD5, so
+    # nothing here *chooses* them; see crates/ntlm/Cargo.toml). That is an argument about `md-5` and
+    # `md4`, not about `digest` and `hmac`, which are generic trait crates that legitimately evolve
+    # and are pinned here only by their coupling to the other two.
     groups:
+      # Ordered before the catch-all: a dependency lands in the first group it matches, and the
+      # update-types are disjoint, so minor/patch bumps of these four still ride the group below.
+      ntlm-crypto:
+        patterns: ["digest", "hmac", "md-5", "md4"]
+        update-types: ["major"]
       cargo-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
-    # The NTLM crypto primitives are pinned on purpose (crates/ntlm/Cargo.toml). NTLMv2 mandates MD4
-    # and MD5, so nothing here *chooses* the algorithm: a major bump of these four is pure API churn
-    # for zero security or behaviour gain, and worse, they are one coordinated RustCrypto release
-    # (digest 0.11 pulls hmac 0.13 / md-5 0.11 / md4 0.11), so a lone major PR for any one of them
-    # cannot even build. The supply-chain job (cargo-deny advisories) still watches the graph, so a
-    # real advisory is not silenced by this. Minor/patch updates within the pinned majors still flow
-    # through the group above. Revisit by deleting the relevant line if the crate is ever unpinned.
-    ignore:
-      - dependency-name: "digest"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "hmac"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "md-5"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "md4"
-        update-types: ["version-update:semver-major"]
 
   # --- GitHub Actions used by .github/workflows/ci.yml ----------------------------------------
   - package-ecosystem: github-actions
