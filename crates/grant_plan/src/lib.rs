@@ -377,10 +377,13 @@ impl Prog {
                 interruptible: false,
                 clock: false,
             },
-            // **The viewer**, and the second program whose whole manifest is "a stream in, a stream
-            // out". That it is identical to `wc`'s is the finding rather than a coincidence: a
-            // documentation viewer is the program a reader most expects to go and fetch things, and
-            // this one is handed bytes like every other stage. No memory grant, because the renderer
+            // **The viewer**, whose manifest is "a stream in, a stream out" like `wc`'s, and handed
+            // bytes like every other stage. The one place it parts from `wc` is the field milestone
+            // 50 added: `wc` absorbs the whole stream before it emits (`writes_while_reading:
+            // false`), while `doc` renders as it reads and so writes while it is still reading. That
+            // difference is not decoration. It is exactly why `doc` can deadlock a rendezvous
+            // pipeline where `wc` never does (notes/manual.md's BUGS section), and the planner can
+            // only account for it if the manifest declares it. No memory grant, because the renderer
             // never allocates.
             Prog::Doc => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -389,7 +392,9 @@ impl Prog {
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
                 output: OutputSpec::Bytes,
-                input: InputSpec::Required,
+                input: InputSpec::Required {
+                    writes_while_reading: true,
+                },
                 reports: true,
                 interruptible: false,
                 clock: false,
