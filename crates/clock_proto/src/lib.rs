@@ -275,6 +275,12 @@ impl ClockPage {
             // the machine may reorder them after it, and the check would validate nothing. Removing
             // it fails the same three loom harnesses the writer's release fence does, so both
             // halves of the pair are checked rather than argued (notes/interleaving.md).
+            //
+            // PAIR: the writer's `W_SEQ.store(claimed + 2, Ordering::Release)` at the end of
+            // `publish`, below in this file. **The only protocol in the tree where both halves must
+            // be here**, because a reader is in a different address space and reaches this page with
+            // no syscall at all: there is no IPC rendezvous underneath to supply the edge the way
+            // there is for every other shared page (notes/memory-ordering.md).
             fence(Ordering::Acquire);
             if self.word(W_SEQ).load(Ordering::Relaxed) == s1 {
                 return Reading {
@@ -320,6 +326,12 @@ impl ClockPage {
         // needs is its own store ordered ahead of the plain stores that follow. That is a
         // store-store barrier between the two, which is exactly the `smp_wmb()` Linux puts in
         // `write_seqcount_begin` for the same reason.
+        //
+        // PAIR: the reader's `fence(Ordering::Acquire)` in `read`, above in this file. That one is
+        // the load-load half of the same barrier: this fence keeps the odd sequence ahead of the
+        // data, and the reader's keeps its revalidating load of `W_SEQ` behind the data it is
+        // revalidating. Neither one is sufficient alone, and milestone 80's loom run failed with
+        // either removed (notes/interleaving.md, notes/memory-ordering.md).
         fence(Ordering::Release);
         self.word(W_STATE).store(new_state, Ordering::Relaxed);
         self.word(W_OFFSET).store(offset_nanos, Ordering::Relaxed);
