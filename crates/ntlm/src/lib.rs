@@ -71,7 +71,9 @@
 #![cfg_attr(not(test), no_std)]
 
 use digest::{Digest, Update};
-use hmac::{Hmac, Mac};
+// `KeyInit` carries `new_from_slice`, which `hmac` 0.12 reached through `Mac` and 0.13 does not:
+// the trait is re-exported (`pub use digest::{KeyInit, Mac, ...}`) and has to be named to be used.
+use hmac::{Hmac, KeyInit, Mac};
 use md4::Md4;
 use md5::Md5;
 
