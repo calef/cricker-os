@@ -41,6 +41,7 @@ members = [
     "crates/line_editor",
     "crates/manual",
     "crates/measured_boot",
+    "crates/ntlm",
     "crates/ntp_proto",
     "crates/slots",
     "crates/user_heap",

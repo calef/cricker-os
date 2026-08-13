@@ -345,7 +345,9 @@ completes, not why the poll path did not.
   `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
   filesystem to look in.
 - **`net` is bound, but with recorded gaps.** `TcpStream` and outbound `UdpSocket` work; the honest
-  Unsupported list is `TcpListener` (no LISTEN/accept verb in the contract), non-blocking mode and
+  Unsupported list is `TcpListener` (the contract grew LISTEN and ACCEPT in milestone 107, so this
+  is now a gap in the PAL rather than in the contract; see notes/net.md for what binding it takes),
+  non-blocking mode and
   read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
   resolver rides the contract, so `ToSocketAddrs` handles numeric addresses only, and a program that
   wants DNS does it as a plain UDP query, as the demo does), IPv6 (net_stack is IPv4-only), and `peek` /

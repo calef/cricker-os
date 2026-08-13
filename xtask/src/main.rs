@@ -901,6 +901,11 @@ fn screendump(sock: &str, out: &Path) -> bool {
 /// through. The child inherits stdio, so the suite's output streams exactly as before.
 fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let mut referee = ScanoutReferee::new(arch);
+    // The other host-side actor (milestone 107): a process that connects INTO the guest, which is
+    // the one thing no in-guest test can stage. Constructed before the child for the same reason
+    // the referee is: it is what sets `CRICKER_HOSTFWD_PORT`, and the runner reads it from the
+    // environment the child inherits.
+    let prober = InboundProber::new(arch);
     let mut child = match Command::new("cargo").args(test_args).spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -926,7 +931,11 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         referee.poll();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    referee.report()
+    // Both, and not short-circuited: a run that lost the scanout AND the inbound answer should say
+    // so once rather than making the reader run it again to find the second failure.
+    let scanout = referee.report();
+    let inbound = prober.report();
+    scanout && inbound
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1093,6 +1102,220 @@ impl ScanoutReferee {
             }
         }
         ok
+    }
+}
+
+/// The bytes the inbound prober sends into the guest and the answer it requires back. They must
+/// match `user/src/socket_test_client.rs` (`IN_MSG`/`OUT_MSG`), and they are deliberately different
+/// strings: an echo would pass even if the guest were only reflecting our own bytes, and the point
+/// of this gate is that the guest **composed** an answer to a connection it did not make.
+const INBOUND_IN: &[u8] = b"cricker-in!";
+const INBOUND_OUT: &[u8] = b"cricker-out!";
+/// How many connections the prober must complete. **Two, and the second is the load-bearing one:**
+/// a listener that accepts one connection and then goes deaf is a listener a file server cannot
+/// use, and nothing but a second accept proves the re-arm (milestone 107).
+const INBOUND_ROUNDS: usize = 2;
+
+/// Ask the OS for a free TCP port on the loopback and let it go again.
+///
+/// There is a race between letting go and QEMU binding it, and it is the right trade: the
+/// alternative is a *fixed* port, which two lanes running the suite on one machine collide on every
+/// time rather than rarely. A lost race fails loudly (QEMU refuses to start), which is the failure
+/// mode this project prefers to a quiet one.
+fn free_loopback_port() -> Option<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+    let port = listener.local_addr().ok()?.port();
+    drop(listener);
+    Some(port)
+}
+
+/// **The host side of the inbound gate** (milestone 107): a host process that connects TO the guest.
+///
+/// Everything else the suite proves about the network is the guest as a client. This is the mirror,
+/// and it needs a host actor for the same reason the scanout check does: nothing inside the guest
+/// can open a connection to the guest from outside it. QEMU's `hostfwd` forwards a loopback port
+/// into the guest's listening port, and this thread connects to it, sends a payload, and requires
+/// the guest's own answer back.
+///
+/// It **retries for the whole run** rather than being timed to the accept test, because nothing here
+/// knows when that test starts. A connection that arrives while some other net test holds the NIC
+/// finds no listener and is reset by smoltcp, which costs nothing and is indistinguishable from any
+/// other closed port. It stops the moment both rounds have completed.
+struct InboundProber {
+    arch: String,
+    port: Option<u16>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl InboundProber {
+    /// Pick the port, tell the runner about it, and start poking. Call this **before** the child is
+    /// spawned: the runner reads `CRICKER_HOSTFWD_PORT` from the environment it inherits.
+    fn new(arch: &str) -> Self {
+        let Some(port) = free_loopback_port() else {
+            eprintln!("inbound prober ({arch}): could not get a free loopback port");
+            return Self {
+                arch: arch.to_string(),
+                port: None,
+                stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                thread: None,
+            };
+        };
+        // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads. This runs
+        // on the main thread before both the child that reads it and the prober thread below, and
+        // that thread only touches sockets; no thread xtask starts ever writes the environment.
+        unsafe { std::env::set_var("CRICKER_HOSTFWD_PORT", port.to_string()) };
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let thread = std::thread::spawn(move || probe_inbound(port, stop_thread));
+        Self {
+            arch: arch.to_string(),
+            port: Some(port),
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stop poking, and say whether the guest answered. Fails the leg when it did not: the guest's
+    /// own assertion covers "somebody connected", and this covers the other half, that what came
+    /// back was the answer the guest meant to send.
+    fn report(mut self) -> bool {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let arch = &self.arch;
+        let Some(thread) = self.thread.take() else {
+            eprintln!("inbound check ({arch}) FAILED: the prober never started");
+            return false;
+        };
+        let port = self.port.unwrap_or(0);
+        match thread.join() {
+            Ok(Ok(())) => {
+                eprintln!(
+                    "inbound check ({arch}): {INBOUND_ROUNDS} host connections to 127.0.0.1:{port} \
+                     were forwarded into the guest, accepted, and answered with the guest's own \
+                     bytes. The second one is the proof the listener re-arms."
+                );
+                true
+            }
+            Ok(Err(reason)) => {
+                eprintln!();
+                eprintln!("inbound check ({arch}) FAILED: {reason}");
+                eprintln!(
+                    "  A host process connecting to the guest is the one thing no in-guest test can \
+                     stage. See notes/net.md."
+                );
+                false
+            }
+            Err(_) => {
+                eprintln!("inbound check ({arch}) FAILED: the prober thread panicked");
+                false
+            }
+        }
+    }
+}
+
+/// One prober thread: connect, speak, and require the guest's answer, `INBOUND_ROUNDS` times.
+///
+/// **Never abandon a connection because it is slow, and this is the whole subtlety** (found by the
+/// first green run, where the guest passed and the prober reported nothing). A `connect` here
+/// succeeds the moment QEMU accepts the host side; slirp only then starts the guest side, and if the
+/// guest is not *polling* nothing answers the SYN. Dropping such a connection does not take back the
+/// payload already written: slirp keeps the guest-side connection, completes the handshake whenever
+/// the guest next polls, and delivers those bytes to a socket whose host end has gone. The guest then
+/// serves a round nobody is listening for, and its answer is discarded.
+///
+/// One retry every 100 ms for a whole boot makes that a queue of them, which is exactly what
+/// happened: the guest served both its rounds from abandoned connections and passed, while the
+/// prober timed out on its own live one and reported zero.
+///
+/// So a timeout is **not** a reason to give up: keep reading the same connection until it answers,
+/// dies, or the run ends. A hard error (the RST a guest with no listener sends, which is the common
+/// case for most of a boot) *is* a reason, and a cheap one, because nothing was consumed.
+fn probe_inbound(
+    port: u16,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    use std::io::{ErrorKind, Read, Write};
+    use std::sync::atomic::Ordering;
+
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut done = 0usize;
+    let mut last = String::from("nothing ever answered on the forwarded port");
+
+    while done < INBOUND_ROUNDS && !stop.load(Ordering::Relaxed) {
+        let mut s = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                last = format!("could not connect to 127.0.0.1:{port}: {e}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+        };
+        // Short, so the loop below can notice `stop`; not a deadline for the exchange.
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+        let _ = s.set_nodelay(true);
+
+        if let Err(e) = s.write_all(INBOUND_IN) {
+            last = format!(
+                "the guest closed before reading our {} bytes: {e}",
+                INBOUND_IN.len()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
+        }
+
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        while got.len() < INBOUND_OUT.len() {
+            match s.read(&mut buf) {
+                Ok(0) => break, // the guest had no listener and closed; nothing was consumed
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                    // Still waiting on a guest that has not polled yet. Hold the connection: see
+                    // this function's note on why dropping it would feed the guest a round we
+                    // cannot collect. The run ending is the only thing that ends this wait.
+                    if stop.load(Ordering::Relaxed) {
+                        last = String::from(
+                            "the run ended while a connection was still waiting for the guest to \
+                             accept it",
+                        );
+                        break;
+                    }
+                }
+                Err(e) => {
+                    last = format!("reading the guest's answer failed: {e}");
+                    break;
+                }
+            }
+        }
+        drop(s);
+
+        if got == INBOUND_OUT {
+            done += 1;
+            continue;
+        }
+        // Not an answer: almost always "no listener yet", which is the normal state for most of the
+        // run. Keep the last one only so a genuine failure has something to say.
+        if !got.is_empty() {
+            last = format!(
+                "the guest answered {:?}, wanted {:?}",
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(INBOUND_OUT),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    if done == INBOUND_ROUNDS {
+        Ok(())
+    } else {
+        Err(format!(
+            "the guest served {done} of {INBOUND_ROUNDS} inbound connections on the port forwarded \
+             to 127.0.0.1:{port}; last attempt: {last}"
+        ))
     }
 }
 
@@ -3136,6 +3359,11 @@ fn hvf_kernel_leg() -> bool {
     // Constructed before the child, because it is what sets `CRICKER_GPU_MON`: the runner reads
     // that when it builds the QEMU command line, so a referee born later would find no monitor.
     let referee = ScanoutReferee::new("aarch64");
+    // And the inbound prober, for the same reason and on the same terms: it sets
+    // `CRICKER_HOSTFWD_PORT` before the child exists, and it runs on its own thread throughout. The
+    // accept test is not accelerator-sensitive, but it is in the suite, so a leg without a prober
+    // would fail it. Its "before the child" placement is load-bearing exactly as the referee's is.
+    let prober = InboundProber::new("aarch64");
 
     let mut cmd = Command::new(RUNNER);
     cmd.arg(&elf);
@@ -3218,12 +3446,16 @@ fn hvf_kernel_leg() -> bool {
         }
     };
 
+    // Same ordering argument as the referee's: the prober has to stop while the guest is still
+    // there, and its verdict is collected before QEMU is killed.
+    let inbound_ok = prober.report();
+
     // It is parked at a semihosting trap HVF will not answer, so it will never exit by itself.
     let _ = child.kill();
     let _ = child.wait();
 
     match verdict {
-        Some(true) => scanout_ok,
+        Some(true) => scanout_ok && inbound_ok,
         Some(false) => {
             eprintln!();
             eprintln!(
@@ -3425,6 +3657,17 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 37] = [
     // than an assertion: one line reaches the file through an operator and one through a name, so
     // if they disagree, one of them opened something else.
     ("wc gate.txt", Some("2 4 24")),
+    // **And the same name at the head of a pipeline**, which is the line that answered nothing at
+    // all until milestone 50's draining lane. An input operand is resolved by the planner, and the
+    // shell used to wire a pipeline's head off the `Line` (which has no `<` on it), so the planned
+    // source was dropped and the stage counted an empty stream (a `recv` on an empty slot answers
+    // `NoSuchSlot`, which reads as end of document). Two spawned processes, and this shell feeds the
+    // first.
+    //
+    // `2 4 24` plus a newline is seven bytes and three words on one line, so the answer is the
+    // answer above it counted. Spelled out rather than derived for this file's reason: it is a boot
+    // gate, and deriving one number from another would hide the case where both are wrong.
+    ("wc gate.txt | wc", Some("1 3 7")),
     // The negative control the pair would be weaker without. `wc` alone is refused **at the
     // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
     // on Unix the same command is a shell that appears to hang. So the line above granted
