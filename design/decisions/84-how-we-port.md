@@ -76,11 +76,19 @@ nobody continues.
 
 ## BUGS
 
-- **`cap-std` cannot run here today, so preference 1 currently has nothing to prefer.** It assumes
-  `openat`-family semantics and a `Dir` handle; this system's PAL grants one name with no nesting and
-  exposes no way to obtain a handle for a subdirectory. Milestone 121's correction records the same
-  gap from the other side: `walkdir` builds and cannot walk. Until the descent model exists, this
-  section is a policy about work that cannot start.
+- **`cap-std` cannot run here today, so preference 1 currently has nothing to prefer.** The gap is
+  narrower than an earlier draft of this entry claimed, and the narrower version is worth stating
+  exactly. **Descent is built**: `fs_proto`'s `OPENDIR` resolves one name under a directory handle,
+  requires `DESCEND`, and attenuates so no descendant exceeds its ancestor, and `rm`, `swish` and both
+  `fs_*_caretaker` programs walk with it. What is missing is one layer up: the `std` PAL calls
+  `OPENDIR` only inside `read_dir`, against `ROOT`, and drops the handle, so there is no directory
+  object for `cap-std`'s `Dir` to bind to. Milestone 122 is that binding, and until it lands this
+  preference is policy about work that cannot start.
+- **The `cap-primitives` backend is unmeasured in the way that matters.** Nobody here has read it, so
+  whether its Unix and Windows split offers a seam a third backend can use, or whether that needs
+  upstream work, is unknown. A backend would also be a **carried patch** until this system is
+  something Bytecode Alliance has reason to care about, which is precisely the tax this section says
+  to count.
 - **This is not a WASI runtime and nothing here promises WASI compatibility.** The alignment claimed
   above is of *design shape*, not of ABI, and reading it as "we can run WASI binaries" would be a
   serious misunderstanding.
