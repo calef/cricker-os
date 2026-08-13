@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # **Required by the merge queue, and the queue jams silently without it.** A queued pull request
+  # is tested on a `gh-readonly-queue/...` branch that GitHub creates, and that raises a
+  # `merge_group` event rather than a `pull_request` one. A workflow that does not listen for it
+  # never runs there, so every required check sits on "Expected" forever and nothing ever merges.
+  # The failure looks like the queue hanging rather than like a missing trigger, which is why this
+  # is here before the queue is switched on rather than after.
+  merge_group:
   workflow_dispatch:
 
 # Least privilege for GITHUB_TOKEN, set once for every job below. CodeQL flagged its absence
@@ -106,7 +113,7 @@ jobs:
       - name: Does this change need the matrix?
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           changed="$(git diff --name-only "$base" HEAD)"
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
@@ -218,7 +225,7 @@ jobs:
       - name: Does this change need the tripwire?
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           changed="$(git diff --name-only "$base" HEAD)"
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
@@ -288,7 +295,7 @@ jobs:
       - name: Read the pinned cargo-deny version
         id: deny
         run: echo "version=$(cat .cargo-deny-version)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@v2.85.11
         with:
           tool: cargo-deny@${{ steps.deny.outputs.version }}
       # The published .crate tarballs script/vendor-verify hashes. Keyed on the pin files, so
@@ -319,7 +326,7 @@ jobs:
       - name: Does this change need the sweep?
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           changed="$(git diff --name-only "$base" HEAD)"
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
@@ -388,7 +395,7 @@ jobs:
       - name: Does this change need the measurement?
         id: scope
         run: |
-          base="${{ github.event.pull_request.base.sha }}"
+          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
           [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
           changed="$(git diff --name-only "$base" HEAD)"
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
@@ -402,7 +409,7 @@ jobs:
       - name: Install llvm-tools (pinned nightly)
         if: steps.scope.outputs.needed == 'true'
         run: rustup toolchain install nightly --profile minimal --component llvm-tools
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@v2.85.11
         if: steps.scope.outputs.needed == 'true'
         with:
           tool: cargo-llvm-cov

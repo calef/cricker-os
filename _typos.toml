@@ -24,6 +24,15 @@ extend-exclude = ["vendor/", "patches/", "*.lock", "target/"]
 # are chosen by specification authors who were not optimising for English. Each entry below is a
 # real name in a real document, not a word we decided to spell unusually.
 [default.extend-words]
+# Eduard Suess's 1909 name for the Earth's nickel-iron core, Ni plus Fe, and the name this OS takes
+# under milestone 120. `typos` reports it as a misspelling of "knife" and is not wrong to: the whole
+# argument for the name is that its accidental reading is `knife`, which is sharp, single-purpose and
+# a held tool with no authority of its own. That is the same coin as this entry. Recorded here rather
+# than argued with, and worth knowing before the rename lands: every contributor's spell-checker will
+# reach the same conclusion about all 1,001 renamed occurrences until it is told otherwise.
+nife = "nife"
+Nife = "Nife"
+NIFE = "NIFE"
 # RISC-V supervisor registers (the privileged spec). `sie` is Supervisor Interrupt Enable, and at 76
 # occurrences it is the single loudest false positive in the tree.
 sie = "sie"
