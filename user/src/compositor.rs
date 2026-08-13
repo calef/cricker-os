@@ -190,6 +190,8 @@ fn drain_input(focusable: usize, focus: &mut u32) {
     // without this the compositor can act on a fresh tail and stale bytes. The kernel's stand-in
     // for this same ring (`kernel/src/user/keyboard_service.rs`, `take_typed`) already fences
     // here; the userspace reader of the same contract did not.
+    // PAIR: `kbd::ring_publish`'s release fence in the input source (milestone 43,
+    // notes/shared-page-audit.md finding 7), which fences before it stores the tail loaded above.
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     while head != tail {
         let at = RING_VA + ring::BYTES + (head % ring::CAPACITY) as u64;
@@ -256,6 +258,8 @@ fn serve_frame(
         // The same shape, in the clock page's seqlock, is milestone 80's finding; it is recorded
         // here because it is a different page, a different pair, and the reader's half rather than
         // the writer's.
+        // PAIR: each client's release fence in user/src/window.rs and user/src/display_terminal.rs
+        // (milestone 43), between the pixel/rectangle stores and the `ctl::SEQ` store loaded above.
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         // The client's rectangle is **untrusted input**. Clip it to the surface it owns; say so in its
