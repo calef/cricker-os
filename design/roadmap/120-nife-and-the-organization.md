@@ -13,9 +13,35 @@ transferring the repository. The in-tree rename can be prepared before either.
 |---|---|---|
 | the organization | none; `calef`, a user account | `crickertech` |
 | the OS | `cricker-os` | **`nife`** |
-| the distribution | does not exist | `sial`, reserved now and built later |
-| a base-system layer, if one is ever separated | does not exist | `sima`, held in reserve |
+| the distribution | does not exist | **`basalt`**, reserved now and built later |
 | the shell, and every other program | `swish`, ... | unchanged |
+
+## The convention, which is the part a stranger has to be able to infer
+
+Two names imply a scheme, and this one is worth stating outright because third parties will need it
+and principle 3 says they must not have to ask:
+
+| Tier | Named after | Because |
+|---|---|---|
+| the kernel | **the core**, `nife` | one thing, at the centre, with nothing beneath it |
+| distributions | **rocks**, `basalt` and whatever others choose | an aggregate assembled from many pieces |
+| programs and components | **minerals**, `kamacite` and `taenite` held for this | what a rock is made of |
+
+**A rock is an aggregate of minerals, and a distribution is an aggregate of programs.** That is what
+the words already mean rather than an analogy stretched to fit, and it is what makes the scheme
+inferable from two examples instead of needing a specification.
+
+Three properties make it work for people this project will never meet. It is **unbounded**: there are
+hundreds of named rocks, so nobody needs permission, a registry, or an allocation from us, and the
+alternative (everyone wanting to be `nife-something`) is a namespace we would have to police. It is
+**self-classifying**: a reader meeting `anthracite` knows it is a distribution and not a kernel
+before reading anything about it. And it lets a distribution **state its character in its own name**,
+which is what makes a convention get adopted rather than resented: `pumice` for a light one,
+`conglomerate` for one that bundles everything, `quartzite` for a hardened one, `flint` for a
+toolkit.
+
+**Nothing here is reserved beyond `basalt`.** Naming a distribution requires no coordination with
+this project, and that sentence is the difference between an ecosystem and a trademark.
 
 ## Why `nife`
 
@@ -60,6 +86,18 @@ Milestone 115's point is that the refusals are the valuable half.
 - **`siderite`, `kamacite`** — both good, both longer, and kamacite is a phase *inside* a nife rather
   than the material itself. Kept in reserve as component names.
 
+**The distribution's name went through the same test and two candidates lost it.** `sial` and `sima`,
+Suess's own terms for the crust, were the first proposal and were dropped for one reason: Chris had
+to ask how to say them. That is §39's decisive evidence, the same kind that retired `linedisc`, and
+it lands differently here than it does for the kernel. `nife` earns its declared pronunciation
+because the wrong reading (*knife*) is sharp, single-purpose and a held tool, so the mistake flatters
+the project. `sial` has no such compensation: its wrong readings mean nothing at all, and a family in
+which every member needs a pronunciation note stops being a signature and becomes a tax on every
+conversation. `granite` replaced them and was itself passed over, because IBM ships a prominent
+family of open models under that name. **`basalt`** is the most common volcanic rock on the planet's
+surface, which is exactly the workhorse claim a first-party distribution wants, and it is the rock
+that `sima` actually is, so the layering survives the words being retired.
+
 ## Why an organization, and why it is not called `nife`
 
 **The concrete unblock is milestone 119.** GitHub's merge queue is available only in repositories
@@ -67,7 +105,7 @@ owned by an **organization**; this one is owned by a user account, which is why 
 from the ruleset page rather than merely hard to find. 119 names the merge queue as one of two
 structural levers and leaves it to Chris; this milestone is what makes it reachable at all.
 
-**The organization is deliberately not named after the OS.** An org named `nife` makes `sial` and
+**The organization is deliberately not named after the OS.** An org named `nife` makes `basalt` and
 `swish` read as subsidiaries of the kernel rather than as peers, and it has no room for anything that
 is not the OS. Canonical ships Ubuntu and Red Hat ships Fedora for the same reason. `crickertech` is
 already Chris's domain, costs nothing, and gives the old name a retirement rather than a deletion: it
@@ -112,7 +150,7 @@ stops being the product and becomes the publisher.
 
 5. **Do not split the build.** §80 landed on 2026-08-13 and decided one build for the kernel and
    everything that runs on it, with the threshold being *ownership*: the moment this project runs a
-   program whose source is not here (milestones 64, 99, 66). Reserving `sial` as a name and an empty
+   program whose source is not here (milestones 64, 99, 66). Reserving `basalt` as a name and an empty
    repository is free and forecloses nothing. Creating a second build today would contradict a
    decision made the same week.
 
@@ -148,6 +186,6 @@ Redox is the closest neighbour in this tree's own reference set and does the opp
   no audience, so the cost is at its lifetime minimum and rises from here.
 - **GitHub redirects the old URL but not everything else.** Clones keep working through the redirect;
   a hard-coded `calef/cricker-os` in a workflow, a badge, or a bookmark does not necessarily.
-- **This milestone does not deliver `sial`.** It reserves the name and the repository. What a
+- **This milestone does not deliver `basalt`.** It reserves the name and the repository. What a
   distribution actually packages is `design/what-a-distribution-packages.md`, and nothing here
   answers it.
