@@ -28,36 +28,46 @@ These are not aspirations. Each names a mechanism that keeps it true when nobody
 is the only kind of principle a free software project can enforce: a volunteer cannot be made to
 care, so the work has to carry the standard on its own.
 
-### 1. The ranking function is the shortest path to a system Chris actually runs
+### 1. The ranking function is the shortest path to a system a customer runs
 
 Milestone 55's block already says it, in its own first line: **"The actual goal, and probably the
 largest single piece of work in the project."** A Time Machine target the family's Macs back up to,
 served by this kernel, on hardware in this house. The roadmap has said that for weeks and has never
 used it to order anything.
 
-It should. **Dogfooding is the only test that cannot be gamed.** A benchmark can be chosen, a gate can
-be written to pass, a note can describe a system that no longer exists. A backup you depend on either
-works on a Tuesday or it does not, and the failure arrives as your own data missing rather than as a
-red check.
+It should. **A customer running it is the only test that cannot be gamed.** A benchmark can be
+chosen, a gate can be written to pass, a note can describe a system that no longer exists. A backup
+somebody depends on either works on a Tuesday or it does not, and the failure arrives as their own
+data missing rather than as a red check.
+
+**Chris is the first customer, not the audience** (his correction on this section, 2026-08-05:
+*"It isn't about me running it. It is about customers. I'm just the first customer."*). That
+distinction is
+load-bearing rather than modest. "The architect runs it" ranks work by one person's convenience and
+has no answer when that person's taste and a stranger's needs diverge; "a customer runs it" ranks it
+by what anyone taking this system on would require. The two agree today because there is exactly one
+customer. They stop agreeing the moment there are two, and the wording that survives that is the one
+worth writing now.
 
 What that means concretely, and it is a reordering rather than a slogan:
 
-- When two milestones are both ready, **the one on the dogfood path goes first.** As of 2026-08-05
+- When two milestones are both ready, **the one on the customer path goes first.** As of 2026-08-05
   that path is 54 (a network file service a Mac can mount) and 55, whose remaining gates are a
   scoping decision and real concurrency, `MILESTONE 65` and `MILESTONE 107` having cleared.
 - A milestone that is not on the path is not thereby worthless. Verification, parity and the
   analysis tooling are what make the demonstrator a demonstrator. But when they compete for a lane,
   the tie breaks toward the thing that gets a real workload running.
-- **Security and performance are not separate goals; they are what "runs it" means.** Nobody
-  dogfoods a backup server they do not trust with the only copy, and nobody dogfoods one that takes
-  a week. That is why the audit cadence, the confinement claims and the benchmark tripwire are on
-  this path rather than beside it.
+- **Security and performance are not separate goals; they are what "runs it" means.** No customer
+  runs a backup server they do not trust with the only copy, and none runs one that takes a week.
+  That is why the audit cadence, the confinement claims and the benchmark tripwire are on this path
+  rather than beside it.
 - Naming is on this path too, and it is the least obvious member. A person using the system meets a
   name before they meet anything else, and in a capability system the name is often the only thing
   that says what a program may *do*.
 
-**The honest caveat: the system is not ready to dogfood and will not be for a while.** Saying the
-principle out loud now is what stops the roadmap drifting into a collection of interesting kernels.
+**The honest caveat: the system is not ready for a customer, this one included, and will not be for
+a while.** Saying the principle out loud now is what stops the roadmap drifting into a collection of
+interesting kernels.
 
 ### 2. The method is a result, and it is currently undocumented
 
