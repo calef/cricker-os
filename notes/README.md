@@ -740,6 +740,16 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Locking](locking.md): why a plain spinlock in a kernel with interrupts is a
   *guaranteed* deadlock on a single core, the two orderings that are the whole point, and
   why "restore" is not the same as "enable".
+- [Memory ordering, and the fences with no partner](memory-ordering.md): milestone 116's inventory
+  of every fence and every ordered atomic outside test code, each adjudicated into a bug, a stated
+  soundness argument, or dead code. The count and the two ways a grep gets it wrong. The structural
+  answer to why there are so few (almost every happens-before edge in this kernel comes from the
+  `SCHED` lock or a blocking IPC rendezvous, so it lives in a dependency where no grep can find it),
+  and the one protocol that has no rendezvous under it, which is where the real bug was. Why the
+  broad per-variable check **cannot** work, measured rather than argued: built, run, and it flagged
+  the tree's best pair while missing its one genuine finding. The narrow check that ships instead,
+  with the limitation named at the same volume as the feature. Also a corrected comment that claimed
+  plain `write_volatile` store order was doing work it cannot do.
 - [How portable kernels are written](portability.md): what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.
