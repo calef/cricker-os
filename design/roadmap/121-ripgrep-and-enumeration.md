@@ -5,9 +5,10 @@ target beside milestone 66's Vaultwarden and milestone 99's git, chosen for a re
 has: it is the workload that pushes on **enumeration**, which is the one authority this system treats
 as dangerous.
 
-**Gate: MILESTONE 64.** 64 measured the crates.io surface and bound `read_dir`; this milestone spends
-what that bought. It is gated rather than blocked, in the sense that every dependency it needs was
-already measured as building.
+**Gate: MILESTONE 64, MILESTONE 122.** 64 measured the crates.io surface and bound `read_dir`; 122
+gives `std` a directory handle it can hold, without which a walker cannot open what it lists. Every
+dependency this milestone needs was already measured as building, so the gate is about the platform
+rather than about the crates.
 
 ## Why this workload rather than another
 
@@ -57,11 +58,18 @@ subdirectory and cannot open what it finds there.**
 So `walkdir` and `ignore` build and cannot walk, and "built with no change" turns out to mean
 compiles rather than works. The distance between those two is this milestone.
 
-**What that makes the real work.** Not the port. The **descent model**: how a process obtains a
-capability for a subdirectory from the one it holds, which is what §47's `DESCEND` right exists to
-name, and how a walker written against `std` paths is mapped onto holding one handle per directory
-rather than joining strings against a root. That is the `openat` shape, and it is the same shape
-`cap-std` gives Rust programs on ordinary systems.
+**What that makes the real work, and a second correction.** An earlier draft of this paragraph said
+the descent model was unbuilt. It is not. `fs_proto` has **`OPENDIR`** (op 8), which resolves one name
+under the directory handle in `req_handle`, requires `DESCEND` on the parent, and attenuates the
+child's rights so that no descendant can exceed its ancestor. `rm`, `swish`, both `fs_*_caretaker`
+programs and the FS server use it today, so §47's descent is built and exercised by native programs.
+
+The gap is one layer up. **The `std` PAL calls `OPENDIR` only inside `read_dir`, against
+`proto::ROOT`, and does not retain the handle**, so a `std` program has no directory object to
+descend into and `one_name` has nothing to resolve a second component against. The contract is fine;
+the binding is missing.
+
+That work is milestone 122, and this milestone is gated on it.
 
 This correction is why the benchmark below is worth more than the port: the number prices a design
 that does not exist yet, rather than confirming one that does.
@@ -138,6 +146,6 @@ ripgrep working beautifully and confinement being decorative.
   metadata-heavy paths and gitignore semantics behave identically here is a separate question that
   only running it answers. The correction above is the sharp version of this: it compiles, and it
   cannot walk past one level, and no probe that only builds a crate would have found that.
-- **The descent model is unbuilt and unspecified.** §47 names a `DESCEND` right and the `std` PAL has
-  no way for a program to turn it into a handle for a subdirectory. Until that exists this milestone
-  cannot start, which makes the gate on 64 necessary and not sufficient.
+- **A walker's cost is per component and invisible.** Whatever milestone 122 chooses, descending a
+  path is one IPC round trip per component, and a tool that walks a deep tree pays it on every open.
+  That is part of what the benchmark below is for, and it is a cost `ripgrep` on Linux does not have.
