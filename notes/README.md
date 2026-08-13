@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [The merge queue, and the two things that watch it](merge-queue.md): `scripts/merge-drain.sh`
+  lands every pull request that does not need Chris; `scripts/trunk-health.sh` says when `main` goes
+  red and when it recovers. Both exist because three duties on 2026-08-04 belonged to whoever
+  happened to notice, and the steward that was supposed to cover them reported without acting. Why
+  the drain is deliberately serial (`cpu matrix` is load-sensitive, so parallel updates manufacture
+  their own failures), and why the prevention half is a GitHub rule rather than either script.
 - [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
   and not just a number, and what `script/citations` can and cannot prove about it. The two older
   gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the
