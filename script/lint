@@ -113,6 +113,100 @@ for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
 done
 
+# Every `unsafe fn` states its contract in a `# Safety` section (milestone 112).
+#
+# **Read what this does and does not claim, because the milestone it comes from is about exactly
+# that distinction.** It checks that a contract is WRITTEN. It cannot check that the contract is
+# true, that it is relevant, or that any caller met it. No gate here can: `undocumented_unsafe_blocks`
+# has the same limit one level down, and DECISIONS §61 carries the BUGS note about a generated pass
+# that produced a comment false at its first site. What this buys is that the reader of an
+# `unsafe fn` always has a sentence to judge, which is a low bar and is the bar that was missing.
+#
+# It earns its place because of the shape of this tree's unsafe code, measured in milestone 82: of
+# the tree's `unsafe fn`s, a third contain **no unsafe operation at all**. Their unsafety is a
+# contract about meaning rather than a memory operation a compiler can point at (`set_ttbr0` is
+# unsafe because `aarch64-cpu` hands `TTBR0_EL1.set` over as a safe call; `assume_no_stale_entry` is
+# named for its contract). For those, both unsafe lints have nothing to fire on and **the rustdoc
+# section is the only enforcement there is.** Nothing was checking that it existed.
+#
+# `clippy::missing_safety_doc` is already on via `-D warnings` and does NOT cover this: it only fires
+# on an EXPORTED function, and the interesting ones here are private to their module (`set_ttbr0`,
+# `write_satp`). This found one violation on its first run, `fs_server`'s `file_page`, whose contract
+# was written but spelled `SAFETY:` instead of `# Safety` and so rendered as ordinary prose.
+#
+# **Trait-impl methods are excluded, and that is correctness rather than convenience.** `GlobalAlloc`'s
+# `alloc` and RedoxFS's `Disk::read_at` are `unsafe fn` because the TRAIT declares them so; the
+# contract belongs to the trait's own documentation and an impl restating it would be a copy that can
+# drift. Twelve of the tree's `unsafe fn`s are this case, and clippy's own lint skips them for the
+# same reason. Without that exclusion this check is twelve false positives out of thirteen, which is
+# a nag rather than a gate.
+echo "==> unsafe fn contracts"
+python3 - <<'PY'
+import pathlib
+import re
+import sys
+
+# `unsafe fn`, at any visibility, but not `unsafe trait`, not `unsafe impl`, and not a bare `fn`.
+DECL = re.compile(
+    r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?'
+    r'unsafe\s+(?:extern\s+"[^"]*"\s+)?fn\s+(\w+)')
+# An `impl ... for ...` header. `impl<T> Node for N` counts; `impl Fifo<T>` (inherent) does not.
+IMPL_FOR = re.compile(r'^\s*(?:unsafe\s+)?impl\b.*\bfor\b')
+
+total = 0
+in_trait_impl = 0
+missing = []
+
+for path in sorted(pathlib.Path('.').rglob('*.rs')):
+    parts = path.parts
+    if any(p in ('target', 'vendor', '.git', '.claude', 'patches') for p in parts):
+        continue
+    lines = path.read_text(errors='replace').split('\n')
+    # Brace depth, so "am I inside a trait impl" is answered by nesting rather than by guessing.
+    depth = 0
+    trait_impl_at = None
+    for i, line in enumerate(lines):
+        if trait_impl_at is None and IMPL_FOR.match(line):
+            trait_impl_at = depth
+        m = DECL.match(line)
+        if m:
+            total += 1
+            if trait_impl_at is not None:
+                in_trait_impl += 1
+            else:
+                # Walk up over attributes and comments to the doc block that belongs to this item.
+                j, doc = i - 1, []
+                while j >= 0:
+                    s = lines[j].strip()
+                    if s.startswith('///') or s.startswith('//!'):
+                        doc.append(s)
+                        j -= 1
+                    elif s.startswith(('#[', '#!', '//')):
+                        j -= 1
+                    else:
+                        break
+                if not any(re.search(r'#\s*Safety', d, re.I) for d in doc):
+                    missing.append(f'{path}:{i + 1}  {m.group(1)}')
+        depth += line.count('{') - line.count('}')
+        if trait_impl_at is not None and depth <= trait_impl_at:
+            trait_impl_at = None
+
+if missing:
+    print('lint: unsafe fn with no `# Safety` section in its rustdoc:', file=sys.stderr)
+    for entry in missing:
+        print(f'  {entry}', file=sys.stderr)
+    print('', file=sys.stderr)
+    print('For a third of this tree\'s unsafe fns the doc section is the ONLY enforcement there '
+          'is: they contain no unsafe operation, so neither unsafe lint has anything to fire on. '
+          'Spell it `# Safety` (a heading), not `SAFETY:` (a block comment): that is the form '
+          'rustdoc renders as the contract. See notes/unsafe-obligations.md.', file=sys.stderr)
+    sys.exit(1)
+
+print(f'unsafe fn contracts: {total} declarations '
+      f'({in_trait_impl} trait-impl methods, whose contract is the trait\'s), '
+      f'every other one has a `# Safety` section')
+PY
+
 # Rule 1, made mechanical (milestone 83): all architecture-specific code in the kernel lives under
 # kernel/src/arch/. This is the rule that makes the x86_64 port a new directory instead of a diff
 # across every file, and until now it was enforced by discipline alone; the discipline slipped once
@@ -136,6 +230,134 @@ if git grep -nE 'asm!\(|core::arch::' -- \
     exit 1
 fi
 echo "rule 1: no asm outside kernel/src/arch/"
+
+# Every `fence` names where its other half is (milestone 116, CLAUDE.md rule 4).
+#
+# A release fence with no matching acquire orders nothing and reads as though it does, which is
+# worse than an absent fence because the fence *is* the comment: a reader who sees
+# `fence(Ordering::Release)` stops asking the question. That mistake was found twice on 2026-08-04
+# by two methods that share nothing, milestone 80's loom harness on the clock seqlock and milestone
+# 43's audit on the compositor, and no gate in the tree could see either one.
+#
+# **This checks the bookkeeping, not the ordering, and the difference is the whole design.** Pairing
+# two fences is a dataflow problem across functions, across binaries and sometimes across address
+# spaces; in this tree the other half is frequently not a fence at all but a blocking IPC rendezvous
+# whose happens-before edge lives inside `spin::Mutex`, in a dependency. Nothing an AST can see. So
+# this takes milestone 112's posture instead: a narrow check that is true beats a broad one that is
+# aspirational. What it buys is the forcing function, because an author made to write down where the
+# partner lives has to go and look for it, and that is exactly the step neither 43's nor 80's author
+# took. See notes/memory-ordering.md, which measures the broad check and shows why it fails.
+#
+# Fences only, not every `Ordering::Release`. A `Release` store names its variable, so its partner
+# is a grep away; `fence()` names nothing at all, which is what makes it the site where the partner
+# has to be written down by hand.
+echo "==> every fence names its counterpart"
+python3 - <<'PYEOF' || exit 1
+import re, subprocess, sys
+
+MARKER = "PAIR:"
+files = subprocess.run(["git", "ls-files", "*.rs"], capture_output=True, text=True,
+                       check=True).stdout.split()
+files = [f for f in files if not f.startswith("vendor/")]
+
+def blank(src):
+    """Comments and string literals blanked out, offsets and newlines preserved."""
+    out, i, n = list(src), 0, len(src)
+    while i < n:
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if src[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif src[i] == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            for k in range(i, min(j + 1, n)):
+                if src[k] != "\n":
+                    out[k] = " "
+            i = j + 1
+        else:
+            i += 1
+    return "".join(out)
+
+# `#[cfg(test)] mod x;` makes the whole of x.rs test code. Chased down because the first version of
+# this scan matched the next `{` after the attribute and swallowed 400 lines of live kernel, hiding
+# a real fence in user.rs. The kernel's tests are `#[cfg(test)]` files, not inline modules.
+CFG = re.compile(r"#\[cfg\((?:all\(|any\()?(?:test|kani|loom)\b")
+test_files = set()
+for f in files:
+    code = blank(open(f, encoding="utf-8", errors="replace").read())
+    for m in CFG.finditer(code):
+        mm = re.match(r"[^;{]*?\bmod\s+([A-Za-z0-9_]+)\s*;", code[m.end():m.end() + 400], re.S)
+        if mm:
+            d, stem = f.rsplit("/", 1)[0], f.rsplit("/", 1)[1][:-3]
+            for cand in (f"{d}/{mm.group(1)}.rs", f"{d}/{stem}/{mm.group(1)}.rs",
+                         f"{d}/{mm.group(1)}/mod.rs"):
+                if cand in files:
+                    test_files.add(cand)
+
+FENCE = re.compile(r"\b(compiler_fence|fence)\s*\(")
+bad, seen = [], 0
+for f in files:
+    src = open(f, encoding="utf-8", errors="replace").read()
+    lines = src.split("\n")
+    code = blank(src)
+    regions = []
+    if f not in test_files and "/tests/" not in f and not f.startswith("fuzz/"):
+        for m in CFG.finditer(code):
+            tail = code[m.end():]
+            semi, brace = tail.find(";"), tail.find("{")
+            if brace < 0 or 0 <= semi < brace:
+                continue  # `mod x;` or a `use`: no inline body to bound
+            i, depth = m.end() + brace, 0
+            while i < len(code):
+                if code[i] == "{":
+                    depth += 1
+                elif code[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            regions.append((m.start(), i))
+    else:
+        regions.append((0, len(code)))
+    for m in FENCE.finditer(code):
+        if any(a <= m.start() <= b for a, b in regions):
+            continue
+        seen += 1
+        ln = code.count("\n", 0, m.start())  # 0-based index into `lines`
+        # The contiguous comment block immediately above, which is where `SAFETY:` lives too.
+        k, found = ln - 1, False
+        while k >= 0 and lines[k].strip().startswith("//"):
+            if MARKER in lines[k]:
+                found = True
+            k -= 1
+        if not found:
+            bad.append(f"{f}:{ln + 1}: {lines[ln].strip()}")
+
+if bad:
+    sys.stderr.write("lint: fences with no %s comment naming the other half:\n" % MARKER)
+    for b in bad:
+        sys.stderr.write("  " + b + "\n")
+    sys.stderr.write("""
+Put a comment directly above the fence saying where the matching acquire or release is, as
+`// %s <file> <function>'s fence(Acquire)`. If there is no matching fence because the ordering
+comes from somewhere else (a blocking IPC rendezvous, a lock, a spawn), say THAT and say which,
+because a reader who cannot find the partner has no way to tell a sound fence from a one-sided
+one. See notes/memory-ordering.md for the inventory and every site's adjudication.
+""" % MARKER)
+    sys.exit(1)
+print(f"fences: {seen} outside test code, each naming its counterpart")
+PYEOF
 
 # No module-wide dead-code suppression, anywhere (milestone 41, DECISIONS §38).
 #
@@ -283,6 +505,38 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/C
 # trust prose. See script/decisions, including what it still cannot check.
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
+
+# A dependency stays reachable by an upgrade (§81).
+#
+# Dependabot's `groups`, `schedule` and `open-pull-requests-limit` all reduce update noise and leave
+# the upgrade reachable. `ignore` is the one that does not: it removes the pull requests by removing
+# the upgrade, and the version stays out of reach until somebody edits this file again, which nothing
+# prompts anyone to do. That is a standing decision about the dependency graph rather than about the
+# queue, and §81 makes it Chris's.
+#
+# The incident is §81's: four RustCrypto majors that could not build one at a time were silenced with
+# an `ignore` block, on a pull request whose stated purpose was unblocking CI. Four lines of config is
+# exactly the size at which a policy decision rides along unnoticed.
+#
+# So this refuses the SILENT foreclosure, not the deliberate one. An exception is allowed and has to
+# say it is one, which is CLAUDE.md's rule for every rung of the ladder.
+echo "==> dependency upgrades stay reachable"
+dependabot="$(dirname "$0")/../.github/dependabot.yml"
+if [ -f "$dependabot" ] && grep -qE '^[[:space:]]*ignore:' "$dependabot" &&
+    ! grep -q 'EXCEPTION (§81)' "$dependabot"; then
+    echo "lint: .github/dependabot.yml has an \`ignore:\` block with no recorded exception." >&2
+    echo >&2
+    echo "An \`ignore\` does not quiet an update, it forecloses the upgrade: the version stays" >&2
+    echo "unreachable until somebody edits this file, and nothing will prompt them to. Prefer" >&2
+    echo "\`groups\` (fold many pull requests into one), \`schedule\`, or" >&2
+    echo "\`open-pull-requests-limit\`, all of which cut the noise and leave the upgrade reachable." >&2
+    echo >&2
+    echo "If a dependency genuinely must be held, say so where you hold it:" >&2
+    echo "  # EXCEPTION (§81): <why this one cannot be upgraded, and what would change it>" >&2
+    echo >&2
+    echo "See design/decisions/81-dependency-upgrades.md." >&2
+    exit 1
+fi
 
 # The third citation gate, and the one that reads what a citation points AT (milestone 97). The two
 # above prove a `§N` or a `milestone N` resolves to SOME entry; neither can prove it resolves to the

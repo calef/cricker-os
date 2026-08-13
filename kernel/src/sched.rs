@@ -550,13 +550,13 @@ fn pick_spawn_target() -> usize {
 /// bounded cost §28 accepts. Pull-based and lock-free between run queues: the only shared structure
 /// touched is the requester's inbox.
 pub fn serve_steal_request() {
-    // Take the request. Acquire pairs with the requester's Release CAS, so the requester id the CAS
-    // published is visible here; clearing it (swap to 0) lets the next idle core queue a fresh one.
-    let req = cpu::current().steal_request.swap(0, Ordering::Acquire);
-    if req == 0 {
+    // Take the request, which also clears the slot so the next idle core can queue a fresh one. The
+    // acquire/release pairing and the read-and-clear live in `steal_request`, where loom checks
+    // them (notes/interleaving.md); this function spends its own code on the hand-off.
+    let Some(requester) = cpu::current().steal_request.take() else {
         return;
-    }
-    let requester = (req - 1) as usize;
+    };
+    let requester = requester as usize;
     // One thread off our own queue, if any. `with_runq` keeps the runnable mirror exact.
     let thread = cpu::current().with_runq(|q| q.pop_front());
     if let Some(t) = thread {
@@ -573,8 +573,9 @@ pub fn serve_steal_request() {
 /// **An idle core asks a loaded core for work** (DECISIONS §28.3), from the idle loop. Pick the
 /// most-loaded other core and, if it has a queued thread to spare, request one over its steal slot
 /// and poke it with the reschedule SGI; the victim serves it at its next scheduler entry, the stolen
-/// thread lands in our inbox, and that SGI's drain runs it. One outstanding request per victim (the
-/// CAS), so a crowd of idle cores collapses to one steal per victim per round.
+/// thread lands in our inbox, and that SGI's drain runs it. One outstanding request per victim
+/// (`steal_request::Slot::claim` is a compare-exchange from empty), so a crowd of idle cores
+/// collapses to one steal per victim per round.
 fn try_initiate_steal() {
     // Do not steal if we have work of our own arriving: our run queue is empty (that is why the idle
     // thread is running), but the inbox may hold threads a remote just handed us that our own next
@@ -597,10 +598,7 @@ fn try_initiate_steal() {
         }
     }
     if let Some(v) = victim
-        && cpu::of(v)
-            .steal_request
-            .compare_exchange(0, (me + 1) as u32, Ordering::Release, Ordering::Relaxed)
-            .is_ok()
+        && cpu::of(v).steal_request.claim(me as u32)
     {
         crate::arch::irq::send_reschedule(v);
     }
@@ -931,7 +929,14 @@ pub fn schedule() {
         // by everybody, and a thread that resumes at EL0 in the previous thread's low half is
         // running a stranger's code. (No-ops, including no TLB flush, when the root is already
         // right, which is every switch between two kernel threads.)
-        crate::arch::mmu::switch_user_root(next_root);
+        //
+        // SAFETY: `next_root` is `reserved_root()`, or the composed value of the `AddressSpace`
+        // owned by thread `next`, which the block above popped off this core's run queue and marked
+        // `Running` with `on_cpu` set before releasing `SCHED`. No other core can pick it up in that
+        // state and nothing reaps a thread that is on a CPU, so the root is still live here even
+        // though the lock is not held. The lock is released on purpose (rule 1, above), which is
+        // exactly why this obligation cannot be a borrow and has to be a sentence.
+        unsafe { crate::arch::mmu::switch_user_root(next_root) };
 
         // SAFETY: both pointers name live `Context`s owned by boxed `Thread`s in the map, and
         // interrupts are masked so nothing can reorder underneath us.
@@ -2054,7 +2059,10 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
             .space = Some(space);
     }
 
-    crate::arch::mmu::switch_user_root(ttbr);
+    // SAFETY: `ttbr` is the composed value of the `AddressSpace` the block above just moved into
+    // the *current* thread's slot. The current thread is the one executing this line, so it is on a
+    // CPU and cannot be reaped, and the space it now owns is live until that thread's `Drop` runs.
+    unsafe { crate::arch::mmu::switch_user_root(ttbr) };
 }
 
 /// The top of the current thread's kernel stack: **where its `TrapFrame` belongs.**
@@ -2218,7 +2226,11 @@ pub fn scan_live_thread_stacks() {
     };
     for t in sched.threads.iter_mut() {
         if let Some(s) = t.stack.as_ref() {
-            crate::stack::note_thread_stack_use(crate::stack::high_water(s.bottom(), s.top()));
+            // SAFETY: a `KernelStack` this thread still owns, so its pages are mapped until its
+            // `Drop` runs, and `KernelStack::new` painted the whole span. `SCHED` is held, so the
+            // thread cannot be reaped out from under the scan.
+            let used = unsafe { crate::stack::high_water(s.bottom(), s.top()) };
+            crate::stack::note_thread_stack_use(used);
         }
     }
 }

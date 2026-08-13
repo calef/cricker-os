@@ -259,6 +259,9 @@ static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 pub fn last_user_fault() -> Option<(UserFault, u64)> {
     // Pairs with the `Release` on `USER_FAULTS` in [`user_fault`], so a caller that has seen the
     // counter rise reads the record the faulting hart wrote rather than something older.
+    //
+    // PAIR: `USER_FAULTS.fetch_add(1, Ordering::Release)` in [`user_fault`], below in this file.
+    // Both halves are here and both are load-bearing; the aarch64 twin is the same pair.
     core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))

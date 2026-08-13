@@ -182,8 +182,13 @@ impl KernelStack {
 
         // Paint the whole stack for the high-water report (milestone 84): every page is mapped and
         // no thread has run on it, so there is no live portion to skip.
+        //
+        // SAFETY: the loop above mapped every page of `[bottom, top)` and returned early on any
+        // failure, and this `KernelStack` has not been handed to a thread yet, so nothing is on it.
         #[cfg(test)]
-        crate::stack::paint(bottom, top);
+        unsafe {
+            crate::stack::paint(bottom, top);
+        };
 
         Some(KernelStack {
             guard,
@@ -218,7 +223,10 @@ impl Drop for KernelStack {
         // would fault) and note it was never painted or used anyway.
         #[cfg(test)]
         if self.pages.iter().all(|&p| p != 0) {
-            crate::stack::note_thread_stack_use(crate::stack::high_water(self.bottom, self.top));
+            // SAFETY: every page is mapped (the `all` above is exactly that check), still mapped
+            // because the unmap loop below has not run, and `new` painted the whole span.
+            let used = unsafe { crate::stack::high_water(self.bottom, self.top) };
+            crate::stack::note_thread_stack_use(used);
         }
 
         for (i, &phys) in self.pages.iter().enumerate() {

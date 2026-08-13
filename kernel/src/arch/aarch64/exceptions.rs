@@ -385,6 +385,9 @@ pub fn last_user_fault() -> Option<(UserFault, u64)> {
     // faulting core wrote and not something older. We are on ARM, so this is not free ordering we
     // can assume: the two relaxed stores below the counter's release are exactly the reordering the
     // architecture permits.
+    //
+    // PAIR: `USER_FAULTS.fetch_add(1, Ordering::Release)` in [`user_fault`], below in this file.
+    // Both halves are here and both are load-bearing; the riscv64 twin is the same pair.
     core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))

@@ -222,15 +222,24 @@ fn top() -> u64 {
 #[cfg(test)]
 const PAINT: u64 = 0x5AFE_57AC_5AFE_57AC;
 
-/// Paint `[bottom, top)` with [`PAINT`]. The caller asserts nothing has used the region yet: a
-/// painted-over live frame is corruption, so every call site painting a stack in use must skip the
-/// live portion (see [`paint_boot_stack`]).
+/// Paint `[bottom, top)` with [`PAINT`].
+///
+/// # Safety
+/// `[bottom, top)` must be a mapped, writable, 8-byte-aligned range that **nothing has used yet**.
+/// This writes every word in it, so a live frame anywhere inside is corrupted: a call site painting
+/// a stack that is in use has to skip the live portion itself (see [`paint_boot_stack`], which stops
+/// a margin below the running `sp`).
+///
+/// It was a safe fn until milestone 112, with that requirement written as a `// SAFETY:` comment
+/// naming "the caller". Three call sites, and any other safe code in the kernel could have written
+/// this pattern over an arbitrary address range.
 #[cfg(test)]
-pub fn paint(bottom: u64, top: u64) {
+pub unsafe fn paint(bottom: u64, top: u64) {
     let mut p = bottom as *mut u64;
     while (p as u64) < top {
-        // SAFETY: the caller hands us a mapped, unused stack region; volatile so the writes are
-        // not elided or coalesced into something that assumes the region is ordinary memory.
+        // SAFETY: this function's own `# Safety` contract puts `[bottom, top)` in a mapped, unused,
+        // aligned region, and the loop stays inside it. Volatile so the writes are not elided or
+        // coalesced into something that assumes the region is ordinary memory.
         unsafe { core::ptr::write_volatile(p, PAINT) };
         p = p.wrapping_add(1);
     }
@@ -248,13 +257,25 @@ pub fn paint(bottom: u64, top: u64) {
 ///
 /// A frame whose deepest word happened to store the paint value exactly reads one word shallow.
 /// Classic limitation of the method; a 64-bit pattern makes it vanishingly unlikely.
+///
+/// # Safety
+/// `[bottom, top)` must be a mapped, readable, 8-byte-aligned range, and it must be a range
+/// [`paint`] ran over, or the answer is a reading of somebody else's bytes rather than a
+/// measurement.
+///
+/// **This one is milestone 112's correction to milestone 82's survey**, which found four sites by
+/// grepping SAFETY comments for the word "caller" and so missed this one: it had the identical
+/// defect (a safe fn dereferencing an address range built from its own arguments) written in the
+/// passive voice, "a mapped stack region", which names the obligation without naming anybody who
+/// owes it. Passive voice hides the defect from the pattern that found the rest of it.
 #[cfg(test)]
-pub fn high_water(bottom: u64, top: u64) -> u64 {
+pub unsafe fn high_water(bottom: u64, top: u64) -> u64 {
     let mut p = bottom as *const u64;
     while (p as u64) < top {
-        // SAFETY: a mapped stack region. Volatile because another core may own this stack and be
-        // running on it right now; we only ever compare a snapshot word against the pattern, and a
-        // racing write can only make the stack look deeper, never shallower than it truly was.
+        // SAFETY: this function's own `# Safety` contract puts `[bottom, top)` in a mapped, aligned
+        // region, and the loop stays inside it. Volatile because another core may own this stack and
+        // be running on it right now; we only ever compare a snapshot word against the pattern, and
+        // a racing write can only make the stack look deeper, never shallower than it truly was.
         if unsafe { core::ptr::read_volatile(p) } != PAINT {
             return top - p as u64;
         }
@@ -283,7 +304,11 @@ pub fn paint_boot_stack() {
     let ceiling = crate::arch::current_sp() - 512;
     BOOT_PAINT_CEILING.store(ceiling, core::sync::atomic::Ordering::Relaxed);
     // Start above the canary words: painting them would kill the canary check.
-    paint(bottom() + core::mem::size_of_val(&CANARY) as u64, ceiling);
+    //
+    // SAFETY: the boot stack is mapped by the linker script and is live from `_start`, and `ceiling`
+    // is 512 bytes below the running `sp`, so the range is the unused part. The 512 is the margin
+    // for the paint loop's own callees, which push frames below our `sp` while it runs.
+    unsafe { paint(bottom() + core::mem::size_of_val(&CANARY) as u64, ceiling) };
 }
 
 /// Deepest thread-stack use seen so far, in bytes, over every reaped [`crate::thread::KernelStack`]
@@ -316,7 +341,8 @@ pub fn report_high_water() {
 
     let boot_bottom = bottom() + core::mem::size_of_val(&CANARY) as u64;
     let size = top() - boot_bottom;
-    let used = high_water(boot_bottom, top());
+    // SAFETY: the same range `paint_boot_stack` painted, on a stack the linker script mapped.
+    let used = unsafe { high_water(boot_bottom, top()) };
     let floor = top() - BOOT_PAINT_CEILING.load(Ordering::Relaxed);
     crate::println!(
         "stack high-water: boot   {used}/{size} bytes ({}%), paint floor {floor}",
@@ -330,7 +356,9 @@ pub fn report_high_water() {
             continue; // the boot core runs on the linker-script stack; its slot was never painted
         }
         let (b, t) = crate::smp::secondary_stack_span(id);
-        let core_used = high_water(b, t);
+        // SAFETY: the span of an online core's `.bss` stack slot, which `bring_up_secondaries`
+        // painted whole before any `CPU_ON`. The `continue` above skipped every slot that was not.
+        let core_used = unsafe { high_water(b, t) };
         max_secondary = max_secondary.max(core_used);
         crate::println!(
             "stack high-water: core{id}  {core_used}/{} bytes ({}%)",
