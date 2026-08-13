@@ -74,7 +74,7 @@ jobs:
       - name: Read the pinned cargo-mutants version
         id: mutants
         run: echo "version=$(cat .cargo-mutants-version)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2.85.5
+      - uses: taiki-e/install-action@v2.85.11
         with:
           tool: cargo-mutants@${{ steps.mutants.outputs.version }}
 
@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download every shard's outcomes
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: mutants-shard-*
           path: shards
