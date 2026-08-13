@@ -212,17 +212,15 @@ state of the world for every driver in the tree the day before.
   which pays only for page tables). That is 255 records per page and `AS_OVERHEAD` is sixteen pages
   of slack, so nothing here comes close; a program that maps thousands of frames would notice.
 
-- **The suite faults intermittently on this branch, and the cause is not known.** Recorded here
-  rather than in a commit message because it is a live defect and the next person to run this suite
-  needs to meet it at the feature, which is what a `BUGS` section is for.
+- **The suite overflows a kernel thread stack intermittently on this branch.** Recorded here rather
+  than in a commit message because it is a live defect and the next person to run this suite needs to
+  meet it at the feature, which is what a `BUGS` section is for.
 
   One run in five faulted (2026-08-13; four green runs on this branch, one red). **The kernel binary
   was byte-identical between a run that faulted and a run that passed**: the two commits differ only
   in `.github/dependabot.yml`, `.github/workflows/toolchain-bump.yml` and `script/ci-qemu`, with
-  nothing under `kernel/`, `crates/`, `user/` or `fs_server/`. So this is a race or an
-  ordering-dependent bug, not a deterministic one, and re-running until green would hide it.
-
-  What the machine said, decoded rather than quoted:
+  nothing under `kernel/`, `crates/`, `user/` or `fs_server/`. So it is depth-dependent rather than
+  deterministic, and re-running until green would hide it.
 
   ```
   ESR_EL1  0x96000047   EC 0x25, data abort taken without a change in EL (so: kernel mode)
@@ -233,17 +231,27 @@ state of the world for every driver in the tree the day before.
   x8       0xffff0010001b7a90
   ```
 
-  **The faulting address is the interesting part, and it is not simply an unmapped page.**
-  `phys_to_virt` is `pa | KERNEL_VA_BASE`, so the physical half of `FAR` is `0x10_001b_3000`: that is
-  `0x1b3000`, a plausible low physical address, **with bit 36 set**, putting it 64 GiB up where no
-  RAM exists on `virt`. `x8` carries the same stray bit over a nearby address. One bit set in two
-  pointers at once is a corrupted or mis-constructed pointer, not a legitimately absent mapping, and
-  that is a different investigation from "something was unmapped too early".
+  `FAR` is **exactly the guard page of kernel thread stack slot 87**. `thread::STACK_AREA` is
+  `KERNEL_VA_BASE | 0x10_0000_0000` and the per-thread stride is five pages (`STACK_PAGES` = 4 plus
+  one guard), so `FAR - STACK_AREA` is `0x1b3000` = 87 × `0x5000` with a remainder of **zero**. `x8`
+  is `0x4a90` into the same slot, which is that thread's own stack, 1392 bytes below its top. So the
+  guard page did its job: a 16 KiB kernel stack ran out and the write below it was caught rather than
+  quietly landing on the neighbour.
 
   It faulted while the supervision and reap tests were running (the console interleaves, so which
-  test owns it is not established, and this note should not pretend otherwise). `ELR` is in the
-  kernel image region, unlike the operand.
+  test owns it is not established, and this note should not pretend otherwise).
+
+  **A correction worth keeping, because the wrong reading was reasonable and cost an hour.** The
+  first pass at this decoded `FAR` through `phys_to_virt` (which is `pa | KERNEL_VA_BASE`), read the
+  result as physical `0x1b3000` with a stray bit 36, and concluded the pointer was corrupted. Bit 36
+  is not corruption: it is `STACK_AREA`, placed 64 GiB up **precisely so that a stack address can
+  never collide with the virtual name of a physical one**, which `thread.rs` says in the comment
+  above the constant. The lesson is that a high-half address is not automatically a physmap address,
+  and masking off `KERNEL_VA_BASE` is not a decode unless you have first established which region
+  you are in.
 
   **The milestone is held on this**, not merged on the four green runs. A demonstration OS that
   merges a kernel change whose suite passes four times in five has published a number it does not
-  believe.
+  believe. The work is to find what makes this branch's kernel path deeper: this milestone puts nine
+  `MAP` calls and their mapping records where spawn-time wiring used to be, and 16 KiB is Linux's
+  arm64 figure rather than a measured one for this tree.
