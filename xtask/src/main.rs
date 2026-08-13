@@ -3505,7 +3505,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 36] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 37] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -3517,6 +3517,17 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 36] = [
     // than an assertion: one line reaches the file through an operator and one through a name, so
     // if they disagree, one of them opened something else.
     ("wc gate.txt", Some("2 4 24")),
+    // **And the same name at the head of a pipeline**, which is the line that answered nothing at
+    // all until milestone 50's draining lane. An input operand is resolved by the planner, and the
+    // shell used to wire a pipeline's head off the `Line` (which has no `<` on it), so the planned
+    // source was dropped and the stage counted an empty stream (a `recv` on an empty slot answers
+    // `NoSuchSlot`, which reads as end of document). Two spawned processes, and this shell feeds the
+    // first.
+    //
+    // `2 4 24` plus a newline is seven bytes and three words on one line, so the answer is the
+    // answer above it counted. Spelled out rather than derived for this file's reason: it is a boot
+    // gate, and deriving one number from another would hide the case where both are wrong.
+    ("wc gate.txt | wc", Some("1 3 7")),
     // The negative control the pair would be weaker without. `wc` alone is refused **at the
     // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
     // on Unix the same command is a shell that appears to hang. So the line above granted
