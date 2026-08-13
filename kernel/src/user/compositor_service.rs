@@ -341,6 +341,14 @@ impl Wiring {
             self.ring_tail = self.ring_tail.wrapping_add(1);
         }
         // The bytes must be visible before the tail that advertises them.
+        //
+        // PAIR: `drain_input` in user/src/compositor.rs, which reads `TAIL` and then the bytes. This
+        // is the **fourth** writer into pages that reader consumes, and milestone 43's audit counted
+        // three: it named `window.rs`, `display_terminal.rs` and `kbd.rs` and missed the kernel
+        // playing the same input-driver role here. Its fix covers all four, because `drain_input` is
+        // the single reader. The `ipc_call` below also orders this one on its own (the compositor is
+        // blocked in `recv_cap` on the doorbell), so the reader's fence is not what makes *this*
+        // producer safe; see notes/memory-ordering.md for which producer it is.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // SAFETY: inside the ring frame.
         unsafe {

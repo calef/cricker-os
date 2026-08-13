@@ -130,8 +130,11 @@ Five decisions, each with its alternative on the record:
    on riscv64. Every other program in the archive is loaded by init in userspace and is not measured
    today, so the chain of trust stops at init's entry. The capability-correct extension is **init
    measuring what init loads** (its own table, in userspace, trustworthy because init's own bytes are
-   now measured), which keeps policy out of the kernel the same way supervision does. Recorded as the
-   follow-up, not built. Hashing the whole 14 MB archive in the kernel would cover everything with one
+   now measured), which keeps policy out of the kernel the same way supervision does. **Built by
+   milestone 104 on 2026-08-05**, so this paragraph describes the state before it: init now refuses
+   to load what it cannot vouch for, the table is an archive entry rather than compiled into init
+   (init is *in* the archive it measures), and the kernel gained one digest and no policy. Three
+   programs remain unmeasured and are named in notes/trusted-init.md. Hashing the whole 14 MB archive in the kernel would cover everything with one
    value but puts both the cost and the policy in the wrong place.
 
 **The signature variant, recorded as a follow-up rather than built.** A signature over init against a

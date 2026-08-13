@@ -56,20 +56,15 @@ fn generate_trust_root(manifest_dir: &str, arch: &str) {
 
     let text = std::fs::read_to_string(&manifest).unwrap_or_default();
     let mut entries = String::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (name, hex) = line.split_once(' ').unwrap_or_else(|| {
+    // The format has one definition (`measured_boot::manifest_entries`), shared with init, which
+    // reads the same shape out of the archive at boot (milestone 104). This side turns an
+    // unparseable line into a hard error where init treats it as a refusal, and the asymmetry is
+    // deliberate: at build time we can still stop, and a manifest we cannot read means the build
+    // wrote something we cannot read.
+    for entry in measured_boot::manifest_entries(&text) {
+        let (name, digest) = entry.unwrap_or_else(|line| {
             panic!(
                 "malformed measurement line in {}: {line:?}",
-                manifest.display()
-            )
-        });
-        let digest = measured_boot::parse_hex(hex.trim()).unwrap_or_else(|| {
-            panic!(
-                "measurement for {name:?} in {} is not a sha256 digest: {hex:?}",
                 manifest.display()
             )
         });

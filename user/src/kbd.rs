@@ -185,6 +185,12 @@ fn ring_push(tail: &mut u32, byte: u8) {
 fn ring_publish(tail: u32) {
     use compositor::proto::ring;
     // The bytes must be visible before the tail that advertises them.
+    //
+    // PAIR: two readers of one contract. `take_typed` in kernel/src/user/keyboard_service.rs has the
+    // matching `fence(SeqCst)`; `drain_input` in user/src/compositor.rs is the half milestone 43's
+    // audit found missing (finding 7). The `call(DOORBELL, ...)` this program makes immediately
+    // after `ring_publish` orders it against the compositor anyway, because the compositor is
+    // blocked in `recv_cap` on that doorbell. See notes/memory-ordering.md.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     // SAFETY: inside the ring frame.
     unsafe { core::ptr::write_volatile((RING_VA + ring::TAIL) as *mut u32, tail) };
