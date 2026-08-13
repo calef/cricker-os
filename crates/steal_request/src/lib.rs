@@ -79,6 +79,11 @@
 //! - [`MAX_REQUESTER`] exists because the bias is an addition, and an addition can overflow. No
 //!   kernel configuration can reach it (`MAX_CPUS` is single digits), so the branch that refuses it
 //!   is unreachable in the running system and is covered by a host test alone.
+//!
+//! Name: unrecorded. Provisional, minted 2026-08-04 (milestone 80) and not yet put to Chris; the
+//! type is `Slot` and the methods are `claim`/`take`. Named as a noun for what the slot carries, the
+//! work-steal request, per CLAUDE.md's naming tenet. Chris's call; `notes/interleaving.md` records
+//! why it was lifted into its own crate.
 
 #![cfg_attr(not(test), no_std)]
 

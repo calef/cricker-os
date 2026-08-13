@@ -3,6 +3,10 @@
 # thread interleaving and every reordering the C11 memory model permits (milestone 80). See
 # notes/interleaving.md.
 #
+# Name: unrecorded. Provisional, minted 2026-08-04 (milestone 80) and not yet put to Chris. Named for
+# the question it answers (which interleavings are legal) rather than for the tool that answers it
+# (loom), following script/undefined-behavior-check rather than a tool name. Chris's call.
+#
 # The gap this fills. CLAUDE.md's fourth rule is "assume weak memory ordering", and until this
 # script existed nothing in the tree could falsify a violation of it. QEMU's TCG executes guest
 # atomics conservatively and explores almost none of the orderings aarch64 and riscv64 permit, so an
