@@ -31,7 +31,7 @@ walking is where the interesting costs and the interesting confinement both live
 |---|---|---|
 | the `ENUMERATE` right, and `EPERM` when withheld | built | §47, `crates/fs_proto` |
 | rights that cannot be widened by a child | built | §47 |
-| `read_dir` bound in the `std` PAL | built | milestone 64 |
+| `read_dir` bound in the `std` PAL, **one level only** | built, see the correction below | milestone 64 |
 | `regex`, `walkdir`, `ignore`, `crossbeam-channel`, `memchr` | **built with no change** | milestone 64's probe of 50 crates |
 
 That last row is the surprising one. Every significant dependency in ripgrep's tree is in 64's
@@ -39,6 +39,32 @@ That last row is the surprising one. Every significant dependency in ripgrep's t
 parsing and the directory walking and which 64's table annotates "fs plus threads". So this milestone
 is closer to a port than to a construction, which is what §46's boundary predicts: the reuse boundary
 is the TCB boundary, and userspace should actively prefer porting.
+
+### Correction (2026-08-13): a recursive walk does not work today, and that is the milestone
+
+The paragraph above was written believing that `read_dir` being bound made the walk nearly free. It
+does not, and the first draft of this block was wrong about the central thing it proposes to build.
+
+**The `std` PAL grants one name, not a path.** `one_name` in `patches/std-cricker` refuses absolute
+paths, `..`, **and nested paths**. The overlay is careful about the flat case: `read_dir(".")` yields
+`./name`, `one_name` accepts it, and feeding an entry's `path()` straight back to `File::open` works
+exactly as a caller expects.
+
+Descend one level and it stops. `read_dir("./sub")` lists, because `./sub` reduces to one component.
+Its entries' `path()` is `./sub/name`, which is two, which is refused. **A program can list a
+subdirectory and cannot open what it finds there.**
+
+So `walkdir` and `ignore` build and cannot walk, and "built with no change" turns out to mean
+compiles rather than works. The distance between those two is this milestone.
+
+**What that makes the real work.** Not the port. The **descent model**: how a process obtains a
+capability for a subdirectory from the one it holds, which is what §47's `DESCEND` right exists to
+name, and how a walker written against `std` paths is mapped onto holding one handle per directory
+rather than joining strings against a root. That is the `openat` shape, and it is the same shape
+`cap-std` gives Rust programs on ordinary systems.
+
+This correction is why the benchmark below is worth more than the port: the number prices a design
+that does not exist yet, rather than confirming one that does.
 
 ## The demonstration
 
@@ -110,4 +136,8 @@ ripgrep working beautifully and confinement being decorative.
   "microkernels are slow at walks", and the note that records it must say so.
 - **`ignore` building is not `ignore` behaving.** 64's probe proved it compiles. Whether its
   metadata-heavy paths and gitignore semantics behave identically here is a separate question that
-  only running it answers.
+  only running it answers. The correction above is the sharp version of this: it compiles, and it
+  cannot walk past one level, and no probe that only builds a crate would have found that.
+- **The descent model is unbuilt and unspecified.** §47 names a `DESCEND` right and the `std` PAL has
+  no way for a program to turn it into a handle for a subdirectory. Until that exists this milestone
+  cannot start, which makes the gate on 64 necessary and not sufficient.
