@@ -117,8 +117,19 @@ fn publish(n: usize, focus: u32) {
         wr32(c + ctl::STRIDE, win.stride());
         wr32(c + ctl::STATUS, ctl::STATUS_OK);
         wr32(c + ctl::ACKED, 0);
-        // MAGIC last: a client that sees it knows every field above is already written. Ordering, not
-        // decoration; the store order is what makes the check mean anything.
+        // MAGIC last: a client that sees it knows every field above is already written.
+        //
+        // **The store order is not what makes that true, and an earlier version of this comment said
+        // it was.** `wr32` is `write_volatile`, which guarantees the access happens and guarantees
+        // no ordering whatsoever; on aarch64 the interconnect may make MAGIC visible before the
+        // fields above it. What actually makes the check sound is the rendezvous: `publish` is
+        // called once, before this program enters its serve loop, so a client's `HELLO` reply cannot
+        // arrive until every control page is written. Both clients say so at their end
+        // (`user/src/window.rs`, `user/src/display_terminal.rs`) and this end did not.
+        //
+        // MAGIC stays last anyway, because it costs nothing and is the right shape if this ever
+        // publishes again while clients run. If it does, this needs a release fence and every client
+        // needs an acquire one, the way `clock_proto` does it. See notes/memory-ordering.md.
         wr32(c + ctl::MAGIC, ctl::MAGIC_VALUE);
     }
 
@@ -143,6 +154,11 @@ fn flush(damage: Rect) {
     // space, and through it a device. A release fence is the portable way to say that (it lowers to
     // `dmb ish` on aarch64 and `fence` on RISC-V), and it belongs here rather than in arch code
     // because this is a userspace program (DECISIONS rule 1).
+    //
+    // PAIR: `barrier()` in user/src/display.rs, which the driver issues before it moves the
+    // virtqueue index and again before it notifies the device. The `call(DISPLAY, FLUSH, ...)` below
+    // is what orders these pixels against the driver *reading* them (the driver is blocked in
+    // `recv_cap`); this fence is what covers the driver-to-device leg not being ours to see.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     let (r0, _) = call(
         DISPLAY,
@@ -174,6 +190,8 @@ fn drain_input(focusable: usize, focus: &mut u32) {
     // without this the compositor can act on a fresh tail and stale bytes. The kernel's stand-in
     // for this same ring (`kernel/src/user/keyboard_service.rs`, `take_typed`) already fences
     // here; the userspace reader of the same contract did not.
+    // PAIR: `kbd::ring_publish`'s release fence in the input source (milestone 43,
+    // notes/shared-page-audit.md finding 7), which fences before it stores the tail loaded above.
     core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
     while head != tail {
         let at = RING_VA + ring::BYTES + (head % ring::CAPACITY) as u64;
@@ -240,6 +258,8 @@ fn serve_frame(
         // The same shape, in the clock page's seqlock, is milestone 80's finding; it is recorded
         // here because it is a different page, a different pair, and the reader's half rather than
         // the writer's.
+        // PAIR: each client's release fence in user/src/window.rs and user/src/display_terminal.rs
+        // (milestone 43), between the pixel/rectangle stores and the `ctl::SEQ` store loaded above.
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         // The client's rectangle is **untrusted input**. Clip it to the surface it owns; say so in its

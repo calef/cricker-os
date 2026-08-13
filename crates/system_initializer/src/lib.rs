@@ -66,7 +66,54 @@
 //! owner, which is whoever split it). Before that, a spawned job's memory was spent for the life of
 //! the boot.
 //!
+//! # What it refuses to load (milestone 104)
+//!
+//! The kernel measures the one program *it* loads, which is this one. Everything else in the
+//! archive is loaded here, and those bytes used to be unchecked, so the chain of trust stopped at
+//! init's entry. It does not now. The build packs a table of digests into the archive
+//! ([`measured_boot::PROGRAM_MEASUREMENTS`]), the kernel's trust root vouches for that table exactly
+//! as it vouches for this program's own bytes, and [`boot`] looks every program up in it before
+//! loading it.
+//!
+//! **One rule: init runs nothing it cannot vouch for.** A digest that does not match is a refusal,
+//! and so is a name the table does not mention, for the reason the kernel's empty trust root is
+//! refused: a check that passes when there is nothing to check against is not a check.
+//!
+//! What a refusal *costs* is not a second policy. It falls out of what the program was for, which is
+//! a question this crate already had to answer for an archive entry that is simply missing, so a
+//! refused program is treated exactly as a missing one:
+//!
+//! - **console, input, `line_editor`, swish, `job_undertaker`.** The system is made of these, so not
+//!   running one and not having a system are the same outcome. init prints which one it refused and
+//!   traps, which is `kernel::trust::require`'s decision one link down.
+//! - **`terminal_sink_caretaker`.** Already optional: a boot without an adapter comes up and a
+//!   declared second stream finds an empty slot. A refused adapter costs that same feature.
+//! - **The spawnable programs.** Left out of the table [`spawn_service`] indexes, so the prompt
+//!   answers "could not spawn" for them and everything else still works. Halting a running machine
+//!   because `wc` changed would turn a build defect into an unbootable system, and it buys nothing:
+//!   the guarantee is that nothing unvouched-for runs, and not spawning it is that guarantee.
+//!
+//! Recording a mismatch and loading anyway was considered and refused. There is no audit log to put
+//! a record in, and a measurement that changes nothing about what runs is theatre; a chain whose
+//! second link is advisory is not a chain.
+//!
 //! # BUGS
+//!
+//! **A refused `console` or `line_editor` stops in silence.** Those two are what carry init's
+//! output, so a refusal of either has no route to a person: init traps and the operator sees the
+//! kernel's fault line for init and nothing else, indistinguishable from any other early init
+//! failure. Everything refused after them is named on the console. There is no debug-print syscall
+//! (the kernel-served `Console` object went away at milestone 8) and driving the UART from here
+//! would be a second copy of the console driver, per ISA, inside the process the drivers exist to
+//! keep small.
+//!
+//! **An absent required component still traps with no message**, unchanged from before this
+//! existed. That is a build that did not pack it rather than bytes somebody swapped, and it has
+//! never had one.
+//!
+//! **The measurement is of the archive, not of memory over time.** It is checked once, when the
+//! program is loaded. Nothing re-measures a running process, and nothing measures the pages init
+//! wrote into a child after `build_child` copied them.
 //!
 //! The return of pages is **LIFO** (§16, `crates/regions`): a job region that is not at the top of
 //! the budget's watermark when it is reclaimed returns nothing, and its run is a hole until this
@@ -244,37 +291,69 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         fail()
     };
 
-    let Some(con_elf) = fs.read("console").and_then(|b| elf::Elf::parse(b).ok()) else {
-        fail()
-    };
-    let Some(in_elf) = fs.read("input").and_then(|b| elf::Elf::parse(b).ok()) else {
-        fail()
-    };
-    let Some(td_elf) = fs.read("line_editor").and_then(|b| elf::Elf::parse(b).ok()) else {
-        fail()
-    };
-    let Some(sh_elf) = fs.read("swish").and_then(|b| elf::Elf::parse(b).ok()) else {
-        fail()
-    };
+    // **The table init measures what it loads against** (milestone 104). The kernel vouched for this
+    // entry before it started us, exactly as it vouched for our own bytes
+    // (`kernel::trust::require_program_measurements`), so the table is worth what this process is
+    // worth and the chain extends by induction rather than by widening the kernel.
+    //
+    // Bytes that are not UTF-8 become the **empty** table rather than a fault, and an empty table
+    // vouches for nothing: every lookup below answers `Unmeasured`, the console is refused, and the
+    // boot stops. That is the same direction to be wrong in as the kernel's empty trust root, and it
+    // is the failure mode a measured boot must never get backwards.
+    let table = fs
+        .read(measured_boot::PROGRAM_MEASUREMENTS)
+        .and_then(|b| core::str::from_utf8(b).ok())
+        .unwrap_or("");
+
+    let con_elf = measured(&fs, table, "console");
+    let in_elf = measured(&fs, table, "input");
+    let td_elf = measured(&fs, table, "line_editor");
+    let sh_elf = measured(&fs, table, "swish");
     // **The terminal's sink adapter** (milestone 50's last remainder). Optional on purpose: an
     // initrd built without it still boots, and a program that declares a second stream then finds
     // an empty slot and says what it has to say in-band. A missing component should cost a feature,
-    // not a prompt.
-    let sink_elf = fs
-        .read("terminal_sink_caretaker")
-        .and_then(|b| elf::Elf::parse(b).ok());
+    // not a prompt. An adapter the table refuses costs exactly the same feature, which is the whole
+    // policy in one line: init treats what it cannot vouch for as what is not there.
+    let sink_elf = measured(&fs, table, "terminal_sink_caretaker").elf;
     // The undertaker (milestone 22, the interactive increment). Read here with the rest, because
     // the archive is only readable while we hold it and every failure below is one `fail`. Required
     // rather than optional, unlike the adapter above: without it a bounded job pool fills and the
     // prompt stops spawning, which is a broken system and not a missing feature.
-    let Some(reaper_elf) = fs
-        .read("job_undertaker")
-        .and_then(|b| elf::Elf::parse(b).ok())
-    else {
-        fail()
-    };
+    let reaper_elf = measured(&fs, table, "job_undertaker");
+
+    // **The programs the shell can spawn** (milestone 31), measured and parsed here rather than
+    // after the giveaway: the announcement further down is the only thing init ever says, so the
+    // verdicts have to exist before it. One `Option<elf::Elf>` is five words, so moving seven of
+    // them up the frame costs a third of a kilobyte and buys a person being told at boot instead of
+    // at the prompt.
+    //
+    // The refusals are collected in the same pass, because a second pass would hash every program a
+    // second time. Only entries the archive **has** count as refusals: `rm` is deliberately not
+    // loadable here, and a program this initrd never packed was never spawnable, so neither is news.
+    let mut progs: [Option<elf::Elf>; grant_plan::PROG_COUNT] = core::array::from_fn(|_| None);
+    let mut refused = [""; grant_plan::PROG_COUNT];
+    let mut refused_n = 0usize;
+    for (id, slot) in progs.iter_mut().enumerate() {
+        let Some(name) = Prog::from_id(id as u64).and_then(archive_name) else {
+            continue;
+        };
+        let found = measured(&fs, table, name);
+        if found.unvouched {
+            refused[refused_n] = name;
+            refused_n += 1;
+        }
+        *slot = found.elf;
+    }
 
     let ut = g.untyped;
+
+    // **The two components that have to exist before init can say anything.** The console writes
+    // the UART and the line discipline is its only client, so a refusal of either has no route to a
+    // person and this is the one case that stops in silence (see this module's BUGS). Everything
+    // else is checked below, after they are running.
+    let (Some(con_elf), Some(td_elf)) = (con_elf.elf, td_elf.elf) else {
+        fail()
+    };
 
     // The endpoints and shared pages we own and hand out, each retyped with full rights so we can
     // delegate narrowed views. `term_ep` is the terminal contract's one endpoint: the discipline
@@ -328,6 +407,52 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     ));
     must_ok(tcb_start(line_editor, 0, 0, 0));
     cap_delete(line_editor);
+
+    // **Refuse the system if a required component is not the one that was measured** (milestone
+    // 104), here, because this is the earliest point at which init can be read by a person and the
+    // latest at which nothing unmeasured has been built. The console and the line discipline above
+    // are running; nothing else is.
+    //
+    // Halting is not a second policy. The policy is that init runs nothing it cannot vouch for, and
+    // for a component the whole system is made of, not running it and not having a system are the
+    // same outcome. What it costs is decided by what the program was for, which is a question init
+    // already had to answer for an archive entry that is simply missing.
+    let unvouched: [&str; 3] = [
+        if in_elf.unvouched { "input" } else { "" },
+        if sh_elf.unvouched { "swish" } else { "" },
+        if reaper_elf.unvouched {
+            "job_undertaker"
+        } else {
+            ""
+        },
+    ];
+    if unvouched.iter().any(|n| !n.is_empty()) {
+        // The shell's output page, in our own space, so the refusal can be read. The giveaway below
+        // maps it for the same reason and this path never reaches the giveaway; a refusal nobody
+        // can see is most of what this milestone was written to fix.
+        // SAFETY: `invoke` traps to the kernel, which validates the capability and the method before
+        // acting (user_rt's contract).
+        if unsafe { invoke(term_out, abi::frame::MAP, INIT_OUT_VA, 1, ut) } == 0 {
+            let mut buf = [0u8; SENTENCE];
+            announce(
+                term_ep,
+                sentence(
+                    &mut buf,
+                    b"init: cannot vouch for",
+                    &unvouched,
+                    b"; halting rather than building an unmeasured system\n",
+                ),
+            );
+        }
+        fail()
+    }
+    // Past the refusal, so an absent component still traps the way it always has: a build that did
+    // not pack the console's client is a broken build, not an attack, and it has never had a
+    // message.
+    let (Some(in_elf), Some(sh_elf), Some(reaper_elf)) = (in_elf.elf, sh_elf.elf, reaper_elf.elf)
+    else {
+        fail()
+    };
 
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let input = must(build_child(
@@ -534,6 +659,26 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
             b"init: construction budget NOT dropped; it can still build\n"
         },
     );
+    // **And what the measurement decided** (milestone 104), on the same terms as the line above: a
+    // claim about what init refuses is worth what the check behind it is worth, and only init can
+    // run that check. The affirmative line is the load-bearing one. A measured boot's natural bug is
+    // for the check to evaporate when the build step does not run, and a boot that says nothing
+    // looks exactly like a boot that measured everything, so `script/shell-check` reads this
+    // sentence and a boot that stopped measuring fails the gate instead of passing quietly.
+    let mut buf = [0u8; SENTENCE];
+    announce(
+        term_ep,
+        if refused_n == 0 {
+            b"init: every program measured against the archive table\n"
+        } else {
+            sentence(
+                &mut buf,
+                b"init: measurement refused",
+                &refused[..refused_n],
+                b"; they cannot be spawned\n",
+            )
+        },
+    );
     cap_delete(term_ep);
     cap_delete(term_out);
 
@@ -558,16 +703,6 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     // assumed.
     must_ok(tcb_start(shell, 0, fs_rights, sh_clock_slot));
     cap_delete(shell);
-
-    // The programs the shell can spawn (milestone 31), parsed once from the archive; every spawn
-    // request builds a fresh child. A missing or unparseable entry stays `None` and the service
-    // answers "could not spawn" for it.
-    let progs: [Option<elf::Elf>; grant_plan::PROG_COUNT] = core::array::from_fn(|id| {
-        Prog::from_id(id as u64)
-            .and_then(archive_name)
-            .and_then(|name| fs.read(name))
-            .and_then(|b| elf::Elf::parse(b).ok())
-    });
 
     spawn_service(
         Channels {
@@ -920,6 +1055,86 @@ fn announce(term_ep: u64, text: &[u8]) {
         unsafe { core::ptr::write_volatile(out.add(i), b) };
     }
     call(term_ep, proto::req(proto::OP_WRITE, text.len() as u64), 0);
+}
+
+// -------------------------------------------------------------------------------------------
+// The measurement (milestone 104): init measures what init loads.
+// -------------------------------------------------------------------------------------------
+
+/// What init found when it asked the archive for a program.
+///
+/// One rule produces both fields: **init loads nothing it cannot vouch for.** So `elf` is `None`
+/// whenever the entry is missing, refused, or not an ELF, and every caller below treats those the
+/// same way it always treated a missing entry. `unvouched` exists only for the sentence init prints:
+/// a build that did not pack a program and a program whose bytes are not the ones this system was
+/// measured against are the same decision and very different news.
+struct Lookup<'a> {
+    elf: Option<elf::Elf<'a>>,
+    /// The archive **had** this entry and the table would not vouch for it.
+    unvouched: bool,
+}
+
+/// Read a program out of the archive and measure it against the table, or refuse it.
+///
+/// `Unmeasured` (the table says nothing about this name) and `Mismatch` (it says something else) are
+/// both refusals here, which is `measured_boot`'s own rule and the kernel's: a check that passes
+/// when there is nothing to check against is not a check. In particular a table that failed to
+/// generate refuses **everything**, and the boot stops at the console rather than coming up
+/// unmeasured.
+fn measured<'a>(fs: &crickerfs::Fs<'a>, table: &str, name: &str) -> Lookup<'a> {
+    let Some(bytes) = fs.read(name) else {
+        return Lookup {
+            elf: None,
+            unvouched: false,
+        };
+    };
+    if measured_boot::verify_in_manifest(table, name, bytes).is_err() {
+        return Lookup {
+            elf: None,
+            unvouched: true,
+        };
+    }
+    Lookup {
+        elf: elf::Elf::parse(bytes).ok(),
+        unvouched: false,
+    }
+}
+
+/// The buffer one printed sentence is composed in. A page would fit, but the sentences are one line
+/// each and a fixed frame-local buffer is what keeps [`sentence`] free of an allocator.
+const SENTENCE: usize = 192;
+
+/// Compose `prefix name name ... suffix` into `buf`, skipping empty names.
+///
+/// A hand-rolled `write!` because there is no allocator and `core::fmt` would drag its machinery
+/// into a program whose whole job is to be small. It **truncates** rather than failing: a diagnostic
+/// cut short still names the first thing that went wrong, and the alternative is a refusal that says
+/// nothing at all.
+fn sentence<'b>(
+    buf: &'b mut [u8; SENTENCE],
+    prefix: &[u8],
+    names: &[&str],
+    suffix: &[u8],
+) -> &'b [u8] {
+    fn push(buf: &mut [u8; SENTENCE], n: &mut usize, src: &[u8]) {
+        for &b in src {
+            if *n < SENTENCE {
+                buf[*n] = b;
+                *n += 1;
+            }
+        }
+    }
+    let mut n = 0usize;
+    push(buf, &mut n, prefix);
+    for name in names {
+        if name.is_empty() {
+            continue;
+        }
+        push(buf, &mut n, b" ");
+        push(buf, &mut n, name.as_bytes());
+    }
+    push(buf, &mut n, suffix);
+    &buf[..n]
 }
 
 /// Unwrap a `Result<u64, ()>` or fault: a half-built system is not worth limping along.
