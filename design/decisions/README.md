@@ -140,6 +140,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 81 | DECIDED | [A dependency stays upgradable; we suppress churn, never the upgrade](81-dependency-upgrades.md) |
 | 82 | DECIDED | [Ambient authority is the problem; replacing the ecosystem, not confining it, is the end state](82-ambient-authority-and-the-rewrite.md) |
 | 83 | DECIDED | [When the same thing exists in C and in Rust, take the Rust one](83-rust-over-c-implementations.md) |
+| 84 | DECIDED | [How we port: prefer software that has already dropped ambient authority](84-how-we-port.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
