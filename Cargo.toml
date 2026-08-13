@@ -43,6 +43,7 @@ members = [
     "crates/ntlm",
     "crates/ntp_proto",
     "crates/slots",
+    "crates/steal_request",
     "crates/user_heap",
     "crates/user_rt",
     "crates/coremark",
@@ -87,7 +88,12 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 # `cfg(kani)` is set by the model checker, not by cargo, so without this every Kani-gated module is
 # an "unexpected cfg" warning. Was duplicated across 19 crates; now stated once.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+#
+# `cfg(loom)` is the same shape, one tool along (milestone 80): it is set by
+# `script/interleaving-check` and by nothing else, so without this line every `#[cfg(loom)]` in
+# `crates/steal_request` is an "unexpected cfg" warning in the ordinary lint pass. Listing it here
+# rather than in that crate is the point of milestone 68's one-table rule.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 # The lint that composes with `undocumented_unsafe_blocks` below (milestone 82). An `unsafe fn`
 # body is one implicit unsafe block, so a function with three unsafe operations carries three
 # invariants under a single signature, and the clippy lint cannot see any of them: it fires on
