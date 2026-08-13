@@ -137,6 +137,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 78 | PROPOSED | [Signed commits: worth doing, and not as a side effect](78-signed-commits.md) |
 | 79 | DECIDED | [Holding password-equivalent material, and what a session key release means](79-password-equivalent-material.md) |
 | 80 | DECIDED | [One build for the kernel and everything that runs on it](80-one-build-for-everything.md) |
+| 81 | DECIDED | [A dependency stays upgradable; we suppress churn, never the upgrade](81-dependency-upgrades.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
