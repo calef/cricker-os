@@ -385,6 +385,9 @@ pub fn last_user_fault() -> Option<(UserFault, u64)> {
     // faulting core wrote and not something older. We are on ARM, so this is not free ordering we
     // can assume: the two relaxed stores below the counter's release are exactly the reordering the
     // architecture permits.
+    //
+    // PAIR: `USER_FAULTS.fetch_add(1, Ordering::Release)` in [`user_fault`], below in this file.
+    // Both halves are here and both are load-bearing; the riscv64 twin is the same pair.
     core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
@@ -602,6 +605,10 @@ fn fatal(frame: &TrapFrame, index: u64, esr: u64) -> ! {
             "  FAR_EL1   {:#018x}   the address that faulted",
             FAR_EL1.get()
         );
+        // And say whether that address is a guard page, which decides what everything below means.
+        // Only here: for a class where FAR is stale garbage the classifier would be reading a
+        // previous fault's address and could name a stack at random. See the riscv64 twin.
+        crate::stack::warn_if_guard_page(FAR_EL1.get());
     } else {
         println!("  FAR_EL1   (not meaningful for this exception class)");
     }

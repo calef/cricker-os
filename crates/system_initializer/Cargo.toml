@@ -16,6 +16,9 @@ elf = { version = "0.1.0", path = "../elf" }
 grant_plan = { version = "0.1.0", path = "../grant_plan" }
 # The terminal contract's framing, for the one sentence init prints (`proto::OP_WRITE`).
 line_editor = { version = "0.1.0", path = "../line_editor" }
+# The hash and the manifest format the kernel measures init with (milestone 104). This crate is the
+# next link: it reads the same shape of table out of the archive and applies it to what IT loads.
+measured_boot = { version = "0.1.0", path = "../measured_boot" }
 # The sink contract, for the end-of-stream init sends on a child's behalf when the child was never
 # built and therefore cannot end its own second stream.
 sink_proto = { version = "0.1.0", path = "../sink_proto" }

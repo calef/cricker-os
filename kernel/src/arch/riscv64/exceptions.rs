@@ -259,6 +259,9 @@ static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 pub fn last_user_fault() -> Option<(UserFault, u64)> {
     // Pairs with the `Release` on `USER_FAULTS` in [`user_fault`], so a caller that has seen the
     // counter rise reads the record the faulting hart wrote rather than something older.
+    //
+    // PAIR: `USER_FAULTS.fetch_add(1, Ordering::Release)` in [`user_fault`], below in this file.
+    // Both halves are here and both are load-bearing; the aarch64 twin is the same pair.
     core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
@@ -425,6 +428,13 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
         _ => {
             // An exception from S-mode is a KERNEL bug, and fatal. Report it with the detail
             // that makes it legible.
+            //
+            // Say first whether `stval` is a guard page, because that single fact decides what the
+            // rest of the message means. Milestone 78: two `cpu matrix` runs died here with
+            // `scause=0xf ... from_user=false` and an address nothing interpreted, and it took
+            // arithmetic on the CI log to work out that both were the base of a thread stack's
+            // guard page. The kernel knew; it just was not saying.
+            crate::stack::warn_if_guard_page(frame.stval);
             panic!(
                 "unexpected RISC-V trap: scause={scause:#x} (code {code}) stval={:#x} sepc={:#x} \
                  from_user={from_user}",

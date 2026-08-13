@@ -198,6 +198,11 @@ impl Wiring {
         // The pixels must be visible to whoever reads them next: another address space, and through
         // it a device. A release fence is the portable way to say so (`dmb ish` on aarch64, `fence`
         // on RISC-V), and it belongs in this userspace program rather than in arch code (rule 1).
+        //
+        // PAIR: whichever of the two paths below runs. `MODE_DISPLAY` pairs with `barrier()` in
+        // user/src/display.rs, the same as the compositor's `flush`; `MODE_WINDOW` pairs with
+        // `serve_frame` in user/src/compositor.rs. Both are also ordered by the `call` each path
+        // makes, when it makes one; the second fence below is the case where it does not.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         if self.mode == MODE_DISPLAY {
@@ -232,6 +237,14 @@ impl Wiring {
         self.seq += 1;
         // The sequence must become visible after the pixels and the rectangle that describes them,
         // or the compositor could composite a frame we have not finished writing.
+        //
+        // PAIR: `serve_frame` in user/src/compositor.rs, which milestone 43's audit found had no
+        // fence (finding 7). **Read `ring` before assuming a rendezvous covers this one.** On a
+        // keystroke `ring` is false and no `call` follows, so the only edge is the reply this
+        // process is about to send to the compositor that `CALL`ed it. That reply does order it. The
+        // case the reader's fence is genuinely load-bearing for is a *second* window committing
+        // while `serve_frame` rescans every client's page; see the note in user/src/window.rs and
+        // notes/memory-ordering.md.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         wr32(CTL_VA + ctl::SEQ, self.seq);
         if ring {
