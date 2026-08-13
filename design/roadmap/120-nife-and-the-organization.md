@@ -73,17 +73,17 @@ search box, so the name will always need a companion word to be findable.
 
 Milestone 115's point is that the refusals are the valuable half.
 
-- **`patina`** — the idiomatic figurative sense in English is a thin attractive surface over
+- **`patina`**. The idiomatic figurative sense in English is a thin attractive surface over
   something worse, which is the opposite of the claim a verification project makes. Also
   architecturally backwards: a patina is the layer on top, and a microkernel is the bottom.
-- **`lemma`** — architecturally exact (the small proved thing larger results are built on) and
+- **`lemma`**. Architecturally exact (the small proved thing larger results are built on) and
   rejected by Chris on taste.
-- **`keystone`** — unavailable. Berkeley's Keystone is an open-source framework for TEEs **on
+- **`keystone`**. Unavailable: Berkeley's Keystone is an open-source framework for TEEs **on
   RISC-V**, which is this project's second architecture. Same `capsh` failure: a reader arriving from
   RISC-V security would assume ours is that.
-- **`psyche`** — the asteroid is an exposed planetesimal iron core, which is the denotation we
+- **`psyche`**. The asteroid is an exposed planetesimal iron core, which is the denotation we
   wanted, but it is a NASA mission and a psychology term.
-- **`siderite`, `kamacite`** — both good, both longer, and kamacite is a phase *inside* a nife rather
+- **`siderite`, `kamacite`**. Both good, both longer, and kamacite is a phase *inside* a nife rather
   than the material itself. Kept in reserve as component names.
 
 **The distribution's name went through the same test and two candidates lost it.** `sial` and `sima`,
