@@ -1,11 +1,17 @@
 # 44. GitHub repository hardening: policy, private reporting, code scanning, pull requests
 
-**Status: PARTIAL.**
+**Status: BUILT** 2026-08-04. The committable half landed 2026-07-30; Chris applied the settings half
+the evening of 2026-08-04, and what was applied is recorded in §73 rather than only in a chat.
+Private vulnerability reporting is on, and the `main` ruleset is active with seven required checks,
+zero bypass actors, no linear-history rule, and branches required to be up to date before merging.
 
-**Gate: DECISION.** The committable half is built; what is left is settings only Chris can change,
-private vulnerability reporting and the `main` ruleset with its required checks. See
-design/open-decisions.md, which carries the exact steps and the check names that moved. Signed
-commits are the fifth item and sequence after the ruleset.
+**BUGS: the fifth item is deliberately not done.** Signed commits are **not** required, on purpose,
+and the reason is sequencing rather than merit: a required-signature rule applies to every automated
+committer and to Dependabot, so turning it on before signing works blocks every merge. That deferral
+now has its own home in §78 instead of dying with the section that carried it. Two of the four items'
+caveats also moved: `undefined-behavior check` cannot be a required check because it runs on a weekly
+cron and never on a pull request, and five checks that do run on every pull request deliberately do
+not block, `cpu matrix` among them because it is load-sensitive.
 
 **The committable half is built 2026-07-30 (DECISIONS §36); the settings half is written down and
 waiting on an admin (notes/repo-hardening.md).** `SECURITY.md` states the scope at confinement, with

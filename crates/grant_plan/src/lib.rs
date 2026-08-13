@@ -75,6 +75,7 @@ pub mod jobframe;
 pub mod line;
 pub mod nav;
 pub mod spawnproto;
+pub mod word;
 
 use expand::{Expansion, Name, NameSet};
 use line::{Sink, Source};
@@ -352,7 +353,13 @@ impl Prog {
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
                 output: OutputSpec::Bytes,
-                input: InputSpec::Required,
+                // **The barrier**, and the only one in this tree. `wc` prints nothing until end of
+                // stream, which is what lets this shell feed it and read it back with the one wait
+                // point a process has. See [`InputSpec::Required::writes_while_reading`]: a filter
+                // that answered as it read could not be run this way at all.
+                input: InputSpec::Required {
+                    writes_while_reading: false,
+                },
                 reports: true,
                 interruptible: false,
                 clock: false,
@@ -432,7 +439,25 @@ pub enum InputSpec {
     Forbidden,
     /// The program reads an input stream and cannot do anything without one. A line that gives it
     /// none is [`Refusal::InputRequired`] **at the prompt**, which is a check Unix cannot make.
-    Required,
+    Required {
+        /// **Whether this program's output may begin before its input has ended.**
+        ///
+        /// `wc` counts to end of stream and then prints one line, so it is `false`. A renderer or a
+        /// filter that transforms as it reads is `true`, and the difference is not a performance
+        /// note: it decides whether **this shell** can run the program at all.
+        ///
+        /// A sink message is a rendezvous `SEND` and a process has exactly one wait point (no
+        /// select, no poll, no timed receive: DECISIONS §51's fork is still open, and
+        /// design/roadmap/106 is NOT-STARTED). So a shell that is feeding a stage cannot also be
+        /// receiving from it, and a stage that writes while it reads blocks against a shell that is
+        /// still writing. Both stop, and the prompt never comes back.
+        ///
+        /// A program that declares `false` is a **barrier**: it absorbs the whole stream before it
+        /// answers, which lets the shell finish feeding before anything comes back. One barrier
+        /// anywhere in a chain is enough, which is why `doc page.md | wc` runs and `doc page.md`
+        /// does not. See [`check_chain`] and notes/pipes.md.
+        writes_while_reading: bool,
+    },
 }
 
 /// A program that takes no short options. Spelled once so a manifest reads as a declaration rather
@@ -694,11 +719,23 @@ pub struct RunSpec<'a> {
     /// anything is spawned. A letter no manifest declares is [`Refusal::NoSuchOption`] there.
     opts: [u8; MAX_FLAGS],
     nopts: usize,
+    /// Which of [`positionals`](RunSpec::positionals) were quoted, in the same order. A quoted word
+    /// is **never a pattern**, whatever bytes are in it, which is the one authority-visible thing
+    /// quoting does: `rm "*.txt"` designates one name and `rm *.txt` designates a set.
+    posq: [bool; MAX_POSITIONALS],
     /// A token nothing can place: a flag-shaped token that is not `--mem`, or one past
     /// [`MAX_POSITIONALS`]. Kept so the shell refuses it rather than silently ignoring authority the
     /// user thought they were granting. A **flag** that fell through to the file position would be
     /// the one way a typo could turn into a capability transfer, so it never reaches that position.
     pub unexpected: Option<&'a [u8]>,
+    /// **The line's quotes do not make sense** ([`Refusal::UnclosedQuote`] or
+    /// [`Refusal::PartlyQuoted`]), carried rather than returned because [`parse_run`] has no error
+    /// channel and because this is a fact about the *line*, not about any program.
+    ///
+    /// [`plan_against_with`] answers it **before** it resolves the program, which is the one place
+    /// the ordering matters: a line whose words cannot be read has no reliable first word either, so
+    /// "no such program" would be a true sentence about a name nobody typed.
+    pub misquoted: Option<Refusal>,
 }
 
 impl<'a> RunSpec<'a> {
@@ -711,6 +748,15 @@ impl<'a> RunSpec<'a> {
     /// The short-option letters typed, in order. Meaningless until a manifest says which exist.
     pub fn options(&self) -> &[u8] {
         &self.opts[..self.nopts]
+    }
+
+    /// **Whether positional `i` was quoted**, which is the whole of what quoting decides about
+    /// authority: a quoted word designates itself and is never expanded, so `rm "*.txt"` hands over
+    /// one name where `rm *.txt` hands over a set.
+    ///
+    /// `false` for an index past the end, because a word that is not there was not quoted.
+    pub fn quoted(&self, i: usize) -> bool {
+        i < self.npos && self.posq[i]
     }
 }
 
@@ -765,6 +811,16 @@ pub struct Endowment {
     /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
     /// the per-job interrupt channel and runs the escalation policy while the job is foreground.
     pub interruptible: bool,
+    /// **Whether this stage may write before it has read to the end** (mirrors
+    /// [`InputSpec::Required::writes_while_reading`]; `false` for a program that reads nothing,
+    /// which cannot be fed and so cannot be the thing that blocks).
+    ///
+    /// It is carried on the endowment rather than looked up from `prog.manifest()` because
+    /// [`check_chain`] asks about a **whole planned line** and because [`plan_against_with`] can be
+    /// given an explicit manifest. That is what keeps the check live, tested logic rather than a
+    /// branch nothing reaches: no shipped program declares `true` yet, and the host tests plan one
+    /// that does, exactly as `FileSpec::Required` is exercised.
+    pub writes_while_reading: bool,
 }
 
 /// One resolved per-file grant: the directory it was resolved against, the name the command
@@ -960,7 +1016,13 @@ pub enum Refusal {
     /// See notes/pipes.md: refusing the other order is what keeps a stage's text a slice of the
     /// line in a shell with no allocator.
     WordAfterRedirect,
-    /// **A pipeline stage with no command in it** (`| wc`, `a |`, `a || b`).
+    /// **A pipeline stage with no command in it** (`| wc`, `a |`).
+    ///
+    /// **This listed `a || b` until milestone 67 and no longer can**: `||` is a connector now, and
+    /// the shell splits on it before [`line::split`] ever sees the line, so that spelling is two
+    /// commands rather than a pipeline with a hole in it. A `||` still reaches this function in a
+    /// direct call, which is why the sequence splitter has to run first rather than merely usually
+    /// running first.
     EmptyStage,
     /// **More stages than one line may carry** ([`line::MAX_STAGES`]). A ceiling on processes and
     /// endpoints, not on a buffer.
@@ -986,6 +1048,16 @@ pub enum Refusal {
     /// block on a receive forever; the manifest says so, so the prompt can. **The refusal Unix
     /// cannot produce**, because there fd 0 always exists.
     InputRequired,
+    /// **This shell would be both the writer and the reader of the line, and it can only wait on
+    /// one thing.** Every stage declares that it writes while it reads
+    /// ([`InputSpec::Required::writes_while_reading`]), so nothing in the chain absorbs the stream,
+    /// and the shell's feed would block against a stage that is blocked writing back.
+    ///
+    /// It is a fact about **this shell** rather than about the program, which is why the fix is to
+    /// put a reader after it (`| wc`) rather than to change anything the program does. See
+    /// [`check_chain`] and notes/pipes.md: with no select, no poll and no timed receive, one wait
+    /// point per process is the whole of the reason.
+    NoReaderButThisShell,
     /// **A builtin in a pipeline stage that the shell cannot supply.** `cd | wc` is the shape: a
     /// builtin rebinds what the shell holds and produces no stream. The producing builtins (`echo`,
     /// `ls`, `pwd`) are not this, because the shell writes their bytes into the pipe itself.
@@ -995,6 +1067,26 @@ pub enum Refusal {
     /// file a program is granted. Refused rather than ignored, so authority the user thought they
     /// were granting never silently evaporates.
     Unexpected,
+    // ---- milestone 67's quoting and sequencing. Both are facts about the *line*, decided before
+    // any manifest is consulted, which is why they sit at the end rather than beside the grant
+    // refusals above.
+    /// **A quote that never closes** (`wc 'my notes.txt`). The line is refused whole rather than
+    /// run to the last complete word, because a line missing its end designates something nobody
+    /// typed. See [`word`].
+    UnclosedQuote,
+    /// **A quote that wraps part of a word** (`a"b"`, `'it''s'`). Every token here is a slice of
+    /// the line you typed, so two quoted pieces cannot be joined into one word; the alternative is
+    /// a byte buffer this shell has no allocator for. Refused rather than misread, because both
+    /// readings (join them, or take the quotes literally) would be silently wrong. See [`word`].
+    PartlyQuoted,
+    /// **A connector with nothing on one side of it** (`&& date`, `date &&`). The mirror of
+    /// [`EmptyStage`](Refusal::EmptyStage) one level out: `&&` asks about a command that ran, and
+    /// there is no command.
+    EmptySegment,
+    /// **More commands on one line than the shell will sequence.** A ceiling like
+    /// [`TooManyStages`](Refusal::TooManyStages), and a line that wants more is better written as
+    /// several lines than silently truncated.
+    TooManySegments,
 }
 
 /// The kind of capability a command designated but the shell cannot back. Phase 1 has one; the
@@ -1089,6 +1181,23 @@ impl Refusal {
             Refusal::NotAPipelineStage => {
                 "is a builtin that produces no stream, so it cannot be a stage of a pipeline"
             }
+            // Phrased about the line rather than about the program, because it is true of neither
+            // one alone: the program is fine and the shell is fine, and what cannot be done is this
+            // shell feeding it and reading it at the same time.
+            Refusal::NoReaderButThisShell => {
+                "writes while it reads, and this shell can only wait on one thing at a time: give \
+                 it a reader that is not this shell, as in '| wc'"
+            }
+            // Milestone 67's. Each names what the line is missing rather than what it did wrong,
+            // and the quoting pair say *why* the shape is the shape: a token here is a slice of
+            // what you typed, so there is nothing to join pieces into.
+            Refusal::UnclosedQuote => "a quote here is never closed, so the line ends mid-name",
+            Refusal::PartlyQuoted => {
+                "quote a whole word: this shell hands a name over as the bytes you typed, so it \
+                 cannot join pieces of one"
+            }
+            Refusal::EmptySegment => "a connector with no command on one side of it",
+            Refusal::TooManySegments => "that is more commands than one line sequences (at most 8)",
         }
     }
 }
@@ -1097,15 +1206,24 @@ impl Refusal {
 /// the filled prefix. A tiny `no_std` tokenizer: no allocation, bounded by `out.len()`. Tokens
 /// past `out.len()` are dropped (a command line with more than a handful of tokens is a mistake,
 /// not a workload).
+///
+/// **Whitespace inside quotes is not a separator** (milestone 67). The quotes stay on the token,
+/// because this function's job is where a token ends and [`word::read`]'s is what it means; a
+/// caller that wants the name rather than the spelling asks for it. That split is what lets
+/// [`parse_run`] refuse `a"b"` in one place instead of every scanner having to.
 pub fn tokenize<'a, 'b>(line: &'a [u8], out: &'b mut [&'a [u8]]) -> &'b [&'a [u8]] {
     let mut n = 0;
     let mut i = 0;
+    let mut c = word::Cursor::new();
     while i < line.len() && n < out.len() {
-        while i < line.len() && line[i].is_ascii_whitespace() {
+        // A whitespace byte can never open or close a quote, so the cursor's state cannot change
+        // while it is being skipped and this loop does not have to step it.
+        while i < line.len() && !c.open() && line[i].is_ascii_whitespace() {
             i += 1;
         }
         let start = i;
-        while i < line.len() && !line[i].is_ascii_whitespace() {
+        while i < line.len() && !(!c.open() && line[i].is_ascii_whitespace()) {
+            c.step(line[i]);
             i += 1;
         }
         if i > start {
@@ -1135,6 +1253,14 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         return Command::Empty;
     }
     let (first, rest) = split_first_word(trimmed);
+    // **A quoted builtin name still names the builtin**, because quoting decides what a word *is*
+    // and this match is about what the word says. A first word whose quotes do not make sense falls
+    // through to [`parse_run`], which is the one place a quoting refusal is raised; raising it here
+    // as well would be a second copy of the same sentence.
+    let first = match word::read(first) {
+        Ok(w) => w.text,
+        Err(_) => return Command::Run(parse_run(trimmed)),
+    };
     match first {
         b"help" => Command::Help,
         b"echo" => Command::Echo(rest),
@@ -1178,27 +1304,46 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
     let mut mem = None;
     let mut prog: &[u8] = b"";
     let mut pos = [&b""[..]; MAX_POSITIONALS];
+    let mut posq = [false; MAX_POSITIONALS];
     let mut npos = 0;
     let mut opts = [0u8; MAX_FLAGS];
     let mut nopts = 0;
     let mut unexpected = None;
+    let mut misquoted = None;
     let mut have_prog = false;
 
     let mut i = 0;
     while i < toks.len() {
-        let t = toks[i];
-        if t == b"--mem" {
+        // **The quotes come off before anything is classified** (milestone 67), because what a
+        // token *is* is what it says: `"--mem"` is a name and `--mem` is an option, and deciding
+        // that after the flag check would make a quoted name into a flag.
+        let (t, quoted) = match word::read(toks[i]) {
+            Ok(w) => (w.text, w.quoted),
+            Err(r) => {
+                if misquoted.is_none() {
+                    misquoted = Some(r);
+                }
+                i += 1;
+                continue;
+            }
+        };
+        if !quoted && t == b"--mem" {
             // The next token is the page count. A missing or non-numeric value leaves mem None,
             // which the plan turns into MemRequired for a program that needs it.
             if i + 1 < toks.len() {
-                mem = parse_u64(toks[i + 1]);
+                // Unquoted first, so `--mem "16"` is the same grant as `--mem 16`. Quoting decides
+                // what a word is and this one has to be a number either way.
+                mem = word::read(toks[i + 1]).ok().and_then(|w| parse_u64(w.text));
                 i += 2;
             } else {
                 i += 1;
             }
             continue;
         }
-        if t.first() == Some(&b'-') {
+        // A quoted token is never an option, which is the same rule one line up: `rm "-r"` names a
+        // file called `-r`, and reading it as the flag that widens a directory grant into a subtree
+        // walk would be the loudest possible version of a typo becoming a capability transfer.
+        if !quoted && t.first() == Some(&b'-') {
             // A cluster of short options (`-r`, `-rf`), kept for the manifest to check. Anything
             // else shaped like a flag is refused: it never becomes a program name and never reaches
             // the file position, because an unknown flag silently designating a file is exactly the
@@ -1219,6 +1364,7 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
             have_prog = true;
         } else if npos < MAX_POSITIONALS {
             pos[npos] = t;
+            posq[npos] = quoted;
             npos += 1;
         } else if unexpected.is_none() {
             unexpected = Some(t);
@@ -1230,10 +1376,12 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
         prog,
         mem,
         pos,
+        posq,
         npos,
         opts,
         nopts,
         unexpected,
+        misquoted,
     }
 }
 
@@ -1280,6 +1428,11 @@ pub fn plan_stage(
     expanded: Expansion,
     streams: Streams,
 ) -> Result<Endowment, Refusal> {
+    // Ahead of resolving the program, for the reason [`RunSpec::misquoted`] states: a line whose
+    // words cannot be read has no reliable first word either.
+    if let Some(r) = run.misquoted {
+        return Err(r);
+    }
     let prog = Prog::from_name(run.prog).ok_or(Refusal::NoSuchProgram)?;
     plan_against_with(run, prog, prog.manifest(), holds, expanded, streams)
 }
@@ -1330,6 +1483,14 @@ pub fn plan_against_with(
     expanded: Expansion,
     streams: Streams,
 ) -> Result<Endowment, Refusal> {
+    // **A line whose quotes do not make sense is answered before anything else** (milestone 67),
+    // because every other refusal below is a sentence about a word, and this is the one that says
+    // the words could not be read. Ordering it after "no such program" would name a program the
+    // user did not type.
+    if let Some(r) = run.misquoted {
+        return Err(r);
+    }
+
     // A flag nothing knows, or a token past what any manifest could hold. Nothing about this
     // program's declaration can rescue it, so it is answered before the slots are filled.
     if run.unexpected.is_some() {
@@ -1454,7 +1615,7 @@ pub fn plan_against_with(
     // An explicit `<` wins, because it is the same designation said out loud: a line carrying both
     // has named its input twice, and the operand then has nowhere to go and is unplaceable below.
     let mut streams = streams;
-    if matches!(m.input, InputSpec::Required)
+    if matches!(m.input, InputSpec::Required { .. })
         && matches!(streams.source, Source::None)
         && let Some(&token) = pos.get(next)
     {
@@ -1509,6 +1670,12 @@ pub fn plan_against_with(
         diagnostics,
         reports: m.reports,
         interruptible: m.interruptible,
+        writes_while_reading: matches!(
+            m.input,
+            InputSpec::Required {
+                writes_while_reading: true
+            }
+        ),
     })
 }
 
@@ -1570,11 +1737,57 @@ fn check_streams(m: Manifest, streams: Streams) -> Result<line::Diagnostics, Ref
         (Some(_), Some((g, mode))) => line::Diagnostics::File(g, mode),
     };
     match (m.input, streams.source) {
-        (InputSpec::Required, Source::None) => Err(Refusal::InputRequired),
+        (InputSpec::Required { .. }, Source::None) => Err(Refusal::InputRequired),
         (InputSpec::Forbidden, Source::None) => Ok(diagnostics),
         (InputSpec::Forbidden, _) => Err(Refusal::InputForbidden),
-        (InputSpec::Required, _) => Ok(diagnostics),
+        (InputSpec::Required { .. }, _) => Ok(diagnostics),
     }
+}
+
+/// **Whether this shell can be at both ends of the chain it just planned**, which is the one
+/// question the operators cannot answer stage by stage.
+///
+/// `shell_feeds_head` is true when the bytes going into the first stage come from *this process*: a
+/// `<`, an input operand (`wc report.txt`), or a producing builtin at the head (`ls | wc`). When it
+/// is false there is a separate process on the far end of the head's input and none of this applies.
+///
+/// # The constraint, which is the kernel's and not the shell's
+///
+/// A process has **one wait point**. `SEND` blocks until a receiver takes the message, `RECV` blocks
+/// until one arrives, and there is no select, no poll and no timed wait (design/roadmap/106 is
+/// NOT-STARTED and is a kernel-surface fork). So a shell that is feeding a chain cannot also be
+/// receiving from it, and the two blocked processes have nothing that could wake either.
+///
+/// **No interleaving schedule fixes this**, which is worth stating because it is the first thing
+/// anybody reaches for. Alternating one send with one receive deadlocks whenever the stage reads
+/// twice before it writes; alternating the other way deadlocks whenever it writes twice before it
+/// reads. The shell cannot know which, because the whole point of the sink contract is that neither
+/// end knows anything about the other.
+///
+/// # What makes a line runnable anyway: one barrier
+///
+/// A stage that declares [`InputSpec::Required::writes_while_reading`] `false` absorbs the whole
+/// stream before it answers. One of those anywhere in the chain is enough: everything upstream of it
+/// can stream freely, the shell's feed completes, and only then does anything travel back. So
+/// `doc page.md | wc` runs and `doc page.md` is refused, with `| wc` being the fix the message names.
+///
+/// A line whose head is a builtin and which spawns nothing at all (`ls > out.txt`) is not a chain
+/// and is always `Ok`: there is no second process to deadlock against.
+pub fn check_chain(shell_feeds_head: bool, plans: &[Option<Endowment>]) -> Result<(), Refusal> {
+    if !shell_feeds_head {
+        return Ok(());
+    }
+    let mut spawned = false;
+    for e in plans.iter().flatten() {
+        spawned = true;
+        if !e.writes_while_reading {
+            return Ok(());
+        }
+    }
+    if spawned {
+        return Err(Refusal::NoReaderButThisShell);
+    }
+    Ok(())
 }
 
 /// **What one operand token designates**: the directory its leading path landed in, and the set of
@@ -1687,12 +1900,11 @@ pub fn trim(s: &[u8]) -> &[u8] {
 }
 
 /// Split off the first whitespace-delimited word; return `(word, rest)` where `rest` keeps its
-/// internal spacing (so `echo` can print it verbatim).
+/// internal spacing (so `echo` can print it verbatim). The word keeps its quotes if it had any;
+/// [`parse`] takes them off, because whether the word is a builtin is a question about what it
+/// says rather than about how it was spelled.
 fn split_first_word(s: &[u8]) -> (&[u8], &[u8]) {
-    let mut i = 0;
-    while i < s.len() && !s[i].is_ascii_whitespace() {
-        i += 1;
-    }
+    let mut i = word::span(s, 0, &|b| b.is_ascii_whitespace());
     let word = &s[..i];
     while i < s.len() && s[i].is_ascii_whitespace() {
         i += 1;
@@ -1847,6 +2059,78 @@ mod tests {
 
         let mut two = [&b""[..]; 2];
         assert_eq!(tokenize(b"a b c", &mut two), [&b"a"[..], &b"b"[..]]);
+    }
+
+    /// **Whitespace inside quotes is not a separator** (milestone 67), which is what makes a name
+    /// with a space in it a single token and therefore a single designation.
+    #[test]
+    fn a_quoted_span_is_one_token_however_many_spaces_are_in_it() {
+        let mut out = [&b""[..]; 8];
+        assert_eq!(
+            tokenize(b"wc \"my notes.txt\"", &mut out),
+            [&b"wc"[..], &b"\"my notes.txt\""[..]],
+        );
+        // The quotes stay on here: what a token *means* is `word::read`'s question, and keeping the
+        // two apart is what lets one place refuse `a"b"` for every scanner.
+        assert_eq!(
+            tokenize(b"echo 'a  b' c", &mut out),
+            [&b"echo"[..], &b"'a  b'"[..], &b"c"[..]],
+        );
+    }
+
+    /// The parser takes the quotes off, and what is left is the designation.
+    #[test]
+    fn a_quoted_operand_designates_the_bytes_between_the_quotes() {
+        let r = parse_run(b"wc \"my notes.txt\"");
+        assert_eq!(r.prog, b"wc");
+        assert_eq!(r.positionals(), [&b"my notes.txt"[..]]);
+        assert!(r.quoted(0), "the flag is what stops it being expanded");
+        assert_eq!(r.misquoted, None);
+        // A bare operand is unchanged, so nothing about an ordinary line moved.
+        assert!(!parse_run(b"wc notes.txt").quoted(0));
+    }
+
+    /// **A quoted token is never an option**, which is the sharpest edge quoting has here: `-r` is
+    /// what widens `rm`'s grant from one name to a subtree walk, and a quoted `-r` is a file name.
+    #[test]
+    fn quoting_keeps_a_dash_from_widening_a_grant() {
+        let r = parse_run(b"rm \"-r\"");
+        assert_eq!(r.options(), b"");
+        assert_eq!(r.positionals(), [&b"-r"[..]]);
+        // And unquoted it is still the option it always was.
+        assert_eq!(parse_run(b"rm -r x").options(), b"r");
+        // Same rule for `--mem`, which is an option that moves memory.
+        let r = parse_run(b"budgeter \"--mem\" 16");
+        assert_eq!(r.mem, None);
+        assert_eq!(r.positionals(), [&b"--mem"[..], &b"16"[..]]);
+        // ... while a quoted *value* is still the number it says.
+        assert_eq!(parse_run(b"budgeter --mem \"16\"").mem, Some(16));
+    }
+
+    /// A builtin's name is a word like any other, so quoting it still names it. Nothing about
+    /// authority turns on this; what turns on it is that a reader can quote anything without
+    /// wondering which words are exempt.
+    #[test]
+    fn a_quoted_builtin_name_still_names_the_builtin() {
+        assert!(matches!(parse(b"\"help\""), Command::Help));
+        assert!(matches!(parse(b"'echo' hi"), Command::Echo(b"hi")));
+    }
+
+    /// **A line whose quotes do not make sense is refused before a program is named**, because
+    /// otherwise "no such program" would be a true sentence about a word nobody typed.
+    #[test]
+    fn a_misquoted_line_is_refused_ahead_of_everything_else() {
+        let r = parse_run(b"wc 'my notes.txt");
+        assert_eq!(r.misquoted, Some(Refusal::UnclosedQuote));
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::UnclosedQuote));
+        // Even when the program does not exist, so the ordering is real rather than incidental.
+        let r = parse_run(b"nosuchprog 'x");
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::UnclosedQuote));
+        // And the joining case.
+        assert_eq!(
+            parse_run(b"wc a\"b\"").misquoted,
+            Some(Refusal::PartlyQuoted)
+        );
     }
 
     /// `--mem` at the very end of the line reads no value, and reads no memory past the token
@@ -2775,6 +3059,132 @@ mod tests {
         };
         assert!(!i.writable);
         assert!(o.writable);
+    }
+
+    // ---- milestone 50's draining lane: the input operand inside a pipeline, and the one wait
+    // point ----
+
+    /// **`wc report.txt | wc` names its input the way `wc report.txt` does**, and the planner is
+    /// the only thing that knows it: an input operand is a trailing positional at a program that
+    /// declares an input, not a token any grammar could classify.
+    ///
+    /// This is the fact the shell was dropping. It planned the stage correctly and then wired the
+    /// pipeline off the **line**, which has no `<` on it, so the head was spawned with an empty
+    /// input slot. A `recv` there answers `NoSuchSlot` rather than blocking and every reader reads
+    /// that as end of document, so the stage reported an empty stream: a wrong answer, not a hang,
+    /// which is why nothing caught it.
+    #[test]
+    fn an_input_operand_survives_a_pipeline() {
+        let (p, n) = plan_line(b"wc report.txt | wc", WITH_DIR).unwrap();
+        assert_eq!(n, 2);
+        let line::Source::File(g) = p[0].unwrap().source else {
+            panic!("the head stage's operand did not become a source")
+        };
+        assert_eq!(g.name.as_bytes(), b"report.txt");
+        assert!(!g.writable, "a stream is read, whatever the operator");
+        assert_eq!(p[0].unwrap().sink, line::Sink::Pipe);
+        // And the same name written out loud plans to the same thing, which is what makes the
+        // operand a spelling rather than a second mechanism.
+        let (explicit, _) = plan_line(b"wc < report.txt | wc", WITH_DIR).unwrap();
+        assert_eq!(p[0], explicit[0]);
+    }
+
+    /// A filter that answers while it reads: the manifest shape no shipped program declares yet.
+    /// Planned through [`plan_against_with`] so [`check_chain`] is live, tested logic rather than a
+    /// branch nothing reaches, exactly as [`READS_A_FILE`] keeps `FileSpec::Required` live.
+    const RENDERS_AS_IT_READS: Manifest = Manifest {
+        arg: ArgSpec::Forbidden,
+        mem: MemSpec::Forbidden,
+        file: FileSpec::Forbidden,
+        dir: DirSpec::Forbidden,
+        flags: NO_FLAGS,
+        output: OutputSpec::Bytes,
+        input: InputSpec::Required {
+            writes_while_reading: true,
+        },
+        reports: true,
+        interruptible: false,
+        clock: false,
+    };
+
+    /// Plan one stage against an explicit manifest, with the operators' answer folded in.
+    fn plan_as(m: Manifest, text: &[u8], streams: Streams) -> Endowment {
+        let Command::Run(r) = parse(text) else {
+            panic!()
+        };
+        plan_against_with(&r, Prog::Wc, m, WITH_DIR, Expansion::none(), streams).unwrap()
+    }
+
+    /// **The declaration reaches the endowment**, which is what lets a whole line be checked rather
+    /// than one stage. A program that answers while it reads says so; `wc` does not.
+    #[test]
+    fn writing_while_reading_is_a_declaration_the_plan_carries() {
+        let streams = Streams {
+            source: line::Source::File(FileGrant {
+                dir: nav::Cwd::root(),
+                name: Name::new(b"page.md").unwrap(),
+                writable: false,
+            }),
+            ..Streams::default()
+        };
+        assert!(plan_as(RENDERS_AS_IT_READS, b"wc", streams).writes_while_reading);
+        assert!(!plan_as(Prog::Wc.manifest(), b"wc", streams).writes_while_reading);
+    }
+
+    /// **One wait point, stated as a rule about a line.**
+    ///
+    /// The shell can be at one end of a chain or the other, never both, because a `SEND` blocks
+    /// until somebody receives and there is no select. So a line whose bytes all come from this
+    /// shell needs at least one stage that reads to the end before it writes; with one, the feed
+    /// completes before anything travels back, and with none, both processes stop.
+    #[test]
+    fn a_chain_this_shell_feeds_needs_one_stage_that_reads_to_the_end() {
+        let src = Streams {
+            source: line::Source::File(FileGrant {
+                dir: nav::Cwd::root(),
+                name: Name::new(b"page.md").unwrap(),
+                writable: false,
+            }),
+            ..Streams::default()
+        };
+        let piped = Streams {
+            sink: line::Sink::Pipe,
+            ..src
+        };
+        let renderer = plan_as(RENDERS_AS_IT_READS, b"wc", src);
+        let counter = plan_as(Prog::Wc.manifest(), b"wc", src);
+        let renderer_piped = plan_as(RENDERS_AS_IT_READS, b"wc", piped);
+
+        // `doc page.md`: this shell writes the file in and reads the render back. Nothing else is
+        // in the chain, so there is nobody either process could be waiting on but the other.
+        assert_eq!(
+            check_chain(true, &[Some(renderer)]),
+            Err(Refusal::NoReaderButThisShell),
+        );
+        // `doc page.md | wc`: the `wc` absorbs the whole stream, so the feed finishes first.
+        assert_eq!(
+            check_chain(true, &[Some(renderer_piped), Some(counter)]),
+            Ok(()),
+        );
+        // `wc page.md`: the barrier is the only stage, which is why this worked all along and why
+        // nobody noticed the rule until a second reader existed.
+        assert_eq!(check_chain(true, &[Some(counter)]), Ok(()));
+        // `something | doc`: a chain this shell does not feed is somebody else's rendezvous.
+        assert_eq!(check_chain(false, &[Some(renderer)]), Ok(()));
+        // `ls > out.txt`: the shell is the producer and no stage was spawned at all, so there is no
+        // second process for it to deadlock against.
+        assert_eq!(check_chain(true, &[None, None]), Ok(()));
+    }
+
+    /// The refusal names what a person can do about it, and it is about the **line**: the program
+    /// is fine, and so is the shell.
+    #[test]
+    fn the_both_ends_refusal_names_the_fix() {
+        assert!(
+            Refusal::NoReaderButThisShell
+                .message()
+                .contains("give it a reader that is not this shell"),
+        );
     }
 
     /// A builtin is not a pipeline stage the planner spawns, because it spawns nothing. The shell

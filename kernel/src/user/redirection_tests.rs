@@ -9,11 +9,19 @@ const DONE: &[u8] = b"== redirections done\n";
 /// The script's transcript, run **once** and shared by every assertion below, for
 /// [`pipeline_tests`]'s reason: the assertions are about one run of one script, and re-running
 /// it per test would be the same measurement four times rather than four measurements.
-static TRANSCRIPT: spin::Mutex<Option<([u8; 3072], usize)>> = spin::Mutex::new(None);
+static TRANSCRIPT: spin::Mutex<Option<([u8; TRANSCRIPT_MAX], usize)>> = spin::Mutex::new(None);
+
+/// How much of the script's transcript the assertions read. Level with
+/// `pipeline_service::TRANSCRIPT`, because a smaller number here would truncate the answers that
+/// come **last**, silently, and the last answers are milestone 67's (see [`language_tests`]).
+pub(super) const TRANSCRIPT_MAX: usize = 8192;
 
 /// Run the script if nothing has yet, and hand back everything the shell printed. `None` when
 /// this boot has no RedoxFS disk attached, which is the same skip every FS test takes.
-fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
+/// Shared with [`language_tests`], which asserts about the tail of this same script: **one shell
+/// runs it, once**, and a second module wiring its own would be a second live process for no new
+/// coverage.
+pub(super) fn transcript(out: &mut [u8; TRANSCRIPT_MAX]) -> Option<usize> {
     let mut cache = TRANSCRIPT.lock();
     if cache.is_none() {
         let dir = fs_service::narrow_dir(
@@ -27,7 +35,7 @@ fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
         let Some(w) = pipeline_service::start_redirecting(dir, dir::ALL) else {
             panic!("no swish program in the initrd archive, or no memory to wire one");
         };
-        let mut buf = [0u8; 3072];
+        let mut buf = [0u8; TRANSCRIPT_MAX];
         let n = pipeline_service::transcript(&w, DONE, &mut buf);
         *cache = Some((buf, n));
     }
@@ -75,7 +83,7 @@ fn listing_counts(printed: &[u8]) -> (u64, u64, u64) {
 /// and not a sink process's.
 #[test_case]
 fn one_builtin_two_destinations_and_the_same_bytes() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -122,7 +130,7 @@ fn one_builtin_two_destinations_and_the_same_bytes() {
 /// `fs_file_caretaker` serves. See notes/grant-expression.md.
 #[test_case]
 fn naming_a_file_to_a_reader_is_the_operator_left_out() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -139,6 +147,41 @@ fn naming_a_file_to_a_reader_is_the_operator_left_out() {
     assert_eq!(operand, listing_counts(answer(t, b"ls")));
 }
 
+/// **A named file reaches a stage of a pipeline**, which is the fix this lane exists for.
+///
+/// `wc out.txt | wc` puts the operand on the **head** of a pipeline. The name is resolved by the
+/// planner (deciding that a trailing positional is a stream needs the manifest), and the shell used
+/// to wire the head's input off the `Line`, which has no `<` on it. So the planned source was
+/// thrown away and the stage was spawned with an **empty** input slot.
+///
+/// It did not hang, which is what made it hard to see. A `recv` on an empty slot answers
+/// `NoSuchSlot` rather than blocking, the error word decodes as `sink_proto::Msg::Malformed`, and
+/// every reader in this tree treats a malformed message as the end of the document. So the stage
+/// ran to completion over nothing and reported an honest count of an empty stream.
+///
+/// The assertion is derived from the line above it rather than from a constant: the second `wc`
+/// counts what the first one printed, so its byte total is the length of that answer with the
+/// prompt's two-space indent taken off. A head stage fed nothing would report `0 0 0`, which is
+/// exactly what milestone 40's viewer got and what made the bug look like a viewer bug.
+#[test_case]
+fn a_named_file_reaches_the_head_of_a_pipeline() {
+    let mut buf = [0u8; TRANSCRIPT_MAX];
+    let Some(n) = transcript(&mut buf) else {
+        crate::println!("    (no RedoxFS disk attached; skipping)");
+        return;
+    };
+    let t = &buf[..n];
+    let printed = &answer(t, b"wc out.txt")[2..];
+    let piped = counts(&answer(t, b"wc out.txt | wc")[2..]);
+    assert_eq!(
+        piped,
+        (1, 3, printed.len() as u64),
+        "the head stage counted {:?} rather than {:?}",
+        piped,
+        core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+    );
+}
+
 /// **And the same claim for a program's output**, which is the half `>` shares with `|`.
 ///
 /// `date` is spawned twice from the same ELF. The first time the shell prints what arrives on
@@ -146,7 +189,7 @@ fn naming_a_file_to_a_reader_is_the_operator_left_out() {
 /// byte count `wc` reports for the file has to be the length of what was printed.
 #[test_case]
 fn one_program_two_destinations_and_the_same_bytes() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -198,7 +241,7 @@ fn one_program_two_destinations_and_the_same_bytes() {
 /// file, which is the property `>>` exists to be the opposite of.
 #[test_case]
 fn append_keeps_what_truncate_throws_away() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;
@@ -248,7 +291,7 @@ fn append_keeps_what_truncate_throws_away() {
 /// program with bytes and not a shell with a directory.
 #[test_case]
 fn a_redirection_that_cannot_be_backed_is_still_refused() {
-    let mut buf = [0u8; 3072];
+    let mut buf = [0u8; TRANSCRIPT_MAX];
     let Some(n) = transcript(&mut buf) else {
         crate::println!("    (no RedoxFS disk attached; skipping)");
         return;

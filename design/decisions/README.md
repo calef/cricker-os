@@ -70,7 +70,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 11 | AMENDED | [SMP: per-CPU run queues, message-based migration. §6, reopened.](11-per-cpu-run-queues.md) |
 | 12 | DECIDED | [Call/Reply IPC: a one-shot reply capability](12-call-reply-ipc.md) |
 | 13 | DECIDED | [Capability revocation and untyped reclamation (frames)](13-frame-revocation.md) |
-| 14 | DECIDED | [The project's direction: a verified-Rust capability microkernel that runs real workloads](14-project-direction.md) |
+| 14 | AMENDED | [The project's direction: a verified-Rust capability microkernel that runs real workloads](14-project-direction.md) |
 | 15 | DECIDED | [The native ABI: formalize the convention, defer the BootInfo (milestone 19e)](15-native-abi.md) |
 | 16 | AMENDED | [Object revocation: reclaim the objects a process built (extends §13)](16-object-revocation.md) |
 | 17 | DECIDED | [The second architecture: RISC-V, and the page-table format trait](17-riscv-second-architecture.md) |
@@ -129,11 +129,19 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
 | 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
-| 73 | PROPOSED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
+| 73 | DECIDED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
 | 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
 | 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 | 77 | PROPOSED | [The branch-prefix list does not describe the tree](77-branch-prefixes.md) |
+| 78 | PROPOSED | [Signed commits: worth doing, and not as a side effect](78-signed-commits.md) |
+| 79 | DECIDED | [Holding password-equivalent material, and what a session key release means](79-password-equivalent-material.md) |
+| 80 | DECIDED | [One build for the kernel and everything that runs on it](80-one-build-for-everything.md) |
+| 81 | DECIDED | [A dependency stays upgradable; we suppress churn, never the upgrade](81-dependency-upgrades.md) |
+| 82 | DECIDED | [Ambient authority is the problem; replacing the ecosystem, not confining it, is the end state](82-ambient-authority-and-the-rewrite.md) |
+| 83 | DECIDED | [When the same thing exists in C and in Rust, take the Rust one](83-rust-over-c-implementations.md) |
+| 84 | DECIDED | [How we port: prefer software that has already dropped ambient authority](84-how-we-port.md) |
+| 85 | DECIDED | [What we port is evidence and must not be ours; what we ship is product and must be](85-evidence-and-product.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

@@ -181,25 +181,31 @@ because a blanket comment is exactly how the old claim survived past being true.
 | Test | Reason |
 | --- | --- |
 | `el1_runs_on_sp_el1` | **No RISC-V analogue exists.** RISC-V does not bank `sp` by privilege level; there is one `sp`, swapped with `sscratch` on trap entry. The hazard (two names for one register, silently) cannot arise, so a twin would have nothing to assert. |
-| `asid_tagging_keeps_address_spaces_apart_without_flushes` | **The property is not true on RISC-V yet.** `write_satp` issues an unconditional `sfence.vma` on every root switch, so a twin would read the right byte because everything was just flushed, not because the tagging works, and would pass whatever happened to the ASIDs. See the open gap below. |
+| ~~`asid_tagging_keeps_address_spaces_apart_without_flushes`~~ | **Closed by milestone 58; it runs on both ISAs now.** It was here because the property was not true on RISC-V: `write_satp` issued an unconditional `sfence.vma` on every root switch, so a twin would have read the right byte because everything was just flushed, not because the tagging works. The row stays, struck through, because the *reason* is the useful part: this is what a test that cannot fail for its stated reason looks like before anyone notices. |
 | `the_hardware_says_el0_cannot_read_the_kernels_memory` | Twin exists: `riscv_virtio_tests::the_page_tables_say_u_mode_cannot_read_the_kernels_memory`. Kept separate on purpose, because the *mechanism* is the subject: aarch64 asks the silicon (`AT S1E0R`), RISC-V has no such instruction and walks in software. Merging them would assert only what both can say. |
 | `userspace_init_delegates_an_interrupt_to_a_child` | RISC-V has no second interrupt to raise. Its only hand-assertable line is the console UART's, which `spawn_init` is already routing for the input driver, so a twin would prove delivery through whichever route was bound last rather than through the delegated capability. The property is covered by `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk` (which asserts `ROUTED_IRQS` rises while a userspace driver waits on its own Irq cap) and by `sched::tests::an_interrupt_becomes_a_message`. |
 | `userspace_init_builds_a_driver_that_reads_real_hardware` | The assertion is `0xB105F00D` in the PL011's PrimeCell identification registers, and RISC-V `virt` has no PL011. That constant is what makes the test exact rather than "the read did not fault"; substituting a virtio magic number would be a different test wearing this one's name. Device delegation to a userspace driver is proved on RISC-V by the virtio-blk driver test, which is a stronger version of the same claim. |
 | 24 device / filesystem / network tests | **Twins already exist** in `riscv_virtio_tests`, which drives the same properties through the dedicated `blk` and `net_stack` binaries. Running both copies would double the suite's slowest tests (including the ~300 s `std_net`) to prove nothing new. This duplication is itself worth revisiting: see the open gap below. |
 
-### Open gap: RISC-V allocates ASIDs and then throws them away
+### Closed gap: RISC-V allocated ASIDs and then threw them away
 
-`riscv64::mmu` does the whole ASID dance. `asid_bits()` probes the implemented width at boot,
-`ttbr0_value` packs the ASID into `satp[59:44]`, `flush_asid` exists for teardown. And then
-`write_satp` ends with a bare `sfence.vma`, which invalidates **everything**, on every address-space
-switch. So the tagging costs what it costs and buys nothing: RISC-V is still swinging the
+`riscv64::mmu` did the whole ASID dance. `asid_bits()` probed the implemented width at boot,
+`ttbr0_value` packed the ASID into `satp[59:44]`, `flush_asid` existed for teardown. And then
+`write_satp` ended with a bare `sfence.vma`, which invalidates **everything**, on every address-space
+switch. So the tagging cost what it cost and bought nothing: RISC-V was still swinging the
 sledgehammer aarch64 put down at milestone 15.
 
 Found while deciding whether `asid_tagging_keeps_address_spaces_apart_without_flushes` could be
-ported. It could not, honestly, and that is the finding. Fixing it is a kernel change with real
-consequences (the shootdown paths assume the flush), not a test-portability change, so it is recorded
-here rather than done under a test lane. The aarch64 test is the model for what the RISC-V twin
-should assert once it is.
+ported. It could not, honestly, and that was the finding.
+
+**Milestone 58 closed it**, and the sequencing is the lesson. The flush was not merely slow, it was
+covering for two things: `flush_asid` was local, because `sfence.vma` does not broadcast and RISC-V
+has no hardware equivalent of `tlbi aside1is`; and `satp.ASID` may be zero bits wide on conforming
+hardware where aarch64 mandates eight, so `crates/asid`'s 255 numbers rest on an assumption that
+holds on one ISA and not the other. So: the SBI RFENCE shootdown first, then the removal, gated on a
+boot-time probe rather than on the specification. The aarch64 witness now runs on both ISAs, and
+`an_asid_flush_reaches_the_other_cores` proves the broadcast half on both. The benchmark did **not**
+improve, and cannot on an emulator that models no TLB-miss cost. See notes/riscv-tlb-shootdown.md.
 
 ### Open gap: `tests` and `riscv_virtio_tests` overlap by 24 tests
 

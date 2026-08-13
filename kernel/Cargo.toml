@@ -80,8 +80,17 @@ regions = { version = "0.1.0", path = "../crates/regions" }
 # spawn, so the framing they decode comes from the same definition the PAL packs with rather than
 # from a second copy of it in a test helper, which is what it was before this milestone.
 sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
+# The socket contract (milestone 30, and 107's inbound half). The kernel's spawn service is what
+# *grants* a net server its listen ports, so it packs the grant with the same `listen_grant` the
+# server checks against rather than open-coding the layout of a word two programs must agree on.
+socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
+# The work-steal handshake (milestone 80): the one lock-free cross-core protocol in the scheduler,
+# lifted out of `cpu.rs` so a model checker can reach it. The kernel calls the checked type rather
+# than keeping a second copy of the compare-exchange, the same move `regions`, `ipc` and
+# `dma_validator` made for Kani. See notes/interleaving.md.
+steal_request = { version = "0.1.0", path = "../crates/steal_request" }
 video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's

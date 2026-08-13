@@ -82,6 +82,8 @@ fn provisioning_fills_the_store_and_the_seal_closes_it() {
     let (_, report, ready) = provisioned();
     assert_eq!(report[0], cs::RPT_DONE, "the provisioner did not report");
     let codes = report[1];
+    // Three logins, then three shares. Six secrets, not three people with two credentials each:
+    // a secret here is scoped to the resource it authenticates to (milestone 65).
     for k in 0..3 {
         assert_eq!(
             cs::nth(codes, k),
@@ -90,18 +92,28 @@ fn provisioning_fills_the_store_and_the_seal_closes_it() {
             cs::nth(codes, k),
         );
     }
+    for k in 3..6 {
+        assert_eq!(
+            cs::nth(codes, k),
+            cred_proto::OK,
+            "share {} was not stored (reply {}), codes {codes:#018x}",
+            k - 3,
+            cs::nth(codes, k),
+        );
+    }
     assert_eq!(
-        cs::nth(codes, 3),
+        cs::nth(codes, 6),
         cred_proto::FULL,
-        "a fourth identity in a three-slot store must be refused, not silently accepted",
+        "a seventh secret in a six-slot store must be refused, not silently accepted",
     );
     assert_eq!(
-        cs::nth(codes, 4),
+        cs::nth(codes, 7),
         cred_proto::OK,
         "the seal was not accepted"
     );
     assert_eq!(
-        report[2], 1,
+        report[2] & cs::F_CLEAN,
+        cs::F_CLEAN,
         "the provisioner's page still held bytes after the seal: a plaintext secret survived \
          in a frame the provisioner maps",
     );
@@ -114,8 +126,8 @@ fn provisioning_fills_the_store_and_the_seal_closes_it() {
         ready[0],
     );
     assert_eq!(
-        ready[1], 3,
-        "the sealed store does not hold three identities"
+        ready[1], 6,
+        "the sealed store does not hold three logins and three shares"
     );
     assert!(
         ready[2] >= 1024,
@@ -160,7 +172,8 @@ fn a_client_gets_a_correct_yes_or_no_and_nothing_else() {
         "one identity's secret opened another's account, codes {codes:#018x}",
     );
     assert_eq!(
-        r[2], 1,
+        r[2] & cs::F_CLEAN,
+        cs::F_CLEAN,
         "the shared page was not empty after the last reply: either the client's presented \
          secret or something of the store's is still sitting in a frame two processes map",
     );
@@ -197,10 +210,27 @@ fn the_same_endowment_cannot_write_the_store() {
         "a PUT on the verify endpoint is a verify of an identity nobody provisioned, so the \
          answer must be MISMATCH; codes {codes:#018x}",
     );
+    // **And `SEAL` now gets MISMATCH too, which the machine corrected a second time.** This
+    // assertion expected MALFORMED and had been right for as long as the verify endpoint served
+    // one opcode. Milestone 65 gave it a second, `NTLM_PROOF`, at number 2, which is
+    // `provision::SEAL`'s number: so an attacker's `SEAL` is now read as an NTLM proof for a
+    // resource nobody provisioned, and the honest answer to that is no.
+    //
+    // Worth recording rather than renumbering, for the reason above and for one more. The opcode
+    // spaces colliding is not a coincidence to be tidied away, it is what "the endpoint gives a
+    // number its meaning" *looks like* when a space grows: adding an opcode on one endpoint
+    // silently changed what a word means on the other, and nothing broke, because a word arriving
+    // at a serve loop never carried authority in the first place.
+    assert_eq!(
+        cs::nth(codes, 1),
+        cred_proto::MISMATCH,
+        "a SEAL on the verify endpoint is an NTLM_PROOF for a resource nobody provisioned, so \
+         the answer must be MISMATCH; codes {codes:#018x}",
+    );
     for (k, what) in [
-        (1, "SEAL"),
         (2, "an undefined opcode"),
         (3, "a request with lengths outside the contract"),
+        (4, "PUT_NTLM"),
     ] {
         assert_eq!(
             cs::nth(codes, k),
@@ -211,11 +241,143 @@ fn the_same_endowment_cannot_write_the_store() {
         );
     }
     assert_eq!(
-        cs::nth(codes, 4),
+        cs::nth(codes, 5),
         cred_proto::MISMATCH,
         "the attacker installed a working credential for itself, codes {codes:#018x}",
     );
-    assert_eq!(r[2], 1, "the attacker left bytes in the shared page");
+    assert_eq!(
+        r[2] & cs::F_CLEAN,
+        cs::F_CLEAN,
+        "the attacker left bytes in the shared page",
+    );
+}
+
+/// **The headline of milestone 65.** A userspace program with one endpoint, no key, no store and
+/// no entropy answers a client's NTLMv2 authentication correctly, and comes away with the session
+/// key it needs to sign the session and with nothing it could carry anywhere else.
+///
+/// Everything asserted here is a number [MS-NLMP] §4.2.4 prints. The client sends the published
+/// `NTProofStr`; the service, which alone holds the `NTOWFv2`, agrees and publishes §4.2.4.1.2's
+/// `SessionBaseKey`. Nothing in this test or in the program under test computes an expected value,
+/// which is what makes it a compatibility test and not a self-consistency one.
+///
+/// **This is the property Samba cannot offer.** There, `smbd` opens the password database, so
+/// compromising it leaks every hash: crackable offline, reusable wherever the password was reused.
+/// Here the SMB server's whole endowment is an endpoint, and revoking it ends the access.
+#[test_case]
+fn an_smb_server_authenticates_a_session_without_ever_holding_the_key() {
+    let (w, _, _) = provisioned();
+    let cli = program("credentialer_test_client")
+        .expect("no credentialer_test_client program in the initrd archive");
+    let r = cs::client(cli, &w, cs::ROLE_NTLM);
+    assert_eq!(r[0], cs::RPT_DONE, "the NTLM client did not report");
+    let codes = r[1];
+
+    assert_eq!(
+        cs::nth(codes, 0),
+        cred_proto::MATCH,
+        "the published NTLMv2 proof for a provisioned share was refused, codes {codes:#018x}",
+    );
+    assert_eq!(
+        r[2] & cs::F_SESSION_KEY,
+        cs::F_SESSION_KEY,
+        "the session key the service published is not [MS-NLMP] §4.2.4.1.2's",
+    );
+
+    assert_eq!(
+        cs::nth(codes, 1),
+        cred_proto::MISMATCH,
+        "a proof with one bit flipped was accepted, codes {codes:#018x}",
+    );
+    assert_eq!(
+        r[2] & cs::F_NO_KEY_ON_REFUSAL,
+        cs::F_NO_KEY_ON_REFUSAL,
+        "a refused proof still got a session key: the release rule is the whole security \\
+         statement of this opcode",
+    );
+
+    // A record that has a password but no NTLM secret stores a key of *zeros*, which is a value an
+    // attacker knows, so a proof computed under it is the strongest forgery available. It must
+    // fail, and it must fail exactly as a resource nobody provisioned does: distinguishing them
+    // would turn this endpoint into an oracle for which shares exist.
+    assert_eq!(
+        cs::nth(codes, 2),
+        cred_proto::MISMATCH,
+        "a password-only identity answered an NTLM challenge, codes {codes:#018x}",
+    );
+    assert_eq!(
+        cs::nth(codes, 3),
+        cred_proto::MISMATCH,
+        "an unprovisioned resource answered an NTLM challenge, codes {codes:#018x}",
+    );
+
+    // One password, two derivations: the same share answers an ordinary verify.
+    assert_eq!(
+        cs::nth(codes, 4),
+        cred_proto::MATCH,
+        "a share provisioned for NTLM stopped answering its own password, codes {codes:#018x}",
+    );
+    assert_eq!(
+        r[2] & cs::F_CLEAN,
+        cs::F_CLEAN,
+        "the shared page was not empty after the last reply",
+    );
+}
+
+/// **The kernel looks at the frame after an NTLM exchange**, which is the check the client cannot
+/// make for itself: a program can only see what it was given, and the claim here is about what the
+/// service did *not* put in a frame two processes map.
+///
+/// The published `NTOWFv2` for this share is the byte string an attacker actually wants, and
+/// `NTProofStr` and the session key are what a naive service would leave lying in the page. None
+/// of the three is there.
+#[test_case]
+fn no_ntlm_key_material_survives_in_the_shared_frame() {
+    let (w, _, _) = provisioned();
+    let cli = program("credentialer_test_client")
+        .expect("no credentialer_test_client program in the initrd archive");
+    let _ = cs::client(cli, &w, cs::ROLE_NTLM);
+
+    let mut page = [0u8; 4096];
+    cs::peek(cs::verify_page_va(), &mut page);
+    for (what, bytes) in [
+        // NTOWFv2, [MS-NLMP] §4.2.4.1.1. The one value that must never leave the service.
+        (
+            "the stored NTLM key",
+            [
+                0x0c, 0x86, 0x8a, 0x40, 0x3b, 0xfd, 0x7a, 0x93, 0xa3, 0x00, 0x1e, 0xf2, 0x2e, 0xf0,
+                0x2e, 0x3f,
+            ],
+        ),
+        // The session key, §4.2.4.1.2. Allowed to cross, but only for as long as the exchange it
+        // belongs to; leaving it in the frame would make it outlive that.
+        (
+            "the session key",
+            [
+                0x8d, 0xe4, 0x0c, 0xca, 0xdb, 0xc1, 0x4a, 0x82, 0xf1, 0x5c, 0xb0, 0xad, 0x0d, 0xe9,
+                0x5c, 0xa3,
+            ],
+        ),
+        // NTProofStr, §4.2.4.1.3, which the client itself put in the page.
+        (
+            "the presented proof",
+            [
+                0x68, 0xcd, 0x0a, 0xb8, 0x51, 0xe5, 0x1c, 0x96, 0xaa, 0xbc, 0x92, 0x7b, 0xeb, 0xef,
+                0x6a, 0x1c,
+            ],
+        ),
+    ] {
+        assert!(
+            !page.windows(bytes.len()).any(|s| s == bytes),
+            "{what} is still in the frame the client and the service share",
+        );
+    }
+    if let Some(i) = page.iter().position(|&b| b != 0) {
+        panic!(
+            "byte {i} of the shared frame is {:#04x} after the NTLM exchange",
+            page[i],
+        );
+    }
 }
 
 /// **The service kept serving.** Every refusal above must be a reply, not a crash: a credential

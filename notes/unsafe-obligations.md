@@ -87,9 +87,10 @@ accordingly when you change one.
 
 ## BUGS: three things neither lint can reach
 
-**1. A safe fn whose SAFETY comment discharges onto "the caller".** The comment names an obligation
-the signature imposes on nobody, so any safe code may call the function without it and both lints
-are satisfied. Four sites in `kernel/`:
+**1. A safe fn whose SAFETY comment discharges onto "the caller". DECIDED in milestone 112**, and
+the section below records what each site got and why. The comment names an obligation the signature
+imposes on nobody, so any safe code may call the function without it and both lints are satisfied.
+Four sites in `kernel/`:
 
 | Site | The comment's claim |
 |---|---|
@@ -235,6 +236,179 @@ One warning fired only because the module doc grew: `mixed_attributes_style`, wh
 first written as `//!` inside a module that already had a `///` block above it. It belongs in the
 outer doc.
 
+## The comments that bound nobody, decided (milestone 112)
+
+BUGS item 1 above is this milestone. Four safe functions carried a `// SAFETY:` comment that
+discharged an obligation onto "the caller" while their signatures imposed it on nobody, and both
+lints were satisfied throughout, because there is no `unsafe fn` and no undocumented block for
+either to fire on.
+
+**Three converted, one did not, and the difference is not how strong the obligation is.** It is
+whether anything closes the set of callers.
+
+| Site | Decided | Why |
+|---|---|---|
+| `arch/riscv64/mmu.rs` `write_satp` | `unsafe fn` | aarch64's `set_ttbr0` already was, so the same register write was a contract on one ISA and an ordinary call on the other |
+| `arch/{aarch64,riscv64}/mmu.rs` `switch_user_root` | `unsafe fn` | `pub`, called cross-module from `sched.rs`, and no type can carry the obligation (below) |
+| `stack.rs` `paint`, and its sibling `high_water` | `unsafe fn` | `pub` in the crate, so any kernel code could have written the pattern over an arbitrary range |
+| `virtio.rs` `pread` / `pwrite` | stayed safe fns | private to one module, so the compiler closes the caller set at twenty sites in one `impl` block |
+
+### What makes an obligation binding, which is the whole distinction
+
+`sched.rs`'s `endpoint_of` is the contrast that settles it. Its comment says the access is
+"serialized by SCHED, which every caller holds", which reads exactly like the four. **It binds**,
+because the parameter is `&Scheduler` and the only way to obtain one is through the lock guard. The
+sentence restates a fact the type already enforces.
+
+`switch_user_root(ttbr: u64)` says something that sounds similar and enforces nothing, because any
+`u64` will do. So the question to ask of a SAFETY comment on a safe fn is not "does it mention the
+caller" but **"could the parameter have been produced without meeting this?"** When the answer is no,
+the comment is documentation of a type-level guarantee. When it is yes, the comment is the only thing
+there, and `unsafe fn` is what puts it in front of somebody.
+
+`virtio::pread` is the third case, and it is why the rule is not "convert everything a type does not
+guarantee". Nothing about `phys: u64` enforces the invariant, but `pread` is private and every call
+site is in one `impl` block passing a field of `Transport::Pci` that `pci.rs` resolved from a mapped
+BAR. **A module invariant is a real way to be sound**, and the compiler is what makes it one.
+Converting would have put twenty `unsafe` blocks in a single file, each restating one sentence, which
+is the ritual the milestone block named as the thing to avoid, and it would have made nothing
+checkable: an `unsafe fn` whose contract nothing verifies is still a contract nothing verifies.
+
+### Why a newtype does not rescue the context switch
+
+The obvious repair for `switch_user_root` is a `#[repr(transparent)]` newtype that only
+`AddressSpace::ttbr0` and `reserved_root` can mint, which would make the function honestly safe
+rather than merely honestly documented. It does not work, and the reason is worth keeping:
+
+**The dangerous half of the obligation is liveness, and a `Copy` wrapper over a `u64` launders
+exactly that.** An `AddressSpace` can be dropped and its frames recycled while a copy of its composed
+value lives on. A borrow would carry liveness, and the scheduler cannot hold one: `sched::switch`
+reads the root out from under the `SCHED` lock **on purpose**, so the lock is released before the
+context switch, and a lifetime tied to the `AddressSpace` cannot survive that drop. The obligation
+stays a sentence. Both call sites now carry the argument that makes it true (the incoming thread is
+`Running` with `on_cpu` set before the lock drops, so nothing can reap it across the gap) rather than
+a restatement of the contract.
+
+### Two sites the survey missed, and the pattern that missed them
+
+Milestone 82 found its four by looking for the word "caller". Two more had the identical defect and
+did not use the word:
+
+- **`virtio::pwrite`** says `// SAFETY: as above.` A comment by reference inherits the defect and
+  none of the text a grep can match.
+- **`stack::high_water`** says "a mapped stack region", in the passive voice. It names the obligation
+  without naming anybody who owes it, which is the same defect stated in a way that reads like a
+  fact.
+
+**Passive voice and comment-by-reference are the two blind spots of any text search over SAFETY
+comments**, and they are worth knowing before anyone trusts a count produced that way.
+
+Two counts in the survey above are also wrong, from the same cause on the other side:
+
+- "**33 `unsafe fn`s**" is 33 in `kernel/` and `crates/`, not in the tree. The tree had **46** before
+  this milestone and **51** after it: `fs_server/` holds 9, `tools/redoxfs_host/` 2, `user/src/` 2.
+- "**`user/src/` has none**" is wrong. `user/src/c_shim.rs` has two, `malloc` and `free`, and a regex
+  that does not allow `extern "C"` between `unsafe` and `fn` misses both. They are the C ABI's
+  contract and are correctly documented; only the count was wrong.
+
+### The bug this found, which is the argument in one line
+
+**Taking `pread`'s comment seriously found a path that made it false.** It claimed every address
+reaching it was inside a device-mapped BAR. `Transport::Pci`'s `notify_addr[q]` is **zero until
+`setup_queue` resolves it**, and the `NOTIFY` syscall checked only that the queue number was under
+`MAX_QUEUES`. So a userspace driver holding a virtio capability could ring a queue it had never set
+up, and the kernel wrote a `u16` through `phys_to_virt(0)`: a kernel store, inside no BAR, at a
+moment the driver chose. `virtio::notify` now refuses that queue via `Transport::doorbell_ready`, and
+a unit test builds the two transport values by hand so it runs on both ISAs and in the mmio-only
+configurations that have no PCI function at all.
+
+The mmio transport was never exposed, because it has one fixed notify register and nothing per-queue
+to resolve. That is why the defect was invisible from the syscall and only appeared in the PCI arm.
+
+### The worst SAFETY comment in the tree, and it passed every gate
+
+`user/src/net_transport.rs`'s `w16` carried this, over a `write_volatile` into the DMA page:
+
+```
+// SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+// before acting (user_rt's contract). A caller cannot break an invariant by passing a
+// bad slot or method; it gets an error back.
+```
+
+There is no `invoke` in the function. The comment was pasted from `mr`/`mw` a few lines below and
+describes a different operation, on a different mechanism, with a different contract. Its five
+siblings (`r8`, `r16`, `r32`, `w8`, `write_desc`) carry the correct DMA-page sentence, so the defect
+is one line in a block of six. **`undocumented_unsafe_blocks` was green on it the whole time**,
+because the property it checks is that a comment exists. DECISIONS §61 already carries a BUGS note
+predicting this; this is the in-tree instance.
+
+### What is not mechanically checkable, stated plainly
+
+**The milestone's headline property has no gate, and should not be given one.** Whether a SAFETY
+comment binds anybody is not a syntactic question, and the measurements say so rather than the
+intuition:
+
+- The tree has **937 `// SAFETY:` comment blocks**. **871** are inside a safe fn, which is the normal
+  and correct case: an `unsafe` block in a safe fn whose soundness is discharged locally is what
+  most correct Rust looks like.
+- **36** of those mention a caller. Three are artifacts of this milestone's own prose quoting the
+  string `// SAFETY:`, so **33** are real, and **19 of the 33 are legitimate** (the calling *thread*,
+  the calling *process*, an IPC caller, or a fact the parameter type already enforces). A gate on
+  "SAFETY plus caller in a safe fn" would be wrong more often than right.
+- And it would have missed `pwrite` and `high_water`, which are two of the six real ones, for the
+  reasons above. A check that is both noisy and incomplete is a nag.
+
+An allowlist ratchet would fix the noise and not the incompleteness, at the cost of 19 entries that
+each need a reason written and reviewed. Not worth it against a defect class this small. **This one
+is a review discipline**: when you read a SAFETY comment on a safe fn, ask whether the parameter
+could have been produced without meeting it.
+
+### What is mechanically checkable, and shipped
+
+A different property, adjacent to the milestone rather than the milestone itself: **every `unsafe fn`
+states its contract in a `# Safety` section.** `script/lint` gained that check.
+
+It earns its place because of the shape measured in the survey above: a third of this tree's
+`unsafe fn`s contain **no unsafe operation at all**, so neither unsafe lint has anything to fire on
+and the rustdoc section is the only enforcement there is. Nothing was checking that it existed.
+`clippy::missing_safety_doc` is already on via `-D warnings` and does not cover it: that lint fires
+only on an **exported** function, and the interesting ones here (`set_ttbr0`, `write_satp`) are
+private to their module.
+
+**It found one violation on its first run**, `fs_server`'s `file_page`, whose contract was written
+but spelled `SAFETY:` in the doc comment instead of `# Safety`, so rustdoc rendered it as ordinary
+prose and no tool recognised it as the contract.
+
+Two things it deliberately does not do. **It excludes trait-impl methods**, because `GlobalAlloc`'s
+`alloc` and RedoxFS's `Disk::read_at` are `unsafe fn` by the trait's declaration and the contract
+belongs to the trait; twelve of the tree's 51 are that case, and without the exclusion the check is
+twelve false positives out of thirteen. And **it checks that a contract is written, never that it is
+true**, which is the same limit `undocumented_unsafe_blocks` has one level down. It is a low bar, and
+it is the bar that was missing.
+
+### The same defect outside `kernel/`, which is somebody else's lane
+
+The milestone scoped to the four sites in `kernel/`. The survey pattern, run over the whole tree,
+finds **14 more** of the same shape, and they are listed here so the finding lives somewhere a person
+reads rather than in a report:
+
+| Site | The comment's claim |
+|---|---|
+| `user/src/net_transport.rs` `r8` `r16` `r32` `w8` `w16` `write_desc` | "callers pass offsets inside it" (the DMA frame) |
+| `user/src/fs_test_client.rs:854` `fill_page` | "the caller keeps within it" |
+| `user/src/fs_file_caretaker.rs:77` `get` | "callers clamp `out` to the page" |
+| `user/src/fs_nameset_caretaker.rs:107` `get_at` | "every caller clamps `out` and `off` to the page" |
+| `user/src/sink.rs:133` `get` | "callers clamp `i` to the page" |
+| `user/src/swish.rs:616` `put_page` | "every caller is behind a `dir.is_some()` check" |
+| `user/src/line_editor.rs:217` `copy_in` | "offset+len is bounded by PAGE by every caller" |
+| `patches/std-cricker/overlay/std/src/sys/fs/cricker.rs:161` `put` | "callers clamp to it" |
+| `crates/user_heap/src/lib.rs:100` `effective_size` | "the caller provides the locking" (a data-race obligation, not an addressing one) |
+
+Eight of the nine rows are the same clamp-to-a-page obligation, which suggests the answer there is
+one shared page-slice type rather than nine conversions. That is a design question and wants its own
+lane. `crates/user_heap`'s is a different flavour and should be judged separately. The `patches/`
+one is in the vendored std overlay, which most gates exclude on purpose.
+
 ## Re-running the survey
 
 ```sh
@@ -252,3 +426,70 @@ cargo check -p kernel -p user -p user_rt --target riscv64imac-unknown-none-elf -
 Grep for `E0133`, not for the lint's name: rustc reports the error code and spells the lint
 `unsafe-op-in-unsafe-fn` with hyphens in its trailing note, so a grep for the underscored form
 finds nothing and looks exactly like a clean tree.
+
+### EXAMPLES: finding a SAFETY comment that binds nobody
+
+The `# Safety` check is part of `script/lint` and needs nothing:
+
+```sh
+script/lint 2>&1 | grep -A20 'unsafe fn contracts'
+# unsafe fn contracts: 51 declarations (12 trait-impl methods, whose contract is the trait's),
+#                      every other one has a `# Safety` section
+```
+
+To see it fail, take a section off and put it back:
+
+```sh
+# delete the `/// # Safety` line above `pub unsafe fn paint` in kernel/src/stack.rs, then:
+script/lint
+# lint: unsafe fn with no `# Safety` section in its rustdoc:
+#   kernel/src/stack.rs:125  paint
+git restore kernel/src/stack.rs
+```
+
+The judgement half has no gate, so it is a grep plus reading. This is the pattern that found the
+four, with its two blind spots (a comment saying "as above", and one in the passive voice) named so
+the next person does not repeat the undercount:
+
+```sh
+# Candidates: a SAFETY comment inside a fn that is not an `unsafe fn`, mentioning a caller.
+# Expect ~33 hits and expect most of them to be legitimate; this is a reading list, not a verdict.
+git grep -n 'SAFETY:.*caller' -- ':!vendor' ':!notes'
+
+# The blind spots. Neither of these says "caller", and both were the real thing:
+git grep -n 'SAFETY: as above'          # inherits the defect and none of the matchable text
+git grep -nE 'SAFETY: (a|an|the) [a-z]' # passive voice: an obligation with nobody owing it
+```
+
+For each hit, the question is not whether it says "caller". It is **could this parameter have been
+produced without meeting the obligation?** `sched.rs`'s `endpoint_of` takes `&Scheduler`, which only
+the lock guard can produce, so its sentence restates a guarantee. `switch_user_root(u64)` took
+anything at all.
+
+## BUGS (milestone 112)
+
+**The `# Safety` check parses Rust with a regex and a brace counter.** It matches an `unsafe fn`
+declaration at the start of a line and tracks `impl ... for ...` blocks by nesting depth. A
+declaration split across lines by `rustfmt` would be missed, and a brace inside a string literal or a
+comment miscounts the depth. The tree has neither shape today and the check was verified against the
+real declarations, but this is a text scanner, not a parser. The same caveat applies to `script/lint`'s
+dead-code and `#[path]` checks, which are built the same way.
+
+**It cannot see a contract in the wrong place.** A `# Safety` section on the enclosing `impl` block,
+or in the module doc, does not count; the check wants it on the item. That is the intent (a reader
+meets the function), but it means a legitimate arrangement could be flagged. Nothing in the tree is
+arranged that way yet.
+
+**Nothing checks that a SAFETY comment is true, relevant, or about the operation it sits over**, and
+milestone 112 did not change that. `net_transport`'s `w16` carried a comment about capability
+invocation over a raw store for as long as the file has existed, and every gate was green on it.
+Fixing that one line does not make the next one visible.
+
+**The `# Safety` count moves with the tree and must be taken from the merged tree.** 51 declarations
+and 12 trait-impl methods were measured on milestone 112's branch on 2026-08-04. Two concurrent lanes
+adding unsafe code would both report honest numbers that disagree, which is the failure CLAUDE.md
+records for the Kani harness count.
+
+**The riscv64 `user` gap noted at the top of this file is still open.** `script/lint` compiles
+`user` and `user_rt` for aarch64 only, so nine of the fourteen sites in the handoff table above are
+linted on one ISA.

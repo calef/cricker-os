@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [The merge queue, and the two things that watch it](merge-queue.md): `scripts/merge-drain.sh`
+  lands every pull request that does not need Chris; `scripts/trunk-health.sh` says when `main` goes
+  red and when it recovers. Both exist because three duties on 2026-08-04 belonged to whoever
+  happened to notice, and the steward that was supposed to cover them reported without acting. Why
+  the drain is deliberately serial (`cpu matrix` is load-sensitive, so parallel updates manufacture
+  their own failures), and why the prevention half is a GitHub rule rather than either script.
 - [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
   and not just a number, and what `script/citations` can and cannot prove about it. The two older
   gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the
@@ -263,7 +269,22 @@ in the code or the conversation doesn't make sense, it belongs here.
   destinations. And the finding that finished it: the file behind a `>` is **the shell's own
   filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
   and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
-  redirection is being written.
+  redirection is being written. Since 2026-08-04 it also holds the constraint the second reader
+  found: **a process has one wait point**, so a shell that feeds a stage cannot also receive from
+  it, and a line whose bytes all come from the shell needs one stage that reads to the end. No
+  interleaving schedule fixes that, and the two shapes that would (a pull-based source, a buffering
+  component) are both design forks and are weighed there.
+- [`swish` the language](swish-language.md): milestone 67: quoting, sequencing, and the one design
+  fork inside them. **Quoting was an authority gap rather than a convenience**: a file called `my
+  notes.txt` could not be named, and a resource you cannot name is a resource you cannot grant. It
+  **delimits a word and never rewrites one**, because every token here is a slice of the line you
+  typed and a shell with no allocator has nothing to join pieces into, so there is no backslash
+  escape and `a"b"` is refused rather than misread. The one thing it does to authority is *narrow*:
+  it suppresses expansion, so `rm "*.txt"` hands over one name where `rm *.txt` hands over the set,
+  and it stops `-r` widening a directory grant into a subtree walk. Sequencing splits **outermost**,
+  which is bash's binding and also what keeps a pipeline region scoped to its segment. And the fork:
+  **a refusal is not an error and gets its own status**, because "did my command fail" and "was I
+  able to ask" are different questions and Unix cannot tell them apart.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
@@ -328,8 +349,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   operation (this kernel has one wait point, so the provision endpoint is deleted at both ends
   rather than guarded), why we depend on RustCrypto's `argon2` rather than write or vendor one and
   run the RFC 9106 vectors to prove it, the debug-build overflow panic our exhaustive corruption
-  test found inside that dependency, and an honest list of what this does not protect against,
-  starting with the fact that it cannot serve NTLMv2 and why.
+  test found inside that dependency, and an honest list of what this does not protect against.
+- [NTLM](ntlm.md): milestone 65, the other half of the same store: **hold the key, expose the
+  operation, never the key.** NTLMv2 does not verify a presented secret, so "secret in, boolean
+  out" does not describe it: the server holds a key and computes a MAC, which is why this needed a
+  milestone rather than another opcode. Why the store holds `NTOWFv2` rather than the NT hash (the
+  account name and domain are bound at provisioning, so a caller cannot choose half the key
+  derivation), what crosses the shared frame and what never does, why the `SessionBaseKey` is
+  released only against a proof that verified, and why the client-side operation the roadmap named
+  is deliberately absent. Also three broken primitives shipped on purpose with their blast radius
+  stated, the published vectors from RFC 1320, RFC 2202 and [MS-NLMP] §4.2.4 that pin them, the
+  four-zero transcription error the machine caught, and an honest `BUGS` list starting with
+  revocation being per holder rather than per secret.
 - [The framebuffer contract](framebuffer-contract.md): milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the
@@ -409,6 +440,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the
   measured caveat behind CodeQL's "0 alerts" and the reason `--auto` merging silently did nothing.
+- [Auditing the shared pages](shared-page-audit.md): the **second** security audit, with the lens the
+  first one lacked. Every service contract now moves bulk data through a page shared with its client,
+  so the question is whether a value a server **checks** and a value it **uses** are two reads of
+  memory somebody else can write in between. Seven findings, five fixed; the structural reason there
+  were not more (every length travels in a register, never in the page); and the two patterns that
+  recurred, a guarantee assumed from the wrong side of a boundary and half a discipline written by
+  instinct.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
@@ -440,6 +478,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
   clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
   sampled paths, never the exhaustive claims. Run by `script/undefined-behavior-check`, weekly in CI plus on demand.
+- [Interleavings, model-checked (loom)](interleaving.md): milestone 80, the fourth leg. Kani's
+  harnesses are single-threaded, Miri runs *one* interleaving, and QEMU's TCG explores almost none of
+  the orderings aarch64 and riscv64 permit, so CLAUDE.md's fourth rule (assume weak memory ordering)
+  had no instrument that could falsify a violation of it. Loom searches the space. The survey that
+  found four of the five candidate protocols have **no atomics at all** (they are under the ranked
+  interrupt-safe lock, which is §9 working); the pilot on the work-steal handshake, which passed and
+  is worth having anyway; and the real find, **a torn read in the clock page's seqlock** that was
+  missing the store-store barrier between claiming the sequence and writing the data, unreachable on
+  x86 and invisible to every other gate. Including which fixes do *not* work: `AcqRel` and `SeqCst`
+  on the claim both still tear. Run by `script/interleaving-check`.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function
@@ -461,7 +509,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   other candidate (`-D warnings` on `script/verify`) finds **none** of what is there, `cargo kani`
   driving a rustc where no `clippy::` lint exists. It found 26 warnings in 9 crates, 13 of them
   undocumented `unsafe` (the hand count of 11 had missed two `unsafe impl`s) and 13 with nothing to
-  do with unsafe at all.
+  do with unsafe at all. The four safe fns are **decided** by milestone 112: three become `unsafe fn`
+  and `virtio::pread` does not, because it is private and the compiler closes its caller set, which
+  is what a module invariant is. The test that separates them is not "does the comment say caller"
+  but **could the parameter have been produced without meeting the obligation** (`endpoint_of` takes
+  `&Scheduler`, which only the lock guard can mint, so its identical-sounding sentence binds). A
+  newtype cannot rescue the context switch: the dangerous half of the obligation is liveness and a
+  `Copy` wrapper launders it. Taking `pread`'s comment seriously found a **real bug**, a userspace
+  driver able to ring a virtio queue it never set up and make the kernel store through
+  `phys_to_virt(0)`. The honest verdict on the headline question is that it **cannot be a gate**
+  (33 real hits, 19 of them legitimate, and the pattern misses "as above" and the passive voice); the
+  adjacent property that can be is now one: every `unsafe fn` has a `# Safety` section, checked in
+  `script/lint`, which found one violation.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
@@ -512,6 +571,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The RISC-V TLB shootdown](riscv-tlb-shootdown.md): milestone 58: RISC-V carried an ASID it got
+  no benefit from, because every context switch threw the whole TLB away. Why `sfence.vma` needs a
+  distributed protocol (SBI RFENCE, and its acknowledgement) where `tlbi aside1is` needs one
+  instruction, why removing the flush is gated on a *measurement* of `satp.ASID`'s width rather than
+  on the specification, the test that fails without the shootdown, and the honest benchmark: the win
+  is invisible under icount and needs the board.
 - [init, and loading a program from userspace](init-and-loading.md): milestone 19d: the ELF
   parser leaves the kernel for init, an ordinary confined program. How init loads a child through
   the granular verbs (retype, copy-and-map each segment, endow, configure, start), why
@@ -665,6 +730,16 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Locking](locking.md): why a plain spinlock in a kernel with interrupts is a
   *guaranteed* deadlock on a single core, the two orderings that are the whole point, and
   why "restore" is not the same as "enable".
+- [Memory ordering, and the fences with no partner](memory-ordering.md): milestone 116's inventory
+  of every fence and every ordered atomic outside test code, each adjudicated into a bug, a stated
+  soundness argument, or dead code. The count and the two ways a grep gets it wrong. The structural
+  answer to why there are so few (almost every happens-before edge in this kernel comes from the
+  `SCHED` lock or a blocking IPC rendezvous, so it lives in a dependency where no grep can find it),
+  and the one protocol that has no rendezvous under it, which is where the real bug was. Why the
+  broad per-variable check **cannot** work, measured rather than argued: built, run, and it flagged
+  the tree's best pair while missing its one genuine finding. The narrow check that ships instead,
+  with the limitation named at the same volume as the feature. Also a corrected comment that claimed
+  plain `write_volatile` store order was doing work it cannot do.
 - [How portable kernels are written](portability.md): what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.
