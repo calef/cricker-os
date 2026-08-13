@@ -211,3 +211,39 @@ state of the world for every driver in the tree the day before.
   log page retyped from the *address space's* own backing region (not the untyped named in the call,
   which pays only for page tables). That is 255 records per page and `AS_OVERHEAD` is sixteen pages
   of slack, so nothing here comes close; a program that maps thousands of frames would notice.
+
+- **The suite faults intermittently on this branch, and the cause is not known.** Recorded here
+  rather than in a commit message because it is a live defect and the next person to run this suite
+  needs to meet it at the feature, which is what a `BUGS` section is for.
+
+  One run in five faulted (2026-08-13; four green runs on this branch, one red). **The kernel binary
+  was byte-identical between a run that faulted and a run that passed**: the two commits differ only
+  in `.github/dependabot.yml`, `.github/workflows/toolchain-bump.yml` and `script/ci-qemu`, with
+  nothing under `kernel/`, `crates/`, `user/` or `fs_server/`. So this is a race or an
+  ordering-dependent bug, not a deterministic one, and re-running until green would hide it.
+
+  What the machine said, decoded rather than quoted:
+
+  ```
+  ESR_EL1  0x96000047   EC 0x25, data abort taken without a change in EL (so: kernel mode)
+                        WnR 1, a write
+                        DFSC 0x07, translation fault at level 3
+  FAR_EL1  0xffff0010001b3000
+  ELR_EL1  0xffff00004012fa34
+  x8       0xffff0010001b7a90
+  ```
+
+  **The faulting address is the interesting part, and it is not simply an unmapped page.**
+  `phys_to_virt` is `pa | KERNEL_VA_BASE`, so the physical half of `FAR` is `0x10_001b_3000`: that is
+  `0x1b3000`, a plausible low physical address, **with bit 36 set**, putting it 64 GiB up where no
+  RAM exists on `virt`. `x8` carries the same stray bit over a nearby address. One bit set in two
+  pointers at once is a corrupted or mis-constructed pointer, not a legitimately absent mapping, and
+  that is a different investigation from "something was unmapped too early".
+
+  It faulted while the supervision and reap tests were running (the console interleaves, so which
+  test owns it is not established, and this note should not pretend otherwise). `ELR` is in the
+  kernel image region, unlike the operand.
+
+  **The milestone is held on this**, not merged on the four green runs. A demonstration OS that
+  merges a kernel change whose suite passes four times in five has published a number it does not
+  believe.
