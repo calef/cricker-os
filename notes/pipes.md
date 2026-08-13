@@ -19,6 +19,13 @@ by declaration** (DECISIONS §67), which is what makes the digit a familiar spel
 number everybody has to agree on. See ["`2>`: built as a
 declaration"](#2-built-as-a-declaration-decisions-67).
 
+**The draining lane came after all of them, on 2026-08-04**, and it is the only one that was raised
+by somebody trying to *use* this. Milestone 40 built a documentation viewer, could not show a page
+at the prompt, and spent three boot-gate failures finding out that all three reasons were here. Two
+were bugs and are fixed; the third is not a bug at all, and naming it correctly is the reusable
+part. See ["One wait point, and what it decides about a
+line"](#one-wait-point-and-what-it-decides-about-a-line).
+
 ## What this lane had to add, which was less than it looks
 
 The protocol lane established that a program's output destination is **a capability its spawner
@@ -587,6 +594,192 @@ Inventing the convention before a program has two things to say would be inventi
 discovering it, which is the same argument milestone 50 made about `InputSpec` and got right by
 waiting.
 
+## One wait point, and what it decides about a line
+
+*Written 2026-08-04, by the lane milestone 40 handed this to. Everything above was built and proved
+with **one** program that reads a stream, and `wc` turns out to be the one shape of reader that
+hides the constraint. The second reader found it in an afternoon.*
+
+### The three limitations, and only two of them were bugs
+
+Milestone 40's `doc` reads markdown on its input and writes it rendered on its output. At the prompt
+it did three things and none of them showed a page:
+
+| line | what happened | what it was |
+|---|---|---|
+| `doc page.md \| wc` | `0 0 0` | a bug, and a **silent wrong answer** rather than a failure |
+| `doc page.md > out.txt` | `0 0 0` | the same bug |
+| `doc page.md` | the prompt never came back | **not a bug** |
+
+And a fourth, underneath: even with a page arriving, the shell printed at most 512 bytes of it.
+
+### The two bugs
+
+**A named file did not reach a pipeline stage.** `wc report.txt` is `wc < report.txt` with the
+operator left out, and the resolution is the **planner's**, because deciding that a trailing
+positional is a stream needs the manifest (`InputSpec::Required` plus a bare token, in
+`grant_plan::plan_against_with`). `run` read that answer off the plan. `pipeline` did not: it wired
+the head's input off the `Line`, which has no `<` on it, so a planned `Source::File` was thrown away
+and the stage was spawned with an **empty** input slot.
+
+**It did not hang, and that is the part worth keeping.** A `recv` on an empty slot answers
+`NoSuchSlot` rather than blocking; the error word's top byte is an opcode `sink_proto` does not
+define, so it decodes as `Msg::Malformed`; and every reader in this tree treats a malformed message
+as the end of the document, because a page silently missing a paragraph is worse than a page that
+stops. Three correct local decisions compose into a stage that runs to completion over nothing and
+reports an honest count of an empty stream. `doc page.md | wc` answering `0 0 0` is not a viewer
+that failed to render, it is a viewer that rendered the empty document it was given.
+
+That is why nothing caught it, and it is the shape to recognise: **an empty capability slot on a
+byte stream reads as an empty stream**, everywhere, by construction. There is no reader in this
+system that can tell "nobody granted me an input" from "the input was empty", because the sink
+contract deliberately gives a reader nothing to ask with. The check that can tell them apart is the
+shell's, at plan time, which is where `InputSpec` already lives.
+
+Nothing caught it because the only line anybody had typed with an operand *and* an operator on it
+was `wc out.txt`, which is one stage and goes down `run`. `wc out.txt | wc` is now in the guest test
+and in `script/shell-check`, and its expected answer is derived from the line above it rather than
+written down.
+
+**The output ceiling was two numbers for one job.** Printing stopped at 32 sixteen-byte messages
+and a `>` allowed 1024, so the same program's output was cut at 512 bytes on the screen and whole in
+a file, with nothing saying which had happened. The number exists to bound a program that never
+announces end of stream, and that bug is not more tolerable when the bytes are going into a file.
+There is one number now (`MAX_OUTPUT_CHUNKS`, 64 KiB) and the reason on record for the split ("a
+file is where output goes when there is too much of it to read") was a policy about length, which
+the same comment disclaimed in its next sentence.
+
+### The third one is the rendezvous, and no amount of shell code fixes it
+
+**A process here has exactly one wait point.** `SEND` blocks until a receiver takes the message,
+`RECV` blocks until one arrives, and there is nothing else: no select, no receive-on-a-set, no poll,
+no timed wait. DECISIONS §51 records the timed-wait fork and design/roadmap/106 is NOT-STARTED,
+which makes it a kernel-surface decision rather than something a lane may reach for.
+
+So when the shell is the thing feeding a stage, it cannot also be the thing receiving from it:
+
+```text
+  doc page.md
+
+  shell ──feeds the file──►  doc  ──renders as it reads──►  shell
+        blocked in SEND                                     never gets here,
+        because doc is                                      because it is still
+        blocked in SEND                                     in the SEND above
+```
+
+**No interleaving schedule fixes this**, and that is worth stating because it is the first thing
+anybody reaches for. Alternate send-then-receive and it deadlocks the moment the stage reads twice
+before it writes (both sides in `RECV`). Alternate the other way and it deadlocks the moment the
+stage writes twice before it reads. The shell cannot know which, and *the whole point of the sink
+contract is that it cannot ask*: a writer holds an endpoint and has no message that would tell it
+what is on the other end. The property that makes redirection one grant is the same property that
+makes the schedule unknowable.
+
+This is milestone 107's wall from the other side. That lane's listener re-arms before `ACCEPT`
+returns, so it serves connections one after another; simultaneous service still needs threads or a
+select-shaped wait, and it recorded that rather than faking it. Same sentence, different verb.
+
+### What makes a line runnable anyway: one barrier
+
+A stage that reads **to the end** before it writes anything absorbs the stream. One of those
+anywhere in a chain is enough: everything upstream of it can stream freely, the shell's feed
+completes, and only then does anything travel back.
+
+```text
+  doc page.md | wc          shell ──►  doc  ──►  wc  ──►  shell
+                                                 ^
+                                       the feed finishes here, because `wc`
+                                       says nothing until end of stream
+```
+
+`wc` is a barrier and is the **only one in this tree**, which is exactly why nobody found this until
+a second reader existed. So it is now a manifest declaration, in the shape DECISIONS §67 used for
+the second output stream: `InputSpec::Required { writes_while_reading }`, carried onto the
+`Endowment`, and checked over a **whole planned line** by `grant_plan::check_chain`, because the
+barrier may be any stage in the chain and no single stage can answer the question.
+
+A line with no barrier is `Refusal::NoReaderButThisShell` **at the prompt, before any file is
+opened**, which matters because a `>` truncates and a line that will not run must not have emptied
+one:
+
+```text
+$ doc page.md
+  doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+  reader that is not this shell, as in '| wc'
+```
+
+It is the same kind of sentence as `InputRequired`'s, one level up: the manifest knows something
+about the program, so the prompt knows something about the line. And it is the same trade, because
+a shell that hangs is strictly worse than a shell that refuses: this kernel has no way to interrupt
+a process blocked in a rendezvous send, so the prompt is gone until the machine is rebooted.
+
+**Nothing in this tree declares `true` yet**, so the refusal is unreachable from the prompt on
+`main` today and the logic is proved by host tests that plan an explicit manifest, which is the same
+door `FileSpec::Required` has been kept alive through. Milestone 40's `doc` is the first declarer
+and needs one field set.
+
+### Verified against the viewer, on a branch that is not merged
+
+This lane's gates run without a streaming filter, because there is not one on `main`. So it was
+also run against milestone 40's branch merged in, with `doc`'s manifest declaring
+`writes_while_reading: true` and nothing else changed. **Both ISAs, at a real prompt, through the
+real init.** The `motd` file on the fixture image is 70 bytes of markdown:
+
+```text
+$ wc motd
+  1 12 70
+$ doc motd | wc
+  1 12 72
+$ doc motd
+  doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+  reader that is not this shell, as in '| wc'
+$ doc motd > page.txt
+  doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+  reader that is not this shell, as in '| wc'
+```
+
+The second line is the whole claim, and the two numbers are the assertion rather than the fact that
+it ran: the same 70 bytes went in and 72 came out, because the renderer wrapped a paragraph and put
+a newline where the source had none. `0 0 0` is what that line answered before, and a viewer that
+rendered nothing would still say it. The first line is the control: `wc` is the barrier, so the
+same operand at the head of the same pipeline worked all along.
+
+The third and fourth are the wall, said out loud instead of hung on. A person who wants a page on
+the screen still cannot have one; what they get is a sentence naming what to type instead, which is
+worse than a pager and far better than a prompt that has to be rebooted.
+
+### The two ways out, and both are somebody's decision
+
+Neither is taken here. Both are recorded because the refusal above is a wall and not an answer, and
+a person who wants `doc page.md` to render on the screen is asking a reasonable thing.
+
+**A pull-based source, which is the exact answer to the constraint.** The reason the shell needs two
+wait points is that it holds two channels to one child. Make it one: hand the stage a single
+endpoint on which it `CALL`s for input and `SEND`s output, and the shell's loop is one
+`RECV_CAP` that either replies with bytes or writes bytes out. One wait point, arbitrary
+interleaving, no deadlock ever. What it costs is everything this note calls a finding: "a source is
+the sink contract received rather than sent" stops being true, `<` and the right-hand side of `|`
+stop being one convention, and the read end and the write end stop being separate capabilities, so
+the program on the right of a `|` could write back up its own input. That last property is called
+load-bearing above and it would be gone. **A design fork, and Chris's.**
+
+**A buffering stage, which is the answer the roadmap already predicted.** A barrier can be
+*inserted* rather than declared: a component that speaks the sink contract on both sides, takes a
+memory grant, and absorbs what it is given. That is precisely the shape ["Buffering:
+measured"](#buffering-measured-and-the-answer-is-to-build-nothing) said a buffer would arrive in if
+it earned its place, and this is the case that earns it. The measurement there says a buffer costs
+roughly double and buys **decoupling, not bandwidth**, and decoupling is exactly what is wanted:
+that section's own caveat is that the benchmark did not measure the case buffering is for. It needs
+a program, a name, an init entry and a `Prog` id, and a document larger than the grant deadlocks
+again, so the bound has to be an honest part of it.
+
+**What is not a way out is an adapter process at the file end.** The obvious move for
+`doc page.md > out.txt` is to give the writing end to a component so the shell is only the producer,
+and it does not work for the reason ["The file behind a `>` is this
+shell"](#the-file-behind-a--is-this-shell-and-that-was-not-the-plan) already gives: `fs_proto` shares
+one page between the FS server and its clients, and this line has the shell reading the filesystem
+while the adapter writes it. Same race, same page, and no ordering fix.
+
 ## Buffering: measured, and the answer is to build nothing
 
 The roadmap block said it plainly: **measure `a | b` throughput against a Unix pipe before deciding
@@ -863,6 +1056,36 @@ because the destination is a capability rather than an integer with a convention
 the same question has no answer at that point, since fd 1 is whatever the shell's fd 1 happened to
 be and nothing records what that was.
 
+And the operand at the head of a pipeline, which is the line the draining lane fixed. Read the
+numbers rather than the fact that it ran: `2 4 24` plus a newline is seven bytes and three words on
+one line, so the second `wc` counting the first one's answer is what says the file reached the
+**head** stage rather than nothing reaching it:
+
+```text
+$ wc gate.txt
+  2 4 24
+$ wc gate.txt | wc
+  1 3 7
+```
+
+The failure it replaces is the one worth recognising, because it does not look like a failure. The
+head stage was spawned with an empty input slot, a `recv` there answers `NoSuchSlot` instead of
+blocking, and that reads as end of document, so this line used to print `0 0 0` and mean it. **A
+pipeline that reports zero of everything is a pipeline in which nothing was ever fed**, and it is
+the only symptom an empty input slot has.
+
+Three stages, to show the operand is the *head*'s and travels no further (`1 12 70` plus a newline
+is eight bytes, and `1 3 8` plus a newline is six):
+
+```text
+$ wc motd
+  1 12 70
+$ wc motd | wc
+  1 3 8
+$ wc motd | wc | wc
+  1 3 6
+```
+
 ## What the guest test proves, on both ISAs
 
 `kernel::user::pipeline_tests` wires the **real shell binary** in a role that reads a script instead
@@ -1063,9 +1286,23 @@ reader would look. The symptom is always a data abort one word below the lowest 
   *and* an input, or a clock *and* an input, needs a numbered slot convention rather than an ordered
   one.
 - **A pipeline is full lockstep.** There is no buffer: every sixteen bytes is a rendezvous. Unix's
-  64 KB pipe buffer lets a producer run ahead; this does not, and nothing here has been benchmarked
-  against a Unix pipeline. If buffering earns its place it arrives as a component that speaks the
-  sink contract on both sides and is inserted into the chain.
+  64 KB pipe buffer lets a producer run ahead and this does not. *(This entry used to end "and
+  nothing here has been benchmarked against a Unix pipeline", which stopped being true on 2026-08-03
+  and was left standing for a day. It has been: the section above has the numbers, and the finding
+  is that the sixteen-byte message rather than the lockstep is what costs.)*
+- **A line whose bytes all come from this shell needs a stage that reads to the end**, or it is
+  refused. One wait point per process, no select, and the section above has the whole of why. The
+  cost is real and it is the case a person meets first: a filter that renders as it reads cannot be
+  run on its own, only with something after it. `wc` is the only barrier in this tree.
+- **Nothing declares `writes_while_reading` yet**, so that refusal is unreachable from the prompt on
+  `main` and is proved only by host tests planning an explicit manifest. The declaration exists
+  ahead of its first declarer on purpose, because the alternative was a prompt that hangs the moment
+  one arrives; it is the one place in this milestone where a mechanism precedes its consumer, and it
+  should be read as a debt against milestone 40 rather than as a pattern.
+- **The refusal is named after a program and is a fact about the line.** `doc page.md` prints
+  `doc: writes while it reads...`, which reads as a complaint about `doc`. Nothing is wrong with
+  `doc`, and the same program is fine one character later. The name is there because it is the stage
+  a person would put the `| wc` after; the wording gap is the same shape as `<<`'s below.
 - **`2>` works only on a program that declares a second stream, and one does** (`date`). That is
   DECISIONS §67's cost, stated where a person meets it: `wc gate.txt 2> err.txt` is refused, and the
   fix is `wc` declaring a second output rather than anything about the operator.
