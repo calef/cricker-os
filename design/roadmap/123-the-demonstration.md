@@ -97,6 +97,24 @@ does not get widened to make a red run green.
 picked for being ordinary and useful, and the ones that do not port should be **reported rather than
 dropped**, because the fraction that fails is the finding.
 
+## How the corpus is chosen, so that it cannot be chosen to fit
+
+§85 settles this. An **external ranking** of what software people actually have installed supplies the
+order, because nobody here chose it and it cannot be quietly reshaped when a program turns out to be
+inconvenient. It is filtered, **before it is consulted**, to leaf applications: things a person
+invokes, rather than libraries, package management or init, which dominate the head of any such list
+and are not applications at all.
+
+**The corpus stays software this project did not write**, and §85 records why that is not negotiable:
+this milestone exists to answer the objection that we wrote the kernel and then wrote the programs
+that run on it, and a corpus of our own reimplementations leaves that objection exactly where it was.
+A grant width measured from a program we wrote is a measurement of our own intentions.
+
+Reimplementing the same programs is worth doing and belongs elsewhere. That is the distribution's
+userland, where §84's tier three applies and writing the thing from the ideas is correct;
+`design/what-a-distribution-packages.md` owns it. The two activities look identical and are
+opposites, which is the whole reason §85 exists.
+
 ## BUGS
 
 - **`caps` is plan-time, not process introspection.** It reports what the planner would grant, not
