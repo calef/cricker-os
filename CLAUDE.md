@@ -74,8 +74,33 @@ than to findings.
 **Open decisions live in a file, not in a conversation.** A decision waiting on Chris that exists
 only in chat scrollback is in exactly the medium milestone 94 was written to abolish, and on
 2026-08-04 five of them accumulated there in one day while that milestone was being built. They go
-in `design/open-decisions.md` (name provisional), one entry each: what is being decided, the
-options, the recommendation with its reason, and what is blocked until it is answered.
+in `design/decisions/` with `**Status: PROPOSED.**`, one section each: what is being decided, the
+options, the recommendation with its reason, and what is blocked until it is answered. (They lived
+briefly in `design/open-decisions.md`; milestone 114 absorbed that file, and the numbering is the
+integrator's at merge like every other section number.)
+
+**And work waiting on Chris carries its own label and its own ask** (Chris, 2026-08-04). The same
+principle one level out: a pull request held for him is a decision, and a queue that exists only in
+a chat message is the medium above. Two things, both at the moment the decision to hold is made and
+not later, because the failure this prevents is the maintainer forgetting it is holding something:
+
+- **The `needs-chris` label**, so the queue is `gh pr list --label needs-chris` rather than a
+  paragraph somebody has to have read. Its description carries the reason a thing lands there at
+  all: outside standing merge authority, meaning the syscall surface, a new dependency, or a
+  `DECISIONS` section owed.
+- **A `## What I need from you` comment** naming the specific ask. Three properties make it worth
+  writing, and they are what separate it from a link to a diff. It should be **answerable without
+  reading the diff**, because the point is to spend Chris's attention on the decision rather than on
+  reconstructing it. It should **say what happens if he says no**, since a recommendation with no
+  stated downside is not a recommendation. And it should **separate what is blocking from what is
+  eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
+  gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
+
+**Do not try to route this by requesting a review.** GitHub silently refuses a review request from
+the pull request's own author: `gh pr edit N --add-reviewer calef` **returns success and sets zero
+reviewers**, because every pull request here is authored under Chris's account by the `gh` token.
+That was tried on 2026-08-04 and the silent no-op looked exactly like a working queue, which is
+worse than an error. Assignees and labels do work; reviewers do not.
 
 **Stop and bring it to Chris only when it is genuinely his call:** a design fork not already
 decided, a test that will not pass after real effort, a hardware or external dependency, or the
