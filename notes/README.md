@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [The merge queue, and the two things that watch it](merge-queue.md): `scripts/merge-drain.sh`
+  lands every pull request that does not need Chris; `scripts/trunk-health.sh` says when `main` goes
+  red and when it recovers. Both exist because three duties on 2026-08-04 belonged to whoever
+  happened to notice, and the steward that was supposed to cover them reported without acting. Why
+  the drain is deliberately serial (`cpu matrix` is load-sensitive, so parallel updates manufacture
+  their own failures), and why the prevention half is a GitHub rule rather than either script.
 - [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
   and not just a number, and what `script/citations` can and cannot prove about it. The two older
   gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the
@@ -477,6 +483,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   leaks, at the tree's 224 `unsafe` occurrences), what the first full run found, and the honesty
   clause: the exhaustive suites sample themselves under `cfg(miri)`, so "Miri-clean" means the
   sampled paths, never the exhaustive claims. Run by `script/undefined-behavior-check`, weekly in CI plus on demand.
+- [Interleavings, model-checked (loom)](interleaving.md): milestone 80, the fourth leg. Kani's
+  harnesses are single-threaded, Miri runs *one* interleaving, and QEMU's TCG explores almost none of
+  the orderings aarch64 and riscv64 permit, so CLAUDE.md's fourth rule (assume weak memory ordering)
+  had no instrument that could falsify a violation of it. Loom searches the space. The survey that
+  found four of the five candidate protocols have **no atomics at all** (they are under the ranked
+  interrupt-safe lock, which is §9 working); the pilot on the work-steal handshake, which passed and
+  is worth having anyway; and the real find, **a torn read in the clock page's seqlock** that was
+  missing the store-store barrier between claiming the sequence and writing the data, unreachable on
+  x86 and invisible to every other gate. Including which fixes do *not* work: `AcqRel` and `SeqCst`
+  on the claim both still tear. Run by `script/interleaving-check`.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function

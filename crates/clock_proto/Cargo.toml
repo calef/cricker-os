@@ -14,3 +14,10 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+
+# Loom, only under `--cfg loom`, which nothing but `script/interleaving-check` sets. Cargo evaluates
+# `cfg(loom)` as false for every real target, so no ordinary build resolves or compiles it. The
+# seqlock above is the second protocol milestone 80 modelled; see notes/interleaving.md for what the
+# retrofit cost, which was the milestone's actual question.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
