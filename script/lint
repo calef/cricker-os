@@ -506,6 +506,38 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/C
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
 
+# A dependency stays reachable by an upgrade (§81).
+#
+# Dependabot's `groups`, `schedule` and `open-pull-requests-limit` all reduce update noise and leave
+# the upgrade reachable. `ignore` is the one that does not: it removes the pull requests by removing
+# the upgrade, and the version stays out of reach until somebody edits this file again, which nothing
+# prompts anyone to do. That is a standing decision about the dependency graph rather than about the
+# queue, and §81 makes it Chris's.
+#
+# The incident is §81's: four RustCrypto majors that could not build one at a time were silenced with
+# an `ignore` block, on a pull request whose stated purpose was unblocking CI. Four lines of config is
+# exactly the size at which a policy decision rides along unnoticed.
+#
+# So this refuses the SILENT foreclosure, not the deliberate one. An exception is allowed and has to
+# say it is one, which is CLAUDE.md's rule for every rung of the ladder.
+echo "==> dependency upgrades stay reachable"
+dependabot="$(dirname "$0")/../.github/dependabot.yml"
+if [ -f "$dependabot" ] && grep -qE '^[[:space:]]*ignore:' "$dependabot" &&
+    ! grep -q 'EXCEPTION (§81)' "$dependabot"; then
+    echo "lint: .github/dependabot.yml has an \`ignore:\` block with no recorded exception." >&2
+    echo >&2
+    echo "An \`ignore\` does not quiet an update, it forecloses the upgrade: the version stays" >&2
+    echo "unreachable until somebody edits this file, and nothing will prompt them to. Prefer" >&2
+    echo "\`groups\` (fold many pull requests into one), \`schedule\`, or" >&2
+    echo "\`open-pull-requests-limit\`, all of which cut the noise and leave the upgrade reachable." >&2
+    echo >&2
+    echo "If a dependency genuinely must be held, say so where you hold it:" >&2
+    echo "  # EXCEPTION (§81): <why this one cannot be upgraded, and what would change it>" >&2
+    echo >&2
+    echo "See design/decisions/81-dependency-upgrades.md." >&2
+    exit 1
+fi
+
 # The third citation gate, and the one that reads what a citation points AT (milestone 97). The two
 # above prove a `§N` or a `milestone N` resolves to SOME entry; neither can prove it resolves to the
 # RIGHT one, and both say so in their own headers. Twenty-eight comments credited the two-tier `^C`

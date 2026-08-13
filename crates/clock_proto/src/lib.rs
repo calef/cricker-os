@@ -58,7 +58,31 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// The atomics are loom's under `--cfg loom` and the real ones otherwise, which is what lets
+// `script/interleaving-check` replay this seqlock under every interleaving the C11 model permits
+// (milestone 80; notes/interleaving.md). The algorithms below are written once and are the ones the
+// clock service runs: only where the words live differs, and that is not what is being checked.
+#[cfg(not(loom))]
 use core::sync::atomic::{AtomicU64, Ordering, fence};
+
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicU64, Ordering, fence};
+
+/// Give the model checker a scheduling point inside a spin, and the CPU a hint outside one.
+///
+/// A seqlock spins while the other side holds the sequence. On real hardware that is a few
+/// instructions and `spin_loop` is the right hint. Under loom it is a **liveness hazard**: loom's
+/// scheduler is cooperative, and a thread that spins without yielding can starve the writer whose
+/// progress the spin is waiting for, so the model never terminates. `yield_now` tells loom this is
+/// a point where the other thread must be allowed to run, which is exactly what the hardware does
+/// for free.
+#[inline]
+fn spin_hint() {
+    #[cfg(loom)]
+    loom::thread::yield_now();
+    #[cfg(not(loom))]
+    core::hint::spin_loop();
+}
 
 /// Nanoseconds in a second, the conversion every reader does exactly once.
 pub const NANOS_PER_SEC: u64 = 1_000_000_000;
@@ -156,10 +180,30 @@ pub struct Reading {
 /// the second. On x86 a sloppy version of this would pass every test forever and then fail on the
 /// hardware we actually run.
 ///
+/// **That last sentence was true of this code, and it took a model checker to find out** (milestone
+/// 80, 2026-08-04). The writer claimed the sequence and then wrote the data with nothing ordering
+/// the claim ahead of them, so a reader could observe the new offset while the sequence still read
+/// even and unchanged, revalidate successfully, and return a state from one publish beside an
+/// offset from another. A wrong wall clock, silently. It is not reachable on x86, QEMU's TCG
+/// explores almost none of the orderings that produce it, and every host test and every emulated
+/// boot passed throughout. The fix is a `fence(Release)` in [`publish`](Self::publish), commented
+/// where it sits. See notes/interleaving.md.
+///
 /// Writers are **multiple** (the service, and whoever holds the page read/write), so claiming the
 /// sequence is a compare-exchange rather than a plain store. Two writers racing is not a design we
 /// encourage, but it is a design the capability layout permits, and a seqlock that assumed a single
 /// writer would corrupt silently rather than serialise.
+///
+/// # BUGS
+///
+/// - **The orderings are checked against C11, not against ARM's model or RISC-V's.**
+///   `script/interleaving-check` runs loom, which searches the C11 model: a tear it finds is real,
+///   and a clean run is not a proof about either ISA. Litmus-level confidence would need herd7-style
+///   tooling, and nothing in this tree yet reads this page from two physical cores under load.
+/// - **A reader spins while a writer holds the sequence, and the spin has no bound.** A writer that
+///   faults between its claim and its release leaves the page permanently odd and every reader
+///   spinning in [`read`](Self::read). The window is four stores wide and the writer holds no lock,
+///   so nothing can be preempted into a deadlock; a *killed* writer is simply not recovered from.
 #[derive(Debug, Clone, Copy)]
 pub struct ClockPage {
     base: *const AtomicU64,
@@ -222,13 +266,15 @@ impl ClockPage {
             let s1 = self.word(W_SEQ).load(Ordering::Acquire);
             if s1 & 1 != 0 {
                 // A writer holds it. Spin: a publish is four stores long.
-                core::hint::spin_loop();
+                spin_hint();
                 continue;
             }
             let st = self.word(W_STATE).load(Ordering::Relaxed);
             let off = self.word(W_OFFSET).load(Ordering::Relaxed);
             // Keep the two data loads above the second sequence load. Without this the compiler or
-            // the machine may reorder them after it, and the check would validate nothing.
+            // the machine may reorder them after it, and the check would validate nothing. Removing
+            // it fails the same three loom harnesses the writer's release fence does, so both
+            // halves of the pair are checked rather than argued (notes/interleaving.md).
             //
             // PAIR: the writer's `W_SEQ.store(claimed + 2, Ordering::Release)` at the end of
             // `publish`, below in this file. **The only protocol in the tree where both halves must
@@ -254,10 +300,11 @@ impl ClockPage {
         let claimed = loop {
             let s = self.word(W_SEQ).load(Ordering::Relaxed);
             if s & 1 != 0 {
-                core::hint::spin_loop();
+                spin_hint();
                 continue;
             }
-            // Acquire on success so our stores below cannot be hoisted above the claim.
+            // Acquire on success so our stores below cannot be hoisted above the claim. It is NOT
+            // what makes the claim visible before them; see the release fence after this loop.
             if self
                 .word(W_SEQ)
                 .compare_exchange_weak(s, s + 1, Ordering::Acquire, Ordering::Relaxed)
@@ -266,6 +313,26 @@ impl ClockPage {
                 break s;
             }
         };
+        // **The odd sequence must be visible BEFORE the data it protects.** This is the half of a
+        // seqlock that a total-store-order machine gives you for free and a weakly ordered one does
+        // not, and it was missing here until milestone 80's loom run found it (2026-08-04; see
+        // notes/interleaving.md). Without it a reader can observe the new offset while the sequence
+        // still reads even and unchanged, so its revalidation passes and it returns a state from
+        // one publish beside an offset from another: a wrong wall clock, silently.
+        //
+        // A `fence(Release)` and not a stronger ordering on the claim, which is the part worth
+        // knowing. `AcqRel` and even `SeqCst` on the compare-exchange were both tried and both
+        // still tear: an acquire or release RMW orders accesses around *itself*, and what this
+        // needs is its own store ordered ahead of the plain stores that follow. That is a
+        // store-store barrier between the two, which is exactly the `smp_wmb()` Linux puts in
+        // `write_seqcount_begin` for the same reason.
+        //
+        // PAIR: the reader's `fence(Ordering::Acquire)` in `read`, above in this file. That one is
+        // the load-load half of the same barrier: this fence keeps the odd sequence ahead of the
+        // data, and the reader's keeps its revalidating load of `W_SEQ` behind the data it is
+        // revalidating. Neither one is sufficient alone, and milestone 80's loom run failed with
+        // either removed (notes/interleaving.md, notes/memory-ordering.md).
+        fence(Ordering::Release);
         self.word(W_STATE).store(new_state, Ordering::Relaxed);
         self.word(W_OFFSET).store(offset_nanos, Ordering::Relaxed);
         // Release: everything above is visible to any reader that sees the even sequence below.
@@ -445,7 +512,7 @@ pub mod rtc {
     pub const GOLDFISH: u64 = 2;
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 
@@ -641,5 +708,207 @@ mod tests {
         assert_eq!(policy::NOT_BEFORE_NANOS, 1_767_225_600_000_000_000);
         assert_eq!(policy::NOT_AFTER_NANOS, 4_102_444_800_000_000_000);
         assert!(policy::NOT_BEFORE_NANOS < policy::NOT_AFTER_NANOS);
+    }
+}
+
+// ================================================================================================
+// The seqlock under loom: every interleaving, and every reordering C11 permits (milestone 80).
+// ================================================================================================
+#[cfg(all(test, loom))]
+mod interleavings {
+    //! **The clock page is the sharpest weak-memory target in the tree**, and that is why it is
+    //! here rather than only the scheduler's steal slot. It is a hand-rolled seqlock whose two
+    //! halves run in *different address spaces*, with no lock available between them, and its own
+    //! documentation says the memory ordering is the point rather than decoration. On x86 a sloppy
+    //! version passes forever; on the aarch64 and riscv64 this project targets it does not.
+    //!
+    //! Run with `script/interleaving-check`. See notes/interleaving.md.
+
+    use loom::thread;
+
+    use super::*;
+
+    /// A clock page backed by loom atomics rather than by a mapped frame.
+    ///
+    /// The crate's own `ClockPage` is a raw pointer into a shared page, which is exactly right for
+    /// something two address spaces map and exactly wrong for a model checker, whose atomics carry
+    /// per-execution state and cannot be conjured from an address. Leaking a real array of loom
+    /// atomics and pointing the ordinary `ClockPage` at it means **the algorithm under test is the
+    /// algorithm that ships**: `read`, `publish` and `init` are not reimplemented here, only the
+    /// addressing is. The leak is per model execution and is four words wide.
+    fn page() -> ClockPage {
+        let words: &'static [AtomicU64; WORDS] = Box::leak(Box::new([
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+            AtomicU64::new(0),
+        ]));
+        // SAFETY: `ClockPage::new` wants a mapped, 8-byte-aligned frame of at least `WORDS` words
+        // that stays mapped for the value's life. A leaked array of exactly `WORDS` atomics is all
+        // three: it is aligned by the type, it is never freed, and `word()` indexes it with the
+        // same pointer arithmetic it would use on a frame.
+        unsafe { ClockPage::new(words.as_ptr() as u64) }
+    }
+
+    /// Non-vacuity, across executions rather than within one. See
+    /// `steal_request`'s copy of this for why a model checker needs it.
+    struct Reached(core::sync::atomic::AtomicBool);
+    impl Reached {
+        const fn new() -> Self {
+            Self(core::sync::atomic::AtomicBool::new(false))
+        }
+        fn mark(&self) {
+            self.0.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+        fn assert(&self, what: &str) {
+            assert!(
+                self.0.load(core::sync::atomic::Ordering::Relaxed),
+                "vacuous harness: no execution ever reached {what}, so nothing was checked"
+            );
+        }
+    }
+
+    /// **The seqlock's whole reason to exist: a reader never sees half a publish.**
+    ///
+    /// The state and the offset are a matched pair (a state of `SYNCHRONISED` with the offset from
+    /// before the sync is a wrong wall clock, not a crash, which is the worst kind of bug to leave
+    /// possible). A reader that catches the writer mid-publish must retry, never blend.
+    #[test]
+    fn a_reader_never_sees_half_a_publish() {
+        static SAW_THE_OLD: Reached = Reached::new();
+        static SAW_THE_NEW: Reached = Reached::new();
+
+        loom::model(|| {
+            let page = page();
+            page.init();
+            page.publish(state::RTC, 1_000);
+
+            let writer = {
+                let p = page;
+                thread::spawn(move || p.publish(state::SYNCED, 2_000))
+            };
+
+            let r = page.read();
+            match (r.state, r.offset_nanos) {
+                (state::RTC, 1_000) => SAW_THE_OLD.mark(),
+                (state::SYNCED, 2_000) => SAW_THE_NEW.mark(),
+                other => panic!("a torn reading: {other:?} is neither publish"),
+            }
+
+            writer.join().unwrap();
+        });
+
+        SAW_THE_OLD.assert("an execution where the reader gets in before the publish");
+        SAW_THE_NEW.assert("an execution where the reader gets in after the publish");
+    }
+
+    /// **The generation is what a reader compares, so it must count publishes and not retries.**
+    ///
+    /// `Reading::generation` exists so a log or an expiring cache can ask "did the clock step under
+    /// me" without comparing timestamps and guessing. That makes it a value the reader depends on,
+    /// not a diagnostic, and it is derived from the same sequence word the tearing check uses.
+    #[test]
+    fn the_generation_a_reader_sees_matches_the_pair_it_read() {
+        loom::model(|| {
+            let page = page();
+            page.init();
+
+            let writer = {
+                let p = page;
+                thread::spawn(move || p.publish(state::RTC, 1_000))
+            };
+
+            let r = page.read();
+            // Generation 0 is the initialised page nobody has published to; 1 is the one publish.
+            let expected = if r.state == state::UNKNOWN { 0 } else { 1 };
+            assert_eq!(
+                r.generation, expected,
+                "the generation disagrees with the reading it came with: {r:?}"
+            );
+
+            writer.join().unwrap();
+        });
+    }
+
+    /// **Two writers serialise rather than corrupt.**
+    ///
+    /// The crate's own documentation says this and says why: the capability layout permits several
+    /// processes to hold a read/write mapping, so claiming the sequence is a compare-exchange
+    /// rather than a plain store, and a seqlock that assumed one writer would corrupt silently.
+    /// "Would corrupt silently" is a claim about interleavings, which is the sentence no test in
+    /// this tree could check before this one.
+    #[test]
+    fn two_writers_serialise_rather_than_corrupt_the_page() {
+        static BOTH_LANDED: Reached = Reached::new();
+
+        loom::model(|| {
+            let page = page();
+            page.init();
+
+            let first = {
+                let p = page;
+                thread::spawn(move || p.publish(state::RTC, 1_000))
+            };
+            let second = {
+                let p = page;
+                thread::spawn(move || p.publish(state::SYNCED, 2_000))
+            };
+
+            let g1 = first.join().unwrap();
+            let g2 = second.join().unwrap();
+            assert_ne!(g1, g2, "two publishes were handed the same generation");
+
+            let r = page.read();
+            assert_eq!(
+                r.generation, 2,
+                "two publishes did not advance the page twice"
+            );
+            assert!(
+                matches!(
+                    (r.state, r.offset_nanos),
+                    (state::RTC, 1_000) | (state::SYNCED, 2_000)
+                ),
+                "the page holds a pair neither writer published: {r:?}"
+            );
+            BOTH_LANDED.mark();
+        });
+
+        BOTH_LANDED.assert("any execution at all");
+    }
+
+    /// **A page is recognisable only once it is whole.**
+    ///
+    /// `init` writes the magic last, with a release, precisely so a reader racing the first publish
+    /// sees either a page it does not recognise (and reports `UNKNOWN`, which is the truth about a
+    /// frame nobody has published to) or a fully initialised one. Never a recognised page with
+    /// garbage in it. The release is the whole mechanism, and until now nothing checked it.
+    #[test]
+    fn a_racing_reader_sees_an_unrecognised_page_or_a_whole_one() {
+        static SAW_UNRECOGNISED: Reached = Reached::new();
+        static SAW_INITIALISED: Reached = Reached::new();
+
+        loom::model(|| {
+            let page = page();
+
+            let writer = {
+                let p = page;
+                thread::spawn(move || {
+                    p.init();
+                    p.publish(state::RTC, 1_000);
+                })
+            };
+
+            let r = page.read();
+            match (r.state, r.offset_nanos) {
+                (state::UNKNOWN, 0) => SAW_UNRECOGNISED.mark(),
+                (state::RTC, 1_000) => SAW_INITIALISED.mark(),
+                other => panic!("a reader saw a recognised page with garbage in it: {other:?}"),
+            }
+
+            writer.join().unwrap();
+        });
+
+        SAW_UNRECOGNISED.assert("an execution where the reader arrives before the magic lands");
+        SAW_INITIALISED.assert("an execution where the reader arrives after the publish");
     }
 }
