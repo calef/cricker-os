@@ -1,6 +1,7 @@
 # 14. The project's direction: a verified-Rust capability microkernel that runs real workloads
 
-**Status: DECIDED.**
+**Status: AMENDED.** (§82 moves the end state from confining the existing ecosystem to replacing
+it; the technical shape recorded here is unchanged. See the amendment at the end.)
 
 Committed 2026-07-23. This is the North Star, recorded because everything downstream (which
 milestones are on the critical path, what "done" means) now answers to it. It does not replace the
@@ -74,3 +75,19 @@ are proved in `paging`. See notes/verification.md for what each proof says and w
   broad. Milestone 22 (design/roadmap/22-trusted-init.md) is where this is closed: verify init before it runs, and
   shrink what a broken one can do. Recorded here so the thesis is not read as claiming more than it
   proves.
+
+## Amendment (2026-08-13): the end state is replacement, not confinement (§82)
+
+This section adopted seL4's resolution, which is to verify a small trusted core and run **real,
+unverified workloads** in confined userspace above it. That shape is unchanged and everything above
+still holds.
+
+What §82 changes is the destination. This section reads as treating the existing C and
+ambient-authority ecosystem as permanent, with the kernel's job being to build a box strong enough to
+hold it. §82 records Chris's thesis that the box is instead what makes rewriting that ecosystem worth
+doing, and that LLMs are why the rewrite is affordable now when it defeated KeyKOS, EROS and Coyotos.
+
+The practical difference is how a port is classified. Under this section, running somebody else's
+program is a **demonstration** that confinement works. Under §82 it is the **product**, and the
+question becomes how narrow a grant it can run under rather than whether it runs at all. §82 also
+carries the falsification conditions, which this section never stated.
