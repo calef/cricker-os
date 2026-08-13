@@ -23,6 +23,13 @@
 
 set -e
 cd "$(dirname "$0")/.."
+# Absolute repo root, captured before the cold-cache path cd's into the QEMU build tree. The
+# qemu-check call at the end runs from inside that build dir (there is no cd back), so a relative
+# `script/qemu-check` there resolved against the tarball, not the repo, and died with "not found"
+# (exit 127). It stayed hidden because it is only on the cold path: a warm cache exits above, long
+# before the build, so the bug surfaced only when the QEMU cache expired (~7 days) and every QEMU
+# job rebuilt at once. Anchor the check to the repo instead of to wherever the build left us.
+root="$(pwd)"
 
 want="$(tr -d ' \n' < .qemu-version)"
 prefix="${QEMU_PREFIX:-$HOME/.cache/cricker-qemu}"
@@ -79,4 +86,4 @@ echo "==> QEMU $want installed at $prefix"
 
 # Verify through the SAME check the developer machine uses, rather than repeating its device list here.
 # Two copies of "what QEMU must provide" would drift, and the copy in CI is the one nobody reads.
-PATH="$prefix/bin:$PATH" script/qemu-check
+PATH="$prefix/bin:$PATH" "$root/script/qemu-check"
