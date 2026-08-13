@@ -17,6 +17,22 @@ updates:
       cargo-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    # The NTLM crypto primitives are pinned on purpose (crates/ntlm/Cargo.toml). NTLMv2 mandates MD4
+    # and MD5, so nothing here *chooses* the algorithm: a major bump of these four is pure API churn
+    # for zero security or behaviour gain, and worse, they are one coordinated RustCrypto release
+    # (digest 0.11 pulls hmac 0.13 / md-5 0.11 / md4 0.11), so a lone major PR for any one of them
+    # cannot even build. The supply-chain job (cargo-deny advisories) still watches the graph, so a
+    # real advisory is not silenced by this. Minor/patch updates within the pinned majors still flow
+    # through the group above. Revisit by deleting the relevant line if the crate is ever unpinned.
+    ignore:
+      - dependency-name: "digest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "hmac"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "md-5"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "md4"
+        update-types: ["version-update:semver-major"]
 
   # --- GitHub Actions used by .github/workflows/ci.yml ----------------------------------------
   - package-ecosystem: github-actions
