@@ -48,7 +48,24 @@ pub const STACK_PAGES: usize = 4;
 /// physical one. 64 GiB up, and RAM will not reach there for a while.
 const STACK_AREA: u64 = KERNEL_VA_BASE | 0x0000_0010_0000_0000;
 
+/// One thread's slot in [`STACK_AREA`]: the guard page, then [`STACK_PAGES`] of stack. Every slot
+/// is this wide and every base is a multiple of it from `STACK_AREA`, including the reused ones
+/// (`FREE_STACK_VAS` hands back the slot base, never an interior address), which is what lets a
+/// fault handler turn an address back into "slot N, this far into its guard page". See
+/// [`crate::stack::guard_page_at`].
+pub const STACK_SLOT_SPAN: u64 = (STACK_PAGES as u64 + 1) * FRAME_SIZE;
+
 static NEXT_STACK_VA: AtomicU64 = AtomicU64::new(STACK_AREA);
+
+/// The thread-stack area as `(base, watermark)`: every stack slot ever handed out lies below the
+/// watermark, and nothing else in the kernel map lies in the span at all.
+///
+/// Reads one relaxed atomic and nothing else, deliberately: the caller is a fault handler that has
+/// already lost the machine, so it may not take a lock. A slot allocated concurrently on another
+/// core can be missing from the range, which costs a diagnosis and never a wrong one.
+pub fn stack_area_span() -> (u64, u64) {
+    (STACK_AREA, NEXT_STACK_VA.load(Ordering::Relaxed))
+}
 
 /// The `id` a constructor writes before the scheduler's table has named the thread. Deliberately
 /// `u64::MAX` (= `cpu::NO_TID`), which the generational table can never mint, so a thread that
@@ -133,7 +150,7 @@ impl KernelStack {
     pub fn new() -> Option<Self> {
         // One page of virtual address space for the guard, plus the stack itself. The guard's
         // VA is simply never mapped, which is the entire mechanism.
-        let span = (STACK_PAGES as u64 + 1) * FRAME_SIZE;
+        let span = STACK_SLOT_SPAN;
 
         // Reuse a dead thread's address range if there is one, so the page tables covering it
         // are already built. Only bump into fresh address space when there isn't.

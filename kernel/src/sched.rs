@@ -3036,6 +3036,59 @@ mod tests {
         }
     }
 
+    /// **A fatal fault can name the stack it fell off**, for all three kinds of kernel stack.
+    ///
+    /// Milestone 78. The guard pages already worked; nothing *said* so. Two `cpu matrix` runs died
+    /// with `unexpected RISC-V trap: scause=0xf stval=0xffffffd0001fe000 from_user=false`, which
+    /// reads as a memory-system fault, and it took hand arithmetic against `thread.rs`'s slot span
+    /// to discover that the address was the base of a thread stack's guard page. `guard_page_at` is
+    /// that arithmetic, in the kernel, so the machine says it instead.
+    ///
+    /// The three kinds are allocated three different ways (a linker symbol, a `.bss` array, a slot
+    /// in the virtual area 64 GiB up), so this checks one of each rather than trusting one to stand
+    /// for the others. It also checks the *negatives*, because a classifier that answered
+    /// `Thread(0)` for every address would pass the positive half and be worse than nothing.
+    #[test_case]
+    fn a_guard_page_fault_names_its_stack() {
+        use crate::arch::mmu;
+        use crate::stack::{GuardPage, guard_page_at};
+        use crate::thread::{KernelStack, STACK_SLOT_SPAN};
+
+        assert_eq!(guard_page_at(mmu::stack_guard()), Some(GuardPage::Boot));
+        assert_eq!(
+            guard_page_at(mmu::stack_guard() + 4095),
+            Some(GuardPage::Boot),
+            "the last byte of the guard page is still the guard page"
+        );
+        assert_eq!(
+            guard_page_at(mmu::stack_bottom()),
+            None,
+            "the first usable byte of the stack is not a guard page"
+        );
+
+        // Core 1 is online in every configuration this suite runs (smp.rs boots MAX_CPUS).
+        let g = crate::smp::secondary_stack_guard(1);
+        assert_eq!(guard_page_at(g), Some(GuardPage::Secondary(1)));
+
+        // A live thread stack, so the watermark provably covers it.
+        let stack = KernelStack::new().expect("could not allocate a thread stack");
+        let slot = (stack.guard() - crate::thread::stack_area_span().0) / STACK_SLOT_SPAN;
+        assert_eq!(guard_page_at(stack.guard()), Some(GuardPage::Thread(slot)));
+        assert_eq!(
+            guard_page_at(stack.bottom()),
+            None,
+            "the stack's own first page reported as its guard page"
+        );
+        assert_eq!(
+            guard_page_at(stack.top() - 8),
+            None,
+            "the top of the stack reported as a guard page"
+        );
+
+        // Kernel text is not a stack of any kind.
+        assert_eq!(guard_page_at(guard_page_at as *const () as u64), None);
+    }
+
     /// **The rendezvous, receiver-first.** A thread blocks on an empty endpoint, and stays
     /// blocked, and a *later* sender is what frees it: carrying the message.
     #[test_case]
