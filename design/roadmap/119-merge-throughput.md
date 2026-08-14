@@ -1,10 +1,23 @@
 # 119. The merge queue is the bottleneck, and the long pole is one prover
 
-**Status: NOT-STARTED.** Minted 2026-08-05 by Chris, after an evening in which the constraint stopped
-being how fast lanes produce and became how fast one queue can land.
+**Status: PARTIAL** 2026-08-14. Minted 2026-08-05 by Chris, after an evening in which the constraint
+stopped being how fast lanes produce and became how fast one queue can land.
 
 **Gate: NONE.** The measurement and the sharding need nothing. The two structural options at the end
 are Chris's, and the block says which, but neither blocks a start.
+
+**Built:** the per-crate cost measurement, `script/verify --shard k/n` balanced by measured time,
+and two concurrent shards in `verify.yml` behind an aggregate job that preserves the required
+check name. Serial 30.3 min to 15.1 min.
+
+**Not done, and it is the block's own definition of done:** the after-median. A before-and-after
+wants median merge-cycle wall clock over a *run* of pull requests, and only one sample exists on
+the new path. Take it from the next several merges rather than from the first.
+
+**Two corrections this milestone's own measurement made to it**, both recorded in the sharding
+section below: four shards buy nothing over two, because `glob` is atomic at 15.0 minutes; and
+the floor is not "the slowest harness, minutes on its own" but a specific 10.8-minute one whose
+cost is an unwind bound rather than a CI problem.
 
 ## The measurement, taken 2026-08-05
 
