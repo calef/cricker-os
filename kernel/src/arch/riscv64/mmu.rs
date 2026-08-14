@@ -540,7 +540,10 @@ where
 
 macro_rules! linker_symbol {
     ($name:ident, $sym:ident) => {
-        fn $name() -> u64 {
+        // `pub`, matching the aarch64 twin: `stack::guard_page_at` asks both ISAs where the boot
+        // stack's guard page is, and a portable caller cannot reach a private one. Parity (§19)
+        // wants the two macros identical rather than one of them widened by one symbol.
+        pub fn $name() -> u64 {
             unsafe extern "C" {
                 static $sym: c_void;
             }

@@ -1,18 +1,24 @@
 //! **The display driver: virtio-gpu, at EL0, confined** (milestone 29, the display ladder's rung
 //! one).
 //!
-//! The first pixels this system ever puts in a scanout, put there by an unprivileged process that
-//! holds four capabilities and nothing else:
+//! The first pixels this system ever puts in a scanout, put there by an unprivileged process whose
+//! whole world is a cspace:
 //!
 //! - slot 0, a **report** endpoint: how it tells its spawner it came up, and what it flushed;
 //! - slot 1, an **`Irq`**: the device's completion interrupt, arriving as a message;
 //! - slot 2, a **`Virtio`**: the confined transport. The device's registers are NOT mapped here, so
 //!   this process cannot program a queue address or ring a doorbell; the kernel does both, and
 //!   validates every descriptor first (notes/dma.md);
-//! - slot 3, a **display** endpoint it RECVs on: where clients ask for a flush.
+//! - slot 3, a **display** endpoint it RECVs on: where clients ask for a flush;
+//! - slot 4, an **untyped**: the budget the page tables for its own mappings come out of;
+//! - slots 5.., its **DMA region**: [`DMA_FRAMES`] `Frame` capabilities, one per page, which it maps
+//!   itself (milestone 108). The region's *physical* base still arrives in `x1`, because descriptors
+//!   speak physical addresses and a process only knows virtual ones.
 //!
-//! Plus one mapping: its DMA region, whose *physical* base arrives in `x1`, because descriptors
-//! speak physical addresses and a process only knows virtual ones.
+//! **Nine capabilities for one contiguous region** is the shape a `Frame` forces, and it is worth
+//! seeing: this driver spends nine of the fourteen usable slots in its cspace naming pages that are
+//! adjacent in physics, adjacent in its address space, and covered as a single range by the IOMMU
+//! domain the kernel programmed. See notes/frames.md's BUGS.
 //!
 //! # The thing that draws is not the thing that talks to the hardware
 //!
@@ -51,8 +57,18 @@ const REPORT: u64 = 0;
 const IRQ: u64 = 1;
 const VIRTIO: u64 = 2;
 const DISPLAY: u64 = 3;
+/// The untyped this driver spends on the page tables its DMA region needs.
+const BUDGET: u64 = 4;
+/// The first of [`DMA_FRAMES`] consecutive slots holding the DMA region, a `Frame` per page.
+const DMA_FRAME: u64 = 5;
 
-/// Where the kernel maps this driver's DMA region. Must match `display_service::DMA_VA`.
+/// The DMA region, in frames: one for the rings and control buffers, then the surface. Must match
+/// `display_service::DMA_FRAMES`.
+const DMA_FRAMES: u64 = 1 + gfx::SURFACE_FRAMES as u64;
+
+/// Where this driver puts its DMA region. **Its choice, not the kernel's**: it holds the frames and
+/// maps them (milestone 108). The *physical* base still arrives in `a1`, and has to: descriptors
+/// speak physical, and a process only knows virtual addresses.
 const DMA_VA: u64 = 0x0000_0000_0090_0000;
 
 // --- virtio-mmio v2 register offsets. The PCI transport answers this same vocabulary
@@ -474,6 +490,22 @@ fn run_backing_escape(dma_phys: u64, victim: u64) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, dma_phys: u64, arg2: u64) -> ! {
+    // **The DMA region is ours to place** (milestone 108): DMA_FRAMES capabilities, one per page,
+    // mapped read/write out of our own budget. Before either role, because the rings live in the
+    // first page of it and the escape attempt writes a descriptor too.
+    //
+    // One `MAP` per page is what a `Frame` costs: the object names a page, and this region is a
+    // contiguous run of nine. The kernel had to reserve slots 5..13 of a sixteen-slot cspace to
+    // hand it over. See notes/frames.md's BUGS.
+    for k in 0..DMA_FRAMES {
+        if !user_rt::map_frame(DMA_FRAME + k, DMA_VA + k * 4096, true, BUDGET) {
+            // Nothing to report: `gfx::status` has no code for "I never reached my own rings",
+            // and inventing one would be a protocol change to say what the missing `UP` already
+            // says. A spawner that never sees `UP` knows bring-up failed.
+            exit();
+        }
+    }
+
     // Two roles in one binary, for the reason the blk attackers ride with the blk driver: the attack
     // differs from the honest driver by one field, and sharing the bring-up is what makes it a fair
     // test rather than a different program that fails for its own reasons.

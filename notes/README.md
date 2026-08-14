@@ -222,7 +222,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
   between processes at runtime instead of being wired by the kernel at spawn.
-- [Frame capabilities](frames.md): shared memory a process owns rather than one the kernel wires
+- [Frame capabilities](frames.md): shared memory a process owns rather than one the kernel wires, and
+  why a page handed over at spawn could never be taken back
   in. Retype a page out of untyped into a `Frame`, map it, and delegate a read-only view to a peer
   that maps the same physical page. §10's "shared memory carries data," composed by the processes;
   the IPC rendezvous that carries the frame is also the edge that orders the memory.

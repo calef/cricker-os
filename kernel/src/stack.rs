@@ -66,6 +66,117 @@ pub fn headroom() -> i64 {
     sp.wrapping_sub(bottom()) as i64
 }
 
+/// Which kernel stack a faulting address belongs to, when it lands in that stack's guard page.
+///
+/// There are three kinds and they are allocated three different ways, which is exactly why nothing
+/// used to name them: the boot stack's guard is a linker symbol, a secondary's is an offset into a
+/// `.bss` array (milestone 90), and a thread's is a slot in the virtual stack area 64 GiB up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardPage {
+    /// The boot stack's guard page (`__stack_guard`). Core 0 runs the whole test suite on it.
+    Boot,
+    /// Secondary core `id`'s guard page.
+    Secondary(usize),
+    /// A thread kernel stack's guard page: the slot index within `thread::STACK_AREA`, counting
+    /// from zero. Not a `Tid`, deliberately, because turning a slot back into a thread needs the
+    /// scheduler lock and this runs in a handler that may not take one.
+    Thread(u64),
+}
+
+/// **Is `addr` inside a kernel stack guard page, and whose?**
+///
+/// The one question a fatal kernel fault should answer before anything else, because the answer
+/// turns "unexpected trap at some address" into "this stack overflowed", and those two send a
+/// reader to completely different places. Nothing did it before milestone 78: a thread-stack
+/// overflow reached CI as `unexpected RISC-V trap: scause=0xf ... from_user=false`, which reads as
+/// a fault in the memory system rather than the guard page doing its job.
+///
+/// Takes no locks and touches no allocator, because every caller is already in a fault handler.
+///
+/// # BUGS
+///
+/// **A `None` here does not mean the stack is fine.** A guard page is one page, and the kernel has
+/// stack frames bigger than that (`sched::reap_region_objects` is 6832 bytes on riscv64), so a
+/// function entered near the bottom of a 16 KiB thread stack can put `sp` clean below the guard
+/// page without ever touching it, and then write into the *neighbouring slot's* top stack page,
+/// which is mapped and in use. That produces silent corruption rather than a fault, and this
+/// function cannot see it. See notes/load-sensitive-assertions.md.
+pub fn guard_page_at(addr: u64) -> Option<GuardPage> {
+    const PAGE: u64 = 4096;
+
+    let boot = crate::arch::mmu::stack_guard();
+    if (boot..boot + PAGE).contains(&addr) {
+        return Some(GuardPage::Boot);
+    }
+
+    for id in 0..crate::cpu::MAX_CPUS {
+        let g = crate::smp::secondary_stack_guard(id);
+        if (g..g + PAGE).contains(&addr) {
+            return Some(GuardPage::Secondary(id));
+        }
+    }
+
+    let (area, watermark) = crate::thread::stack_area_span();
+    if (area..watermark).contains(&addr) {
+        let off = addr - area;
+        // A slot is [guard page][STACK_PAGES of stack], so an offset inside the first page of a
+        // slot is a guard-page hit and anything above it is ordinary stack.
+        if off % crate::thread::STACK_SLOT_SPAN < PAGE {
+            return Some(GuardPage::Thread(off / crate::thread::STACK_SLOT_SPAN));
+        }
+    }
+
+    None
+}
+
+/// Shout if `addr` is a kernel stack guard page, naming which stack and how far past its bottom the
+/// access went. Called from both ISAs' fatal-fault paths with the faulting address.
+///
+/// The distance is the number that matters: a few bytes past the bottom is an ordinary overflow,
+/// and *thousands* of bytes past it means a single frame jumped most of the way across the guard,
+/// which is the case where the next one jumps clean over it. Printing it is what let milestone 78
+/// tell those apart.
+pub fn warn_if_guard_page(addr: u64) {
+    let Some(kind) = guard_page_at(addr) else {
+        return;
+    };
+
+    crate::println!();
+    crate::println!("  *** KERNEL STACK OVERFLOW ***");
+    match kind {
+        GuardPage::Boot => {
+            crate::println!("  {addr:#018x} is in the BOOT stack's guard page.");
+            crate::println!(
+                "  bottom {:#018x}, so sp went {} bytes past it.",
+                crate::arch::mmu::stack_bottom(),
+                crate::arch::mmu::stack_bottom().saturating_sub(addr),
+            );
+        }
+        GuardPage::Secondary(id) => {
+            let (bottom, _) = crate::smp::secondary_stack_span(id);
+            crate::println!("  {addr:#018x} is in core {id}'s boot-stack guard page.");
+            crate::println!(
+                "  bottom {bottom:#018x}, so sp went {} bytes past it.",
+                bottom.saturating_sub(addr),
+            );
+        }
+        GuardPage::Thread(slot) => {
+            let (area, _) = crate::thread::stack_area_span();
+            let bottom = area + slot * crate::thread::STACK_SLOT_SPAN + 4096;
+            crate::println!(
+                "  {addr:#018x} is in THREAD stack slot {slot}'s guard page (thread.rs)."
+            );
+            crate::println!(
+                "  bottom {bottom:#018x}, so sp went {} bytes past it, on a {}-byte stack.",
+                bottom.saturating_sub(addr),
+                crate::thread::STACK_PAGES * 4096,
+            );
+        }
+    }
+    crate::println!("  The guard page is ONE page. A frame larger than that can step over it");
+    crate::println!("  into the slot below without faulting; see notes/stack.md.");
+}
+
 /// Shout if the canary is dead. Called from the panic handler and the fault handler,
 /// because a corrupted stack makes every *other* diagnostic a potential lie.
 pub fn warn_if_smashed() {
