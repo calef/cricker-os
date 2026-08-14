@@ -28,7 +28,10 @@ fn the_disabled_s7_does_not_narrow_the_machine() {
     assert_eq!(cpu.harts, 5, "five cpu@ nodes, honestly counted");
     assert_eq!(cpu.described, 4, "but only the four enabled harts speak");
     assert_eq!(cpu.base, Base::Rv64);
-    assert!(cpu.legacy_isa_string, "the JH7110 tree predates isa-extensions");
+    assert!(
+        cpu.legacy_isa_string,
+        "the JH7110 tree predates isa-extensions"
+    );
     assert!(
         cpu.common.contains(F.union(D)),
         "the U74s' FPU survives: the S7's rv64imac did not narrow the intersection"
@@ -77,7 +80,9 @@ fn the_jh7110_serial_node_states_the_dw8250_shape() {
 
     let shift = dt.node_prop(b"serial@10000000", b"reg-shift").unwrap();
     let width = dt.node_prop(b"serial@10000000", b"reg-io-width").unwrap();
-    let clock = dt.node_prop(b"serial@10000000", b"clock-frequency").unwrap();
+    let clock = dt
+        .node_prop(b"serial@10000000", b"clock-frequency")
+        .unwrap();
     let compat = dt.node_prop(b"serial@10000000", b"compatible").unwrap();
 
     assert_eq!(shift.map(be32), Some(2), "registers four bytes apart");
@@ -91,4 +96,3 @@ fn the_jh7110_serial_node_states_the_dw8250_shape() {
         "the DW compatible is what enables the busy quirk"
     );
 }
-

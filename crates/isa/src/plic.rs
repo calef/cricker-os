@@ -94,7 +94,8 @@ impl PlicContexts {
     pub fn from_device_tree(dt: &Dtb<'_>) -> Result<PlicContexts, Error> {
         let mut out = PlicContexts::default();
 
-        let Some(entries) = dt.node_prop_compatible(b"sifive,plic-1.0.0", b"interrupts-extended")?
+        let Some(entries) =
+            dt.node_prop_compatible(b"sifive,plic-1.0.0", b"interrupts-extended")?
         else {
             return Ok(out);
         };
