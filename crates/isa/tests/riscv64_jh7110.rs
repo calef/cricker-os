@@ -65,3 +65,30 @@ fn the_cpu_list_knows_the_s7_is_unusable() {
     assert_eq!(list.timebase_hz, Some(4_000_000));
 }
 
+/// **The DW-8250's shape, straight off the serial node.** These are exactly the reads
+/// `console::configure_from_dtb` performs (reg-shift, reg-io-width, clock-frequency, and the
+/// compatible that turns on the busy quirk), against the same node name the kernel pins
+/// (`serial@10000000`), so the UART facts in notes/visionfive2.md have a machine-readable witness
+/// and the kernel's hardcoded node name has one too.
+#[test]
+fn the_jh7110_serial_node_states_the_dw8250_shape() {
+    let dt = tree(JH7110);
+    let be32 = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+
+    let shift = dt.node_prop(b"serial@10000000", b"reg-shift").unwrap();
+    let width = dt.node_prop(b"serial@10000000", b"reg-io-width").unwrap();
+    let clock = dt.node_prop(b"serial@10000000", b"clock-frequency").unwrap();
+    let compat = dt.node_prop(b"serial@10000000", b"compatible").unwrap();
+
+    assert_eq!(shift.map(be32), Some(2), "registers four bytes apart");
+    assert_eq!(width.map(be32), Some(4), "32-bit accesses");
+    assert_eq!(clock.map(be32), Some(24_000_000), "divisor 13 for 115200");
+    assert!(
+        compat
+            .expect("the node names its binding")
+            .split(|&b| b == 0)
+            .any(|s| s == b"snps,dw-apb-uart"),
+        "the DW compatible is what enables the busy quirk"
+    );
+}
+

@@ -92,6 +92,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // still kills us silently.
     console::init();
 
+    // The console's register-block *shape* comes from the device tree, and it must be adopted
+    // before the first println: on the JH7110 the DW-8250's registers are four bytes apart, so a
+    // byte-strided LSR poll spins on garbage forever and the banner never appears
+    // (notes/visionfive2.md; console::configure_from_dtb). On QEMU the tree restates the defaults
+    // and this is a no-op in effect.
+    #[cfg(target_arch = "riscv64")]
+    console::configure_from_dtb(dtb);
+
     // The RISC-V boot is a self-contained tour, right here in this block, and it halts at the end
     // rather than falling through to the shared boot path below. From OpenSBI's S-mode handoff it
     // brings up its own arch (traps, the Sv39 MMU, the SBI timer) and then demonstrates the whole
