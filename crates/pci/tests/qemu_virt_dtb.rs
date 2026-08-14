@@ -51,7 +51,7 @@ const JH7110: &[u8] = include_bytes!("../../isa/tests/fixtures/jh7110.dtb");
 /// **The JH7110 describes no generic-ECAM bridge, and discovery must say so.** Its PCIe
 /// controller is a PLDA core (`starfive,jh7110-pcie`), a different device this kernel does not
 /// drive; the honest answer is None, no window mapped, every probe reporting nobody home. The
-/// alternative was the first-silicon panic: QEMU's BAR constant (0x4000_0000) is this board's
+/// alternative was the first-silicon panic: QEMU's BAR constant (`0x4000_0000`) is this board's
 /// DRAM base, and mapping it collided with the direct map (notes/visionfive2.md).
 #[test]
 fn the_jh7110_has_no_generic_ecam_bridge_and_discovery_says_none() {

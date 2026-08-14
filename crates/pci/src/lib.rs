@@ -317,12 +317,14 @@ pub fn intx_irq(base: u32, dev: u8, pin: u8) -> u32 {
 /// the node is not the shape this parser knows, and the answer is `None` rather than a guess.
 pub fn mem32_window(ranges: &[u8]) -> Option<(u64, u64)> {
     const ENTRY: usize = 7 * 4;
-    if ranges.is_empty() || ranges.len() % ENTRY != 0 {
+    if ranges.is_empty() || !ranges.len().is_multiple_of(ENTRY) {
         return None;
     }
-    for entry in ranges.chunks_exact(ENTRY) {
+    for entry in ranges.as_chunks::<ENTRY>().0 {
         let cell = |i: usize| -> u64 {
-            u64::from(u32::from_be_bytes(entry[i * 4..i * 4 + 4].try_into().unwrap()))
+            u64::from(u32::from_be_bytes(
+                entry[i * 4..i * 4 + 4].try_into().unwrap(),
+            ))
         };
         let hi = cell(0);
         let space = (hi >> 24) & 0b11;
@@ -885,7 +887,7 @@ mod tests {
 
     /// The QEMU riscv `virt` ranges verbatim (IO, 32-bit memory, 64-bit memory): the parser must
     /// step past the IO entry, take the mem32 one, and never reach the mem64 one. The fixture
-    /// test in tests/qemu_virt_dtb.rs holds the same claim against the real tree.
+    /// test in `tests/qemu_virt_dtb.rs` holds the same claim against the real tree.
     #[test]
     fn the_mem32_entry_is_found_among_its_neighbours() {
         let r = ranges(&[
@@ -900,15 +902,7 @@ mod tests {
     /// that answers `None` rather than a window the non-prefetchable BARs should not land in.
     #[test]
     fn a_prefetchable_window_is_not_taken() {
-        let r = ranges(&[[
-            0x4200_0000,
-            0,
-            0x4000_0000,
-            0,
-            0x4000_0000,
-            0,
-            0x4000_0000,
-        ]]);
+        let r = ranges(&[[0x4200_0000, 0, 0x4000_0000, 0, 0x4000_0000, 0, 0x4000_0000]]);
         assert_eq!(mem32_window(&r), None);
     }
 
@@ -916,15 +910,7 @@ mod tests {
     /// writes one number into both the BAR and its page tables, so it cannot honor one yet.
     #[test]
     fn a_translated_window_is_refused() {
-        let r = ranges(&[[
-            0x0200_0000,
-            0,
-            0x0000_0000,
-            0,
-            0x4000_0000,
-            0,
-            0x4000_0000,
-        ]]);
+        let r = ranges(&[[0x0200_0000, 0, 0x0000_0000, 0, 0x4000_0000, 0, 0x4000_0000]]);
         assert_eq!(mem32_window(&r), None);
     }
 

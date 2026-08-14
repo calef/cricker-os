@@ -451,7 +451,12 @@ where
     // so the mapper's overwrite refusal killed the boot right here (DECISIONS §43,
     // notes/visionfive2.md).
     if let Some(((ecam, ecam_size), (bar, bar_size))) = memory::pci_regions() {
-        direct_map(m, ecam, ecam + PCI_ECAM_MAPPED.min(ecam_size), Flags::device())?;
+        direct_map(
+            m,
+            ecam,
+            ecam + PCI_ECAM_MAPPED.min(ecam_size),
+            Flags::device(),
+        )?;
         direct_map(m, bar, bar + PCI_BAR_MAPPED.min(bar_size), Flags::device())?;
     }
 

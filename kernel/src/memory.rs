@@ -457,10 +457,11 @@ static GIC_REGIONS: IrqSafeMutex<GicRegions> = IrqSafeMutex::new(rank::RAM, (Non
 /// node) and until `init` has run.
 static PLIC_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
 
-/// The generic-ECAM PCIe host bridge's (ecam, mem32) windows. `None` until `init`, and on a
-/// machine whose device tree has no such node (the JH7110).
-static PCI_REGIONS: IrqSafeMutex<Option<((u64, u64), (u64, u64))>> =
-    IrqSafeMutex::new(rank::RAM, None);
+/// The generic-ECAM PCIe host bridge's windows: (ecam, mem32), each (base, size). Physical.
+type PciWindows = ((u64, u64), (u64, u64));
+
+/// `None` until `init`, and on a machine whose device tree has no such node (the JH7110).
+static PCI_REGIONS: IrqSafeMutex<Option<PciWindows>> = IrqSafeMutex::new(rank::RAM, None);
 
 /// The SMMUv3's register block, from the device tree (milestone 16b). `None` unless the machine was
 /// started with `-machine virt,iommu=smmuv3` (and always on riscv, whose IOMMU is a PCI function

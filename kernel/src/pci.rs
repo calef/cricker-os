@@ -406,7 +406,7 @@ mod tests {
     /// `PCI_BAR_BASE` hardcodes, which is the whole regression claim: same machine, same
     /// windows, different provenance. The JH7110's different answer (no generic-ECAM node at
     /// all, so `pci_regions()` is None and no window is mapped) is witnessed on the host, where
-    /// that tree exists (crates/pci/tests/qemu_virt_dtb.rs). Same shape as the PLIC-context
+    /// that tree exists (`crates/pci/tests/qemu_virt_dtb.rs`). Same shape as the PLIC-context
     /// test in arch/riscv64/irq.rs, for the same §43 reason.
     #[test_case]
     fn the_discovered_pci_windows_are_the_machines_own_and_match_the_old_constants() {
