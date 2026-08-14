@@ -101,11 +101,20 @@ fn current_root_pa() -> u64 {
 pub const KERNEL_VA_BASE: u64 = 0xffff_ffc0_0000_0000;
 
 /// The boot page table: a single Sv39 root that maps the low physical range (to survive turning
-/// paging on) and its high-half alias (where the kernel is linked). Four gigapage (1 GiB) leaves are
-/// enough to run and print: index 0 and 2 identity-map the UART region and the kernel/RAM region;
-/// 256 and 258 are the same two at `KERNEL_VA_BASE` (adding 256 to the top-level index). It is RWX
-/// everywhere, like aarch64's coarse boot map: it exists to survive ~twenty instructions until
-/// `mmu::init` builds the real W^X tables. See boot.s and notes/riscv-port.md.
+/// paging on) and its high-half alias (where the kernel is linked). Six gigapage (1 GiB) leaves are
+/// enough to run, print, and read the device tree: indices 0..=2 identity-map the UART region
+/// (gigapage 0), the VisionFive 2's first gigabyte of DRAM (gigapage 1), and the kernel/RAM region
+/// (gigapage 2); 256..=258 are the same three at `KERNEL_VA_BASE` (adding 256 to the top-level
+/// index). It is RWX everywhere, like aarch64's coarse boot map: it exists to survive ~twenty
+/// instructions until `mmu::init` builds the real W^X tables. See boot.s and notes/riscv-port.md.
+///
+/// Gigapage 1 (0x4000_0000..0x8000_0000) is there for the board, not for QEMU. The JH7110's DRAM
+/// starts at 0x4000_0000 and U-Boot's default `fdt_addr_r` is 0x4600_0000, so without this entry a
+/// DTB left at the default address faults on the first read, before the trap path can print
+/// (notes/visionfive2.md). On QEMU `virt` this range is the 32-bit PCI window, which nothing
+/// touches while the boot table is live, so mapping it is inert there. A DTB near the top of an
+/// 8 GB board's RAM (`$fdtcontroladdr`, above 4 GiB) is still out of reach; the bench runbook's
+/// `fdt move` remains the answer for that case, on the record in notes/visionfive2.md.
 ///
 /// `boot.s` reads its **physical** address (PC-relative) to load `satp`, so it must be a real static
 /// with a stable symbol. It is `.data` (initialized), loaded at its low physical address.
@@ -121,8 +130,10 @@ const fn boot_table() -> BootTable {
     }
     let mut t = [0u64; paging::ENTRIES];
     t[0] = giga(0x0000_0000); // identity: 0..1 GiB, covers the UART at 0x1000_0000
+    t[1] = giga(0x4000_0000); // identity: 1..2 GiB, the VF2's low DRAM and U-Boot's default DTB
     t[2] = giga(0x8000_0000); // identity: 2..3 GiB, covers the kernel/RAM at 0x8020_0000
     t[256] = t[0]; // high alias of index 0 (KERNEL_VA_BASE adds 256 to the top-level index)
+    t[257] = t[1]; // high alias of index 1
     t[258] = t[2]; // high alias of index 2
     BootTable(t)
 }
