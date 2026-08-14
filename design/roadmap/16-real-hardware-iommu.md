@@ -2,8 +2,11 @@
 
 **Status: PARTIAL.**
 
-**Gate: HARDWARE.** 16b is built. What remains is 16a, first silicon on a VisionFive 2-class board,
-which is ordered and arrives ~2026-08-21.
+**Gate: HARDWARE.** 16b is built. What remains is 16a, first silicon on a VisionFive 2, which
+arrived 2026-08-14. 16a is in progress: the bench-independent half is done (the RISC-V Image header
+on the kernel, `script/board-image` for the microSD payload, and notes/visionfive2.md with the board
+facts, runbook, and triage ladder); the interactive first-boot loop at the bench remains, and the
+note's BUGS section names the four code changes it is expected to need.
 
 **In brief.** **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it
 
