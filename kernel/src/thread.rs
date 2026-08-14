@@ -548,7 +548,32 @@ impl Thread {
     /// monomorphized [`call_closure::<F>`] that knows how to call it. The old shape boxed the
     /// closure twice (a `dyn` fat pointer does not fit one register); both allocations are gone,
     /// and the memory is freed by being the thread's stack.
-    pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Self> {
+    /// **Build a thread directly into `dst`, rather than returning one by value** (milestone 124).
+    ///
+    /// A `Thread` is a large value: `CSpace<Object, 16>` alone is 384 bytes, and a debug build
+    /// copies rather than elides at every move. Returning one travelled through
+    /// `Thread::spawn`'s frame, `spawn_on`'s local, a closure capture, that closure's return, and
+    /// finally `ptr.write`, and each hop was a real memcpy through a stack temporary. The
+    /// instantiations of `sched::spawn_on` measured 3888 to 4592 bytes, **over the 4096-byte guard
+    /// page on both ISAs**, which is the size at which a frame can step past the guard in one move
+    /// and corrupt the neighbouring stack without ever faulting (notes/stack.md).
+    ///
+    /// Writing through a pointer the caller already has removes the hops. The destination is the
+    /// TCB page `Threads::insert_at` claimed, which is where the thread was always going to live.
+    ///
+    /// Returns `false` and writes nothing if the kernel stack could not be allocated, which is the
+    /// same failure `spawn` reported as `None`.
+    ///
+    /// # Safety
+    ///
+    /// `dst` must be writable, aligned for `Thread`, and hold no live `Thread`: this *writes*
+    /// rather than assigns, so nothing is dropped. `Threads::insert_at` satisfies all three with a
+    /// fresh page it exclusively owns.
+    pub unsafe fn spawn_into<F: FnOnce() + Send + 'static>(
+        f: F,
+        id: Tid,
+        dst: *mut Thread,
+    ) -> bool {
         // Bounds at compile time, per monomorphization: a capture that does not comfortably fit
         // the stack is refused at build, not at runtime. 1 KiB is generous (captures here are a
         // few words) while leaving the 16 KiB stack its headroom.
@@ -565,7 +590,11 @@ impl Thread {
             );
         };
 
-        let stack = KernelStack::new()?;
+        // `false` rather than `?`: this returns a bool now, and the failure is the one `spawn`
+        // used to report as `None`. Nothing has been written to `dst` at this point.
+        let Some(stack) = KernelStack::new() else {
+            return false;
+        };
 
         // The closure's slot: at the very top of the stack, aligned down to 16 so the switch
         // frame below it keeps `sp` 16-aligned (notes/stack.md). Bytes above the initial `sp`
@@ -590,28 +619,47 @@ impl Thread {
             context.write(Context::for_kernel_thread(closure_at, call_shim));
         }
 
-        Some(Thread {
-            id: UNNAMED, // named at insert, like every thread
-            state: State::Ready,
-            context,
-            stack: Some(stack),
-            space: None, // a kernel thread until it calls `user::exec`
-            cspace: crate::cap::CSpace::new(), // and it can name nothing until it is handed something
-            mailbox: [0; 5],
-            quota: None,
-            outgoing_cap: None,
-            next: None,
-            on_cpu: false,
-            wake_pending: false,
-            ipc_aborted: false,
-            entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
-            start_args: [0; 3],
-            tcb_kmem: true,
-            killed: false,
-            fault_ep: None,
-            tcb_region: None,
-            fault_msg: None,
-        })
+        // SAFETY: the caller's contract: `dst` is writable, aligned, and holds no live Thread.
+        unsafe {
+            dst.write(Thread {
+                id,
+                state: State::Ready,
+                context,
+                stack: Some(stack),
+                space: None, // a kernel thread until it calls `user::exec`
+                cspace: crate::cap::CSpace::new(), // and it can name nothing until it is handed something
+                mailbox: [0; 5],
+                quota: None,
+                outgoing_cap: None,
+                next: None,
+                on_cpu: false,
+                wake_pending: false,
+                ipc_aborted: false,
+                entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
+                start_args: [0; 3],
+                tcb_kmem: true,
+                killed: false,
+                fault_ep: None,
+                tcb_region: None,
+                fault_msg: None,
+            });
+        }
+        true
+    }
+
+    /// The by-value form, for the callers that have nowhere to write into yet.
+    ///
+    /// `sched::init`'s idle thread and `spawn_blocked` still take this path; they hold no TCB page
+    /// at the point they build. It costs the copies `spawn_into` exists to avoid, which is why
+    /// `spawn_on` does not use it (milestone 124).
+    pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Self> {
+        let mut slot: core::mem::MaybeUninit<Thread> = core::mem::MaybeUninit::uninit();
+        // SAFETY: `slot` is writable, aligned and holds no live Thread.
+        if !unsafe { Self::spawn_into(f, UNNAMED, slot.as_mut_ptr()) } {
+            return None;
+        }
+        // SAFETY: `spawn_into` returned true, so it initialised every field.
+        Some(unsafe { slot.assume_init() })
     }
 
     /// **A TCB object, retyped but not started** (milestone 19c.3). No stack, no saved context,
