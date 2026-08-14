@@ -155,6 +155,22 @@ print("verify-scope: " + ("needed" if needed else "not-needed"))
 PY
 fi
 
+# --shard k/n: prove a balanced slice of the crates, for CI to run n of these concurrently.
+#
+# Parsed here rather than passed through to `cargo kani`, which has no such flag. Deliberately after
+# --affected-since above: a shard of a change that cannot reach a proof is still nothing to prove,
+# and the two must compose or CI would ask every shard to decide the scope question separately and
+# could get n different answers on a racing tree.
+shard=""
+if [ "$1" = "--shard" ]; then
+	shard="$2"
+	if [ -z "$shard" ]; then
+		echo "usage: script/verify --shard <k>/<n>   (for example --shard 1/2)" >&2
+		exit 2
+	fi
+	shift 2
+fi
+
 if ! cargo kani --version >/dev/null 2>&1; then
 	echo "==> installing Kani (first run only)"
 	cargo install --locked kani-verifier
@@ -179,61 +195,107 @@ fi
 # one harness serially: `cargo kani -p <crate> --harness <name>`.
 set -- -j "${VERIFY_JOBS:-4}" --output-format=terse
 
-# The crates carrying proof harnesses. Grow this list as verification spreads inward from the
-# capability core toward IPC and the MMU invariants.
-echo "==> kani: capability (the capability model)"
-cargo kani -p capability "$@"
+# The crates carrying proof harnesses, with what each one COSTS. Grow this list as verification
+# spreads inward from the capability core toward IPC and the MMU invariants.
+#
+# The seconds are a measurement, not an estimate: taken 2026-08-14 from a real CI run of this job
+# (VERIFY_JOBS=2 on ubuntu-24.04-arm), and they exist so `--shard` can balance by time rather than by
+# crate count. Milestone 119 asked for that explicitly, because the distribution is extreme: **two
+# crates are 83% of the job**, and a four-way split by crate count would put three shards on coffee
+# breaks while one did everything.
+#
+#     glob           15.0 min   49.7%
+#     calendar       10.0 min   33.0%
+#     dma_validator   2.9 min    9.6%
+#     gpt             1.1 min    3.5%
+#     the other 15    1.4 min    4.2%
+#
+# **They drift, and a stale number costs balance rather than correctness**: a shard that is slower
+# than its sibling still proves exactly the same harnesses, so this table can never make the proofs
+# wrong. Re-measure by reading the `==> kani:` timestamps out of a CI log, which is what produced
+# these, rather than by running the suite locally for half an hour.
+CRATES="$(cat <<'TABLE'
+capability	8	the capability model
+paging	9	the address arithmetic, and the IOMMU domain's page set
+regions	1	the untyped-region accounting, no double-free
+elf	1	the loader's front half, panic-free on hostile input
+frames	4	the physical frame allocator
+dtb	3	the device-tree parser's leaf readers
+ipc	4	the rendezvous state machine
+slots	4	the generational thread table
+intrusive	9	the scheduler's queue structure
+asid	4	the TLB tag allocator
+crickerfs	2	the initrd parser the kernel runs on boot input
+pci	6	config-space decode on hostile-device input
+dma_validator	175	the DMA-confinement validator, no descriptor escapes the grant
+ntp_proto	17	the 1900-epoch era pivot, and no hostile packet moves the clock
+gpt	64	the partition table's CRC-32, its round trips, and partitions that overlap
+calendar	600	the civil-date arithmetic, and the parser on hostile text
+glob	902	matching is total, and a hostile pattern cannot be made to blow up
+fs_proto	1	a directory capability's child never exceeds its parent, at any depth
+cred_proto	4	no request word reads outside the page; nothing but MATCH authenticates
+TABLE
+)"
 
-echo "==> kani: paging (the address arithmetic, and the IOMMU domain's page set)"
-cargo kani -p paging "$@"
+# --shard k/n: prove this shard's crates only.
+#
+# **The floor is one harness, and it is measured.** Packing these by time, two shards reach 15.1
+# minutes and three or four reach 15.0, because `glob` is atomic at 15.0 and cannot be split at crate
+# granularity. Below that needs per-harness sharding, whose own floor is
+# `glob::the_dot_rule_only_touches_names_that_start_with_a_dot` at **10.8 minutes on its own**. The
+# ladder is 30.3 serial, 15.1 at two shards, 10.8 at unbounded per-harness sharding, and nothing
+# below that without making that one harness cheaper, which is an unwind bound in `glob` rather than
+# a CI question.
+#
+# Two shards is where this stops: 2.0x of the available 2.8x for a fraction of the machinery, and a
+# third or fourth runner buys **nothing at all**. See notes/verification.md.
+if [ -n "$shard" ]; then
+    crates="$(printf '%s\n' "$CRATES" | SHARD="$shard" python3 -c '
+import os, sys
+spec = os.environ["SHARD"]
+try:
+    k, n = (int(x) for x in spec.split("/", 1))
+except ValueError:
+    sys.exit("script/verify: --shard wants k/n (for example 1/2), got %r" % spec)
+rows = []
+for line in sys.stdin:
+    if line.strip():
+        name, secs, _desc = line.rstrip("\n").split("\t", 2)
+        rows.append((int(secs), name))
+if not 1 <= k <= n:
+    sys.exit("script/verify: shard %d/%d is out of range" % (k, n))
+if n > len(rows):
+    sys.exit("script/verify: %d shards for %d crates leaves empty ones" % (n, len(rows)))
+# Greedy longest-processing-time, the standard makespan heuristic. Sorting first is the whole trick:
+# a round-robin over the table order puts glob and calendar in the same bin and doubles the shard.
+rows.sort(reverse=True)
+bins = [[] for _ in range(n)]
+load = [0] * n
+for secs, name in rows:
+    i = load.index(min(load))
+    bins[i].append(name)
+    load[i] += secs
 
-echo "==> kani: regions (the untyped-region accounting, no double-free)"
-cargo kani -p regions "$@"
+# **The shards must partition the table exactly**, and this asserts it on every invocation rather
+# than in a gate somebody has to run. A crate dropped from every shard is not proved at all, and
+# that failure is INVISIBLE: the suite goes green faster and nothing says a harness stopped
+# running. A crate in two shards only wastes a runner. So the dangerous direction is checked here,
+# where it cannot drift away from the code that does the packing.
+placed = [name for b in bins for name in b]
+if sorted(placed) != sorted(name for _, name in rows) or len(placed) != len(set(placed)):
+    sys.exit("script/verify: sharding did not partition the crate table; refusing to prove a "
+             "subset and report it as the suite")
 
-echo "==> kani: elf (the loader's front half, panic-free on hostile input)"
-cargo kani -p elf "$@"
+sys.stderr.write("shard %d/%d: %d crates, ~%.1f min of a %.1f-minute serial total\n"
+                 % (k, n, len(bins[k - 1]), load[k - 1] / 60, sum(load) / 60))
+print(" ".join(bins[k - 1]))
+')"
+else
+    crates="$(printf '%s\n' "$CRATES" | cut -f1 | tr '\n' ' ')"
+fi
 
-echo "==> kani: frames (the physical frame allocator)"
-cargo kani -p frames "$@"
-
-echo "==> kani: dtb (the device-tree parser's leaf readers)"
-cargo kani -p dtb "$@"
-
-echo "==> kani: ipc (the rendezvous state machine)"
-cargo kani -p ipc "$@"
-
-echo "==> kani: slots (the generational thread table)"
-cargo kani -p slots "$@"
-
-echo "==> kani: intrusive (the scheduler's queue structure)"
-cargo kani -p intrusive "$@"
-
-echo "==> kani: asid (the TLB tag allocator)"
-cargo kani -p asid "$@"
-
-echo "==> kani: crickerfs (the initrd parser the kernel runs on boot input)"
-cargo kani -p crickerfs "$@"
-
-echo "==> kani: pci (config-space decode on hostile-device input)"
-cargo kani -p pci "$@"
-
-echo "==> kani: dma_validator (the DMA-confinement validator, no descriptor escapes the grant)"
-cargo kani -p dma_validator "$@"
-
-echo "==> kani: ntp_proto (the 1900-epoch era pivot, and no hostile packet moves the clock)"
-cargo kani -p ntp_proto "$@"
-
-echo "==> kani: gpt (the partition table's CRC-32, its round trips, and partitions that overlap)"
-cargo kani -p gpt "$@"
-
-echo "==> kani: calendar (the civil-date arithmetic, and the parser on hostile text)"
-cargo kani -p calendar "$@"
-
-echo "==> kani: glob (matching is total, and a hostile pattern cannot be made to blow up)"
-cargo kani -p glob "$@"
-
-echo "==> kani: fs_proto (a directory capability's child never exceeds its parent, at any depth)"
-cargo kani -p fs_proto "$@"
-
-echo "==> kani: cred_proto (no request word reads outside the page; nothing but MATCH authenticates)"
-cargo kani -p cred_proto "$@"
+for c in $crates; do
+    desc="$(printf '%s\n' "$CRATES" | awk -F'\t' -v c="$c" '$1 == c { print $3 }')"
+    echo "==> kani: $c ($desc)"
+    cargo kani -p "$c" "$@"
+done

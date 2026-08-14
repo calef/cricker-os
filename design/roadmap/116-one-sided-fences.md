@@ -1,10 +1,7 @@
 # 116. The fences with no partner
 
-**Status: NOT-STARTED.** Minted 2026-08-04 by the integrator, from milestone 43's audit proposal C,
+**Status: BUILT** 2026-08-14 (PR #131). Minted 2026-08-04 by the integrator, from milestone 43's audit proposal C,
 after the same mistake was found twice the same day by two methods that share nothing.
-
-**Gate: NONE.** The population is findable by grep and the judgement is per site; nothing blocks a
-start.
 
 **A release fence orders what came before it against a matching acquire on the reader.** With no
 acquire on the other side, it orders nothing that matters and the code reads as though it does. That
