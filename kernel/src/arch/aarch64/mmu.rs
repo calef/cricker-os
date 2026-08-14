@@ -266,20 +266,16 @@ where
     )?;
 
     // 8. The PCIe windows (the PCIe transport, DECISIONS §18): bus 0's ECAM config space and the
-    // slice of the 32-bit PCI memory window the kernel assigns BARs from. Device memory both; an
-    // absent device reads all-ones in ECAM, so mapping these is harmless without a PCI device.
-    direct_map(
-        m,
-        PCI_ECAM_BASE,
-        PCI_ECAM_BASE + PCI_ECAM_MAPPED,
-        Flags::device(),
-    )?;
-    direct_map(
-        m,
-        PCI_BAR_BASE,
-        PCI_BAR_BASE + PCI_BAR_MAPPED,
-        Flags::device(),
-    )?;
+    // slice of the 32-bit PCI memory window the kernel assigns BARs from, both straight from the
+    // device tree (memory::init read the `pci-host-ecam-generic` node; no node, no mapping).
+    // Device memory both; an absent *device* reads all-ones in ECAM, so mapping the windows is
+    // harmless without a PCI device. The gate is the riscv fix carried across for parity (§19):
+    // QEMU's constants collided with the JH7110's DRAM base on the first VisionFive 2 boot, and
+    // an aarch64 board without a generic-ECAM bridge would have died the same way here.
+    if let Some(((ecam, ecam_size), (bar, bar_size))) = memory::pci_regions() {
+        direct_map(m, ecam, ecam + PCI_ECAM_MAPPED.min(ecam_size), Flags::device())?;
+        direct_map(m, bar, bar + PCI_BAR_MAPPED.min(bar_size), Flags::device())?;
+    }
 
     // 9. The SMMUv3's registers (milestone 16b), only when the device tree says the machine has
     // one. Gating on the node keeps a plain `virt` boot from mapping (and later touching) MMIO
@@ -308,20 +304,21 @@ pub const VIRTIO_IRQ_BASE: u32 = 48;
 pub const VIRTIO_SLOT_STRIDE: u64 = 0x200;
 pub const VIRTIO_SLOTS: u64 = 32;
 
-/// The PCIe ECAM window on QEMU's aarch64 `virt`: the **highmem** ECAM at `0x40_1000_0000` (the
-/// machine's `pcie@10000000` node names the low MMIO base; its `reg` is the high window, 4 KB
-/// per function, 1 MB per bus). As on riscv we map (and enumerate) bus 0 only; QEMU `virt` is a
-/// flat root complex, and widening is one constant. The pci crate's fixture test holds this base
-/// against the machine's own `reg`, the hardcode-with-a-witness pattern.
-pub const PCI_ECAM_BASE: u64 = 0x40_1000_0000;
+/// How much of the PCIe ECAM window the kernel maps: bus 0 only (4 KB per function, 1 MB per
+/// bus). The window itself comes from the device tree (`memory::pci_regions`), which on QEMU's
+/// aarch64 `virt` is the **highmem** ECAM at `0x40_1000_0000`: the node is `pcie@10000000` (the
+/// low MMIO base) but its `reg` is the high window, and trusting a name over the `reg` is the
+/// mistake the fixture witness exists to catch. As on riscv we map (and enumerate) bus 0 only;
+/// QEMU `virt` is a flat root complex, and widening is one constant. The base was `PCI_ECAM_BASE`
+/// here until the first VisionFive 2 boot showed what a QEMU constant costs (DECISIONS §43).
 pub const PCI_ECAM_BUSES: u16 = 1;
 pub const PCI_ECAM_MAPPED: u64 = PCI_ECAM_BUSES as u64 * 0x10_0000;
 
-/// Where BARs get placed: the 32-bit PCI memory window starts at `0x1000_0000` (per the machine's
-/// `ranges`). Nobody has programmed a BAR before us (we boot without EDK2, so there is no PCI
-/// firmware), and the kernel places them itself, exactly as on riscv. A 2 MB mapped slice bounds
-/// the page-table spend.
-pub const PCI_BAR_BASE: u64 = 0x1000_0000;
+/// How much of the 32-bit PCI memory window the kernel maps and assigns BARs from; the window
+/// itself (base `0x1000_0000` on QEMU `virt`) comes from the machine's `ranges` via
+/// `memory::pci_regions`. Nobody has programmed a BAR before us (we boot without EDK2, so there
+/// is no PCI firmware), and the kernel places them itself, exactly as on riscv. A 2 MB mapped
+/// slice bounds the page-table spend.
 pub const PCI_BAR_MAPPED: u64 = 0x20_0000;
 
 /// PCI INTx line A routes to GIC SPI 3 (INTID 32 + 3 = 35); B, C, D follow, by the standard

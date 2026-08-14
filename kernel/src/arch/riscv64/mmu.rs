@@ -157,22 +157,23 @@ pub const VIRTIO_IRQ_BASE: u32 = 1;
 pub const VIRTIO_SLOT_STRIDE: u64 = 0x1000;
 pub const VIRTIO_SLOTS: u64 = 8;
 
-/// The PCIe ECAM window on QEMU's riscv `virt` (the `pci@30000000` node): configuration space,
-/// 4 KB per function, 1 MB per bus. We map (and therefore enumerate) **bus 0 only**: QEMU `virt`
-/// is a flat root complex with every device on bus 0, and a 4 KB-page kernel map of all 256
-/// buses would cost 64K PTEs for space that reads all-ones. Widening is one constant if a bridge
-/// topology ever appears. The dtb fixture test cross-checks this base against the machine's own
-/// `reg`, the same hardcode-with-a-witness pattern as the UART.
-pub const PCI_ECAM_BASE: u64 = 0x3000_0000;
+/// How much of the PCIe ECAM window the kernel maps: **bus 0 only** (4 KB per function, 1 MB per
+/// bus). The window's *base and size* come from the device tree (`memory::pci_regions`, the
+/// `pci-host-ecam-generic` node's `reg`); this cap is kernel policy, because QEMU `virt` is a
+/// flat root complex with every device on bus 0, and a 4 KB-page map of all 256 buses would cost
+/// 64K PTEs for space that reads all-ones. Widening is one constant if a bridge topology ever
+/// appears. This base *was* a QEMU constant here (`PCI_ECAM_BASE = 0x3000_0000`), which is the
+/// DECISIONS §43 class the first VisionFive 2 boot paid for; the kernel test in pci.rs holds the
+/// discovered value to the old one on QEMU.
 pub const PCI_ECAM_BUSES: u16 = 1;
 pub const PCI_ECAM_MAPPED: u64 = PCI_ECAM_BUSES as u64 * 0x10_0000;
 
-/// Where BARs get placed. QEMU `virt` reserves `0x4000_0000..0x8000_0000` as the 32-bit PCI memory
-/// window, but with `-bios default` nobody has programmed a BAR before us (OpenSBI does no PCI),
-/// so the kernel assigns them itself, bumping from this base. We map only a 2 MB slice: a virtio
-/// function's register BAR is 16 KB, so this bounds the kernel's page-table spend while leaving
-/// room for dozens of devices.
-pub const PCI_BAR_BASE: u64 = 0x4000_0000;
+/// How much of the 32-bit PCI memory window the kernel maps and assigns BARs from. The window
+/// itself comes from the device tree (`memory::pci_regions`, the bridge's `ranges`); with
+/// `-bios default` nobody has programmed a BAR before us (OpenSBI does no PCI), so the kernel
+/// places them itself, bumping from the discovered base (kernel/src/pci.rs). A 2 MB slice: a
+/// virtio function's register BAR is 16 KB, so this bounds the kernel's page-table spend while
+/// leaving room for dozens of devices.
 pub const PCI_BAR_MAPPED: u64 = 0x20_0000;
 
 /// The PLIC input for INTx line A on the `virt` board's root complex; B, C, D follow. A device's
@@ -441,20 +442,18 @@ where
     )?;
 
     // 9. The PCIe windows (the PCIe transport): bus 0's ECAM config space, and the slice of the
-    // 32-bit PCI memory window the kernel assigns BARs from. Device memory both. An absent device
-    // reads all-ones in ECAM ("nobody home"), so mapping these is harmless without a PCI device.
-    direct_map(
-        m,
-        PCI_ECAM_BASE,
-        PCI_ECAM_BASE + PCI_ECAM_MAPPED,
-        Flags::device(),
-    )?;
-    direct_map(
-        m,
-        PCI_BAR_BASE,
-        PCI_BAR_BASE + PCI_BAR_MAPPED,
-        Flags::device(),
-    )?;
+    // 32-bit PCI memory window the kernel assigns BARs from, both straight from the device tree
+    // (memory::init read the `pci-host-ecam-generic` node; no node, no mapping). Device memory
+    // both. An absent *device* reads all-ones in ECAM ("nobody home"), so mapping the windows is
+    // harmless without a PCI device; mapping them unconditionally from QEMU's constants was not,
+    // and it is what stopped the first VisionFive 2 boot: the JH7110 states no such node, and
+    // QEMU's BAR window (0x4000_0000) is that board's DRAM base, already direct-mapped by step 1,
+    // so the mapper's overwrite refusal killed the boot right here (DECISIONS §43,
+    // notes/visionfive2.md).
+    if let Some(((ecam, ecam_size), (bar, bar_size))) = memory::pci_regions() {
+        direct_map(m, ecam, ecam + PCI_ECAM_MAPPED.min(ecam_size), Flags::device())?;
+        direct_map(m, bar, bar + PCI_BAR_MAPPED.min(bar_size), Flags::device())?;
+    }
 
     Ok(())
 }

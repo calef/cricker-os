@@ -123,6 +123,26 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
+    // The PCIe host bridge, matched on the generic-ECAM binding both QEMU `virt` boards state.
+    // `reg` is the ECAM config window; `ranges` carries the standard 7-cell PCI entries, of
+    // which the 32-bit non-prefetchable memory entry is the window the kernel assigns BARs from
+    // (`pci::mem32_window` owns that parse). The JH7110 has no such node (its PLDA controller
+    // is `starfive,jh7110-pcie`, a different device with no driver here yet), so there this
+    // stays None and no PCIe window is ever mapped or probed. It has to come from the tree: the
+    // old QEMU constants put the BAR window at 0x4000_0000, which on the JH7110 is DRAM base,
+    // already direct-mapped, and the first VisionFive 2 boot died on the mapper's overwrite
+    // refusal (DECISIONS §43, notes/visionfive2.md).
+    {
+        let mut ecam = [Region { start: 0, size: 0 }; 1];
+        if let Ok(n) = dtb.node_reg_compatible(b"pci-host-ecam-generic", &mut ecam)
+            && n >= 1
+            && let Ok(Some(ranges)) = dtb.node_prop_compatible(b"pci-host-ecam-generic", b"ranges")
+            && let Some(mem32) = ::pci::mem32_window(ranges)
+        {
+            *PCI_REGIONS.lock() = Some(((ecam[0].start, ecam[0].size), mem32));
+        }
+    }
+
     // The whole span we have to be able to describe. Note this is the *span*, not the
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
@@ -336,6 +356,17 @@ pub fn plic_region() -> Option<(u64, u64)> {
     *PLIC_REGION.lock()
 }
 
+/// The PCIe host bridge's windows, from the device tree: `(ecam, mem32)`, each `(start, size)`,
+/// all **physical**. ECAM is the config window the bridge's `reg` names; `mem32` is the 32-bit
+/// non-prefetchable memory window BARs are placed in. `None` before `init`, and on a machine
+/// whose tree describes no `pci-host-ecam-generic` bridge, which is the JH7110's honest state:
+/// its own PCIe controller is a different device, undriven until its own milestone. Absence
+/// degrades the way an absent virtio device does: `mmu::map_everything` maps no window and every
+/// probe in kernel/src/pci.rs reports nobody home without touching MMIO.
+pub fn pci_regions() -> Option<((u64, u64), (u64, u64))> {
+    *PCI_REGIONS.lock()
+}
+
 /// The SMMUv3's register block (start, size), both **physical**, from the device tree. `None`
 /// when the machine has no SMMU (riscv, or aarch64 without `iommu=smmuv3`). Presence here is what
 /// gates the whole aarch64 IOMMU path: no node, no register reads, no faults on a machine that
@@ -425,6 +456,11 @@ static GIC_REGIONS: IrqSafeMutex<GicRegions> = IrqSafeMutex::new(rank::RAM, (Non
 /// The PLIC's single register block, from the device tree (milestone 20). `None` on aarch64 (no such
 /// node) and until `init` has run.
 static PLIC_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
+
+/// The generic-ECAM PCIe host bridge's (ecam, mem32) windows. `None` until `init`, and on a
+/// machine whose device tree has no such node (the JH7110).
+static PCI_REGIONS: IrqSafeMutex<Option<((u64, u64), (u64, u64))>> =
+    IrqSafeMutex::new(rank::RAM, None);
 
 /// The SMMUv3's register block, from the device tree (milestone 16b). `None` unless the machine was
 /// started with `-machine virt,iommu=smmuv3` (and always on riscv, whose IOMMU is a PCI function

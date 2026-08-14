@@ -1,30 +1,73 @@
-//! Hold the kernel's PCI hardcodes against the machine's own device tree.
+//! Hold the kernel's PCI reads and hardcodes against the machine's own device tree.
 //!
-//! The kernel constants under witness live in kernel/src/arch/riscv64/mmu.rs (`PCI_ECAM_BASE`,
-//! `PCI_IRQ_BASE`) and the swizzle in this crate (`intx_irq`); a bare-metal crate cannot be a
-//! dev-dependency, so the values are asserted as literals here, the same
-//! hardcode-with-a-witness pattern as the UART test in the dtb crate. If QEMU ever moves the
-//! ECAM window or routes INTx differently, these fail on the host before the kernel misroutes
-//! anything on the machine.
+//! The kernel's PCIe windows come from the tree at boot (`memory::init` reads the
+//! `pci-host-ecam-generic` node's `reg` and `ranges`; the parse is this crate's
+//! `mem32_window`); the tests here run the same reads over the fixture trees and pin the
+//! answers, so a QEMU layout change fails on the host before the kernel maps the wrong window
+//! on the machine. What is still a hardcode under witness: `PCI_IRQ_BASE` in each
+//! kernel/src/arch/*/mmu.rs and the swizzle in this crate (`intx_irq`); a bare-metal crate
+//! cannot be a dev-dependency, so those values are asserted as literals, the same
+//! hardcode-with-a-witness pattern as the UART test in the dtb crate.
 
 use dtb::{Dtb, Region};
-use pci::intx_irq;
+use pci::{intx_irq, mem32_window};
 
 const QEMU_RISCV_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv64-virt.dtb");
 
-/// The ECAM window the kernel maps (`PCI_ECAM_BASE`) is where the machine says its
-/// `pci-host-ecam-generic` bridge lives.
+/// The discovery `memory::init` performs, over the riscv `virt` tree: the node found by its
+/// binding, the ECAM window from its `reg`, the BAR window from its `ranges`. The pinned values
+/// are the constants the kernel carried until the first VisionFive 2 boot (`PCI_ECAM_BASE`,
+/// `PCI_BAR_BASE`), which is the regression claim: on QEMU, discovery changes provenance and
+/// nothing else. The kernel-side twin (same claim against the live tree, on the machine) is the
+/// test in kernel/src/pci.rs.
 #[test]
-fn the_ecam_window_matches_the_machine() {
+fn discovery_finds_the_riscv_windows_the_constants_named() {
     let dtb = Dtb::from_bytes(QEMU_RISCV_VIRT).unwrap();
     let mut regs = [Region { start: 0, size: 0 }; 2];
-    assert_eq!(dtb.node_reg(b"pci@", &mut regs).unwrap(), 1);
+    assert_eq!(
+        dtb.node_reg_compatible(b"pci-host-ecam-generic", &mut regs)
+            .unwrap(),
+        1
+    );
     assert_eq!(
         regs[0],
         Region {
-            start: 0x3000_0000, // PCI_ECAM_BASE in arch/riscv64/mmu.rs
+            start: 0x3000_0000, // was PCI_ECAM_BASE in arch/riscv64/mmu.rs
             size: 0x1000_0000,  // 256 buses x 1 MB; the kernel maps bus 0's megabyte
         }
+    );
+    let ranges = dtb
+        .node_prop_compatible(b"pci-host-ecam-generic", b"ranges")
+        .unwrap()
+        .expect("the bridge states its ranges");
+    assert_eq!(
+        mem32_window(ranges),
+        Some((0x4000_0000, 0x4000_0000)), // base was PCI_BAR_BASE in arch/riscv64/mmu.rs
+    );
+}
+
+const JH7110: &[u8] = include_bytes!("../../isa/tests/fixtures/jh7110.dtb");
+
+/// **The JH7110 describes no generic-ECAM bridge, and discovery must say so.** Its PCIe
+/// controller is a PLDA core (`starfive,jh7110-pcie`), a different device this kernel does not
+/// drive; the honest answer is None, no window mapped, every probe reporting nobody home. The
+/// alternative was the first-silicon panic: QEMU's BAR constant (0x4000_0000) is this board's
+/// DRAM base, and mapping it collided with the direct map (notes/visionfive2.md).
+#[test]
+fn the_jh7110_has_no_generic_ecam_bridge_and_discovery_says_none() {
+    let dtb = Dtb::from_bytes(JH7110).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(
+        dtb.node_reg_compatible(b"pci-host-ecam-generic", &mut regs)
+            .unwrap(),
+        0,
+        "no node claims the generic-ECAM binding"
+    );
+    assert_eq!(
+        dtb.node_prop_compatible(b"pci-host-ecam-generic", b"ranges")
+            .unwrap(),
+        None,
+        "and no ranges either: both reads memory::init performs come back empty"
     );
 }
 
@@ -65,20 +108,33 @@ fn the_intx_swizzle_matches_the_interrupt_map() {
 
 const QEMU_AARCH64_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-aarch64-virt.dtb");
 
-/// The aarch64 ECAM window the kernel maps is the machine's **highmem** ECAM: the node is named
-/// `pcie@10000000` (the low MMIO base) but its `reg` is `0x40_1000_0000`, and trusting the name
-/// instead of the `reg` is exactly the mistake this witness exists to catch.
+/// The aarch64 discovery, same claim as the riscv one, with the machine's own twist: the ECAM is
+/// the **highmem** window. The node is named `pcie@10000000` (the low MMIO base) but its `reg`
+/// is `0x40_1000_0000`, and trusting the name instead of the `reg` is exactly the mistake this
+/// witness exists to catch.
 #[test]
-fn the_aarch64_ecam_window_matches_the_machine() {
+fn discovery_finds_the_aarch64_windows_the_constants_named() {
     let dtb = Dtb::from_bytes(QEMU_AARCH64_VIRT).unwrap();
     let mut regs = [Region { start: 0, size: 0 }; 2];
-    assert_eq!(dtb.node_reg(b"pcie@", &mut regs).unwrap(), 1);
+    assert_eq!(
+        dtb.node_reg_compatible(b"pci-host-ecam-generic", &mut regs)
+            .unwrap(),
+        1
+    );
     assert_eq!(
         regs[0],
         Region {
-            start: 0x40_1000_0000, // PCI_ECAM_BASE in arch/aarch64/mmu.rs
+            start: 0x40_1000_0000, // was PCI_ECAM_BASE in arch/aarch64/mmu.rs
             size: 0x1000_0000,
         }
+    );
+    let ranges = dtb
+        .node_prop_compatible(b"pci-host-ecam-generic", b"ranges")
+        .unwrap()
+        .expect("the bridge states its ranges");
+    assert_eq!(
+        mem32_window(ranges),
+        Some((0x1000_0000, 0x2eff_0000)), // base was PCI_BAR_BASE in arch/aarch64/mmu.rs
     );
 }
 

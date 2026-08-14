@@ -7,8 +7,10 @@
 //! only the volatile accessors into the mapped ECAM window and the policy: which device to pick,
 //! where BARs go, which command bits to set. See notes/pcie.md and notes/pcie-transport-scope.md.
 //!
-//! Portable: everything here except the `arch::mmu` window/irq constants is architecture-
-//! neutral, and both `virt` boards expose the same `pci-host-ecam-generic` bridge. On riscv the
+//! Portable: everything here except the `arch::mmu` policy/irq constants is architecture-
+//! neutral, and both `virt` boards expose the same `pci-host-ecam-generic` bridge, whose
+//! windows come from the device tree (`memory::pci_regions`). A machine whose tree has no such
+//! node (the JH7110) answers every probe here with "nobody home", no MMIO touched. On riscv the
 //! INTx lines route to the PLIC (32..35), on aarch64 to GIC SPIs (INTIDs 35..38); each arch's
 //! constants say so, and host-run witnesses hold them against the machine's own device tree.
 
@@ -16,18 +18,46 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use pci::{Bar, Bdf, VirtioCap};
 
-use crate::arch::mmu::{
-    self, PCI_BAR_BASE, PCI_BAR_MAPPED, PCI_ECAM_BASE, PCI_ECAM_BUSES, PCI_IRQ_BASE,
-};
+use crate::arch::mmu::{self, PCI_BAR_MAPPED, PCI_ECAM_BUSES, PCI_IRQ_BASE};
 
-/// The shared bump cursor for kernel-assigned BARs. With `-bios default` the kernel is the PCI
-/// firmware (OpenSBI does no PCI setup), so every BAR arrives zero and the kernel places it. More
-/// than one function now needs placing: the virtio disk, and on riscv the IOMMU (itself a PCI
-/// function, milestone 16b). Two independent bump allocators starting from `PCI_BAR_BASE` would
-/// hand out the same address twice, so the cursor is one shared value that only ever advances.
-/// Enumeration runs on the boot hart alone; the atomic is for correctness of the shared state, not
-/// contention.
-static BAR_NEXT: AtomicU64 = AtomicU64::new(PCI_BAR_BASE);
+/// The ECAM window's physical base, cached from `memory::pci_regions` by [`host_bridge_present`].
+/// Zero means "not cached yet, or no bridge", and cannot collide with a real value: no machine
+/// puts config space at physical zero (that is RAM or a vector table everywhere this runs).
+static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
+
+/// The shared bump cursor for kernel-assigned BARs, starting at the discovered 32-bit memory
+/// window's base. With `-bios default` the kernel is the PCI firmware (OpenSBI does no PCI
+/// setup), so every BAR arrives zero and the kernel places it. More than one function needs
+/// placing: the virtio disk, and on riscv the IOMMU (itself a PCI function, milestone 16b). Two
+/// independent bump allocators would hand out the same address twice, so the cursor is one shared
+/// value that only ever advances. Enumeration runs on the boot hart alone; the atomics here are
+/// for correctness of the shared state, not contention.
+static BAR_NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// One past the last byte a BAR may occupy: the discovered window base plus the mapped slice
+/// (`mmu::map_everything` maps the same `PCI_BAR_MAPPED`-capped slice, so this limit is exactly
+/// what is addressable).
+static BAR_LIMIT: AtomicU64 = AtomicU64::new(0);
+
+/// True when the device tree described a generic-ECAM host bridge, caching its windows on first
+/// call. Every public entry point checks this before touching config space, so on a machine with
+/// no such node (the JH7110: its PLDA PCIe controller is a different device, undriven until its
+/// own milestone) every probe reports nobody home without a single MMIO access, the same
+/// degradation as an absent virtio-mmio device. Single-hart boot-path code (see `BAR_NEXT`); the
+/// store order (cursor and limit before the base that stands for "present") is documentation,
+/// not synchronization.
+fn host_bridge_present() -> bool {
+    if ECAM_BASE.load(Ordering::Relaxed) != 0 {
+        return true;
+    }
+    let Some(((ecam, _), (bar, bar_size))) = crate::memory::pci_regions() else {
+        return false;
+    };
+    BAR_NEXT.store(bar, Ordering::Relaxed);
+    BAR_LIMIT.store(bar + PCI_BAR_MAPPED.min(bar_size), Ordering::Relaxed);
+    ECAM_BASE.store(ecam, Ordering::Relaxed);
+    true
+}
 
 /// Place every unassigned BAR of `bdf` at a size-aligned address drawn from the shared cursor,
 /// writing the config-space BAR registers. Returns false (after saying so) if the window is
@@ -44,7 +74,7 @@ fn place_bars(bdf: Bdf, bars: &mut [Option<Bar>; 6]) -> bool {
         let base = loop {
             let cur = BAR_NEXT.load(Ordering::Relaxed);
             let base = cur.next_multiple_of(align);
-            if base + bar.size > PCI_BAR_BASE + PCI_BAR_MAPPED {
+            if base + bar.size > BAR_LIMIT.load(Ordering::Relaxed) {
                 crate::println!("  pci: BAR window exhausted; cannot place BAR{i}");
                 return false;
             }
@@ -65,15 +95,18 @@ fn place_bars(bdf: Bdf, bars: &mut [Option<Bar>; 6]) -> bool {
     true
 }
 
+/// Callers sit behind [`host_bridge_present`], which is what makes the cached base nonzero and
+/// the window below it device-mapped.
 fn cfg_read32(bdf: Bdf, off: u64) -> u32 {
-    let va = mmu::phys_to_virt(PCI_ECAM_BASE + bdf.ecam_offset() + (off & !3));
-    // SAFETY: the ECAM window for the buses we enumerate is device-mapped (mmu::map_everything
-    // region 9), and ECAM config reads are side-effect-free.
+    let va = mmu::phys_to_virt(ECAM_BASE.load(Ordering::Relaxed) + bdf.ecam_offset() + (off & !3));
+    // SAFETY: the ECAM window for the buses we enumerate is device-mapped (mmu::map_everything's
+    // PCIe step maps it whenever the tree described one), and ECAM config reads are
+    // side-effect-free.
     unsafe { core::ptr::read_volatile(va as *const u32) }
 }
 
 fn cfg_write32(bdf: Bdf, off: u64, v: u32) {
-    let va = mmu::phys_to_virt(PCI_ECAM_BASE + bdf.ecam_offset() + (off & !3));
+    let va = mmu::phys_to_virt(ECAM_BASE.load(Ordering::Relaxed) + bdf.ecam_offset() + (off & !3));
     // SAFETY: as above; config writes go to the one function this bdf names.
     unsafe { core::ptr::write_volatile(va as *mut u32, v) }
 }
@@ -188,6 +221,9 @@ pub fn find_rng_device() -> Option<PciVirtioDevice> {
 /// config space and nothing else, which is all a roster is entitled to know
 /// (`crates/block_roster`).
 pub fn count_block_devices() -> usize {
+    if !host_bridge_present() {
+        return 0;
+    }
     let mut n = 0;
     pci::enumerate(
         PCI_ECAM_BUSES,
@@ -207,6 +243,9 @@ pub fn count_block_devices() -> usize {
 /// (virtio-gpu): there is then no such warning to give, and inventing an id to compare against
 /// would be a fact nobody checked.
 fn find_virtio_bdf(modern: u16, transitional: Option<u16>, kind: &str) -> Option<Bdf> {
+    if !host_bridge_present() {
+        return None;
+    }
     let mut found: Option<Bdf> = None;
     pci::enumerate(
         PCI_ECAM_BUSES,
@@ -323,6 +362,9 @@ const IOMMU_DEVICE: u16 = 0x0014;
 /// Bus-Master: the IOMMU is not a DMA initiator, it is the thing that polices them.
 #[cfg(target_arch = "riscv64")]
 pub fn init_iommu() {
+    if !host_bridge_present() {
+        return;
+    }
     let mut found: Option<Bdf> = None;
     pci::enumerate(
         PCI_ECAM_BUSES,
@@ -353,4 +395,58 @@ pub fn init_iommu() {
     cfg_write32(bdf, pci::COMMAND, (cmd | pci::CMD_MEMORY_SPACE) as u32);
 
     crate::arch::iommu::init(base);
+}
+
+#[cfg(test)]
+mod tests {
+    /// **The discovered PCIe windows are the machine's own, and on this machine they equal the
+    /// constants they replaced.** A fresh parse of the live DTB must agree with what
+    /// `memory::init` recorded, which proves the boot-path read end to end; and on QEMU `virt`
+    /// (the machine every merge boots) the values must be the old `PCI_ECAM_BASE` and
+    /// `PCI_BAR_BASE` hardcodes, which is the whole regression claim: same machine, same
+    /// windows, different provenance. The JH7110's different answer (no generic-ECAM node at
+    /// all, so `pci_regions()` is None and no window is mapped) is witnessed on the host, where
+    /// that tree exists (crates/pci/tests/qemu_virt_dtb.rs). Same shape as the PLIC-context
+    /// test in arch/riscv64/irq.rs, for the same §43 reason.
+    #[test_case]
+    fn the_discovered_pci_windows_are_the_machines_own_and_match_the_old_constants() {
+        let (ecam, mem32) = crate::memory::pci_regions()
+            .expect("QEMU virt describes a pci-host-ecam-generic bridge");
+
+        let ptr = crate::DTB.load(core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: the pointer firmware handed us, already parsed several times on this boot.
+        let dt =
+            unsafe { dtb::Dtb::from_ptr(crate::arch::mmu::phys_to_virt(ptr as u64) as *const u8) }
+                .expect("device tree is unreadable");
+        let mut regs = [dtb::Region { start: 0, size: 0 }; 1];
+        let n = dt
+            .node_reg_compatible(b"pci-host-ecam-generic", &mut regs)
+            .expect("the bridge's reg parses");
+        assert_eq!(n, 1, "one host bridge, one register window");
+        assert_eq!(
+            (regs[0].start, regs[0].size),
+            ecam,
+            "the recorded ECAM window is not the tree's"
+        );
+        let ranges = dt
+            .node_prop_compatible(b"pci-host-ecam-generic", b"ranges")
+            .expect("the bridge's ranges parses")
+            .expect("the bridge states its ranges");
+        assert_eq!(
+            ::pci::mem32_window(ranges),
+            Some(mem32),
+            "the recorded BAR window is not the tree's"
+        );
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            assert_eq!(ecam, (0x3000_0000, 0x1000_0000), "was PCI_ECAM_BASE");
+            assert_eq!(mem32, (0x4000_0000, 0x4000_0000), "was PCI_BAR_BASE");
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert_eq!(ecam, (0x40_1000_0000, 0x1000_0000), "was PCI_ECAM_BASE");
+            assert_eq!(mem32, (0x1000_0000, 0x2eff_0000), "was PCI_BAR_BASE");
+        }
+    }
 }
