@@ -29,8 +29,10 @@ fn target_cpu(intid: u32) -> usize {
     if existing != UNASSIGNED {
         return existing as usize;
     }
-    let n = crate::smp::online_count();
-    let chosen = NEXT_IRQ_CORE.fetch_add(1, Ordering::Relaxed) % n;
+    // The k-th ONLINE core, not index k (first-silicon sweep, 2026-08-14): `cursor % count` as an
+    // index routes device lines to parked cores (where they sit pending forever) and never to the
+    // online cores past the count, when the online set is not contiguous from zero.
+    let chosen = crate::smp::nth_online(NEXT_IRQ_CORE.fetch_add(1, Ordering::Relaxed));
     // First writer wins, so a racing second enable of the same line agrees on the target.
     match slot.compare_exchange(
         UNASSIGNED,

@@ -1240,7 +1240,11 @@ fn pick_wake_target() -> usize {
     let here = cpu::id();
     let mut best = here;
     let mut best_load = cpu::current().runnable();
-    for c in 0..crate::smp::online_count() {
+    // The online SET, never `0..count` (first-silicon sweep, 2026-08-14): on the VisionFive 2 the
+    // set is {1,2,3}, and the count-as-index loop would read parked slot 0's zeroed `runnable()`,
+    // which wins every comparison, so every device-IRQ wake would land in a dead core's inbox. It
+    // also never considered online cpu 3. See smp::online_cpus.
+    for c in crate::smp::online_cpus() {
         if c == here {
             continue;
         }
@@ -2253,11 +2257,11 @@ pub fn runnable_non_idle_count(&exclude: &Tid) -> usize {
         return 0;
     };
     let mut idles = [u64::MAX; crate::cpu::MAX_CPUS];
-    for (c, slot) in idles
-        .iter_mut()
-        .enumerate()
-        .take(crate::smp::online_count())
-    {
+    // Harvest each ONLINE core's idle tid by set membership, not `0..count` (first-silicon sweep,
+    // 2026-08-14): with the VisionFive 2's {1,2,3} online, count-as-index misses cpu 3's idle tid,
+    // and its idle thread would then be counted as a leaked spinner. The array slot order does not
+    // matter; only membership in `idles` does.
+    for (slot, c) in idles.iter_mut().zip(crate::smp::online_cpus()) {
         *slot = crate::cpu::of(c).idle.load(Ordering::Relaxed);
     }
     sched
@@ -2341,7 +2345,9 @@ pub fn dump_threads() {
             crate::println!("  ep={name:#06x} senders={ns} receivers={nr} pending={np}");
         }
     }
-    for c in 0..crate::smp::online_count() {
+    // The online set, not `0..count` (first-silicon sweep, 2026-08-14): on the VisionFive 2 the
+    // count-as-index loop printed parked slot 0 as if it were a live core and hid online core 3.
+    for c in crate::smp::online_cpus() {
         let pc = cpu::of(c);
         let inbox_len = pc.inbox.lock().len();
         crate::println!(
@@ -2352,6 +2358,19 @@ pub fn dump_threads() {
             pc.need_resched.load(Ordering::Relaxed),
             inbox_len,
         );
+    }
+    // A parked slot with a non-empty inbox is a thread nothing will ever run: the exact shape of
+    // the VisionFive 2 placement hang (init modulo-counted into slot 0's inbox; that dead inbox in
+    // this dump was the clue). Since the online-set sweep no path should produce it, so if this
+    // prints, something is picking cpus by count again.
+    let online = crate::smp::online_harts_mask();
+    for c in (0..crate::cpu::MAX_CPUS).filter(|c| online & (1 << c) == 0) {
+        let inbox_len = cpu::of(c).inbox.lock().len();
+        if inbox_len != 0 {
+            crate::println!(
+                "  core {c}: PARKED with inbox_len={inbox_len} (placed on a dead core)"
+            );
+        }
     }
     crate::println!("--- end thread dump ---");
 }
@@ -2567,7 +2586,9 @@ mod tests {
     /// Raise it.
     #[cfg(target_arch = "aarch64")]
     fn raise_test_irq(intid: u32) {
-        crate::drivers::gic::send_sgi(intid, 0); // self (core 0) in the test
+        // Self, by asking rather than by assuming core 0: the test thread runs wherever the
+        // scheduler put it, and a fixed target is the count-as-index disease in miniature.
+        crate::drivers::gic::send_sgi(intid, crate::cpu::id());
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -3128,7 +3149,10 @@ mod tests {
             "the first usable byte of the stack is not a guard page"
         );
 
-        // Core 1 is online in every configuration this suite runs (smp.rs boots MAX_CPUS).
+        // Slot 1's guard address is a static layout fact, not a runtime one: the classifier does
+        // range math over addresses that exist for every slot, online or parked, so this needs no
+        // core 1 at all. (An earlier comment here justified the index by core 1 being online,
+        // which was the wrong reason and read as an online-set assumption.)
         let g = crate::smp::secondary_stack_guard(1);
         assert_eq!(guard_page_at(g), Some(GuardPage::Secondary(1)));
 

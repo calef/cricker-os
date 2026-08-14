@@ -88,9 +88,9 @@ pub fn online_count() -> usize {
     ONLINE.load(Ordering::Acquire) + 1
 }
 
-/// The bitmask of online cores (by id). RISC-V's TLB shootdown targets every online core but the one
-/// doing the flush; see `arch::mmu::flush_tlb`.
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // aarch64's TLB broadcast needs no mask
+/// The bitmask of online cores (by id). RISC-V's TLB shootdown and icache push target every online
+/// core but the one doing the flush (aarch64's `tlbi ..., is` broadcasts in hardware and needs no
+/// mask there); [`online_cpus`] is this mask as an iterator on both ISAs.
 pub fn online_harts_mask() -> usize {
     ONLINE_MASK.load(Ordering::Acquire)
 }
@@ -100,17 +100,18 @@ pub fn online_harts_mask() -> usize {
 /// set is {1,2,3}), and `0..online_count()` as an index range is the bug the first-silicon bench
 /// found in `pick_spawn_target` (2026-08-14): modulo-count produced index 0, a placement into a
 /// parked core's inbox that nothing will ever drain. Iterate the set, never the count.
-pub fn online_cpus() -> impl Iterator<Item = usize> {
-    let mask = online_harts_mask();
-    (0..crate::cpu::MAX_CPUS).filter(move |i| mask & (1 << i) != 0)
+///
+/// The mask arithmetic lives in `crates/cpu_set`, where the {1,2,3} shape QEMU cannot boot is
+/// host-tested; this adds only the live mask.
+pub fn online_cpus() -> cpu_set::Cpus {
+    cpu_set::cpus_in(online_harts_mask())
 }
 
-/// The k-th online cpu, wrapping: the sampler's safe form of "a random online cpu".
+/// The k-th online cpu, wrapping: the sampler's safe form of "a random online cpu". Falls back to
+/// the calling cpu only if the mask is somehow empty (before the boot core registers itself).
 pub fn nth_online(k: usize) -> usize {
-    let n = online_count().max(1);
-    online_cpus().nth(k % n).unwrap_or(crate::cpu::id())
+    cpu_set::nth_in(online_harts_mask(), k).unwrap_or(crate::cpu::id())
 }
-
 
 /// Set by each secondary's probe thread, indexed by the core it actually ran on. The proof that a
 /// secondary schedules real work from its own queue, not just idles. See `secondary_main` step 5.
@@ -315,6 +316,14 @@ unsafe extern "C" {
 ///   the honest state is: the list is read, the ids are checked, and a machine that numbers its
 ///   cores any other way gets a named refusal and a smaller machine instead of a silent no-op.
 ///   A clustered aarch64 board (`MPIDR_EL1.Aff1` in use) is exactly that machine.
+///
+///   What that entanglement no longer includes, since the first-silicon sweep (2026-08-14): the
+///   assumption that the online *logical ids* are contiguous from zero. Every per-cpu loop, both
+///   IRQ-affinity round-robins and the spawn/wake placement now go through [`online_cpus`] /
+///   [`nth_online`] (or mask with [`online_harts_mask`], as the RISC-V RFENCE calls do), so a
+///   machine whose online set is {1,2,3}, the VisionFive 2, is handled. Still assumed: hardware id
+///   equals logical id (above, refused when false), and `MAX_CPUS = 4`, which on that board leaves
+///   U74 hart 4 off the roster and parked (notes/visionfive2.md BUGS; open).
 /// - **The conduit half is proved by parsing and not by calling.** `crates/isa`'s host tests read a
 ///   real QEMU dump that states `smc`, so the decode is exercised; no machine here boots that
 ///   configuration, so the `smc` instruction path has never executed. See `arch::psci_cpu_on`.
@@ -663,6 +672,46 @@ mod tests {
         );
     }
 
+    /// **The online iterator is the live mask, exactly, and the sampler never leaves it** (the
+    /// first-silicon sweep's mechanism, 2026-08-14). Every broadcast-style loop in the kernel now
+    /// either iterates `online_cpus()` or masks with `online_harts_mask()` (the RISC-V RFENCE
+    /// calls), so proving the iterator equals the mask is proving those loops visit exactly the
+    /// online set: no parked slot, no skipped online cpu. The non-contiguous {1,2,3} shape this
+    /// machine cannot boot is host-proven in `crates/cpu_set`; this pins the delegation to the
+    /// live mask, on the machine every merge boots.
+    #[test_case]
+    fn the_online_set_is_the_mask_and_the_sampler_stays_inside_it() {
+        let mask = online_harts_mask();
+        let mut seen = 0usize;
+        let mut last = None;
+        for c in online_cpus() {
+            assert!(
+                mask & (1 << c) != 0,
+                "online_cpus yielded cpu {c}, which the mask {mask:#b} does not name",
+            );
+            assert!(last.is_none_or(|p| c > p), "online_cpus is not ascending");
+            seen |= 1 << c;
+            last = Some(c);
+        }
+        assert_eq!(seen, mask, "online_cpus missed a cpu the mask names");
+        assert_eq!(
+            online_cpus().count(),
+            online_count(),
+            "iterator and count disagree"
+        );
+
+        let n = online_count();
+        for k in 0..2 * n {
+            let c = nth_online(k);
+            assert!(mask & (1 << c) != 0, "nth_online({k}) = {c} is not online");
+            assert_eq!(
+                c,
+                nth_online(k + n),
+                "nth_online does not wrap with period online_count",
+            );
+        }
+    }
+
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.
     ///
     /// `bring_up_secondaries` already waited for the count before `test_main` ran, so the other
@@ -689,8 +738,11 @@ mod tests {
         // is cores 1..N; on RISC-V QEMU's boot hart is not fixed, so it is every core but that one.
         let boot = crate::arch::boot_cpu_id();
         let is_secondary = |c: usize| c != boot;
+        // The online set, not `0..MAX_CPUS`: only a core that came online spawned a probe, so on a
+        // machine whose online set is not the full roster the fixed range would wait forever on
+        // cores that never existed here (first-silicon sweep, 2026-08-14).
         let all_ran = || {
-            (0..MAX_CPUS)
+            online_cpus()
                 .filter(|&c| is_secondary(c))
                 .all(|c| RAN_ON[c].load(Ordering::Acquire))
         };
@@ -700,13 +752,11 @@ mod tests {
             "secondary cores did not run scheduled work in time"
         );
 
-        for (c, ran) in RAN_ON.iter().enumerate() {
-            if is_secondary(c) {
-                assert!(
-                    ran.load(Ordering::Acquire),
-                    "secondary core {c} never ran scheduled work",
-                );
-            }
+        for c in online_cpus().filter(|&c| is_secondary(c)) {
+            assert!(
+                RAN_ON[c].load(Ordering::Acquire),
+                "secondary core {c} never ran scheduled work",
+            );
         }
     }
 
@@ -761,8 +811,10 @@ mod tests {
             "a cross-core placement test needs at least two online cores (runner passes -smp {MAX_CPUS})",
         );
 
-        // Every core but this one, placed from here: the remote path, inbox plus SGI.
-        for target in (0..n).filter(|&c| c != here) {
+        // Every ONLINE core but this one, placed from here: the remote path, inbox plus SGI. The
+        // set, not `0..n` (first-silicon sweep, 2026-08-14): the range would place probes into
+        // parked cores' inboxes and wait forever for an adoption no one performs.
+        for target in online_cpus().filter(|&c| c != here) {
             place_one_probe_on(target);
         }
 
@@ -771,7 +823,9 @@ mod tests {
         // queue, with no inbox and no SGI). The placer cannot itself end up here: a thread changes
         // core only by a steal, a steal is initiated only by an idle core, and this core is running
         // the test thread, which never goes idle.
-        let other = (0..n).find(|&c| c != here).expect("n >= 2 checked above");
+        let other = online_cpus()
+            .find(|&c| c != here)
+            .expect("n >= 2 checked above");
         let placer = crate::sched::spawn_on(other, move || place_one_probe_on(here))
             .expect("spawn_on of the placer failed");
         assert!(
@@ -852,7 +906,9 @@ mod tests {
             .expect("spawn failed");
         }
 
-        let done = || (0..n).all(|c| ON[c].load(Ordering::Relaxed) != 0);
+        // Every ONLINE core must get fed; `(0..n)` would demand a mark from a parked slot that can
+        // never make one and ignore online cores past the count (first-silicon sweep, 2026-08-14).
+        let done = || online_cpus().all(|c| ON[c].load(Ordering::Relaxed) != 0);
         assert!(
             wait_for(done),
             "cpu-bound work never reached every core: placement + stealing did not fill the machine",
