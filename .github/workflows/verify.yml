@@ -38,45 +38,28 @@ concurrency:
   group: verify-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# **The required check is `verify (Kani proofs)` and it must stay a single job with that exact name**
+# (milestone 119). A `matrix` on the proving job would rename it to `verify (Kani proofs) (1)` and
+# `(2)`, so the ruleset's required check would match NOTHING and every pull request would wait
+# forever on a check that no longer exists. That is the same trap this file's header already records
+# for moving a job between workflows, one step further on.
+#
+# So the proving moves to a `prove` matrix and the required name survives as a tiny aggregate job
+# that reports their combined result. The aggregate is where the name lives; the shards are where
+# the time goes.
 jobs:
-  verify:
-    name: verify (Kani proofs)
+  # Decide the scope ONCE. Before sharding this was folded into the proving job; with shards it has
+  # to be its own, because two shards computing it separately could disagree on a moving tree, and
+  # because paying `cargo metadata` twice to answer one question is waste.
+  scope:
+    name: verify scope
     runs-on: ubuntu-24.04-arm
-    # Kani pulls its own toolchain and a CBMC backend, so this is the slowest thing CI runs: ~47
-    # minutes against `build + test`'s ~3. 106 harnesses across 19 crates as of 2026-07-31, counted
-    # from the merged tree rather than from a lane. The 60-minute budget is the number that matters.
-    timeout-minutes: 60
+    outputs:
+      needed: ${{ steps.scope.outputs.needed }}
     steps:
-      # Full history, because the skip decision below diffs against the merge base.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      # **Skip the proving when the change provably cannot reach a proof.**
-      #
-      # Measured 2026-08-02: this job is 43 minutes, of which 42 are `script/verify`; every other
-      # job in this workflow finishes inside 8. Installing Kani is 10 seconds because rust-cache
-      # already holds it, so there is nothing to win in setup. The only lever is not running it.
-      #
-      # The rule is an ALLOW-list of things that cannot matter, not a deny-list of things that can,
-      # because the failure modes are not symmetric. Skipping a proof that was needed is a broken
-      # `main`; running one that was not is 42 wasted minutes. So anything not listed here runs the
-      # proofs, and a new directory is covered by default.
-      #
-      # **The job still runs and still reports success**, and that is deliberate rather than
-      # incidental. A required check that never reports blocks the merge forever, which
-      # notes/repo-hardening.md names as the single most likely way to get this wrong. Skipping the
-      # STEP keeps the check green; skipping the JOB would have been a coin flip on how GitHub
-      # treats a skipped required check.
-      # The decision is computed by `script/verify --affected-since`, not by a path list here,
-      # so it lives where a developer can run it (notes/scripts.md: a command living only in YAML
-      # has no witness). The proofs are a function of the harness crates and their transitive
-      # dependencies; the script asks cargo for that closure and skips only when every changed
-      # file is provably outside it (docs, workflow files other than this one, or crates like
-      # `kernel` and `user` that no proof ever compiles). Anything it cannot attribute runs the
-      # proofs by default. Note: on non-doc changes the script invokes `cargo metadata`, which
-      # installs the pinned toolchain; a minute spent deciding is fine against the 42 it can save,
-      # and doc-only changes never reach cargo.
       - name: Does this change need the proofs?
         id: scope
         run: |
@@ -91,26 +74,69 @@ jobs:
             echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
 
+  prove:
+    name: prove (shard ${{ matrix.shard }}/2)
+    needs: scope
+    if: needs.scope.outputs.needed == 'true'
+    runs-on: ubuntu-24.04-arm
+    # Half the serial job plus its setup. The serial job's 60 was for ~30 minutes of proving; a
+    # shard proves ~15, and the box stays generous because a hung solver must fail loudly rather
+    # than sit on the runner's 6-hour default.
+    timeout-minutes: 45
+    strategy:
+      # **Do not cancel the sibling.** One shard failing is a real result about its own crates, and
+      # the other shard's result is still worth having: knowing whether `glob` alone broke or the
+      # whole suite did is the difference between one investigation and fifteen.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-        if: steps.scope.outputs.needed == 'true'
-      # Kani is deliberately NOT in script/bootstrap (it pulls its own nightly and CBMC, which the
-      # test job would pay for and never use), so install it here, in the one job that needs it.
       - name: Install Kani
-        if: steps.scope.outputs.needed == 'true'
         run: |
           cargo install --locked kani-verifier
           cargo kani setup
-      # The proofs ARE the thesis (DECISIONS §14). Before 2026-07-30 they ran only on a developer's
-      # machine, which meant a change could break a proof and CI would report success.
-      # VERIFY_JOBS=2, not the script's default 4, and this is a measurement, not caution: the
-      # first four runs of the parallel suite on this runner were all killed ~15 minutes in, every
-      # time inside glob's largest harnesses, as a bare "operation was canceled" with orphaned cbmc
-      # processes. That is GitHub's memory kill: four concurrent CBMC formulas at glob's size
-      # exceed the 16 GB this runner has. Two fit. The script's comment about "four fits every
-      # machine" was written before CI measured otherwise; the dev Mac keeps 4.
-      - name: script/verify
-        if: steps.scope.outputs.needed == 'true'
-        run: script/verify
+      # Two shards and not four, which is a measurement rather than a default. `glob` alone is 15.0
+      # minutes of the 30.3, so it is atomic at crate granularity and no number of shards goes
+      # below it: two reach 15.1 and four reach 15.0, buying nothing for two extra runners. The
+      # balance is by measured seconds from the table in script/verify, because `glob` and
+      # `calendar` are 83% of the job and a split by crate count would be lopsided.
+      - name: script/verify --shard ${{ matrix.shard }}/2
+        run: script/verify --shard ${{ matrix.shard }}/2
         env:
           VERIFY_JOBS: 2
 
+  verify:
+    name: verify (Kani proofs)
+    needs: [scope, prove]
+    # **`always()` is load-bearing.** Without it this job is skipped whenever a shard fails or the
+    # scope job says the proofs are not needed, and a required check that never reports blocks the
+    # merge forever, which notes/repo-hardening.md names as the single most likely way to get this
+    # wrong. It must always run and always report.
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    # Reads two strings. The proving is upstream; nothing here needs a toolchain, a checkout or a
+    # cache.
+    timeout-minutes: 5
+    steps:
+      # The result vocabulary is success | failure | cancelled | skipped, and `skipped` is the one
+      # that must pass: it is what `prove` reports when the scope job proved nothing can reach a
+      # harness, which is the deliberate green-without-proving path this workflow has always had.
+      # Anything else, including `cancelled`, is a shard that did not finish and must not read as a
+      # suite that did.
+      - name: Report the shards' combined result
+        run: |
+          scope="${{ needs.scope.result }}"
+          prove="${{ needs.prove.result }}"
+          echo "scope: $scope"
+          echo "prove: $prove"
+          if [ "$scope" != "success" ]; then
+            echo "==> the scope job did not finish; refusing to report the proofs as green" >&2
+            exit 1
+          fi
+          case "$prove" in
+            success) echo "==> every shard proved its crates" ;;
+            skipped) echo "==> nothing in this change can reach a proof" ;;
+            *)       echo "==> a shard reported '$prove'" >&2; exit 1 ;;
+          esac
