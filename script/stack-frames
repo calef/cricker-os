@@ -1,0 +1,194 @@
+#!/bin/sh
+# script/stack-frames: no single kernel function may eat a third of the smallest kernel stack.
+#
+# The complement of milestone 84's watermark, and the half this tree did not have. A watermark says
+# how deep the suite *went*; it cannot say which function is expensive. That is exactly the question
+# an overflow poses, because the fix is either "raise the limit" or "shrink the offender" and a
+# high-water number does not distinguish them. This measures the second thing: what one frame costs,
+# statically, from the compiler.
+#
+# Why it exists at all. On 2026-08-13 `sched::reap_region_objects` carried a 6816-byte frame, of
+# which 4096 was one `[u64; MAX_ENDPOINTS]` scratch array, against a measured thread-stack high-water
+# that left 4712 bytes of headroom. **One frame wanted 2104 bytes more than all the headroom there
+# was**, and it was found only because a milestone's CI faulted one run in five and somebody went
+# looking. It compiled without a warning. See notes/stack-high-water.md.
+#
+# The rule this encodes: **a `[T; MAX]` local sized to a table maximum is a stack allocation wearing
+# the clothes of a bound.** `MAX_ENDPOINTS` is 512 because that is a sensible ceiling on live
+# endpoints; nothing about that number was ever a claim about how much stack a function may use.
+#
+# Name: PROVISIONAL. It reports and gates per-function stack frames, and says so rather than naming
+# the mechanism (`-Z emit-stack-sizes`), on the pattern script/verify's header records: naming the
+# question rather than the tool means swapping the tool costs nothing.
+#
+# EXAMPLES
+#
+#     script/stack-frames                 # gate both architectures, the default
+#     script/stack-frames --arch aarch64  # one architecture
+#     script/stack-frames --report        # print the deepest 40 frames, gate nothing
+#
+# BUGS
+#
+#   - **Per function, not per call chain.** `-Z emit-stack-sizes` says what one frame costs, not
+#     which frames stack on top of each other, so this cannot produce a worst-case depth. It is a
+#     lower bound on trouble and pairs with the watermark; neither is sufficient alone. A call-graph
+#     walker would close the gap and nothing in this tree does that today.
+#   - **The ceiling is one number for stacks of three different sizes.** Boot is 64 KiB, secondaries
+#     64 KiB, kernel thread stacks 16 KiB, and this gates everything against the smallest, because a
+#     function does not carry a label saying which stack it will run on. That is deliberately
+#     pessimistic and it is why the exception table below is not empty.
+#   - **The exception table is maintained by hand**, so a function that moves from the boot stack to
+#     a thread stack keeps its exemption and nothing notices. Each entry states the reason it is
+#     boot-only; a reader who changes that has to change the entry.
+#   - It builds the kernel test binary itself rather than reusing CI's, because the measurement needs
+#     `-Z emit-stack-sizes` and that flag changes the build. Costs one extra kernel build per arch.
+
+set -e
+cd "$(dirname "$0")/.."
+
+arches="aarch64 riscv64"
+report_only=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) arches="$2"; shift 2 ;;
+        --report) report_only=1; shift ;;
+        -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+        *) echo "script/stack-frames: unknown argument $1" >&2; exit 2 ;;
+    esac
+done
+
+status=0
+# shellcheck disable=SC2086  # $arches is a deliberate space-separated list; POSIX sh has no arrays
+for arch in $arches; do
+    case "$arch" in
+        aarch64) target=aarch64-unknown-none-softfloat ;;
+        riscv64) target=riscv64imac-unknown-none-elf ;;
+        *) echo "script/stack-frames: no target for arch $arch" >&2; exit 2 ;;
+    esac
+
+    echo "==> $arch: building the kernel test binary with stack-size metadata"
+    # The TEST binary, not `cargo build`. Half the spawn paths and every test body are `cfg(test)`,
+    # so the plain binary is missing exactly what this is looking for. That mistake cost an hour on
+    # the day this was written, and the tell was that a test-only symbol was absent from `nm`.
+    artifact=$(RUSTFLAGS="-Z emit-stack-sizes" \
+        cargo test -p kernel --target "$target" --no-run 2>&1 \
+        | grep -oE "\(target/[^)]*\)" | tr -d '()' | tail -1)
+
+    if [ -z "$artifact" ] || [ ! -f "$artifact" ]; then
+        echo "script/stack-frames: could not find the $arch test binary" >&2
+        exit 1
+    fi
+
+    tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | cut -d' ' -f2)/bin"
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+
+    "$tools/llvm-objcopy" --dump-section ".stack_sizes=$tmp/ss.bin" "$artifact" /dev/null
+    "$tools/llvm-nm" -C --defined-only -S "$artifact" > "$tmp/syms.txt"
+
+    ARCH="$arch" SS="$tmp/ss.bin" SYMS="$tmp/syms.txt" REPORT="$report_only" python3 - <<'PYEOF' || status=1
+import os, struct, sys
+
+# The smallest kernel stack in the tree: `thread::STACK_PAGES` (4) times a 4 KiB page. Every kernel
+# thread and every process's kernel side runs on one of these, so it is the budget that binds.
+SMALLEST_STACK = 4 * 4096
+DIVISOR = 3
+CEILING = SMALLEST_STACK // DIVISOR
+
+# Test bodies run on the BOOT stack, which is 64 KiB, because `test_main` runs on the boot context
+# (notes/stack-high-water.md: "the boot stack carries the deepest call chain of the entire suite").
+# They are reported and not gated. If a test body ever moved onto a thread stack this would have to
+# change, and so would a great deal else.
+TEST_MARKERS = ("_tests::", "::tests::", "kernel::testing::")
+
+# Functions over the ceiling that provably do not run on a kernel thread stack. Each states why, and
+# a reader who makes one of these reachable from a thread has to come here and say so.
+EXCEPT = {
+    "kernel::sched::init":
+        "boot only: brings the scheduler up before any thread stack exists",
+    "<slots::Table<u64, 512>>::new":
+        "boot only: constructs the endpoint table, called from sched::init",
+    "kernel::user::disk_service::devices":
+        "boot stack: called by roster_page below, before its sched::spawn",
+    "kernel::user::disk_service::roster_page":
+        "boot stack: both callers (start, start_probe) run it before their sched::spawn",
+}
+
+
+def uleb(buf, i):
+    r, s = 0, 0
+    while True:
+        b = buf[i]
+        i += 1
+        r |= (b & 0x7F) << s
+        if not b & 0x80:
+            return r, i
+        s += 7
+
+
+buf = open(os.environ["SS"], "rb").read()
+entries, i = [], 0
+while i + 8 <= len(buf):
+    addr = struct.unpack_from("<Q", buf, i)[0]
+    i += 8
+    if i >= len(buf):
+        break
+    size, i = uleb(buf, i)
+    entries.append((addr, size))
+
+syms = {}
+for line in open(os.environ["SYMS"]):
+    p = line.split(None, 3)
+    if len(p) == 4:
+        try:
+            syms[int(p[0], 16)] = p[3].strip()
+        except ValueError:
+            pass
+
+frames = {}
+for addr, size in entries:
+    name = syms.get(addr)
+    if name:
+        frames[name] = max(size, frames.get(name, 0))
+
+arch = os.environ["ARCH"]
+ranked = sorted(frames.items(), key=lambda kv: -kv[1])
+
+if os.environ.get("REPORT"):
+    print(f"    deepest 40 frames ({arch}), ceiling would be {CEILING}:")
+    for name, size in ranked[:40]:
+        mark = " " if size <= CEILING else "!"
+        print(f"    {mark} {size:<7} {name[:100]}")
+    sys.exit(0)
+
+over = [
+    (n, s) for n, s in ranked
+    if s > CEILING and n not in EXCEPT and not any(m in n for m in TEST_MARKERS)
+]
+
+if over:
+    print(f"    {arch}: frames over {CEILING} bytes "
+          f"(1/{DIVISOR} of a {SMALLEST_STACK}-byte kernel thread stack):", file=sys.stderr)
+    for name, size in over:
+        print(f"      {size:<7} {name}", file=sys.stderr)
+    print(f"""
+A kernel thread stack is {SMALLEST_STACK} bytes and its measured high-water is already about 71% of
+that (notes/stack-high-water.md), so a frame this size is a stack overflow waiting for the right call
+chain. That is not hypothetical: it is exactly how sched::reap_region_objects overflowed on
+2026-08-13, and it compiled without a warning.
+
+Look for a `[T; MAX]` local sized to a table maximum. That shape is a stack allocation wearing the
+clothes of a bound, and the usual fix is to stop collecting into it: rescan for one item at a time,
+or take a caller-provided slice.
+
+If the function provably cannot run on a kernel thread stack, add it to EXCEPT in this script **with
+the reason**, so the next reader can check whether the reason is still true.""", file=sys.stderr)
+    sys.exit(1)
+
+gated = sum(1 for n, s in frames.items() if not any(m in n for m in TEST_MARKERS))
+print(f"    {arch}: {gated} gated frames, deepest {ranked[0][1]} bytes, "
+      f"all under {CEILING} but {len(EXCEPT)} recorded exceptions")
+PYEOF
+done
+
+exit $status
