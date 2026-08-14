@@ -17,9 +17,11 @@
 # the clothes of a bound.** `MAX_ENDPOINTS` is 512 because that is a sensible ceiling on live
 # endpoints; nothing about that number was ever a claim about how much stack a function may use.
 #
-# Name: PROVISIONAL. It reports and gates per-function stack frames, and says so rather than naming
-# the mechanism (`-Z emit-stack-sizes`), on the pattern script/verify's header records: naming the
-# question rather than the tool means swapping the tool costs nothing.
+# Name: unrecorded. Introduced 2026-08-13 with this gate; Chris has not ruled on it. It names what it
+# reports (per-function stack frames) rather than the mechanism (`-Z emit-stack-sizes`), on the
+# pattern script/verify's header argues: naming the question rather than the tool means swapping the
+# tool costs nothing. `stack-high-water` is the sibling measuring the other axis, and the pair reads
+# as a pair, which is the case for this name over `frame-sizes` or `stack-check`.
 #
 # EXAMPLES
 #
