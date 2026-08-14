@@ -194,6 +194,22 @@ Host-proven on both generations of spelling and both JH7110 trees
 mainline fixture's S7 is excluded by `status`, the vendor fixture's by its ISA string, and the
 same conclusion arrives through the two trees' different lies.
 
+**Third bench stop (2026-08-14): the online set is {1,2,3}, and the kernel indexed it as
+{0,1,2}.** With the S7 refused, the machine's online cpus are harts 1..3 (hart 4 is past
+`MAX_CPUS`, see BUGS), the first time this kernel ever ran with a set not contiguous from zero;
+on QEMU `virt` the set is always {0..n-1}, so every `0..online_count()` loop and every
+`rng % online_count()` pick had been right by coincidence. On the board, spawn placement's
+modulo-count produced index 0 and placed `init` into parked slot 0's inbox, which nothing drains,
+ever. It took three boots to pin: the placement is randomized, so roughly one placement in three
+landed dead, and the symptoms disagreed with each other (outlaw's 3-then-0 syscall counts one
+boot, `init` hanging outright the next two). The thread-dump diagnostic added for it (commit
+`3833422`, watching the threads while the demo waits) showed the shape in one line: a parked
+core's inbox holding a runnable thread. Fixed on the critical path in commit `1329874`
+(`smp::online_cpus()` / `nth_online`, placement and steal converted), and the remaining
+count-as-index sites, wake targeting, both ISAs' IRQ-affinity round-robins, the hang watchdog's
+liveness scan and the suite's own per-core loops, were swept in the follow-up branch, with the
+{1,2,3} shape host-proven in `crates/cpu_set` since QEMU cannot boot it.
+
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
 `2h + 1`, which is the formula `kernel/src/smp.rs` uses. On the JH7110 the disabled S7 contributes
@@ -395,10 +411,15 @@ DTB parse, paging, traps, timer, frame allocator) before panicking on the QEMU P
 the PCIe section above records that failure and its fix. The second boot that day carried the
 PCIe fix, got through fine paging and ISA discovery, and died starting hart 0 (the "Second
 bench stop" above): the vendor tree's `status` lie walked the S7 past the disabled-hart
-handling, and vendor OpenSBI crashed rather than refuse the start. The supervisor rule built
-from that crash is QEMU- and host-proven and awaits the next bench boot for its board proof,
-as does the PLIC context map, which sits past the point either boot reached. What QEMU cannot
-prove is what "To measure at the bench" is for.
+handling, and vendor OpenSBI crashed rather than refuse the start. The boots after that carried
+the supervisor rule and the PLIC context map through, and hit the third stop: the first
+non-contiguous online set this kernel ever ran on exposed every count-as-index cpu loop at once,
+starting with spawn placement putting `init` into parked slot 0's inbox (the "Third bench stop"
+above; three boots to diagnose, fixed in `1329874` and swept after). The supervisor rule and the
+context map are QEMU- and host-proven and board-proven as far as those boots reached; the
+online-set sweep's {1,2,3} shape is host-proven in `crates/cpu_set`; whether the fixed placement
+carries the board through the demo is the next bench boot's fact, like everything QEMU cannot
+prove, which is what "To measure at the bench" is for.
 
 Two limitations found while building those, honestly not fixed here:
 
