@@ -85,14 +85,13 @@ board that does not need them.
 
 Consequences the kernel already handles: RAM extent comes from the DTB `/memory` node
 (`kernel/src/memory.rs`), not from a constant, so the base difference is discovered rather than
-assumed. Consequences it may not (see the bench list): the boot page table maps gigapages 0 and
-2 only (`arch/riscv64/mmu.rs`), so physical 0x4000_0000..0x8000_0000, the first gigabyte of board
-DRAM, is unreachable until the fine tables are built, and **a DTB handed to us in that range (or
-above gigapage 2) faults before the memory map exists**. U-Boot's default DTB locations are exactly
-there: `fdt_addr_r` = 0x4600_0000 [uboot-cfg], and `$fdtcontroladdr` (the control DTB) sits near
-the top of RAM, above 4 GiB on an 8 GB board. The runbook below moves the DTB to 0x8600_0000
-(inside gigapage 2) before booting; the code fix, if we want the default addresses to work, is two
-lines adding gigapage 1 to the boot table.
+assumed. And, since 2026-08-14, the boot page table maps **gigapage 1 as well** (0x4000_0000..
+0x8000_0000, `arch/riscv64/mmu.rs`), so a DTB at U-Boot's default `fdt_addr_r` = 0x4600_0000
+[uboot-cfg] is readable before the fine tables exist; it used to fault there before the trap path
+could print. Still out of reach: `$fdtcontroladdr` (the control DTB) near the top of RAM, above
+gigapage 2 on every variant and above 4 GiB on an 8 GB board. The runbook below moves the DTB to
+0x8600_0000 (inside gigapage 2) for exactly that case, and keeping the `fdt move` in the manual
+first boot also removes one variable from a first bring-up.
 
 An 8 GB board's RAM also spans past 4 GiB (0x4000_0000 + 8 GiB = 0x2_4000_0000), and the JH7110
 additionally aliases DRAM uncached at 0x24_0000_0000 [uboot-doc]; the alias appears in no `/memory`
@@ -112,31 +111,53 @@ DesignWare DW_apb_uart, an 8250 derivative [dtsi]:
 | clock | 3.6864 MHz (QEMU ignores the divisor anyway) | **24 MHz** [uboot-cfg] |
 | PLIC irq | 10 | **32** [dtsi] |
 
-What `drivers/ns16550.rs` must grow to drive it, none of which is built yet:
+What `drivers/ns16550.rs` grew on 2026-08-14, **built and QEMU-proven; the JH7110 side of each is
+still a bench question**, because QEMU emulates none of this silicon:
 
-1. **A register stride.** Every offset in the driver (THR=0, IER=1, LCR=3, LSR=5) must be shifted
-   left by `reg-shift`; on the board LSR lives at byte offset 0x14, not 5. Today's byte access at
-   offset 5 reads the middle of a 32-bit register window and the THRE poll spins on garbage.
-2. **32-bit access width**, per `reg-io-width = <4>`.
-3. **The divisor from the real clock.** `init` currently writes divisor 1, correct for the
-   1.8432 MHz convention and a no-op under QEMU. At 24 MHz, divisor = 24e6 / (16 x 115200) = 13
-   (actual rate 115385, 0.16% high, well inside tolerance). Divisor 1 at 24 MHz is 1.5 Mbaud,
-   which is garbage at the far terminal.
-4. **The DW busy quirk.** A DW_apb_uart ignores an LCR write while busy and latches a "busy"
-   interrupt. U-Boot has already programmed 115200 8N1 by the time we run, so the cheapest correct
-   `init` on this part waits for LSR.TEMT before touching LCR, or skips reprogramming entirely.
+1. **A register stride and access width, carried as data.** The driver's `Shape` holds
+   `reg-shift` and `reg-io-width`, defaulting to QEMU's byte wiring. On the board LSR lives at
+   byte offset 0x14, not 5, and the old byte access at offset 5 read the middle of the IER word,
+   so the THRE poll span on garbage.
+2. **The divisor from the stated clock, and only from a stated clock.**
+   `console::configure_from_dtb` programs `clock-frequency / (16 x 115200)` rounded (24 MHz gives
+   13, actual rate 115385, 0.16% high; the two expected divisors are proved at compile time in the
+   driver) and **leaves the divisor and line controls alone when the tree states no clock**.
+   Mainline JH7110 trees express the UART clock as a `clocks` phandle this kernel does not
+   resolve, and U-Boot has already programmed 115200 8N1 on any board that showed a prompt, so
+   not touching it is correct there too; a divisor guessed against the wrong clock is 1.5 Mbaud
+   garbage at the far terminal, which is the failure this rule exists to avoid. QEMU's tree states
+   3.6864 MHz, so the suite now programs divisor 2 where it used to write a constant 1; QEMU
+   ignores both.
+3. **The DW busy quirk**, keyed on the `snps,dw-apb-uart` compatible: a DW_apb_uart ignores an LCR
+   write while busy and latches a "busy" interrupt, so `init` drains the transmitter (LSR.TEMT,
+   bounded) before touching LCR.
+4. **The shape is adopted before the first `println!`.** `kernel_main` calls
+   `console::configure_from_dtb(dtb)` immediately after `console::init`, so no output is ever
+   produced with a stale stride. The node is matched by its name, `serial@10000000`, pinned beside
+   the equally hardcoded base address; the jh7110 fixture test
+   (crates/isa/tests/riscv64_jh7110.rs) is the witness for both.
 
-Until that lands, the honest expectation for first boot is **no banner**, and that is what the
-triage ladder below is for.
+With that built, the honest first-boot expectation moves up one rung: **the banner should
+appear**, provided the DTB U-Boot hands us is readable (see DRAM above) and the silicon matches
+the dtsi's description. The triage ladder below still covers every way that can fail.
 
 ## Harts, the PLIC, and the CLINT
 
 **Five harts, one of which must not be started.** The JH7110 is 1x SiFive S7 (hart 0) + 4x U74
 (harts 1..4). The S7 is `rv64imac_zba_zbb`, has **no MMU** and no S-mode, and its cpu node says
-`status = "disabled"` [dtsi]. Our `/cpus` walk (`crates/dtb`, `CpuList`) does not currently read
-`status`, so `smp::init` would collect hart 0 and try to `sbi_hart_start` it; what OpenSBI answers
-is a bench question, but the code should learn to skip disabled cpu nodes regardless. The U74s are
-`rv64imafdc_zba_zbb`, `mmu-type = "riscv,sv39"` [dtsi], exactly the kernel's contract.
+`status = "disabled"` [dtsi]. The U74s are `rv64imafdc_zba_zbb`, `mmu-type = "riscv,sv39"` [dtsi],
+exactly the kernel's contract.
+
+**Correction (2026-08-14): the roster half of this was already built when this note first claimed
+otherwise.** `CpuList` has read `status` since milestone 100, and `smp::bring_up_secondaries`
+refuses a disabled hart by name rather than starting it; what `sbi_hart_start` would answer for
+hart 0 stays on the bench list only to confirm the refusal is the right call. What was genuinely
+missing, and was built 2026-08-14: the **ISA record** (`isa::riscv64`) counted disabled harts, so
+the S7's `rv64imac` narrowed the machine's common extensions, and an S7 whose tree spells its MMU
+as `riscv,none` would have read as a machine that cannot run us at all. A disabled hart now
+contributes nothing to the record, host-proven against the hand-written jh7110 fixture
+(crates/isa/tests/riscv64_jh7110.rs). One roster limitation remains, recorded in the BUGS below:
+`cpu::MAX_CPUS` is 4 and this SoC describes five harts.
 
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
@@ -144,8 +165,18 @@ is a bench question, but the code should learn to skip disabled cpu nodes regard
 only an M context, so the layout per the dtsi's `interrupts-extended`
 (`<&cpu0_intc 11>, <&cpu1_intc 11>, <&cpu1_intc 9>, <&cpu2_intc 11>, <&cpu2_intc 9>, ...`) is:
 context 0 = hart 0 M, then for U74 hart h in 1..4, context `2h - 1` = M and context `2h` = S.
-**Hart h's S context is `2h` on this board, not `2h + 1`.** The formula must come from the DTB (or
-a board table) before interrupts work on silicon.
+**Hart h's S context is `2h` on this board, not `2h + 1`.**
+
+Built 2026-08-14: the mapping comes from the DTB now. `isa::plic::PlicContexts` decodes
+`interrupts-extended` (entry k is context k; interrupt 9 marks an S context; phandles resolve to
+harts through each cpu's `riscv,cpu-intc` child), `arch::irq::init_contexts` records it at boot,
+and the `2h + 1` formula survives only as the fallback for a tree that does not state the layout.
+The PLIC node itself is found by its `sifive,plic-1.0.0` compatible rather than by name, because
+the JH7110 spells the node `interrupt-controller@c000000` where QEMU says `plic@c000000`, and the
+old `plic@` name-prefix read found nothing there. QEMU-proven in both directions: the kernel suite
+asserts the live `virt` tree reproduces `2h + 1`, and the host fixtures hold the JH7110's `2h`
+answer with no S context for hart 0 (crates/isa/tests/riscv64_plic_contexts.rs). What QEMU cannot
+prove, the real PLIC honoring context `2h`, is a bench fact like everything else here.
 
 **The CLINT is at QEMU's address.** `starfive,jh7110-clint` at 0x200_0000 [dtsi]; timer and IPI go
 through SBI anyway, so this is OpenSBI's problem, not ours.
@@ -302,11 +333,27 @@ Facts documentation could not settle, each an explicit measurement, none guessed
 
 ## BUGS
 
-The kernel does not boot on this board yet, and this note says why in advance: the UART driver
-speaks QEMU's register layout (stride, width, clock), the PLIC context formula is QEMU's, the
-`/cpus` walk does not honor `status = "disabled"`, and the boot page table cannot read a DTB below
-0x8000_0000. Each is a small, named change; none is built, because each deserves to be proven
-against the board rather than against this note.
+The kernel has never run on this board, and the four driver gaps this note originally listed are
+now **built and QEMU-proven, none board-proven** (2026-08-14): the UART driver takes the DW-8250's
+stride, width, clock and busy quirk from the device tree; the PLIC context map comes from
+`interrupts-extended` with the QEMU formula as fallback; a disabled hart no longer narrows the ISA
+record (and was already refused at bring-up); and the boot page table reaches a DTB at U-Boot's
+default `fdt_addr_r`. QEMU cannot prove the JH7110 side of any of them, which is what "To measure
+at the bench" is for.
+
+Two limitations found while building those, honestly not fixed here:
+
+- **The shell path's userspace input driver still speaks QEMU's UART layout.**
+  `user/src/input.rs` reads the NS16550 at byte-stride offsets (LSR at 0x05), so on the board the
+  kernel console will print but the interactive shell's input path reads garbage until that driver
+  learns the same shape the kernel driver did. Not on the first-boot path (the tour and test
+  builds take no input); bites at the shell milestone.
+- **`cpu::MAX_CPUS` is 4 and this SoC describes five harts** (one disabled), so U74 hart 4 falls
+  off the end of the roster and stays parked, silently. The fix is a `MAX_CPUS` bump or a roster
+  that skips disabled harts, and both are entangled with the logical-id-equals-hardware-id
+  assumption recorded in `smp.rs`'s BUGS; a bench boot will print "5 core(s) in the device tree,
+  4 startable" and bring up three secondaries, which is correct arithmetic and one hart short of
+  the machine.
 
 The `text_offset` in the Image header encodes one board's DRAM base; the header comment in
 `boot.s` and the section above carry the caveat.
