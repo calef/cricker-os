@@ -138,11 +138,56 @@ impl Threads {
         name
     }
 
+    /// `insert_with`'s place-writing twin: claim a page from the kernel budget and let `build`
+    /// construct the Thread into it. Recycles the page on any failure, exactly as `insert_with`
+    /// does, so a refused spawn costs nothing.
+    fn insert_in_place(&mut self, build: impl FnOnce(Tid, *mut Thread) -> bool) -> Option<Tid> {
+        let page = crate::kmem::page()?;
+        let name = self.insert_at_in_place(page, build);
+        if name.is_none() {
+            crate::kmem::recycle(page);
+        }
+        name
+    }
+
     /// Insert a Thread that already has a page (milestone 19c.3): a user-retyped TCB, whose page
     /// is its creator's region's, not `kmem`'s. On a full table the page is the region's to
     /// account (spend-only), so nothing is recycled here.
     fn insert_from_page(&mut self, page: u64, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
         self.insert_at(page, f)
+    }
+
+    /// **The place-writing insert** (milestone 124): `build` receives the minted name and the TCB
+    /// page, and writes the Thread there itself. `false` from `build` means it wrote nothing, and
+    /// the slot is left exactly as it was found.
+    ///
+    /// The difference from `insert_at` is where the Thread is constructed. That one takes a
+    /// `FnOnce(Tid) -> Thread`, so the value travels through the closure's return and a temporary
+    /// before `ptr.write` puts it on the page; a `Thread` is large and a debug build copies at
+    /// every hop. This hands the destination down instead. See `Thread::spawn_into`.
+    fn insert_at_in_place(
+        &mut self,
+        page: u64,
+        build: impl FnOnce(Tid, *mut Thread) -> bool,
+    ) -> Option<Tid> {
+        let ptr = crate::arch::mmu::phys_to_virt(page) as *mut Thread;
+        let mut built = false;
+        let name = self.table.insert_with(|tid| {
+            built = build(tid, ptr);
+            TcbPtr(ptr)
+        })?;
+        if !built {
+            // `build` declined (no kernel stack). Take the name back out: the slot never held a
+            // Thread, so there is nothing to drop, and `remove` here would drop uninitialised
+            // bytes. `forget_slot` bumps the generation and frees the slot without touching the
+            // TCB page, which is the caller's to recycle. `Table::remove` is exactly right and
+            // not a leak: the slot holds a `TcbPtr`, and dropping that drops a pointer. The
+            // `Thread` drop lives in `Threads::remove`, which is not on this path because no
+            // Thread was ever constructed.
+            self.table.remove(name);
+            return None;
+        }
+        Some(name)
     }
 
     /// The shared engine: write the built Thread into `page` and name it. The Thread carries its
@@ -494,16 +539,20 @@ fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
 /// thread through its inbox and then poked with the reschedule SGI. (Wiring `spawn` itself to
 /// round-robin over `target` is the trivial next step, once the mechanism is proven.)
 pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid> {
-    let thread = Thread::spawn(f)?;
     let remote = target != cpu::id();
 
     let id = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut()?;
-        let id = sched.threads.insert_with(|tid| {
-            let mut thread = thread;
-            thread.id = tid;
-            thread
+        // **The Thread is built on its own TCB page, not carried there** (milestone 124). The old
+        // shape called `Thread::spawn(f)` for a value and moved it through this closure, and every
+        // instantiation of this generic function carried 3888 to 4592 bytes of frame as a result:
+        // over the 4096-byte guard page, which is the size at which one frame can step past the
+        // guard in a single move and corrupt the neighbouring stack with no fault at all.
+        let id = sched.threads.insert_in_place(|tid, dst| {
+            // SAFETY: `dst` is the fresh, exclusively-ours TCB page `insert_in_place` claimed; it
+            // is aligned for `Thread` and holds no live one, so `write` drops nothing.
+            unsafe { Thread::spawn_into(f, tid, dst) }
         })?;
         place_on(target, tcb_ptr(sched, id));
         id
