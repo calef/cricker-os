@@ -501,6 +501,94 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// The raw bytes of property `name` on the first node whose `compatible` list contains
+    /// `compat`, searched at any depth. `Ok(None)` when no such node exists, or the node has no
+    /// such property.
+    ///
+    /// The property twin of [`node_reg_compatible`](Self::node_reg_compatible), and needed for the
+    /// same reason that method exists: a binding names what a node *is* while the node's label names
+    /// whatever its author typed. The motivating case is the PLIC's `interrupts-extended`, whose
+    /// node QEMU `virt` spells `plic@c000000` and the JH7110 spells `interrupt-controller@c000000`,
+    /// so a name-prefix read that works on one machine finds nothing on the other and reports it
+    /// as an absent property rather than as a wrong question.
+    ///
+    /// Like `node_reg_compatible`, this cannot decide at the property itself, because `compatible`
+    /// may appear after it in the same node; every open node's candidate value is remembered and
+    /// the answer is returned when a matched node closes.
+    pub fn node_prop_compatible(
+        &self,
+        compat: &[u8],
+        name: &[u8],
+    ) -> Result<Option<&'a [u8]>, Error> {
+        const MAX_DEPTH: usize = 16;
+        // Per open node: where `name`'s value sits, and whether `compatible` matched.
+        let mut found = [None::<(usize, usize)>; MAX_DEPTH];
+        let mut matched = [false; MAX_DEPTH];
+
+        let mut depth = 0usize;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let nm = self.cstr(at)?;
+                    at += align4(nm.len() + 1);
+                    depth += 1;
+                    if depth < MAX_DEPTH {
+                        found[depth] = None;
+                        matched[depth] = false;
+                    }
+                }
+
+                FDT_END_NODE => {
+                    // Depth 1 is the root, which carries no `compatible` worth matching here; a
+                    // node past MAX_DEPTH was never tracked, so it cannot answer (the same refusal
+                    // node_reg records: not finding is honest, misreporting is not).
+                    if (2..MAX_DEPTH).contains(&depth) && matched[depth] {
+                        return match found[depth] {
+                            Some((value_at, len)) => self
+                                .bytes
+                                .get(value_at..value_at + len)
+                                .map(Some)
+                                .ok_or(Error::Truncated),
+                            None => Ok(None),
+                        };
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    let pname = self.cstr(self.off_strings + name_off)?;
+                    if depth < MAX_DEPTH {
+                        // Two independent `if`s, so asking for `compatible` itself still answers.
+                        if pname == name {
+                            found[depth] = Some((value_at, len));
+                        }
+                        if pname == b"compatible" {
+                            let bytes = self
+                                .bytes
+                                .get(value_at..value_at + len)
+                                .ok_or(Error::Truncated)?;
+                            matched[depth] = bytes.split(|&b| b == 0).any(|s| s == compat);
+                        }
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(None),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The raw bytes of property `name` on the first node whose name starts with `prefix`,
     /// searched at any depth. `Ok(None)` when no such node, or the node has no such property.
     ///

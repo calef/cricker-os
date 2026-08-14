@@ -272,7 +272,7 @@ unsafe extern "C" {
 ///   core's index would need three other things to change with it, and none of them are in this
 ///   milestone. `cpu::PERCPU`, the secondary stacks and the RISC-V trap stashes are arrays indexed
 ///   by logical id; the GICv2 targets an SPI by CPU-interface number and `send_sgi` by that same
-///   number; the PLIC's S-mode context is `2 * hart + 1` and the SBI IPI mask is a bitmap of hart
+///   number; the PLIC's S-mode context table (`arch::irq`) is indexed by hart id and the SBI IPI mask is a bitmap of hart
 ///   ids. Every one of those reads a logical id today and would need the hardware id instead. So
 ///   the honest state is: the list is read, the ids are checked, and a machine that numbers its
 ///   cores any other way gets a named refusal and a smaller machine instead of a silent no-op.

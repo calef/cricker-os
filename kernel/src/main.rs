@@ -164,6 +164,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // replaced it. The list used to be `0..cpu::MAX_CPUS`, a constant.
         smp::read_cpu_list(dtb);
 
+        // And how does the PLIC number their S-mode contexts? Read here, in the same window and
+        // before anything touches a context: the `2*hart + 1` formula this replaces is QEMU's
+        // layout, and the JH7110's disabled S7 shifts every context down one (arch::irq,
+        // notes/visionfive2.md). On QEMU the tree reproduces the formula exactly.
+        arch::irq::init_contexts(dtb);
+
         // Replace the coarse RWX boot table with fine-grained W^X Sv39 kernel tables. We keep
         // running (and printing) across the satp switch, which proves the fine map covers this code.
         arch::mmu::init();

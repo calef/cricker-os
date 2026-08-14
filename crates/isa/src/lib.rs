@@ -67,4 +67,5 @@
 
 pub mod aarch64;
 pub mod cpu_list;
+pub mod plic;
 pub mod riscv64;

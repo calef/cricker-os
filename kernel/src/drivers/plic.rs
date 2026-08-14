@@ -17,8 +17,11 @@
 //!   base + 0x20_0004 + 0x1000*context per-context claim (read) / complete (write)
 //! ```
 //!
-//! A *context* on QEMU's `virt` is `2*hart + 1` for S-mode (`2*hart` is M-mode, which OpenSBI owns).
-//! Hart 0 S-mode is context 1, which is where our external interrupts land.
+//! A *context* is a (hart, privilege) pair, and **the numbering is the board's**, read out of the
+//! device tree's `interrupts-extended` by `arch::irq::init_contexts` (isa::plic). On QEMU's `virt`
+//! S-mode is `2*hart + 1` (`2*hart` is M-mode, which OpenSBI owns); on the JH7110 the disabled S7
+//! contributes only an M context and S-mode is `2*hart`. This driver is always handed a context
+//! and never derives one, so the mapping lives in `arch::irq`, not here.
 //!
 //! Same rule as every driver here (DECISIONS §4): **it reaches into no kernel globals.** [`init`]
 //! is handed the base address and the context; everything else works from the base it stored. (It
@@ -159,9 +162,10 @@ fn set_enable_bit(source: u32, context: usize, on: bool) {
 
 /// Enable `source` for `context` and give it a nonzero priority, so the PLIC will deliver it there.
 ///
-/// `context` is a hart's S-mode context (`2*hart+1` on QEMU `virt`); the affinity policy in
-/// `arch::irq` chooses which one, so a device line lands on a chosen hart rather than always the
-/// boot hart. The driver is told the context; it does not read the hartid (rule #2, DECISIONS §4).
+/// `context` is a hart's S-mode context (the device tree's numbering; see the module docs); the
+/// affinity policy in `arch::irq` chooses which one, so a device line lands on a chosen hart
+/// rather than always the boot hart. The driver is told the context; it does not read the hartid
+/// (rule #2, DECISIONS §4).
 pub fn enable(source: u32, context: usize) {
     // Priority 1 (the lowest that still interrupts; we do not prioritize among sources yet). Outside
     // the lock deliberately: this is a whole-word write to a register private to `source`, so it

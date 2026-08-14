@@ -326,8 +326,11 @@ What this does and does not buy, measured honestly:
 ## The riscv PLIC side, done the same way (parity §19)
 
 The PLIC equivalent spreads device sources across harts, the same round-robin-with-a-stable-target
-shape as the GIC. The PLIC delivers a source to a **context** (a hart at a privilege level, `2*hart+1`
-for S-mode on QEMU `virt`), so the pieces are:
+shape as the GIC. The PLIC delivers a source to a **context** (a hart at a privilege level). The
+hart-to-context numbering is the board's, read out of the device tree's `interrupts-extended` at
+boot (`arch::irq::init_contexts`, backed by `isa::plic`): `2*hart+1` for S-mode on QEMU `virt`,
+`2*hart` on the JH7110, whose disabled S7 monitor core contributes only an M context (see
+notes/visionfive2.md). The pieces are:
 
 - **Every hart sets `SEIE` early** (`arch::irq::init_this_cpu` now unmasks supervisor external
   interrupts alongside the software-interrupt IPI source). This is safe before the PLIC base is even
@@ -340,7 +343,8 @@ for S-mode on QEMU `virt`), so the pieces are:
   source on it. The target is chosen round-robin over the online harts and is **stable per source**
   (`SOURCE_CTX`), for the same reason the GIC target is stable: the ACK re-enables the line on every
   completion, and the mask and the re-enable have to name the same context.
-- **Each hart claims and completes against its own context** (`this_s_context` = `2*cpu::id()+1`,
+- **Each hart claims and completes against its own context** (`this_s_context`, the context table's
+  entry for `cpu::id()`,
   passed to `plic::claim`/`complete`/`disable` from the external-interrupt handler). A source targets
   exactly one hart, so the hart that takes it is the hart it is enabled on, and the mask/complete land
   on the right context. The PLIC driver stays mechanism-only: it is told the context, it does not read

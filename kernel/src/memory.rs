@@ -73,14 +73,20 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
-    // The RISC-V interrupt controller (milestone 20): the PLIC. aarch64 has no node by this name, so
-    // there the read finds nothing and `plic_region` stays None; the GIC above is its equivalent.
-    // One register block, unlike the GIC's distributor/CPU-interface pair.
+    // The RISC-V interrupt controller (milestone 20): the PLIC. Found by its binding, because the
+    // node's label is the board author's: QEMU spells it `plic@c000000` and the JH7110
+    // `interrupt-controller@c000000`, so the old `plic@` name-prefix read found nothing on the
+    // board this has to boot next (notes/visionfive2.md). The name prefix stays as a fallback for
+    // a tree that names the node conventionally but states a compatible we do not know. aarch64
+    // has neither, so there `plic_region` stays None; the GIC above is its equivalent. One
+    // register block, unlike the GIC's distributor/CPU-interface pair.
     {
         let mut plic = [Region { start: 0, size: 0 }; 1];
-        if let Ok(n) = dtb.node_reg(b"plic@", &mut plic)
-            && n >= 1
-        {
+        let found = match dtb.node_reg_compatible(b"sifive,plic-1.0.0", &mut plic) {
+            Ok(n) if n >= 1 => true,
+            _ => matches!(dtb.node_reg(b"plic@", &mut plic), Ok(n) if n >= 1),
+        };
+        if found {
             *PLIC_REGION.lock() = Some((plic[0].start, plic[0].size));
         }
     }
