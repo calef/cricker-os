@@ -1,5 +1,5 @@
 #!/bin/sh
-# script/stack-frame-check: no single kernel function may eat a third of the smallest kernel stack.
+# script/stack-frame-check: no kernel function may carry a frame larger than the guard page.
 #
 # The complement of milestone 84's watermark, and the half this tree did not have. A watermark says
 # how deep the suite *went*; it cannot say which function is expensive. That is exactly the question
@@ -99,11 +99,23 @@ for arch in $arches; do
     ARCH="$arch" SS="$tmp/ss.bin" SYMS="$tmp/syms.txt" REPORT="$report_only" python3 - <<'PYEOF' || status=1
 import os, struct, sys
 
-# The smallest kernel stack in the tree: `thread::STACK_PAGES` (4) times a 4 KiB page. Every kernel
-# thread and every process's kernel side runs on one of these, so it is the budget that binds.
-SMALLEST_STACK = 4 * 4096
-DIVISOR = 3
-CEILING = SMALLEST_STACK // DIVISOR
+# **The ceiling is the guard page, not a fraction of the stack**, and that correction was paid for.
+#
+# This shipped gating at a third of a 16 KiB thread stack (5461 bytes), which sounded principled and
+# was not. **The guard page is ONE page.** A frame larger than 4096 bytes can move `sp` from inside
+# the stack to below the guard in a single step, touching nothing in between, so the guard never
+# faults and the write lands in the neighbouring thread's stack instead. `kernel/src/stack.rs` says
+# exactly this in the message it prints; the first version of this gate did not read it.
+#
+# So a frame over 4096 does not merely risk an overflow, it defeats the mechanism that turns an
+# overflow into a legible fault rather than silent corruption. Anything in the old 4096..5461 band
+# passed the gate while being able to jump the guard.
+#
+# Measured 2026-08-14 on riscv64, `thead-c906`: a fault landed **4088 bytes below the stack bottom**
+# on a 4096-byte guard page. Eight more bytes and there would have been no fault at all, just a
+# corrupted neighbour and a mystery somewhere else entirely.
+GUARD_PAGE = 4096
+CEILING = GUARD_PAGE
 
 # Test bodies run on the BOOT stack, which is 64 KiB, because `test_main` runs on the boot context
 # (notes/stack-high-water.md: "the boot stack carries the deepest call chain of the entire suite").
@@ -122,6 +134,29 @@ EXCEPT = {
         "boot stack: called by roster_page below, before its sched::spawn",
     "kernel::user::disk_service::roster_page":
         "boot stack: both callers (start, start_probe) run it before their sched::spawn",
+}
+
+# **A ratchet, not an exemption**, and the difference is the number.
+#
+# `sched::spawn_on` is one generic function, and every service instantiates it: ten copies, each
+# 4.1 to 4.6 KiB, each over the guard page, on both ISAs. They run on kernel thread stacks, so unlike
+# the EXCEPT list above there is nothing safe about them. **This is the live defect**, not a
+# tolerated one, and it is the prime suspect for the riscv64 overflow measured on 2026-08-14.
+#
+# It is a ratchet because the fix is a refactor rather than an edit: `spawn_on` takes a `Thread` by
+# value and moves it twice more on the way into the table, and a debug build gives each move its own
+# stack temporary. Making that construct in place is the fix and it wants its own lane with the
+# kernel suite to check it.
+#
+# Until then this permits exactly what exists and **not one byte more**, so the population cannot
+# grow while nobody is looking, and any improvement has to come back here and lower the number.
+RATCHET = {
+    "kernel::sched::spawn_on::<": (
+        4592,
+        "ten instantiations of one generic, 4.1-4.6 KiB each, over the guard page on BOTH ISAs. "
+        "Takes a Thread by value and moves it twice; construct-in-place is the fix and it needs "
+        "the kernel suite to validate. Prime suspect for the 2026-08-14 riscv64 overflow.",
+    ),
 }
 
 
@@ -171,21 +206,40 @@ if os.environ.get("REPORT"):
         print(f"    {mark} {size:<7} {name[:100]}")
     sys.exit(0)
 
-over = [
-    (n, s) for n, s in ranked
-    if s > CEILING and n not in EXCEPT and not any(m in n for m in TEST_MARKERS)
-]
+def ratchet_cap(name):
+    for prefix, (cap, _why) in RATCHET.items():
+        if name.startswith(prefix):
+            return cap
+    return None
+
+
+over = []
+held = 0
+for name, size in ranked:
+    if name in EXCEPT or any(m in name for m in TEST_MARKERS):
+        continue
+    cap = ratchet_cap(name)
+    if cap is not None:
+        # Over the guard page but recorded, and only up to the recorded worst. Growth is a failure:
+        # the whole point of a ratchet is that the number may fall and may never rise.
+        if size > cap:
+            over.append((name, size))
+        elif size > CEILING:
+            held += 1
+        continue
+    if size > CEILING:
+        over.append((name, size))
 
 if over:
     print(f"    {arch}: frames over {CEILING} bytes "
-          f"(1/{DIVISOR} of a {SMALLEST_STACK}-byte kernel thread stack):", file=sys.stderr)
+          f"(the guard page under every kernel thread stack):", file=sys.stderr)
     for name, size in over:
         print(f"      {size:<7} {name}", file=sys.stderr)
     print(f"""
-A kernel thread stack is {SMALLEST_STACK} bytes and its measured high-water is already about 71% of
-that (notes/stack-high-water.md), so a frame this size is a stack overflow waiting for the right call
-chain. That is not hypothetical: it is exactly how sched::reap_region_objects overflowed on
-2026-08-13, and it compiled without a warning.
+The guard page is {GUARD_PAGE} bytes. A frame larger than that can move sp from inside the stack to
+below the guard in ONE step, touching nothing in between, so the guard never faults and the write
+lands in the neighbouring thread's stack. Measured on riscv64 2026-08-14: a fault 4088 bytes below
+the bottom, on a 4096-byte guard. Eight more bytes and there is no fault at all.
 
 Look for a `[T; MAX]` local sized to a table maximum. That shape is a stack allocation wearing the
 clothes of a bound, and the usual fix is to stop collecting into it: rescan for one item at a time,
@@ -196,8 +250,8 @@ the reason**, so the next reader can check whether the reason is still true.""",
     sys.exit(1)
 
 gated = sum(1 for n, s in frames.items() if not any(m in n for m in TEST_MARKERS))
-print(f"    {arch}: {gated} gated frames, deepest {ranked[0][1]} bytes, "
-      f"all under {CEILING} but {len(EXCEPT)} recorded exceptions")
+print(f"    {arch}: {gated} gated frames, ceiling {CEILING} (the guard page), "
+      f"{len(EXCEPT)} boot-only exceptions, {held} held by ratchet")
 PYEOF
 done
 
