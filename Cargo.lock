@@ -425,6 +425,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
+name = "manual"
+version = "0.1.0"
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -815,6 +819,7 @@ dependencies = [
  "gpt",
  "grant_plan",
  "line_editor",
+ "manual",
  "ntp_proto",
  "sink_proto",
  "smoltcp",
@@ -903,6 +908,7 @@ dependencies = [
  "fs_proto",
  "gfx_proto",
  "gpt",
+ "manual",
  "measured_boot",
  "video_terminal",
 ]
