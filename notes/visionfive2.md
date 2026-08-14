@@ -210,6 +210,79 @@ count-as-index sites, wake targeting, both ISAs' IRQ-affinity round-robins, the 
 liveness scan and the suite's own per-core loops, were swept in the follow-up branch, with the
 {1,2,3} shape host-proven in `crates/cpu_set` since QEMU cannot boot it.
 
+**Fourth bench stop (2026-08-14): boot 7's impossible pair, what the audit ruled out, and what
+boot 8 will say.** Boot 7 carried the online-set sweep and the new cross-hart `fence.i` and hung in
+a shape none of the previous stops produced, stable across five thread dumps over ten seconds:
+`init` (the only user thread) `Blocked` with its saved user pc at 0x00400188, a plain store loop in
+the builder's memset, and the boot thread `Running`, `on_cpu`, as core 2's current the whole time,
+with two endpoints each holding one parked receiver, no senders, no pending signals, and the
+syscall count frozen at 20.
+
+First, what the dump could honestly claim, established by reading its locking rather than assuming
+it: `state`, `on_cpu`, `wake_pending` and the endpoint counts are one consistent snapshot (every
+writer holds SCHED and the dump holds SCHED). The pc column is the trap frame at the thread's
+stack top, which trap entry writes without the lock, so it is a racing read for a thread on a cpu
+and trustworthy for a parked one: the frame write happened-before the state write on the thread's
+own core, and the dump's lock acquire synchronises with that core's release. So init's memset pc is
+evidence, not a dump artifact, and the dump now says this about itself (the `pc*` marker and the
+honesty comment in `sched::dump_threads`).
+
+And it is evidence of a state no legal transition sequence produces. The audit walked every write
+of `State::Blocked` in the tree: five sites, all under SCHED, all applied to the executing core's
+own current thread. A user thread reaches any of them only through its own `ecall`, and the syscall
+path advances the frame's `sepc` past the `ecall`, so a legitimately blocked user thread's dumped
+pc is its syscall site, never a memset store. A timer preemption leaves `Ready`, and nothing blocks
+a `Ready` thread in absentia. The wake-before-switch-out family was read against this state and
+holds: a preempted thread's context is saved before any core can pop it (single-owner run queues,
+interrupts masked from the requeue through `finish_switch`), a deferred wake (`wake_pending`)
+completes on the thread's own core after the context is real, and the one lock-free cross-core
+protocol, the steal slot, is loom-checked in `crates/steal_request`. The block/wake protocol itself
+has **no loom coverage**: it is lock-based, and modelling it means extracting SCHED plus the run
+queues plus the inbox into a host-checkable crate, which is a milestone of its own, not a
+bench-night patch. The riscv64 `tp` plumbing, the prior art for exactly this smell, was re-audited
+and reads correct: trap entry reloads `tp` from the per-hart stash, an S-mode return keeps the live
+`tp`, `switch_to` never carries one, and the stash is per-hart, written once.
+
+Three mechanisms survive the audit, and boot 8's serial log now discriminates them (the
+instrumentation commit on this branch):
+
+1. **A `Blocked` byte written outside the block paths**: a stray write into the TCB, or a block
+   applied to the wrong thread through a wrong per-cpu resolution. `Thread::wait_on` (endpoint and
+   sender/receiver/reply role) is written in the same SCHED-held statement as `Blocked` and printed
+   per thread. `Blocked` beside `wait=-` at boot 8 is corruption; `wait=ep/role` means the block
+   path really ran, and names the endpoint it ran against.
+2. **A hart wedged where no trap can land.** The boot thread `Running` as core 2's current for ten
+   seconds, with SCHED demonstrably free (the dumps kept printing), means core 2 reached no
+   scheduler entry for ten seconds: an S-mode spin with interrupts masked, or an SBI call that
+   never returned. Boot 7 was the **first boot to carry `sbi_remote_fence_i`**, issued for every
+   executable-page map, into vendor OpenSBI, the same firmware whose HSM fell over on hart 0
+   (second stop). A hart parked in M-mode takes no delegated S-interrupts, so it freezes with its
+   last `current` on display and, until now, nothing in the dump to say so. The per-core `ticks`
+   column is the discriminator: a wedged core's tick count holds still between dumps, and the
+   `steal_req` column shows the same wedge from a thief's side (a claimed slot that is never
+   served).
+3. **An intrusive-link double-enqueue.** One `Thread::next` link serves run queues, inboxes and
+   endpoint queues, so a double-enqueue corrupts two structures silently; no path that produces one
+   was found, but the class cannot be ruled out from the end state alone. The per-cpu event ring
+   (the last 16 scheduler events each core performed: switch, block, wake, deferred wake, remote
+   place, steal serve, inbox drain; printed by the dump) is what will show the path if the state
+   machine took an illegal step.
+
+The third stop's parked-inbox dump line is also a debug assertion in the placement path now, per
+the audit lane's handoff: loud in every QEMU test build, compiled out of the release board image,
+where the dump line remains the field diagnostic.
+
+**Why QEMU is not expected to reproduce this, said before the runs rather than after**: TCG's
+emulated memory model is far stronger than the U74's (guest accesses execute in the host's
+program order, and MTTCG serialises cross-vCPU visibility through host atomics), QEMU `virt`'s
+online set is contiguous from zero, and its firmware is mainline OpenSBI, so all three candidate
+mechanisms are structurally hidden there. A green QEMU suite says the instrument is safe to fly,
+not that boot 7 cannot recur. Attempted anyway, as it should be: the full riscv64 suite (which
+includes the steal/migration hammers: the cpu-bound batch, the migrated-`tp` waves, the cross-hart
+ASID shootdown) passed at `-smp 4` unloaded, on the sifive-u54 model, and again with the host
+starved by six busy loops. No reproduction, which is the expected null result, recorded so nobody
+mistakes it for evidence of health.
+
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
 `2h + 1`, which is the formula `kernel/src/smp.rs` uses. On the JH7110 the disabled S7 contributes
@@ -419,7 +492,14 @@ above; three boots to diagnose, fixed in `1329874` and swept after). The supervi
 context map are QEMU- and host-proven and board-proven as far as those boots reached; the
 online-set sweep's {1,2,3} shape is host-proven in `crates/cpu_set`; whether the fixed placement
 carries the board through the demo is the next bench boot's fact, like everything QEMU cannot
-prove, which is what "To measure at the bench" is for.
+prove, which is what "To measure at the bench" is for. Boot 7, the first with the placement fix
+and the cross-hart `fence.i`, hung a fourth way, in a state the transition audit says no legal
+path produces (the "Fourth bench stop" above): the cause is **not established**, three candidate
+mechanisms are, and the instrumentation that discriminates them (per-thread wait reason, per-core
+tick and steal-slot columns, per-core event rings) rides this branch for boot 8. The U74s are the
+first genuinely weak-memory parallel machine this scheduler has met, and QEMU's TCG is structurally
+unable to reproduce any of the three candidates, so a green suite there clears the instrument, not
+the scheduler.
 
 Two limitations found while building those, honestly not fixed here:
 
