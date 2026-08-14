@@ -209,7 +209,7 @@ jobs:
           command -v typos        >/dev/null || cargo install typos-cli     --locked
       - run: script/lint
 
-  stack-frames:
+  stack-frame-check:
     name: stack frames (no frame over a third of a thread stack)
     runs-on: ubuntu-24.04-arm
     steps:
@@ -227,7 +227,7 @@ jobs:
       # test binary twice (the flag changes the build, so CI's existing kernel artifacts cannot be
       # reused), which is more than `script/gates`'s header promises a developer will wait for, and
       # jobs run in parallel so a separate one costs no wall clock against the 30-minute Kani job.
-      - run: script/stack-frames
+      - run: script/stack-frame-check
 
   bench:
     name: bench (icount regression tripwire)
