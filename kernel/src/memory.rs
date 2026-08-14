@@ -561,8 +561,15 @@ mod tests {
             *slot = Some(frame);
         }
 
-        for frame in taken.into_iter().flatten() {
-            crate::memory::free(frame);
+        // `iter_mut().take()` and not `into_iter()`, which is the same lesson as the array size
+        // above one step further on. `into_iter` on an array consumes it BY VALUE, and a debug
+        // build gives that move its own stack temporary: `script/stack-frame-check` measured
+        // `<[Option<Frame>; 64] as IntoIterator>::into_iter` at **4224 bytes**, over the 4096-byte
+        // guard page, on both ISAs. Taking each slot in place copies one `Option<Frame>` instead.
+        for slot in taken.iter_mut() {
+            if let Some(frame) = slot.take() {
+                crate::memory::free(frame);
+            }
         }
     }
 

@@ -109,6 +109,9 @@ fn main() -> ExitCode {
                 ])
         }
         "initrd-riscv" => initrd_riscv(),
+        // The documentation store (milestone 40): build it, print what it costs, and optionally
+        // answer a query against it with the same reader the guest uses.
+        "manual" => manual_store(std::env::args().nth(2)),
         "std-src" => std_src(),
         // Print the farm's input stamp and exit. Exists so that "the stamp does not depend on where
         // the checkout lives" is a claim anyone can CHECK rather than one they have to believe:
@@ -1495,6 +1498,8 @@ fn initrd_riscv() -> bool {
             "sink",
             "--bin",
             "wc",
+            "--bin",
+            "doc",
             // The credential pair (milestone 56). These were listed in the riscv initrd tables below
             // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
             // file the build was never asked to produce. The lane's own riscv leg went green on a
@@ -1630,6 +1635,10 @@ fn initrd_riscv() -> bool {
         // The consumer (milestone 50). Both archives, for the sink's reason: `date | wc` has to
         // compose on either instruction set or it is not a claim about the system.
         ("wc", "wc"),
+        // The viewer (milestone 40). Both archives for the sink's reason: `doc page.md | wc` is a
+        // claim about how the streams compose, and a claim that holds on one instruction set is not
+        // one.
+        ("doc", "doc"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1902,6 +1911,9 @@ fn mkinitrd() -> bool {
         // `wc` (milestone 50): the right-hand side of a pipe, and the first program that reads a
         // stream. Portable, so both archives carry it.
         "wc",
+        // `doc` (milestone 40): the documentation viewer, a filter from markdown to styled text.
+        // Portable for the same reason as `wc`.
+        "doc",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -2110,6 +2122,194 @@ fn mkfs_elf(triple: &str) -> String {
         .to_string()
 }
 
+// ---- the documentation store (milestone 40) -------------------------------------------------
+
+/// **What each package's documentation is.**
+///
+/// A bundle is a package's pages plus the index shard over them, and it is installed as a unit:
+/// `doc/<bundle>/` in the filesystem image, with `doc/bundles` listing the names. That is the shape
+/// milestone 40 asked for ("installed by the package that owns it") minus a package manager, and it
+/// is the reason the table is here rather than a `doc/` directory per crate: **copying a note into a
+/// crate directory would make a second copy that can drift**, and the whole point of in-tree
+/// documentation is that there is one.
+///
+/// So a bundle names paths that already exist, and the store is a build artifact. A page that has
+/// moved fails the build rather than shipping stale.
+const DOC_BUNDLES: &[(&str, &[&str])] = &[
+    ("manual", &["notes/manual.md"]),
+    ("swish", &["notes/pipes.md", "notes/line-discipline.md"]),
+    ("kernel", &["notes/ipc-naming.md", "notes/stack.md"]),
+    ("glob", &["notes/glob.md"]),
+];
+
+/// Where the store is staged on the host before it is imported into the filesystem image.
+fn doc_store_path() -> std::path::PathBuf {
+    workspace_root().join("target/redoxfs-tree/doc")
+}
+
+/// What one bundle cost, so the numbers in notes/manual.md are measured rather than estimated.
+struct Shard {
+    bundle: &'static str,
+    pages: usize,
+    terms: usize,
+    postings: usize,
+    /// Bytes of markdown.
+    source: usize,
+    /// Bytes of index.
+    index: usize,
+}
+
+/// Build the store into `target/redoxfs-tree/doc`, ready for `mkredoxfs`'s `import`.
+///
+/// Returns one [`Shard`] per bundle. `None` means a listed page is missing, which is a build
+/// failure rather than a warning: a store that quietly ships without a page is a manual with a
+/// missing chapter and nothing to say so.
+fn doc_store() -> Option<Vec<Shard>> {
+    let root = doc_store_path();
+    let _ = std::fs::remove_dir_all(&root);
+    if std::fs::create_dir_all(&root).is_err() {
+        eprintln!("doc-store: cannot create {}", root.display());
+        return None;
+    }
+
+    let mut shards = Vec::new();
+    let mut names = String::new();
+    for (bundle, pages) in DOC_BUNDLES {
+        let dir = root.join(bundle);
+        if std::fs::create_dir_all(&dir).is_err() {
+            eprintln!("doc-store: cannot create {}", dir.display());
+            return None;
+        }
+        // The page's name in the store is its basename, because the store is where a reader types
+        // it: `cd doc/glob` then `doc glob.md`. Its *path* in the index keeps the whole repository
+        // path, so a search result says where the page came from.
+        let mut loaded: Vec<(String, String, Vec<u8>)> = Vec::new();
+        for page in *pages {
+            let src = workspace_root().join(page);
+            let Ok(bytes) = std::fs::read(&src) else {
+                eprintln!("doc-store: {bundle} lists {page}, which does not exist");
+                return None;
+            };
+            let base = std::path::Path::new(page)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(page);
+            if std::fs::write(dir.join(base), &bytes).is_err() {
+                eprintln!("doc-store: cannot write {base}");
+                return None;
+            }
+            let title = manual::index::title_of(&bytes).unwrap_or(base).to_string();
+            loaded.push(((*page).to_string(), title, bytes));
+        }
+
+        let sources: Vec<manual::index::Source<'_>> = loaded
+            .iter()
+            .map(|(path, title, bytes)| manual::index::Source {
+                path,
+                title,
+                text: bytes,
+            })
+            .collect();
+        let index = manual::index::build(&sources);
+        let header = manual::index::Header::parse(&index[..manual::index::PAGE]).ok()?;
+        if std::fs::write(dir.join("index"), &index).is_err() {
+            eprintln!("doc-store: cannot write {bundle}/index");
+            return None;
+        }
+        shards.push(Shard {
+            bundle,
+            pages: header.pages as usize,
+            terms: header.terms as usize,
+            postings: header.postings as usize,
+            source: loaded.iter().map(|(_, _, b)| b.len()).sum(),
+            index: index.len(),
+        });
+        names.push_str(bundle);
+        names.push('\n');
+    }
+
+    // The manifest a reader (and, when it exists, a guest-side `apropos`) uses to find the shards.
+    // A file rather than a directory listing, because **there is no directory iteration in this
+    // system** and adding one would be adding authority: a program that can list a directory can
+    // discover what it was not given. See notes/manual.md.
+    if std::fs::write(root.join("bundles"), names).is_err() {
+        eprintln!("doc-store: cannot write the bundle manifest");
+        return None;
+    }
+    Some(shards)
+}
+
+/// `cargo xtask manual`: build the store and print what it costs, then answer a query against it.
+///
+/// The query at the end is not a demo. It is the only thing that proves the reader and the writer
+/// agree, and it runs the **same** `no_std` lookup the guest runs, over the same bytes, through the
+/// same one-page-at-a-time [`manual::index::Pages`] interface. Only the IO differs.
+fn manual_store(term: Option<String>) -> bool {
+    let Some(shards) = doc_store() else {
+        return false;
+    };
+    println!("documentation store: {}", doc_store_path().display());
+    println!();
+    println!(
+        "  {:<10} {:>5} {:>7} {:>8} {:>9} {:>8} {:>6}",
+        "bundle", "pages", "terms", "postings", "markdown", "index", "probes"
+    );
+    let (mut src, mut idx) = (0usize, 0usize);
+    for s in &shards {
+        // A lookup is a binary search over index PAGES, so its cost is the log of how many pages the
+        // term table occupies, plus the one read that finishes inside a page. This is the number the
+        // layout exists to keep small, so it is the number the build prints.
+        let per = manual::index::PAGE / manual::index::TERM_REC;
+        let term_pages = s.terms.div_ceil(per).max(1) as u64;
+        let probes = 64 - (term_pages - 1).leading_zeros().min(63) + 1;
+        println!(
+            "  {:<10} {:>5} {:>7} {:>8} {:>9} {:>8} {:>6}",
+            s.bundle, s.pages, s.terms, s.postings, s.source, s.index, probes
+        );
+        src += s.source;
+        idx += s.index;
+    }
+    println!();
+    println!("  {src} bytes of markdown, {idx} bytes of index");
+
+    let Some(term) = term else {
+        return true;
+    };
+    println!();
+    println!("search: {term}");
+    let mut found = 0;
+    for (bundle, _) in DOC_BUNDLES {
+        let Ok(bytes) = std::fs::read(doc_store_path().join(bundle).join("index")) else {
+            continue;
+        };
+        let mut pages = manual::index::Slice(&bytes);
+        let Ok(header) = manual::index::Header::parse(&bytes[..manual::index::PAGE]) else {
+            continue;
+        };
+        let Some(hit) = manual::index::lookup(&header, term.as_bytes(), &mut pages) else {
+            continue;
+        };
+        let mut posts = [manual::index::Posting { page: 0, count: 0 }; 16];
+        let n = manual::index::postings(&header, &hit, &mut pages, &mut posts);
+        for p in &posts[..n] {
+            let Some(rec) = manual::index::page_record(&header, p.page, &mut pages) else {
+                continue;
+            };
+            println!(
+                "  {:>4}  {:<24}  {}",
+                p.count,
+                String::from_utf8_lossy(rec.title()),
+                String::from_utf8_lossy(rec.path())
+            );
+            found += 1;
+        }
+    }
+    if found == 0 {
+        println!("  nothing in the store says that");
+    }
+    true
+}
+
 /// Where the RedoxFS test image is written. The runners derive exactly this name from
 /// `CRICKER_DISK` (`${CRICKER_DISK%.img}-redoxfs.img`), so the two stay in lockstep.
 fn redoxfs_disk_path() -> String {
@@ -2168,6 +2368,7 @@ fn mkredoxfs() -> bool {
     redoxfs_host(&["mkfs", &img, "16"])
         && redoxfs_host(&["put", &img, fs_proto::fixture::MOTD_NAME, &motd])
         && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
+        && doc_store().is_some()
         && redoxfs_host(&["import", &img, &tree])
 }
 
@@ -3505,7 +3706,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 37] = [
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     ("echo hello world | wc", Some("1 2 12")),
     ("echo hello world > gate.txt", None),
     ("wc < gate.txt", Some("1 2 12")),
@@ -3536,6 +3737,20 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 37] = [
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
     ("caps wc gate.txt", Some("input    gate.txt")),
+    // **Milestone 40 at the same interface, and only this much of it.** `doc` is in the image, is
+    // spawnable, and declares that it reads a stream, so bare `doc` is refused at the prompt before
+    // anything is spawned, exactly as `wc` is and for the same reason: a viewer that could open the
+    // page it renders could open any page.
+    //
+    // What is deliberately NOT here is `doc gate.txt`, and the reason is a shell limitation this
+    // lane found by typing it rather than by reading. `swish` sends a spawned stage its **whole**
+    // input and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a
+    // program that writes while it is still reading blocks against a shell that is still writing.
+    // `wc` never meets it because it produces nothing until end of stream. Both workarounds fail
+    // for a second reason: neither `doc gate.txt | wc` nor `doc gate.txt > page.txt` delivers the
+    // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
+    // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
+    ("doc", Some("name a file")),
     // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
     // the check is the one word that separates a real time from both ways of not having one:
     // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine

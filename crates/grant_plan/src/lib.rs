@@ -139,13 +139,22 @@ pub enum Prog {
     /// out, resolved by [`plan_against_with`] into a [`line::Source::File`]. See that function for
     /// why what the child holds is narrower than a per-file capability rather than the same thing.
     Wc,
+    /// **Render markdown for a terminal** (milestone 40, `user/src/doc.rs`, notes/manual.md).
+    ///
+    /// The same manifest as [`Prog::Wc`]: a stream in, a stream out, and nothing else. `doc
+    /// notes/glob.md` reads like Unix's `man` and is not: the name is a designation the *shell*
+    /// resolves against the directory it holds, and what arrives at the program is bytes. A viewer
+    /// that opened the page it renders would be a viewer that could open any page.
+    ///
+    /// **Provisional name.**
+    Doc,
 }
 
 /// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
 /// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
 /// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
 /// can be written against one number.
-pub const PROG_COUNT: usize = 7;
+pub const PROG_COUNT: usize = 8;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
@@ -164,6 +173,7 @@ impl Prog {
             // first.
             b"rm" => Some(Prog::Rm),
             b"wc" => Some(Prog::Wc),
+            b"doc" => Some(Prog::Doc),
             _ => None,
         }
     }
@@ -178,6 +188,7 @@ impl Prog {
             Prog::Date => "date",
             Prog::Rm => "rm",
             Prog::Wc => "wc",
+            Prog::Doc => "doc",
         }
     }
 
@@ -191,6 +202,7 @@ impl Prog {
             Prog::Date => 4,
             Prog::Rm => 5,
             Prog::Wc => 6,
+            Prog::Doc => 7,
         }
     }
 
@@ -204,6 +216,7 @@ impl Prog {
             4 => Some(Prog::Date),
             5 => Some(Prog::Rm),
             6 => Some(Prog::Wc),
+            7 => Some(Prog::Doc),
             _ => None,
         }
     }
@@ -359,6 +372,28 @@ impl Prog {
                 // that answered as it read could not be run this way at all.
                 input: InputSpec::Required {
                     writes_while_reading: false,
+                },
+                reports: true,
+                interruptible: false,
+                clock: false,
+            },
+            // **The viewer**, whose manifest is "a stream in, a stream out" like `wc`'s, and handed
+            // bytes like every other stage. The one place it parts from `wc` is the field milestone
+            // 50 added: `wc` absorbs the whole stream before it emits (`writes_while_reading:
+            // false`), while `doc` renders as it reads and so writes while it is still reading. That
+            // difference is not decoration. It is exactly why `doc` can deadlock a rendezvous
+            // pipeline where `wc` never does (notes/manual.md's BUGS section), and the planner can
+            // only account for it if the manifest declares it. No memory grant, because the renderer
+            // never allocates.
+            Prog::Doc => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                output: OutputSpec::Bytes,
+                input: InputSpec::Required {
+                    writes_while_reading: true,
                 },
                 reports: true,
                 interruptible: false,
