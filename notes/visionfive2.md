@@ -159,6 +159,41 @@ contributes nothing to the record, host-proven against the hand-written jh7110 f
 (crates/isa/tests/riscv64_jh7110.rs). One roster limitation remains, recorded in the BUGS below:
 `cpu::MAX_CPUS` is 4 and this SoC describes five harts.
 
+**Second bench stop (2026-08-14): the vendor tree lies about the S7, twice, and the fix above
+never fires on the real board.** Everything in this note cited from [dtsi] describes mainline; the
+tree the flashed firmware actually hands over was read at the U-Boot prompt (`fdt print`) and says
+something else. Measured: **all five cpu nodes carry `status = "okay"`**, and cpu@0 carries
+`riscv,isa = "rv64imacu"` with `mmu-type = "riscv,sv39"`. So the vendor tree marks the S7 okay and
+claims it has an Sv39 MMU, and both are false: the S7 has no MMU and no S-mode. With `status`
+telling that lie, hart 0 came up startable, the kernel handed it to `sbi hart_start`, and **vendor
+OpenSBI died on it**: an M-mode load access fault at OpenSBI's own scratch area, `mepc` inside
+OpenSBI, reported for hart 0, immediately after our bring-up call. If a boot ends in an OpenSBI
+trap dump whose `mepc` is in firmware and whose hart is 0, this is what it looks like; the kernel
+code that caused it is a `hart_start` the roster should never have issued.
+
+The one truthful property on that node is the ISA string itself, and it answers by omission:
+`rv64imacu` is the old spelling that lists **privilege letters** in the single-letter run, and it
+spells `u` (user) without `s` (supervisor). The U74s beside it say `rv64imafdcbsux`, four single
+letters `b s u x` at the tail, `s` present. A hart without S-mode cannot run this kernel whatever
+the rest of its node claims, so since 2026-08-14 **startability requires supervisor mode, read
+from the hart's own `riscv,isa`** (`isa::riscv64::supervisor_mode_claim`, enforced in
+`smp::read_cpu_list`), and such a hart is likewise kept out of the machine record's intersection
+and `mmu` (`isa::riscv64`). The boot line names the exclusion in the machine's own terms: "cpu 0's
+riscv,isa names user mode and not supervisor".
+
+The rule needs a witness, and this is the part worth remembering before generalizing it: **a
+missing `s` alone proves nothing.** Modern ISA strings spell no privilege letters at all (Linux
+rejects them; QEMU dropped `s`/`u` in 5.1), so QEMU `virt` today says `rv64imafdch_...` and the
+mainline jh7110 dtsi says `rv64imac_zba_zbb`/`rv64imafdc_zba_zbb`, silent about privilege on
+machines that have S-mode. Absence of `s` is a denial only when a bare `u` in the same
+single-letter run proves the writer was spelling privilege modes; otherwise it is silence, and
+silence is not evidence of absence. Multi-letter `_s`-prefixed extensions (`_sstc`, `_svadu`,
+QEMU's own string is full of them) never count: only the run before the first `_` is scanned.
+Host-proven on both generations of spelling and both JH7110 trees
+(crates/isa/tests/riscv64_isa_strings.rs, riscv64_jh7110.rs, riscv64_jh7110_vendor.rs): the
+mainline fixture's S7 is excluded by `status`, the vendor fixture's by its ISA string, and the
+same conclusion arrives through the two trees' different lies.
+
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
 `2h + 1`, which is the formula `kernel/src/smp.rs` uses. On the JH7110 the disabled S7 contributes
@@ -327,6 +362,7 @@ jumping without complaint; the banner is the second target, after the driver wor
 | `Starting kernel ...` then silence | Expected until the UART driver handles reg-shift/io-width: the kernel may be running and polling LSR at the wrong offset. Also: DTB left at `$fdtcontroladdr`/`fdt_addr_r` (outside the boot map, faults with the trap path not yet printing); or the relocation did not happen (check U-Boot printed `Moving Image from ... to 0x80200000`) |
 | `Starting kernel ...` then garbage | Kernel is alive and the divisor is wrong: driver reprogrammed the divisor against the wrong clock (needs 13 at 24 MHz, not 1) |
 | Banner, then hang or trap dump | DTB parsing or the memory map: RAM at 0x4000_0000 exercises paths QEMU never did (bitmap placement, gigapage 1 unmapped, the S7's cpu node in `smp::init`, the PLIC context formula) |
+| Banner, then an **OpenSBI** trap dump (`mepc` in firmware, hart 0) | The kernel started the S7: the vendor tree's `status`/`mmu-type` lies got past the roster. The supervisor rule ("Second bench stop" above) exists to refuse hart 0; if this dump is back, that gate has regressed or the tree found a third lie |
 
 ## To measure at the bench
 
@@ -335,7 +371,9 @@ Facts documentation could not settle, each an explicit measurement, none guessed
 1. **OpenSBI version in the shipped flash** (banner), and which SBI extensions `sbi probe` reports;
    specifically whether PMU is present and how many hpmcounters it exposes on the U74s.
 2. **What `sbi_hart_start` returns for hart 0** (the disabled S7): error, or a start that must
-   never be requested.
+   never be requested. **Measured 2026-08-14: the worse answer.** Vendor OpenSBI does not refuse
+   it; it starts the S-incapable core and dies in its own trap handler (see "Second bench stop"
+   above). The refusal has to be ours, and now is.
 3. **The vendor U-Boot's actual environment**: whether its distro boot scans our single-partition
    card (vendor firmware predates some mainline conventions), and the values of `kernel_addr_r`
    and `fdt_addr_r` in the flashed environment (`printenv`), documented above from mainline
@@ -354,12 +392,13 @@ Facts documentation could not settle, each an explicit measurement, none guessed
 
 The kernel first ran on this board on 2026-08-14 and got through its banner (DW-8250 console,
 DTB parse, paging, traps, timer, frame allocator) before panicking on the QEMU PCIe constants;
-the PCIe section above records that failure and its fix, which is QEMU-proven and awaits the
-next bench boot for its board proof. Of the four driver gaps this note originally listed, the
-banner is the board's word on two (the UART's DW-8250 shape, and the boot page table reaching
-the DTB); the PLIC context map and the disabled-hart handling sit past the point that boot
-reached and remain QEMU-proven only. What QEMU cannot prove is what "To measure at the bench"
-is for.
+the PCIe section above records that failure and its fix. The second boot that day carried the
+PCIe fix, got through fine paging and ISA discovery, and died starting hart 0 (the "Second
+bench stop" above): the vendor tree's `status` lie walked the S7 past the disabled-hart
+handling, and vendor OpenSBI crashed rather than refuse the start. The supervisor rule built
+from that crash is QEMU- and host-proven and awaits the next bench boot for its board proof,
+as does the PLIC context map, which sits past the point either boot reached. What QEMU cannot
+prove is what "To measure at the bench" is for.
 
 Two limitations found while building those, honestly not fixed here:
 
@@ -368,12 +407,13 @@ Two limitations found while building those, honestly not fixed here:
   kernel console will print but the interactive shell's input path reads garbage until that driver
   learns the same shape the kernel driver did. Not on the first-boot path (the tour and test
   builds take no input); bites at the shell milestone.
-- **`cpu::MAX_CPUS` is 4 and this SoC describes five harts** (one disabled), so U74 hart 4 falls
+- **`cpu::MAX_CPUS` is 4 and this SoC describes five harts** (one unusable), so U74 hart 4 falls
   off the end of the roster and stays parked, silently. The fix is a `MAX_CPUS` bump or a roster
-  that skips disabled harts, and both are entangled with the logical-id-equals-hardware-id
-  assumption recorded in `smp.rs`'s BUGS; a bench boot will print "5 core(s) in the device tree,
-  4 startable" and bring up three secondaries, which is correct arithmetic and one hart short of
-  the machine.
+  that skips unstartable harts, and both are entangled with the logical-id-equals-hardware-id
+  assumption recorded in `smp.rs`'s BUGS. On the vendor tree a bench boot will print "5 core(s)
+  in the device tree, 3 startable" (the four roster slots hold the S7 and three U74s; the S7 is
+  excluded by the supervisor rule) plus the cpu 0 exclusion line, and bring up two secondaries
+  beside the boot hart, which is correct arithmetic and one hart short of the machine.
 
 The `text_offset` in the Image header encodes one board's DRAM base; the header comment in
 `boot.s` and the section above carry the caveat.
