@@ -5,8 +5,10 @@
 **Gate: DECISION, MILESTONE 65, MILESTONE 107.** The scoping decision comes before any code: the
 subset of SMB3 that Time Machine needs, or a general SMB3 server. Milestone 65 holds the key
 `ntlm_response` computes with, and 107 is what lets a Mac connect at all. One dependency this block
-names has no owner anywhere on the roadmap: `fs_proto` has no `RENAME` verb and the std PAL answers
-`Unsupported`.
+names was recorded here as unowned: `RENAME`. **That is no longer true** (corrected 2026-08-14):
+`fs_proto::fs::RENAME` is op 11, fully specified with its rights (`REMOVE` on the source directory,
+`CREATE` on the destination) and its atomicity, and the std PAL implements `rename` against it. So
+this block's third gate has closed and only the decision, 65 and 107 remain.
 
 **In brief.** The actual goal, and **probably the largest single piece of work in the project**. It is
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
@@ -52,10 +54,19 @@ server, RedoxFS) and accepting sidecar files**, not the hard blocker it first ap
 ## `fruit:posix_rename` lands squarely on work already scoped
 
 Rename over an open file, which is precisely the territory of §42 (a filesystem declares what it
-offers and must be truthful) and milestone 47's `mv` section. Note the current state: **`fs_proto` has
-no `RENAME` verb at all** and `rename` is `Unsupported` in the std PAL. So milestone 55 has a hard
-dependency on that gap being closed, and §42's concurrency-versus-crash atomicity split is exactly the
-distinction Time Machine's durability expectations will test.
+offers and must be truthful) and milestone 47's `mv` section.
+
+**Corrected 2026-08-14.** This paragraph said `fs_proto` had "no `RENAME` verb at all" and that the
+PAL answered `Unsupported`, and called that a hard dependency. Both halves were wrong by the time
+anyone read them. `fs_proto::fs::RENAME` is op 11 with its rights and its atomicity documented, and
+the PAL's `rename` packs both names into the shared page and issues the request; it returns
+`unsupported_err()` only when no filesystem is granted at all, which is equally true of `open`.
+
+**The correction matters more than the fact.** A false blocker on the customer path makes the work
+look harder than it is, and the cost lands on whoever reads this block deciding whether to start. It
+survived because a milestone block is written once and the tree keeps moving; §42's
+concurrency-versus-crash atomicity split is still exactly the distinction Time Machine's durability
+expectations will test, and that half was always right.
 
 ## Three users, and this is where the thesis gets a concrete demonstration
 
