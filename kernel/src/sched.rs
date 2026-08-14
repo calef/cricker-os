@@ -1813,15 +1813,26 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // aborted, and wake it, so its blocked IPC returns an error rather than dangling on a freed page.
     // Removing the name then bumps its generation, so every Endpoint capability to it fails to
     // resolve, and the page is freed by the enclosing destroy.
-    let mut doomed_eps = [0u64; MAX_ENDPOINTS];
-    let mut ne = 0;
-    for (name, &phys) in sched.endpoints.iter() {
-        if base <= phys && phys < end {
-            doomed_eps[ne] = name;
-            ne += 1;
-        }
-    }
-    for &name in &doomed_eps[..ne] {
+    //
+    // **Rescan for one at a time rather than listing them all first.** The obvious shape is to walk
+    // the table into a `[u64; MAX_ENDPOINTS]` and then walk that, because `remove` mutates the table
+    // and you cannot remove while iterating it. That array is **4096 bytes of a 16 KiB kernel thread
+    // stack** (`thread::STACK_PAGES`), and this function is already the deepest frame in the kernel;
+    // measured with `-Z emit-stack-sizes` it was 6816 bytes, of which 6144 was three such scratch
+    // arrays, against a measured thread-stack high-water of 11672 bytes: this one frame wanted 2104
+    // bytes MORE than all the headroom there was. See notes/stack-high-water.md.
+    //
+    // Rescanning costs O(live endpoints) per removal instead of O(1). That is the right trade here
+    // and nowhere near a hot path: this runs when a region is torn down, the table is 512 slots, and
+    // a real teardown removes a handful. Stack is the scarce resource, not these comparisons.
+    loop {
+        let doomed = sched
+            .endpoints
+            .iter()
+            .find(|&(_, &phys)| base <= phys && phys < end)
+            .map(|(name, _)| name);
+        let Some(name) = doomed else { break };
+
         // Drain the endpoint's waiters. `endpoint_of` returns a `'static` reference, so it does not
         // hold the `sched` borrow across the wakes below.
         let mut waiters = [0u64; MAX_THREADS];
