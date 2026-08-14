@@ -31,11 +31,14 @@
 //!
 //! # BUGS
 //!
-//! - **A `status = "disabled"` CPU node is counted.** Firmware sometimes describes a core the OS
-//!   will never run on, and including it narrows the intersection further than it needs to be. That
-//!   is the safe direction (we under-claim rather than over-claim) and it is not free: a board that
-//!   describes a disabled core with no FPU would make us report no FPU. Left alone until a real
-//!   board shows the case, rather than guessed at.
+//! - **A `status = "disabled"` CPU node contributes nothing to the record** (the VisionFive 2 prep,
+//!   2026-08-14; this used to be the first bug on this list). The real board showed the case this
+//!   list was waiting for: the JH7110's hart 0 is an MMU-less S7 monitor core marked disabled, and
+//!   counting it would narrow `common` to the S7's `rv64imac` and, on a tree that spells the S7's
+//!   MMU as `riscv,none`, refuse to boot a machine whose four real harts are exactly our contract.
+//!   The kernel never runs on a disabled hart (`smp` refuses to start one), so its self-description
+//!   is not a fact about the machine the kernel schedules on. Such a node still counts in
+//!   [`Isa::harts`], which is an honest node count, not a roster.
 //! - **Absence of `zicsr` or `zifencei` from a legacy `riscv,isa` string is not evidence of
 //!   absence.** Both were carved out of the base `I` extension in 2019, and a string written before
 //!   that (or by firmware that never caught up) simply says `rv64imafdc` while the hardware has
@@ -562,7 +565,8 @@ pub struct Isa {
     pub mmu: MmuType,
     /// How many `cpu@` nodes the tree has, saturating at [`MAX_HARTS`].
     pub harts: u16,
-    /// How many of those declared an ISA at all. `common` is an intersection over these, so
+    /// How many of those declared an ISA at all, not counting disabled harts (the module BUGS say
+    /// why a disabled hart may not speak). `common` is an intersection over these, so
     /// `described == 0` means `common` is meaningless and the tree simply did not say.
     pub described: u16,
     /// Did the answer come from the deprecated `riscv,isa` string rather than
@@ -643,6 +647,13 @@ impl Isa {
         let mut mmu_type = [None; MAX_HARTS];
         dt.node_props(b"cpu@", b"mmu-type", &mut mmu_type)?;
 
+        // Which harts may speak for the machine at all. A disabled hart (the JH7110's S7 monitor
+        // core is the live case) never runs kernel code, so its ISA and MMU say nothing about the
+        // machine the kernel schedules on; see the module BUGS.
+        let mut status = [None; MAX_HARTS];
+        dt.node_props(b"cpu@", b"status", &mut status)?;
+        let enabled = |i: usize| status[i].is_none_or(crate::cpu_list::is_okay);
+
         let mut out = Isa {
             harts: harts.min(u16::MAX as usize) as u16,
             ..Isa::default()
@@ -653,6 +664,9 @@ impl Isa {
         let mut common = Extensions(!0);
 
         for i in 0..harts.min(MAX_HARTS) {
+            if !enabled(i) {
+                continue;
+            }
             let (base, exts) = match (extensions[i], legacy[i]) {
                 // The modern stringlist wins where both are present: it is the one firmware is
                 // expected to keep current, and QEMU emits both.
@@ -683,7 +697,14 @@ impl Isa {
             out.common = common.intersection(NAMED);
         }
 
-        for m in mmu_type.iter().take(harts.min(MAX_HARTS)).flatten() {
+        for (i, m) in mmu_type.iter().enumerate().take(harts.min(MAX_HARTS)) {
+            let Some(m) = m else { continue };
+            // Same gate as the ISA loop: a disabled hart's MMU (the S7 has none) must not narrow
+            // what the schedulable harts declare, or an MMU-less monitor core reads as a machine
+            // that cannot run us.
+            if !enabled(i) {
+                continue;
+            }
             let t = MmuType::from_property(m);
             if t != MmuType::Unknown && (out.mmu == MmuType::Unknown || t < out.mmu) {
                 out.mmu = t;

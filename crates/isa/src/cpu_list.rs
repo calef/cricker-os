@@ -216,7 +216,11 @@ fn hwid_from_reg(bytes: &[u8], cells: u32) -> Option<u64> {
 /// firmware, and accepting it costs nothing. Everything else, including a value we do not recognise,
 /// reads as unusable, which is the safe direction: not starting a core we could have started is a
 /// smaller machine, while starting one firmware reserved is a core running in someone else's memory.
-fn is_okay(value: &[u8]) -> bool {
+///
+/// `pub(crate)` because [`crate::riscv64::Isa::from_device_tree`] applies the same reading when it
+/// decides which harts' `riscv,isa` and `mmu-type` may narrow the machine record: one decoder for
+/// `status`, so the two walks cannot disagree about what "disabled" means.
+pub(crate) fn is_okay(value: &[u8]) -> bool {
     matches!(
         value.split(|&b| b == 0).next().unwrap_or(b""),
         b"okay" | b"ok"

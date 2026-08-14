@@ -1,0 +1,153 @@
+/dts-v1/;
+
+/*
+ * A hand-written device tree MODELED ON the StarFive JH7110 (the VisionFive 2's SoC), NOT a dump
+ * from the board. Every load-bearing fact is sourced from notes/visionfive2.md, which cites the
+ * mainline Linux jh7110.dtsi and U-Boot as of 2026-08-14:
+ *
+ *   cpu@0        the SiFive S7 monitor core: rv64imac, no MMU, status = "disabled", and its
+ *                interrupt-controller contributes ONLY a machine context to the PLIC
+ *   cpu@1..4     the four U74 application harts: rv64imafdc, Sv39, each with an M and an S context
+ *   plic         `interrupt-controller@c000000` (the JH7110's node NAME differs from QEMU's
+ *                `plic@c000000`; only the `sifive,plic-1.0.0` compatible identifies it on both),
+ *                interrupts-extended per the dtsi: context 0 = hart 0 M, then for U74 hart h,
+ *                context 2h-1 = M and context 2h = S. Hart h's S context is 2h, NOT QEMU's 2h+1.
+ *   serial       the DW-8250: reg-shift 2, reg-io-width 4, and a 24 MHz clock. Mainline expresses
+ *                the clock as a `clocks` phandle; the `clock-frequency` here is the shape vendor
+ *                and U-Boot trees carry, and it is the only form this kernel reads (a tree without
+ *                it means "do not reprogram the divisor", which is also correct on this board).
+ *
+ * Two deliberate departures from the dtsi, both defensive shapes rather than copied facts:
+ * the S7 carries `mmu-type = "riscv,none"` (binding-legal for an MMU-less core, and the worst case
+ * for an intersection that forgets to honor `status`), and the tree is trimmed to what the tests
+ * read. The legacy `riscv,isa` strings are the dtsi's own; the JH7110's tree predates
+ * `riscv,isa-extensions`, which is exactly why the legacy parser exists.
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "starfive,jh7110";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <4000000>;
+
+		cpu@0 {
+			compatible = "sifive,s7", "riscv";
+			device_type = "cpu";
+			reg = <0>;
+			riscv,isa = "rv64imac_zba_zbb";
+			mmu-type = "riscv,none";
+			status = "disabled";
+
+			cpu0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x10>;
+			};
+		};
+
+		cpu@1 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <1>;
+			riscv,isa = "rv64imafdc_zba_zbb";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu1_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x11>;
+			};
+		};
+
+		cpu@2 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <2>;
+			riscv,isa = "rv64imafdc_zba_zbb";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu2_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x12>;
+			};
+		};
+
+		cpu@3 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <3>;
+			riscv,isa = "rv64imafdc_zba_zbb";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu3_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x13>;
+			};
+		};
+
+		cpu@4 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <4>;
+			riscv,isa = "rv64imafdc_zba_zbb";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu4_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x14>;
+			};
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x1 0x0>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* The JH7110 spells its PLIC node `interrupt-controller@...`, not QEMU's `plic@...`. */
+		interrupt-controller@c000000 {
+			compatible = "starfive,jh7110-plic", "sifive,plic-1.0.0";
+			reg = <0x0 0xc000000 0x0 0x4000000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			riscv,ndev = <136>;
+			interrupts-extended = <&cpu0_intc 11>,
+					      <&cpu1_intc 11>, <&cpu1_intc 9>,
+					      <&cpu2_intc 11>, <&cpu2_intc 9>,
+					      <&cpu3_intc 11>, <&cpu3_intc 9>,
+					      <&cpu4_intc 11>, <&cpu4_intc 9>;
+		};
+
+		serial@10000000 {
+			compatible = "starfive,jh7110-uart", "snps,dw-apb-uart";
+			reg = <0x0 0x10000000 0x0 0x10000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			clock-frequency = <24000000>;
+			status = "okay";
+		};
+	};
+};
