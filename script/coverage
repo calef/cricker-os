@@ -45,7 +45,17 @@ fi
 # `c_seam` is NOT excluded, because it is pure: constants, offsets, and small functions. It now
 # carries the test the seam never had, asserting that `user/c/c_seam.c` states the same values
 # this crate does. That test is the reason rule 7 is worth its churn.
-cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt \
+# `--all-features`, because a feature-gated test is still a test and the floor does not know that.
+# `crates/manual` is the first crate here with an optional feature: its index reader is exercised by
+# a round trip against the builder, and the builder sits behind `builder` because it allocates and
+# the guest cannot. Without this flag llvm-cov compiled the reader and ran none of the three tests
+# that reach it, reporting 33.3% on a file whose reader is round-tripped against its own writer.
+#
+# The honest limitation, stated because the flag hides it: this measures the union of all features,
+# so a crate whose default build is undertested can be carried by a feature nobody ships. Today that
+# is theoretical, since `manual` is the only featured crate in the tree.
+cargo llvm-cov --workspace --all-features \
+    --exclude kernel --exclude user --exclude xtask --exclude user_rt \
     --exclude supervision_proto --exclude swap_proto --exclude system_initializer --no-report
 cargo llvm-cov report --summary-only
 mkdir -p target/llvm-cov # the lcov --output-path parent must exist; --html creates its own
