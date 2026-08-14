@@ -31,10 +31,18 @@ because it is the bus-level twin of the authority the confinement layer polices.
 ## What the kernel is, on this bus
 
 With `-bios default`, OpenSBI does no PCI setup: every BAR arrives zero. So the kernel is the
-firmware here: it sizes each BAR and places it in the board's 32-bit PCI memory window
-(`PCI_BAR_BASE`, bump-allocated, size-aligned). On a UEFI machine the firmware would have done
-this and the kernel would only read; both paths go through the same code, because `read_bars`
-reports assigned bases and the kernel places only the zeros.
+firmware here: it sizes each BAR and places it in the board's 32-bit PCI memory window,
+bump-allocated and size-aligned. On a UEFI machine the firmware would have done this and the
+kernel would only read; both paths go through the same code, because `read_bars` reports
+assigned bases and the kernel places only the zeros.
+
+The window itself, and the ECAM config window, come from the device tree, not from constants:
+`memory::init` reads the `pci-host-ecam-generic` node's `reg` and `ranges` (the 32-bit
+non-prefetchable entry, parsed by the pci crate's `mem32_window`) and `memory::pci_regions`
+answers everyone else. They were QEMU constants (`PCI_ECAM_BASE`, `PCI_BAR_BASE`) until the
+first VisionFive 2 boot, where 0x4000_0000 is DRAM base and mapping it collided with the direct
+map (notes/visionfive2.md). A machine whose tree has no such node gets no window mapped and
+every PCI probe answers "nobody home", the same degradation as an absent virtio-mmio device.
 
 Division of labor, same as the mmio side: the **pci crate** is pure decode logic (ECAM math,
 enumeration, BAR sizing, capability parsing, the INTx swizzle), host-tested against a fake config

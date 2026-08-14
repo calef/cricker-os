@@ -299,6 +299,50 @@ pub fn intx_irq(base: u32, dev: u8, pin: u8) -> u32 {
     base.saturating_add((dev as u32 + (pin as u32).saturating_sub(1)) % 4)
 }
 
+/// The 32-bit non-prefetchable memory window from a PCI host bridge's `ranges` property, as
+/// `(cpu_base, size)`. `None` when no entry qualifies, or the property is not the standard shape.
+///
+/// `ranges` is the property's raw bytes: big-endian cells in the standard PCI layout (child
+/// `#address-cells = 3`, parent `#address-cells = 2`, `#size-cells = 2`, so seven cells per
+/// entry). The first child cell (`phys.hi`) carries the space code at bits 25:24 (0b01 IO,
+/// 0b10 32-bit memory, 0b11 64-bit memory) and prefetchability at bit 30; the rest are the
+/// 64-bit PCI address, CPU address, and size. This takes the first 32-bit non-prefetchable
+/// memory entry, which is the window the kernel assigns BARs from (kernel/src/pci.rs).
+///
+/// An entry whose PCI and CPU addresses differ is skipped rather than translated, on purpose:
+/// the kernel's BAR assigner writes one number into both the BAR register and its own page
+/// tables, so a translated window is one it cannot yet honor, and refusing it here is honest
+/// where handing back a CPU address the bridge would not decode from a BAR is not. Both QEMU
+/// `virt` boards state identity windows. A ragged length (not a multiple of seven cells) means
+/// the node is not the shape this parser knows, and the answer is `None` rather than a guess.
+pub fn mem32_window(ranges: &[u8]) -> Option<(u64, u64)> {
+    const ENTRY: usize = 7 * 4;
+    if ranges.is_empty() || !ranges.len().is_multiple_of(ENTRY) {
+        return None;
+    }
+    for entry in ranges.as_chunks::<ENTRY>().0 {
+        let cell = |i: usize| -> u64 {
+            u64::from(u32::from_be_bytes(
+                entry[i * 4..i * 4 + 4].try_into().unwrap(),
+            ))
+        };
+        let hi = cell(0);
+        let space = (hi >> 24) & 0b11;
+        let prefetchable = hi & (1 << 30) != 0;
+        if space != 0b10 || prefetchable {
+            continue;
+        }
+        let pci_addr = (cell(1) << 32) | cell(2);
+        let cpu_addr = (cell(3) << 32) | cell(4);
+        let size = (cell(5) << 32) | cell(6);
+        if pci_addr != cpu_addr || size == 0 {
+            continue;
+        }
+        return Some((cpu_addr, size));
+    }
+    None
+}
+
 /// Machine-checked proofs (`script/verify`; notes/verification.md).
 ///
 /// This crate's input comes from a DEVICE: a hostile or broken PCI function can return any
@@ -372,6 +416,19 @@ mod verification {
         let mut calls = 0u32;
         virtio_caps(bdf, &mut |_, _| kani::any(), &mut |_| calls += 1);
         assert!(calls <= 64);
+    }
+
+    /// **The ranges parser is total.** The property comes from firmware's device tree, which is
+    /// the same hostile-input class as a device's config space: any byte string at all must
+    /// come back as an answer or a `None`, never a panic. Three entries covers every branch
+    /// (the loop is per-entry with no state across iterations).
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn the_ranges_parse_is_total() {
+        let bytes: [u8; 3 * 28] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        let _ = mem32_window(&bytes[..len]);
     }
 }
 
@@ -819,6 +876,53 @@ mod tests {
     /// the kernel hand a driver a truthful `DeviceID` over the PCI transport instead of a
     /// hardcoded one. Every id we drive is pinned against that derivation, so a typo in one
     /// of them is a build-time-cheap test failure rather than a device we quietly never find.
+    /// Build a `ranges` blob from 7-cell entries, the way a device tree stores it.
+    fn ranges(entries: &[[u32; 7]]) -> Vec<u8> {
+        entries
+            .iter()
+            .flatten()
+            .flat_map(|c| c.to_be_bytes())
+            .collect()
+    }
+
+    /// The QEMU riscv `virt` ranges verbatim (IO, 32-bit memory, 64-bit memory): the parser must
+    /// step past the IO entry, take the mem32 one, and never reach the mem64 one. The fixture
+    /// test in `tests/qemu_virt_dtb.rs` holds the same claim against the real tree.
+    #[test]
+    fn the_mem32_entry_is_found_among_its_neighbours() {
+        let r = ranges(&[
+            [0x0100_0000, 0, 0, 0, 0x0300_0000, 0, 0x1_0000],
+            [0x0200_0000, 0, 0x4000_0000, 0, 0x4000_0000, 0, 0x4000_0000],
+            [0x0300_0000, 4, 0, 4, 0, 4, 0],
+        ]);
+        assert_eq!(mem32_window(&r), Some((0x4000_0000, 0x4000_0000)));
+    }
+
+    /// A prefetchable 32-bit entry is not the window BARs are placed in; a tree that states only
+    /// that answers `None` rather than a window the non-prefetchable BARs should not land in.
+    #[test]
+    fn a_prefetchable_window_is_not_taken() {
+        let r = ranges(&[[0x4200_0000, 0, 0x4000_0000, 0, 0x4000_0000, 0, 0x4000_0000]]);
+        assert_eq!(mem32_window(&r), None);
+    }
+
+    /// A translated window (PCI address != CPU address) is refused, per the doc: the kernel
+    /// writes one number into both the BAR and its page tables, so it cannot honor one yet.
+    #[test]
+    fn a_translated_window_is_refused() {
+        let r = ranges(&[[0x0200_0000, 0, 0x0000_0000, 0, 0x4000_0000, 0, 0x4000_0000]]);
+        assert_eq!(mem32_window(&r), None);
+    }
+
+    /// A ragged length is not the shape this parser knows; `None`, not a partial read. Empty is
+    /// the same answer for the same reason.
+    #[test]
+    fn a_ragged_or_empty_ranges_is_refused() {
+        let r = ranges(&[[0x0200_0000, 0, 0x4000_0000, 0, 0x4000_0000, 0, 0x4000_0000]]);
+        assert_eq!(mem32_window(&r[..r.len() - 4]), None);
+        assert_eq!(mem32_window(&[]), None);
+    }
+
     #[test]
     fn a_modern_virtio_pci_id_is_0x1040_plus_the_device_type() {
         assert_eq!(VIRTIO_NET_MODERN as u32, 0x1040 + VIRTIO_TYPE_NET);
