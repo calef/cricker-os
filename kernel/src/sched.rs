@@ -583,8 +583,11 @@ fn pick_spawn_target() -> usize {
     if n <= 1 {
         return cpu::id();
     }
-    let a = cpu::current().rng_next() as usize % n;
-    let b = cpu::current().rng_next() as usize % n;
+    // The k-th ONLINE cpu, not index k: the online set is not contiguous from zero on real boards
+    // (first-silicon bench, 2026-08-14: {1,2,3} online, and modulo-count placed init into parked
+    // slot 0's inbox forever). See smp::online_cpus.
+    let a = crate::smp::nth_online(cpu::current().rng_next() as usize);
+    let b = crate::smp::nth_online(cpu::current().rng_next() as usize);
     if cpu::of(a).runnable() <= cpu::of(b).runnable() {
         a
     } else {
@@ -633,10 +636,9 @@ fn try_initiate_steal() {
         return;
     }
     let me = cpu::id();
-    let n = crate::smp::online_count();
     let mut victim = None;
     let mut best = 0usize;
-    for c in 0..n {
+    for c in crate::smp::online_cpus() {
         if c != me {
             // Steal only a run-queue backlog, never a victim's inbox in transit (see `runq_len`).
             let r = cpu::of(c).runq_len();

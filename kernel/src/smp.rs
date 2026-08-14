@@ -95,6 +95,23 @@ pub fn online_harts_mask() -> usize {
     ONLINE_MASK.load(Ordering::Acquire)
 }
 
+/// The online cpus, by id, in ascending order: the mask above as an iterator. The online set is
+/// NOT contiguous from zero on real boards (the VisionFive 2's slot 0 is the excluded S7, so its
+/// set is {1,2,3}), and `0..online_count()` as an index range is the bug the first-silicon bench
+/// found in `pick_spawn_target` (2026-08-14): modulo-count produced index 0, a placement into a
+/// parked core's inbox that nothing will ever drain. Iterate the set, never the count.
+pub fn online_cpus() -> impl Iterator<Item = usize> {
+    let mask = online_harts_mask();
+    (0..crate::cpu::MAX_CPUS).filter(move |i| mask & (1 << i) != 0)
+}
+
+/// The k-th online cpu, wrapping: the sampler's safe form of "a random online cpu".
+pub fn nth_online(k: usize) -> usize {
+    let n = online_count().max(1);
+    online_cpus().nth(k % n).unwrap_or(crate::cpu::id())
+}
+
+
 /// Set by each secondary's probe thread, indexed by the core it actually ran on. The proof that a
 /// secondary schedules real work from its own queue, not just idles. See `secondary_main` step 5.
 #[cfg(test)]
