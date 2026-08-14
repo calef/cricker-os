@@ -76,6 +76,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level.
+- [The stranger test](stranger-test.md): milestone 117's instrument, written before its first
+  run so the result cannot be graded generously afterwards. The protocol (a fresh context, no
+  brief, no help mid-run, every question a defect), the eight-question rubric for the mental
+  model, and the honest limit that an agent is not a person, so every number it produces is a
+  lower bound on the friction a human would meet.
 - [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
   after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
   separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
