@@ -108,8 +108,8 @@ pub const KERNEL_VA_BASE: u64 = 0xffff_ffc0_0000_0000;
 /// index). It is RWX everywhere, like aarch64's coarse boot map: it exists to survive ~twenty
 /// instructions until `mmu::init` builds the real W^X tables. See boot.s and notes/riscv-port.md.
 ///
-/// Gigapage 1 (0x4000_0000..0x8000_0000) is there for the board, not for QEMU. The JH7110's DRAM
-/// starts at 0x4000_0000 and U-Boot's default `fdt_addr_r` is 0x4600_0000, so without this entry a
+/// Gigapage 1 (`0x4000_0000..0x8000_0000`) is there for the board, not for QEMU. The JH7110's DRAM
+/// starts at `0x4000_0000` and U-Boot's default `fdt_addr_r` is `0x4600_0000`, so without this entry a
 /// DTB left at the default address faults on the first read, before the trap path can print
 /// (notes/visionfive2.md). On QEMU `virt` this range is the 32-bit PCI window, which nothing
 /// touches while the boot table is live, so mapping it is inert there. A DTB near the top of an

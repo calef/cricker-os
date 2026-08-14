@@ -61,7 +61,7 @@ pub fn init() {
 
 /// **Re-shape the console UART from the device tree** (RISC-V; the VisionFive 2 prep,
 /// notes/visionfive2.md). The JH7110's UART0 sits at QEMU's address with different silicon behind
-/// it: a DesignWare 8250 with registers four bytes apart, 32-bit accesses, a 24 MHz clock, and the
+/// it: a `DesignWare` 8250 with registers four bytes apart, 32-bit accesses, a 24 MHz clock, and the
 /// DW busy quirk. Those four facts come from the serial node's `reg-shift`, `reg-io-width`,
 /// `clock-frequency` and `compatible`, read here and handed to the driver in one piece.
 ///
@@ -86,7 +86,7 @@ pub fn configure_from_dtb(dtb_ptr: usize) {
     /// The console node's name, pinned beside `UART_PHYS` and carrying its address in the unit
     /// suffix: both QEMU `virt` and the JH7110 spell UART0 exactly this way. Same
     /// hardcode-with-a-witness stance as the address itself; the fixture test
-    /// (crates/isa/tests/riscv64_jh7110.rs) is the witness.
+    /// (`crates/isa/tests/riscv64_jh7110.rs`) is the witness.
     const UART_NODE: &[u8] = b"serial@10000000";
 
     // SAFETY: the pointer firmware handed us in a1. Nothing has parsed it yet on this boot; the

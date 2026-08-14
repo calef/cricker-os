@@ -126,11 +126,12 @@ impl PlicContexts {
                 n += 1;
                 continue;
             };
-            if ph.len() >= 4 && n < MAX_CONTEXT_HARTS {
-                if let Some(cpu) = cpus.cpus().get(n) {
-                    intc_phandle[n] = u32::from_be_bytes([ph[0], ph[1], ph[2], ph[3]]);
-                    hart_of[n] = cpu.hwid;
-                }
+            if ph.len() >= 4
+                && n < MAX_CONTEXT_HARTS
+                && let Some(cpu) = cpus.cpus().get(n)
+            {
+                intc_phandle[n] = u32::from_be_bytes([ph[0], ph[1], ph[2], ph[3]]);
+                hart_of[n] = cpu.hwid;
             }
             n += 1;
         }
@@ -139,7 +140,7 @@ impl PlicContexts {
         // Walk 2's payoff: entry k is context k. Two big-endian cells per entry, phandle then
         // interrupt number; an entry whose interrupt is not 9 (the machine externals, and the
         // 0xffff_ffff "no interrupt" some SiFive trees write) defines no S context.
-        for (context, entry) in entries.chunks_exact(8).enumerate() {
+        for (context, entry) in entries.as_chunks::<8>().0.iter().enumerate() {
             let phandle = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
             let irq = u32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]);
             if irq != IRQ_S_EXT {

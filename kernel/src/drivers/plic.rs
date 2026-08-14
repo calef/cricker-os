@@ -18,7 +18,7 @@
 //! ```
 //!
 //! A *context* is a (hart, privilege) pair, and **the numbering is the board's**, read out of the
-//! device tree's `interrupts-extended` by `arch::irq::init_contexts` (isa::plic). On QEMU's `virt`
+//! device tree's `interrupts-extended` by `arch::irq::init_contexts` (`isa::plic`). On QEMU's `virt`
 //! S-mode is `2*hart + 1` (`2*hart` is M-mode, which OpenSBI owns); on the JH7110 the disabled S7
 //! contributes only an M context and S-mode is `2*hart`. This driver is always handed a context
 //! and never derives one, so the mapping lives in `arch::irq`, not here.

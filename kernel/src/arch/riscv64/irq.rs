@@ -176,7 +176,7 @@ mod tests {
     /// and on QEMU `virt` (the machine every merge boots) the recorded contexts must be the
     /// `2*hart + 1` the old formula produced, which is the whole regression claim: same machine,
     /// same numbers, different provenance. The JH7110's different answer is witnessed on the host
-    /// (crates/isa/tests/riscv64_plic_contexts.rs), where that tree exists.
+    /// (`crates/isa/tests/riscv64_plic_contexts.rs`), where that tree exists.
     #[test_case]
     fn the_context_table_is_the_machines_own_and_matches_the_formula_here() {
         let ptr = crate::DTB.load(core::sync::atomic::Ordering::Relaxed);

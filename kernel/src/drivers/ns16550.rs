@@ -8,7 +8,7 @@
 //! **The register block's shape is the board's, not the architecture's**, and since the
 //! VisionFive 2 prep (notes/visionfive2.md) this driver carries it as data ([`Shape`]) instead of
 //! assuming QEMU's. QEMU `virt` wires byte-wide registers at consecutive addresses; the JH7110's
-//! UART0 is a Synopsys DesignWare DW_apb_uart, an 8250 whose registers sit **four bytes apart**
+//! UART0 is a Synopsys `DesignWare` `DW_apb_uart`, an 8250 whose registers sit **four bytes apart**
 //! (`reg-shift = <2>`), want **32-bit accesses** (`reg-io-width = <4>`), and run from a **24 MHz**
 //! clock, so the old byte read of LSR at offset 5 landed in the middle of the IER word and the
 //! transmit poll would spin on garbage forever. The shape comes from the device tree
@@ -75,7 +75,7 @@ pub struct Shape {
     /// `clock-frequency`: a wrong guess is 1.5 Mbaud garbage at the far terminal (divisor 1 at
     /// 24 MHz), while U-Boot has already set 115200 8N1 on any board that showed a prompt.
     pub divisor: u16,
-    /// The DesignWare busy quirk (`snps,dw-apb-uart`): the part ignores an LCR write while the
+    /// The `DesignWare` busy quirk (`snps,dw-apb-uart`): the part ignores an LCR write while the
     /// transmitter is busy and latches a "busy" interrupt. When set, `init` drains the transmitter
     /// (LSR.TEMT, bounded) before touching LCR.
     pub dw_busy_quirk: bool,
@@ -137,28 +137,35 @@ impl Ns16550 {
         self.init();
     }
 
+    /// The address of register `reg` under the current shape. Going through `usize` rather than
+    /// pointer casts is the same move `drivers/plic.rs` makes: the 32-bit arm's alignment is a
+    /// checked runtime fact (`off & 3 == 0`), not a static property a pointer cast could promise.
+    fn reg_addr(&self, reg: usize) -> usize {
+        self.base as usize + (reg << self.shape.reg_shift)
+    }
+
     fn read(&self, reg: usize) -> u8 {
-        let off = reg << self.shape.reg_shift;
+        let addr = self.reg_addr(reg);
         // SAFETY: `reg` is one of the register indices above; the shifted offset stays within the
         // block promised by `new` (the largest, LSR at shift 2, is 0x14 of a 0x10000 block). The
         // 32-bit arm requires 4-byte alignment, checked, because an unaligned volatile u32 traps.
         unsafe {
-            if self.shape.reg_io_width == 4 && off & 3 == 0 {
-                core::ptr::read_volatile(self.base.add(off) as *const u32) as u8
+            if self.shape.reg_io_width == 4 && addr & 3 == 0 {
+                core::ptr::read_volatile(addr as *const u32) as u8
             } else {
-                core::ptr::read_volatile(self.base.add(off))
+                core::ptr::read_volatile(addr as *const u8)
             }
         }
     }
 
     fn write(&self, reg: usize, val: u8) {
-        let off = reg << self.shape.reg_shift;
+        let addr = self.reg_addr(reg);
         // SAFETY: as `read`.
         unsafe {
-            if self.shape.reg_io_width == 4 && off & 3 == 0 {
-                core::ptr::write_volatile(self.base.add(off) as *mut u32, val as u32);
+            if self.shape.reg_io_width == 4 && addr & 3 == 0 {
+                core::ptr::write_volatile(addr as *mut u32, val as u32);
             } else {
-                core::ptr::write_volatile(self.base.add(off), val);
+                core::ptr::write_volatile(addr as *mut u8, val);
             }
         }
     }
