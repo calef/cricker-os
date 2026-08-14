@@ -657,6 +657,55 @@ was considered and declined on these numbers. Not in `script/bootstrap`, because
 does not need it; same self-install pattern as `script/coverage`. A new proof crate goes in that
 script's list, and a new harness in an existing crate is picked up with no change.
 
+### Sharding, and the floor that no number of runners moves (milestone 119, 2026-08-14)
+
+The paragraph above says the wall clock cannot drop below the longest single harness. That was
+reasoning; here is the measurement, read from the `==> kani:` timestamps of a real CI run at
+`VERIFY_JOBS=2` rather than from a local run.
+
+| crate | wall clock | share of the job |
+|---|---|---|
+| `glob` | 15.0 min | **49.7%** |
+| `calendar` | 10.0 min | 33.0% |
+| `dma_validator` | 2.9 min | 9.6% |
+| `gpt` | 1.1 min | 3.5% |
+| the other 15 crates | 1.4 min together | 4.2% |
+
+**Two crates are 83% of the suite**, which is the fact that decides everything else. `script/verify
+--shard k/n` packs the crates by measured seconds (greedy longest-processing-time, from the cost
+table in the script), and CI runs two shards concurrently:
+
+| arrangement | wall clock |
+|---|---|
+| serial, as it ran until now | 30.3 min |
+| **two shards** | **15.1 min** |
+| three or four shards | 15.0 min |
+| per-harness sharding, unbounded runners | 10.8 min |
+
+**Three and four shards buy nothing**, because `glob` is atomic at crate granularity: the extra
+runners idle while `glob` decides the answer alone. That is why CI runs two and not the four the
+milestone first proposed.
+
+The 10.8-minute row is the real floor and it is one harness:
+**`glob::the_dot_rule_only_touches_names_that_start_with_a_dot` takes 646 seconds by itself**, with
+`no_magic_means_the_pattern_is_its_own_only_match` at 530 and
+`calendar::the_calendar_algorithms_are_mutual_inverses` at 462. Going below 10.8 minutes is not a CI
+question at all: it is an unwind bound in `glob`, and it should be approached as "is this harness
+proving more than it needs to" rather than as "can we buy more machines".
+
+**The dangerous failure mode is a crate that lands in no shard**, because an unproved crate is
+invisible: the suite goes green *faster* and nothing says a harness stopped running. The packer
+therefore asserts on every invocation that the shards partition the table exactly, and refuses to
+prove a subset while reporting itself as the suite. Verified by running both shards against a stubbed
+`cargo` and diffing the union against the unsharded run: identical, all 19 crates.
+
+**The required check is still one job called `verify (Kani proofs)`.** A matrix would have renamed it
+to `verify (Kani proofs) (1)` and `(2)`, leaving the ruleset requiring a check that no longer exists
+and blocking every merge forever. So the proving happens in a `prove` matrix and a small aggregate
+job carries the name and reports their combined result. See the comment at the top of
+`.github/workflows/verify.yml`; it is the same trap that file already records for moving a job
+between workflows.
+
 `script/verify --affected-since <base>` answers a different question without proving anything: can
 the diff since `<base>` reach a proof at all? The proofs are a function of the harness crates and
 their transitive dependencies, so the script asks `cargo metadata` for that closure and classifies
