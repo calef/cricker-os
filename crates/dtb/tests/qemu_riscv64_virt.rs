@@ -55,6 +55,40 @@ fn finds_the_plic_nested_under_soc() {
     );
 }
 
+/// **A property, found by binding rather than by label.** `node_prop_compatible` exists because
+/// the JH7110 names its PLIC node `interrupt-controller@c000000` where QEMU says `plic@c000000`,
+/// so a name-prefix read of `interrupts-extended` works on one machine and silently finds nothing
+/// on the other. On this (single-hart) dump the property is two entries of two cells: context 0 is
+/// the hart's M external (11), context 1 its S external (9), which is the `2h+1` layout the kernel
+/// used to assume; reading it from the machine is what lets the JH7110's different answer in.
+#[test]
+fn finds_the_plics_context_list_by_compatible() {
+    let dtb = Dtb::from_bytes(QEMU_RISCV_VIRT).unwrap();
+    let prop = dtb
+        .node_prop_compatible(b"sifive,plic-1.0.0", b"interrupts-extended")
+        .unwrap()
+        .expect("the PLIC states its context wiring");
+
+    assert_eq!(prop.len(), 16, "two (phandle, irq) entries of two cells");
+    let cell = |i: usize| u32::from_be_bytes(prop[i * 4..i * 4 + 4].try_into().unwrap());
+    assert_eq!(cell(1), 11, "context 0 is a machine external");
+    assert_eq!(cell(3), 9, "context 1 is the hart's supervisor external");
+    assert_eq!(cell(0), cell(2), "both contexts belong to the same hart");
+
+    // A compatible nothing here carries, and a property the node does not have: both are `None`,
+    // not errors.
+    assert_eq!(
+        dtb.node_prop_compatible(b"acme,unobtainium", b"interrupts-extended")
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        dtb.node_prop_compatible(b"sifive,plic-1.0.0", b"no-such-property")
+            .unwrap(),
+        None
+    );
+}
+
 /// The OpenSBI firmware regions, from the `/reserved-memory` node. Missing these is the bug the
 /// function exists to prevent: the frame allocator hands out OpenSBI's RAM and the first write
 /// faults on a PMP violation, in code nowhere near the allocator.

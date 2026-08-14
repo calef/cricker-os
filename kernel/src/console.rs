@@ -59,6 +59,69 @@ pub fn init() {
     CONSOLE.lock().init();
 }
 
+/// **Re-shape the console UART from the device tree** (RISC-V; the VisionFive 2 prep,
+/// notes/visionfive2.md). The JH7110's UART0 sits at QEMU's address with different silicon behind
+/// it: a `DesignWare` 8250 with registers four bytes apart, 32-bit accesses, a 24 MHz clock, and the
+/// DW busy quirk. Those four facts come from the serial node's `reg-shift`, `reg-io-width`,
+/// `clock-frequency` and `compatible`, read here and handed to the driver in one piece.
+///
+/// **Called immediately after [`init`], before the first `println!`**, so no output is ever
+/// produced with a stale stride; on the board, a byte read of LSR at unshifted offset 5 lands in
+/// the IER word and the transmit poll spins forever, which is why the ordering matters. Between
+/// `init` and this call the console is misconfigured *for the board* and correct for QEMU; nothing
+/// prints in that window, and a panic inside it is one of the fault paths that were always dark
+/// before the UART worked at all.
+///
+/// The **address** stays the compile-time constant above, deliberately (see `UART_BASE`): parsing
+/// the tree for the address would make the console depend on the parser it exists to debug. This
+/// function reads only the *shape*, fails toward the defaults on any absent property, and a tree
+/// without the node (or an unreadable tree) changes nothing, so QEMU `virt` behaves as it always
+/// has. An unstated `clock-frequency` (mainline JH7110 trees express the clock as a phandle)
+/// yields divisor 0: leave the divisor and line controls exactly as U-Boot programmed them, which
+/// is the correct move on a board whose firmware just printed a prompt at 115200.
+#[cfg(target_arch = "riscv64")]
+pub fn configure_from_dtb(dtb_ptr: usize) {
+    use crate::drivers::ns16550::Shape;
+
+    /// The console node's name, pinned beside `UART_PHYS` and carrying its address in the unit
+    /// suffix: both QEMU `virt` and the JH7110 spell UART0 exactly this way. Same
+    /// hardcode-with-a-witness stance as the address itself; the fixture test
+    /// (`crates/isa/tests/riscv64_jh7110.rs`) is the witness.
+    const UART_NODE: &[u8] = b"serial@10000000";
+
+    // SAFETY: the pointer firmware handed us in a1. Nothing has parsed it yet on this boot; the
+    // magic check inside `from_ptr` is what makes a garbage pointer survivable, and on failure the
+    // console simply keeps its defaults.
+    let Ok(dt) = (unsafe {
+        dtb::Dtb::from_ptr(crate::arch::mmu::phys_to_virt(dtb_ptr as u64) as *const u8)
+    }) else {
+        return;
+    };
+
+    let u32_prop = |name: &[u8]| -> Option<u32> {
+        match dt.node_prop(UART_NODE, name) {
+            Ok(Some(bytes)) if bytes.len() >= 4 => {
+                Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            }
+            _ => None,
+        }
+    };
+
+    let default = Shape::QEMU_VIRT;
+    let shape = Shape {
+        reg_shift: u32_prop(b"reg-shift").map_or(default.reg_shift, |v| v as u8),
+        reg_io_width: u32_prop(b"reg-io-width").map_or(default.reg_io_width, |v| v as u8),
+        // A stated clock is the only licence to reprogram the divisor; see the field's doc.
+        divisor: u32_prop(b"clock-frequency").map_or(0, Shape::divisor_for),
+        dw_busy_quirk: matches!(
+            dt.node_prop(UART_NODE, b"compatible"),
+            Ok(Some(compat)) if compat.split(|&b| b == 0).any(|s| s == b"snps,dw-apb-uart")
+        ),
+    };
+
+    CONSOLE.lock().configure(shape);
+}
+
 /// Turn on the console UART's receive interrupt (RISC-V, milestone 20). After this the NS16550 raises
 /// its line into the PLIC whenever a keystroke is waiting.
 ///

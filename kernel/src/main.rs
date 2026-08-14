@@ -92,6 +92,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // still kills us silently.
     console::init();
 
+    // The console's register-block *shape* comes from the device tree, and it must be adopted
+    // before the first println: on the JH7110 the DW-8250's registers are four bytes apart, so a
+    // byte-strided LSR poll spins on garbage forever and the banner never appears
+    // (notes/visionfive2.md; console::configure_from_dtb). On QEMU the tree restates the defaults
+    // and this is a no-op in effect.
+    #[cfg(target_arch = "riscv64")]
+    console::configure_from_dtb(dtb);
+
     // The RISC-V boot is a self-contained tour, right here in this block, and it halts at the end
     // rather than falling through to the shared boot path below. From OpenSBI's S-mode handoff it
     // brings up its own arch (traps, the Sv39 MMU, the SBI timer) and then demonstrates the whole
@@ -163,6 +171,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // reachable through the boot map, rather than at bring-up time after `mmu::init` has
         // replaced it. The list used to be `0..cpu::MAX_CPUS`, a constant.
         smp::read_cpu_list(dtb);
+
+        // And how does the PLIC number their S-mode contexts? Read here, in the same window and
+        // before anything touches a context: the `2*hart + 1` formula this replaces is QEMU's
+        // layout, and the JH7110's disabled S7 shifts every context down one (arch::irq,
+        // notes/visionfive2.md). On QEMU the tree reproduces the formula exactly.
+        arch::irq::init_contexts(dtb);
 
         // Replace the coarse RWX boot table with fine-grained W^X Sv39 kernel tables. We keep
         // running (and printing) across the satp switch, which proves the fine map covers this code.
