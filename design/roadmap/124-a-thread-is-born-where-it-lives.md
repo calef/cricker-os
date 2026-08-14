@@ -1,10 +1,19 @@
 # 124. A thread is born where it lives: the spawn path's copies
 
-**Status: NOT-STARTED.** Minted 2026-08-14 by Chris, out of the riscv64 stack overflow milestone 108
-was held on. The hold turned out to be the wrong suspect twice over, and this is what was underneath.
+**Status: BUILT** 2026-08-14. Minted the same day by Chris, out of the riscv64 stack overflow
+milestone 108 was held on. The hold turned out to be the wrong suspect twice over, and this is what
+was underneath.
 
-**Gate: NONE.** The measurement exists and the change is local. It touches a Kani-verified crate, so
-it needs the harnesses read alongside it, which is work rather than a blocker.
+**The worst `spawn_on` instantiation went from 4592 bytes to 1040**, every one of them now clears the
+4096-byte guard page on its own merits, and `script/stack-frame-check`'s ratchet is deleted rather
+than lowered.
+
+**Two predictions in this block were wrong, and the corrections are the useful part.** It said the
+fix needed `insert_in_place` on `crates/slots` and that reading the Kani harnesses alongside it was
+the main cost. **Neither was true**: the table stores a `TcbPtr`, not a `Thread`, because a TCB lives
+on its own page. `crates/slots` was never touched and no harness moved. The copies were all between
+`Thread::spawn`'s frame and `ptr.write`, so the fix is `Thread::spawn_into` writing through a pointer
+the caller already holds, plus `Threads::insert_in_place` to hand that pointer down.
 
 ## The number, and why it is the interesting kind of number
 
