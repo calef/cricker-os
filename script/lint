@@ -816,7 +816,7 @@ fi
 echo "em-dashes: none outside vendored trees"
 
 echo "==> shellcheck"
-# The 23 `#!/bin/sh` scripts, gated at warning severity. Two reasons this earns a dependency here
+# The 37 `#!/bin/sh` scripts, gated at warning severity. Two reasons this earns a dependency here
 # rather than being generic hygiene:
 #
 # 1. **macOS dev, Ubuntu CI.** `/bin/sh` is bash-in-POSIX-mode on one and dash on the other, so a

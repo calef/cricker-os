@@ -103,9 +103,13 @@ const REPORT: u64 = 0;
 const BLK: u64 = 1;
 /// Slot 2: the entropy service, `WRITE` (it `CALL`s). **Empty in the negative control.**
 const ENTROPY: u64 = 2;
+/// Slot 3: the untyped this program spends on the page tables its own mapping needs.
+const BUDGET: u64 = 3;
+/// Slot 4: the page shared with the block server, `READ|WRITE` (a transfer goes both ways).
+const BLK_FRAME: u64 = 4;
 
-/// Where the wiring maps the page shared with the block server. Must match
-/// `kernel/src/user/disk_service.rs`.
+/// Where this program puts the page it shares with the block server. **Its choice**: it holds the
+/// frame and maps it (milestone 108), so nothing on the kernel side names this address.
 const BLK_PAGE: u64 = 0x5000_0000;
 
 /// The transfer unit of the block service: one filesystem block per request.
@@ -153,6 +157,11 @@ static mut BACKUP: [u8; 6 * blk::BLOCK_SIZE] = [0; 6 * blk::BLOCK_SIZE];
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
+    // The shared page is a `Frame` we hold, mapped here out of our own budget (milestone 108).
+    // Before either role, because every `blk` call goes through it.
+    if !user_rt::map_frame(BLK_FRAME, BLK_PAGE, true, BUDGET) {
+        user_rt::exit()
+    }
     match role {
         ROLE_PARTITION => partition(),
         ROLE_VERIFY => verify(),
