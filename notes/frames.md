@@ -212,9 +212,10 @@ state of the world for every driver in the tree the day before.
   which pays only for page tables). That is 255 records per page and `AS_OVERHEAD` is sixteen pages
   of slack, so nothing here comes close; a program that maps thousands of frames would notice.
 
-- **The suite overflows a kernel thread stack intermittently on this branch.** Recorded here rather
-  than in a commit message because it is a live defect and the next person to run this suite needs to
-  meet it at the feature, which is what a `BUGS` section is for.
+- **The suite overflowed a kernel thread stack intermittently on this branch, and the cause was not
+  this milestone.** Fixed on `main` before this merged; kept here because the next person to meet a
+  fault on this path should meet the whole story, and because "the milestone that surfaced it was not
+  the milestone that caused it" is the part that would otherwise be lost.
 
   One run in five faulted (2026-08-13; four green runs on this branch, one red). **The kernel binary
   was byte-identical between a run that faulted and a run that passed**: the two commits differ only
@@ -250,8 +251,20 @@ state of the world for every driver in the tree the day before.
   and masking off `KERNEL_VA_BASE` is not a decode unless you have first established which region
   you are in.
 
-  **The milestone is held on this**, not merged on the four green runs. A demonstration OS that
-  merges a kernel change whose suite passes four times in five has published a number it does not
-  believe. The work is to find what makes this branch's kernel path deeper: this milestone puts nine
-  `MAP` calls and their mapping records where spawn-time wiring used to be, and 16 KiB is Linux's
-  arm64 figure rather than a measured one for this tree.
+  **What it turned out to be, and why this milestone was the wrong suspect.** The milestone was held
+  rather than merged on four green runs out of five, and the investigation went looking for what made
+  *this branch's* kernel path deeper. It was not this branch. Measuring per-function frames with
+  `-Z emit-stack-sizes` and comparing this milestone's test binary against `main`'s says the largest
+  single frame growth in the whole milestone is **128 bytes**; its biggest new frame is one more
+  `spawn_on` instantiation, the same size as the eight already there.
+
+  The cause was `sched::reap_region_objects` on `main`, whose frame was 6816 bytes, of which 4096 was
+  one `[u64; MAX_ENDPOINTS]` scratch array, against a measured thread-stack headroom of 4712 bytes.
+  **That one frame wanted 2104 bytes more than all the headroom there was**, so any chain reaching the
+  measured peak and then entering a reap could not fit. This milestone added one more spawned program
+  to a margin that was already short, which is why it faulted here first. Fixed on `main`
+  (notes/stack-high-water.md), and `script/stack-frames` now fails the build on a frame that size.
+
+  The general lesson is worth more than the bug: **the milestone a fault appears in is not
+  necessarily the milestone that caused it**, and on a shared resource as invisible as stack depth,
+  the last change to arrive gets blamed for a margin that many changes spent.
