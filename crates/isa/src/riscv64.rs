@@ -39,6 +39,14 @@
 //!   The kernel never runs on a disabled hart (`smp` refuses to start one), so its self-description
 //!   is not a fact about the machine the kernel schedules on. Such a node still counts in
 //!   [`Isa::harts`], which is an honest node count, not a roster.
+//! - **A hart whose own `riscv,isa` disclaims supervisor mode contributes nothing either** (the
+//!   VisionFive 2 bench, 2026-08-14, same day, second stop). The vendor tree in the flashed
+//!   firmware marks the S7 `status = "okay"` **and** gives it `mmu-type = "riscv,sv39"`, both
+//!   false, so the `status` gate above never fires there. The one truthful property is the ISA
+//!   string itself: `rv64imacu` spells user mode and omits supervisor. A hart that cannot enter
+//!   S-mode never runs this kernel, so it may not narrow `common` or `mmu` regardless of what
+//!   `status` claims. See [`supervisor_mode_claim`] for why the rule needs the `u` witness: absence
+//!   of `s` alone would exclude every modern machine, QEMU included.
 //! - **Absence of `zicsr` or `zifencei` from a legacy `riscv,isa` string is not evidence of
 //!   absence.** Both were carved out of the base `I` extension in 2019, and a string written before
 //!   that (or by firmware that never caught up) simply says `rv64imafdc` while the hardware has
@@ -565,9 +573,10 @@ pub struct Isa {
     pub mmu: MmuType,
     /// How many `cpu@` nodes the tree has, saturating at [`MAX_HARTS`].
     pub harts: u16,
-    /// How many of those declared an ISA at all, not counting disabled harts (the module BUGS say
-    /// why a disabled hart may not speak). `common` is an intersection over these, so
-    /// `described == 0` means `common` is meaningless and the tree simply did not say.
+    /// How many of those declared an ISA at all, not counting disabled harts or harts whose own
+    /// `riscv,isa` disclaims supervisor mode (the module BUGS say why neither may speak).
+    /// `common` is an intersection over these, so `described == 0` means `common` is meaningless
+    /// and the tree simply did not say.
     pub described: u16,
     /// Did the answer come from the deprecated `riscv,isa` string rather than
     /// `riscv,isa-extensions`? Changes how an absent `zicsr` should be read (see the module BUGS).
@@ -647,12 +656,18 @@ impl Isa {
         let mut mmu_type = [None; MAX_HARTS];
         dt.node_props(b"cpu@", b"mmu-type", &mut mmu_type)?;
 
-        // Which harts may speak for the machine at all. A disabled hart (the JH7110's S7 monitor
-        // core is the live case) never runs kernel code, so its ISA and MMU say nothing about the
-        // machine the kernel schedules on; see the module BUGS.
+        // Which harts may speak for the machine at all. A disabled hart never runs kernel code,
+        // and neither does one whose own ISA string disclaims supervisor mode, so what they
+        // declare says nothing about the machine the kernel schedules on; see the module BUGS.
+        // Both gates are live on the same silicon: mainline JH7110 trees exclude the S7 by
+        // `status`, the vendor tree marks it "okay" (and Sv39, both lies) and only the missing
+        // `s` in `rv64imacu` tells the truth (bench, 2026-08-14).
         let mut status = [None; MAX_HARTS];
         dt.node_props(b"cpu@", b"status", &mut status)?;
-        let enabled = |i: usize| status[i].is_none_or(crate::cpu_list::is_okay);
+        let enabled = |i: usize| {
+            status[i].is_none_or(crate::cpu_list::is_okay)
+                && legacy[i].is_none_or(|s| supervisor_mode_claim(s) != Some(false))
+        };
 
         let mut out = Isa {
             harts: harts.min(u16::MAX as usize) as u16,
@@ -699,9 +714,11 @@ impl Isa {
 
         for (i, m) in mmu_type.iter().enumerate().take(harts.min(MAX_HARTS)) {
             let Some(m) = m else { continue };
-            // Same gate as the ISA loop: a disabled hart's MMU (the S7 has none) must not narrow
-            // what the schedulable harts declare, or an MMU-less monitor core reads as a machine
-            // that cannot run us.
+            // Same gate as the ISA loop: an unschedulable hart's MMU must not touch what the
+            // schedulable harts declare, in either direction. Mainline spells the S7's truth
+            // (`riscv,none`, which would read as a machine that cannot run us); the vendor tree
+            // spells a lie (`riscv,sv39` on a core with no MMU at all), and neither is a fact
+            // about the machine the kernel schedules on.
             if !enabled(i) {
                 continue;
             }
@@ -771,19 +788,8 @@ pub fn parse_extension_list(value: &[u8]) -> Extensions {
 /// plus `zicsr` and `zifencei` (the 2019 spelling), and a machine that writes `rv64gc` is saying
 /// exactly what `rv64imafdc_zicsr_zifencei` says.
 pub fn parse_isa_string(value: &[u8]) -> Extensions {
-    let s = value.split(|&b| b == 0).next().unwrap_or(b"");
     let mut acc = Extensions::NONE;
-
-    // Skip the base prefix, whatever width it names.
-    let mut rest: &[u8] = s;
-    for p in [&b"rv128"[..], b"rv64", b"rv32"] {
-        if let Some(tail) = s.strip_prefix(p) {
-            rest = tail;
-            break;
-        }
-    }
-
-    let mut parts = rest.split(|&b| b == b'_');
+    let mut parts = strip_base_prefix(value).split(|&b| b == b'_');
 
     // The single-letter run.
     for &c in parts.next().unwrap_or(b"") {
@@ -810,4 +816,60 @@ pub fn parse_isa_string(value: &[u8]) -> Extensions {
     }
 
     acc
+}
+
+/// A legacy `riscv,isa` value up to its NUL, with the `rv32`/`rv64`/`rv128` prefix removed:
+/// the single-letter run first, then the `_`-separated multi-letter extensions.
+fn strip_base_prefix(value: &[u8]) -> &[u8] {
+    let s = value.split(|&b| b == 0).next().unwrap_or(b"");
+    for p in [&b"rv128"[..], b"rv64", b"rv32"] {
+        if let Some(tail) = s.strip_prefix(p) {
+            return tail;
+        }
+    }
+    s
+}
+
+/// **What a legacy `riscv,isa` string says about supervisor mode**, which is a privilege level
+/// rather than an extension, and which the string's grammar changed its mind about spelling.
+///
+/// Early strings list privilege letters in the single-letter run: QEMU before 5.1 wrote
+/// `rv64imafdcsu`, and the VisionFive 2's vendor firmware still writes that generation
+/// (`rv64imacu` on the S7, `rv64imafdcbsux` on the U74s, read at the bench 2026-08-14). Modern
+/// strings write **neither** letter, because Linux rejects them: QEMU `virt` today says
+/// `rv64imafdch_...` on a machine that certainly has S-mode, and the mainline JH7110 dtsi spells
+/// no privilege letter on any hart. So a missing `s` alone proves nothing, and a rule that read it
+/// as "no supervisor mode" would refuse every hart of every modern machine, boot hart included.
+///
+/// The reading that is honest on both generations: a bare `u` is the witness that the writer was
+/// spelling privilege modes at all, and only then is a missing `s` a statement.
+///
+/// - `Some(true)`: a bare `s` in the single-letter run. The hart claims S-mode.
+/// - `Some(false)`: a bare `u` and no `s`. The writer spelled privilege modes and left supervisor
+///   out. This hart cannot enter S-mode, so it cannot run this kernel, whatever its node's
+///   `status` and `mmu-type` claim; the vendor S7 lies about both and this is the tell.
+/// - `None`: neither letter. The string is silent about privilege modes (the modern spelling),
+///   and silence is not evidence of absence, same rule as [`Sbi::answered`].
+///
+/// Only the run before the first `_` is scanned, so `_s`-prefixed multi-letter extensions
+/// (`_sstc`, `_svadu`, `_sdtrig`, all in QEMU's string today) can never read as a bare `s`.
+pub fn supervisor_mode_claim(value: &[u8]) -> Option<bool> {
+    let single_letters = strip_base_prefix(value)
+        .split(|&b| b == b'_')
+        .next()
+        .unwrap_or(b"");
+    let mut saw_s = false;
+    let mut saw_u = false;
+    for &c in single_letters {
+        match c.to_ascii_lowercase() {
+            b's' => saw_s = true,
+            b'u' => saw_u = true,
+            _ => {}
+        }
+    }
+    match (saw_s, saw_u) {
+        (true, _) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    }
 }

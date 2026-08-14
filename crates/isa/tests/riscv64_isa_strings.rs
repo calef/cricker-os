@@ -70,6 +70,41 @@ fn the_base_prefix_is_decoded_and_skipped() {
     assert_eq!(parse_isa_string(b"rv32imac"), parse_isa_string(b"rv64imac"));
 }
 
+/// **The privilege letters, both generations of spelling.** The vendor VisionFive 2 tree, read at
+/// the bench 2026-08-14, is the old generation: cpu@0 says `rv64imacu` (user mode spelled,
+/// supervisor omitted, the one truthful property on a node whose `status` and `mmu-type` both
+/// lie), and cpu@1 says `rv64imafdcbsux`, where `bsux` is four single letters and `s` is the one
+/// that matters.
+#[test]
+fn the_vendor_s7_disclaims_supervisor_mode_and_its_u74_claims_it() {
+    assert_eq!(supervisor_mode_claim(b"rv64imacu"), Some(false));
+    assert_eq!(supervisor_mode_claim(b"rv64imafdcbsux"), Some(true));
+    // The spelling QEMU used before 5.1, still the clearest form of the claim.
+    assert_eq!(supervisor_mode_claim(b"rv64imafdcsu"), Some(true));
+}
+
+/// **A missing `s` alone proves nothing.** Modern strings spell no privilege letters at all
+/// (Linux rejects them), so QEMU `virt` today and the mainline JH7110 dtsi both say nothing about
+/// supervisor mode on machines that certainly have it. A rule that read absence as denial would
+/// refuse every hart of every modern machine, boot hart included.
+#[test]
+fn modern_strings_are_silent_about_privilege_modes() {
+    assert_eq!(supervisor_mode_claim(b"rv64imac_zba_zbb"), None); // mainline JH7110 S7
+    assert_eq!(supervisor_mode_claim(b"rv64imafdc_zba_zbb"), None); // mainline JH7110 U74
+    assert_eq!(supervisor_mode_claim(b"rv64imafdch_zicsr_zifencei"), None); // QEMU virt's shape
+}
+
+/// **`_s`-prefixed multi-letter extensions can never read as a bare `s`.** QEMU's real string
+/// carries `sstc`, `svadu` and `sdtrig` in the multi-letter run; only the run before the first
+/// `_` is scanned. Same for a hypothetical `u`-leading multi-letter name.
+#[test]
+fn multi_letter_extensions_cannot_fake_a_privilege_letter() {
+    assert_eq!(supervisor_mode_claim(b"rv64imac_sstc_svadu_sdtrig"), None);
+    assert_eq!(supervisor_mode_claim(b"rv64imac_smstateen_ssaia"), None);
+    // NUL-terminated, as a real property value arrives.
+    assert_eq!(supervisor_mode_claim(b"rv64imacu_sstc\0"), Some(false));
+}
+
 /// **What the boot line prints is the device tree's own spelling, and it parses back.**
 ///
 /// `Base::name`'s doc says it is "deliberately spelled as the device tree spells it", and nothing
