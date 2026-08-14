@@ -1,0 +1,101 @@
+#!/bin/sh
+# script/board-image: build the VisionFive 2 microSD boot payload (milestone 16a).
+#
+#   script/board-image
+#
+# Builds the riscv64 release kernel, strips it to the flat Image format U-Boot's `booti` loads
+# (the RISC-V Linux Image header sits at offset 0; boot.s emits it), verifies the header magic,
+# writes an extlinux.conf beside it under target/board/, and PRINTS the commands that put both on
+# a card. It runs nothing destructive itself: `dd` to a device is a decision the person at the
+# bench makes, with the device name in front of them. See notes/visionfive2.md for the boot path,
+# the DTB caveat, and the bench runbook.
+#
+# Name: unrecorded. Provisional, this lane's coinage (2026-08-14, milestone 16a): it builds the
+# payload image a board loads, named for the artifact. Expect the integrator to surface it.
+#
+# Exception, on the record: this entry point does not delegate to `cargo xtask` the way its
+# siblings do. It is a build-and-print step with no QEMU, no test harness, and no shared engine
+# code to reuse; a `sh` script that calls cargo and llvm-objcopy directly was judged cheaper than
+# an xtask subcommand. If it ever grows logic (partitioning, image assembly), move it into xtask
+# and make this the usual thin wrapper.
+
+set -eu
+cd "$(dirname "$0")/.."
+
+TARGET=riscv64imac-unknown-none-elf
+ELF="target/$TARGET/release/kernel"
+OUT="target/board"
+IMG="$OUT/cricker-vf2.img"
+
+cargo build -p kernel --release --target "$TARGET"
+
+# llvm-objcopy from the pinned toolchain's llvm-tools component, found the same way xtask finds it
+# (rustc --print sysroot). The Homebrew/system objcopy is deliberately not a fallback: a silent
+# tool substitution is how a subtly different image gets flashed.
+SYSROOT="$(rustc --print sysroot)"
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+OBJCOPY="$SYSROOT/lib/rustlib/$HOST/bin/llvm-objcopy"
+if [ ! -x "$OBJCOPY" ]; then
+    echo "board-image: no llvm-objcopy at $OBJCOPY" >&2
+    echo "board-image: the llvm-tools rustup component provides it (see rust-toolchain.toml)" >&2
+    exit 1
+fi
+
+mkdir -p "$OUT/extlinux"
+"$OBJCOPY" -O binary "$ELF" "$IMG"
+
+# The one field U-Boot checks before agreeing to boot this file: the u32 magic 0x05435352
+# ("RSC\x05") at offset 0x38 (u-boot arch/riscv/lib/image.c). Catch a headerless or truncated
+# image here, at build time, rather than as `Bad Linux RISCV Image magic!` at the bench.
+MAGIC="$(od -An -t x4 -j 56 -N 4 "$IMG" | tr -d ' \n')"
+if [ "$MAGIC" != "05435352" ]; then
+    echo "board-image: $IMG has no RISC-V Image header magic at offset 0x38 (got '$MAGIC')" >&2
+    exit 1
+fi
+
+# The extlinux U-Boot's distro boot finds by scanning FAT/ext partitions for
+# /extlinux/extlinux.conf. No `fdt` line: U-Boot then falls back to its own control DTB
+# ($fdtcontroladdr), which describes the board. CAVEAT, from notes/visionfive2.md: that address
+# sits outside the kernel's boot page table, so until the gigapage-1 fix lands, first boots should
+# use the manual commands printed below, which move the DTB somewhere the kernel can read.
+cat > "$OUT/extlinux/extlinux.conf" <<'EOF'
+default cricker
+timeout 3
+
+label cricker
+    kernel /cricker-vf2.img
+EOF
+
+SIZE="$(wc -c < "$IMG" | tr -d ' ')"
+echo
+echo "built:"
+echo "  $IMG  ($SIZE bytes, Image header verified)"
+echo "  $OUT/extlinux/extlinux.conf"
+echo
+cat <<'EOF'
+To prepare a microSD card (macOS; nothing below has been run for you):
+
+  1. Find the card, and be certain of the name; dd to the wrong disk destroys it:
+       diskutil list
+  2. One FAT32 partition is all U-Boot needs (this erases the card):
+       diskutil eraseDisk FAT32 CRICKER MBR /dev/diskN
+  3. Copy the payload:
+       cp target/board/cricker-vf2.img /Volumes/CRICKER/
+       mkdir -p /Volumes/CRICKER/extlinux
+       cp target/board/extlinux/extlinux.conf /Volumes/CRICKER/extlinux/
+       diskutil eject /dev/diskN
+
+First boots: interrupt U-Boot's countdown and drive it by hand, so the DTB lands inside the
+kernel's boot map (see notes/visionfive2.md, "The microSD payload"):
+
+  StarFive # load mmc 1:1 ${kernel_addr_r} /cricker-vf2.img
+  StarFive # fdt addr ${fdtcontroladdr}
+  StarFive # fdt move ${fdtcontroladdr} 0x86000000
+  StarFive # booti ${kernel_addr_r} - 0x86000000
+
+TFTP instead of the card (cordoba serves; board side only, see the note):
+
+  StarFive # dhcp
+  StarFive # tftpboot ${kernel_addr_r} cricker-vf2.img
+  ...then the same fdt move and booti.
+EOF

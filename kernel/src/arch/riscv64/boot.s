@@ -18,6 +18,37 @@
 .section ".text.boot", "ax"
 .global _start
 _start:
+    # The RISC-V Linux Image header (milestone 16a, notes/visionfive2.md). U-Boot's `booti` refuses
+    # a payload without it, and QEMU never reads it (`-kernel` takes the ELF), so these 64 bytes are
+    # what makes one kernel binary loadable by both. Layout per Linux's
+    # Documentation/arch/riscv/boot-image-header.rst (header version 0.2); U-Boot checks exactly one
+    # field, the u32 magic 0x05435352 ("RSC\x05") at offset 0x38 (u-boot arch/riscv/lib/image.c).
+    #
+    # code0/code1 are "executable code": the entry point is the header itself, so code0 jumps over
+    # it. `j` may assemble compressed (2 bytes) under the C extension; the `.balign 8` absorbs
+    # either width, so every field lands at its required offset.
+    j       _start_kernel           # code0: jump over the header
+    .word   0                       # code1
+    .balign 8
+    # text_offset: U-Boot relocates the image to ram_base + text_offset before jumping (verified in
+    # arch/riscv/lib/image.c, mainline and StarFive's JH7110_VisionFive2_devel fork). THIS VALUE IS
+    # AN EXCEPTION AND A FOOT GUN: Linux uses 0x200000, "2 MiB into RAM". We deliberately encode
+    # 0x40200000 so that on the VisionFive 2 (DRAM base 0x4000_0000) booti places the image at
+    # 0x8020_0000, the PHYS_START this kernel is linked for (link-riscv64.ld), which on QEMU virt is
+    # DRAM base + 2 MiB. One linked address, both machines, no board relink; the cost is that this
+    # header is wrong for any board whose RAM does not put 0x8020_0000 inside it. Revisit if the
+    # kernel ever learns to run at an arbitrary load address. See notes/visionfive2.md.
+    .dword  0x40200000              # text_offset: image load offset from start of RAM
+    .dword  __image_size            # image_size: runtime footprint incl. .bss and stacks (link script)
+    .dword  0                       # flags: bit 0 = 0, little-endian
+    .word   2                       # version 0.2: (major 0) << 16 | (minor 2)
+    .word   0                       # res1
+    .dword  0                       # res2
+    .ascii  "RISCV\0\0\0"           # magic (u64, deprecated but still emitted by Linux)
+    .ascii  "RSC\x05"               # magic2 (u32): the field bootloaders actually check
+    .word   0                       # res3
+
+_start_kernel:
     # a0 = hart id, a1 = DTB (both must survive to the high half; we touch only t0-t2 below).
 
     # --- turn Sv39 on ---

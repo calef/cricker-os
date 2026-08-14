@@ -11,7 +11,7 @@ ipc_rtt 161467 1000
 relay_rtt 328683 1000
 call_reply 169319 1000
 broker_rtt 338143 1000
-spawn_reap 28502 64
+spawn_reap 24835 64
 map_new 2362 64
 coremark 3654631 256
 null_syscall 65600 20000
