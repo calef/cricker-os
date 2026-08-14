@@ -283,6 +283,24 @@ pub enum State {
     Dead,
 }
 
+/// **Which side of a rendezvous a blocked thread is waiting as.** The role half of
+/// [`Thread::wait_on`], recorded at the same instant `state` goes `Blocked` and by the same code,
+/// so a hang dump can say *what kind* of wait a thread is in rather than only that it waits.
+///
+/// `Reply` is a `CALL` caller: it is waiting for its one-shot Reply capability to be invoked, and
+/// (in the rendezvous-met case) it sits on **no** endpoint queue at all, which is exactly the wait
+/// a dump could previously not distinguish from a lost wakeup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitRole {
+    /// Parked on an endpoint's sender queue (a `SEND`/`SEND_CAP` with no receiver, or a corpse
+    /// holding its death message).
+    Sender,
+    /// Parked on an endpoint's receiver queue (a `RECV`/`RECV_CAP` with nothing to take).
+    Receiver,
+    /// A `CALL` caller blocked until `REPLY`; queued as a sender only if no server was waiting.
+    Reply,
+}
+
 /// **A reserved slot in a spawner's resource budget, returned when this thread dies.**
 ///
 /// A process (the shell, say) that spawns children can be given a quota: at most N children alive
@@ -407,6 +425,18 @@ pub struct Thread {
     /// Both touched only under `SCHED`.
     pub(crate) wake_pending: bool,
 
+    /// **What this thread is blocked on, and as which side** (first-silicon diagnostics,
+    /// 2026-08-14): the endpoint name and the [`WaitRole`], or `None` when not waiting.
+    ///
+    /// Written in the same `SCHED`-held statement that writes `state = Blocked`, and cleared where
+    /// the wake makes the thread `Ready` (or where a corpse's message is collected). That coupling
+    /// is the point: a boot-7 bench dump showed a thread `Blocked` whose saved user pc was a plain
+    /// store in `memset`, a pair no legal transition produces, and nothing in the dump could say
+    /// whether the `Blocked` byte had come through a real block path (this field set: the endpoint
+    /// queues were touched) or from corruption (this field `None` beside `Blocked`: the state byte
+    /// changed without the block path running). See notes/visionfive2.md, fourth bench stop.
+    pub(crate) wait_on: Option<(crate::sched::EpId, WaitRole)>,
+
     /// **This thread's blocking IPC was aborted by revocation** (object revocation): the endpoint it
     /// was parked on was destroyed under it, so it was popped off, woken, and marked here. The syscall
     /// layer reads-and-clears this after `ipc_recv`/`ipc_send` returns and hands the caller an error
@@ -497,6 +527,7 @@ impl Thread {
             next: None,
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            wait_on: None,
             ipc_aborted: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
@@ -529,6 +560,7 @@ impl Thread {
             next: None,
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            wait_on: None,
             ipc_aborted: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
@@ -634,6 +666,7 @@ impl Thread {
                 next: None,
                 on_cpu: false,
                 wake_pending: false,
+                wait_on: None,
                 ipc_aborted: false,
                 entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
                 start_args: [0; 3],
@@ -680,6 +713,7 @@ impl Thread {
             next: None,
             on_cpu: false,
             wake_pending: false,
+            wait_on: None,
             ipc_aborted: false,
             entry: (0, 0),
             start_args: [0; 3],
