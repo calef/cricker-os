@@ -767,6 +767,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   (`Context` is aarch64-shaped in portable code; the `paging` crate encodes the aarch64 descriptor
   format), the RISC-V specifics (SBI, S-mode boot, Sv39, NS16550, PLIC/CLINT), and the incremental
   plan from "compiles for riscv64" to "the capability core runs on a second ISA".
+- [The VisionFive 2: first silicon](visionfive2.md): milestone 16a's board facts, every one with a
+  source. The four real differences from QEMU `virt` (DRAM base, the DW-8250 UART, the PLIC context
+  map, the disabled S7 hart), the Image-header load path through vendor U-Boot, the microSD payload
+  and `script/board-image`, the bench runbook with its failure-triage ladder, and the honest list of
+  what only the bench can measure.
 - [Scoping RISC-V / aarch64 parity](riscv-parity-scope.md): aarch64 is a strict superset once the
   port proved the capability core; this scopes the remaining gap (SMP, an in-kernel test run,
   virtio+DMA, the full boot/shell, benchmarks), what each proves, and the order to close them.
