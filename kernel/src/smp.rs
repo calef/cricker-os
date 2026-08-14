@@ -154,8 +154,10 @@ fn stack_top(id: usize) -> u64 {
 static HWID: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
 /// Per slot: did the tree describe a core this kernel could actually start? False for a core
-/// firmware marked `status = "disabled"`, and for one whose `enable-method` is a mechanism this
-/// kernel does not speak (`spin-table`, or a per-SoC method).
+/// firmware marked `status = "disabled"`, for one whose own `riscv,isa` disclaims supervisor mode
+/// (the VisionFive 2's S7, whose vendor node lies about everything else; bench, 2026-08-14), and
+/// for one whose `enable-method` is a mechanism this kernel does not speak (`spin-table`, or a
+/// per-SoC method).
 static STARTABLE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// How many slots of [`HWID`] are filled: `min(what the tree described, MAX_CPUS)`.
@@ -196,7 +198,13 @@ pub fn read_cpu_list(dtb_ptr: usize) {
         // `Unstated` counts as startable on purpose. The RISC-V CPU binding has no `enable-method`
         // at all (SBI HSM is the only mechanism), so demanding the property would refuse every
         // RISC-V machine including the one this kernel already runs on.
+        //
+        // `supervisor` is required because `status` can lie where a hart's own ISA string does
+        // not: the VisionFive 2's vendor tree marks its M/U-only S7 "okay" with an Sv39 mmu-type,
+        // both false, and honoring them started the S-incapable core and crashed vendor OpenSBI
+        // in M-mode (bench, 2026-08-14). A core without S-mode cannot run this kernel, full stop.
         let ok = cpu.usable
+            && cpu.supervisor
             && matches!(
                 cpu.enable_method,
                 EnableMethod::Psci | EnableMethod::Unstated
@@ -220,6 +228,19 @@ pub fn read_cpu_list(dtb_ptr: usize) {
         );
     }
     println!();
+
+    // One honest line per hart excluded for missing supervisor mode, in the machine's own terms.
+    // On the VisionFive 2's vendor tree this is the only place the S7's exclusion is visible at
+    // all: status and mmu-type both claim a schedulable core, and trusting them handed the
+    // S-incapable hart to sbi hart_start and crashed vendor OpenSBI (bench, 2026-08-14).
+    for (i, cpu) in list.cpus().iter().take(n).enumerate() {
+        if !cpu.supervisor {
+            println!(
+                "  smp: cpu {i}'s riscv,isa names user mode and not supervisor: it cannot run \
+                 this kernel, whatever status and mmu-type claim; not started"
+            );
+        }
+    }
 
     // The core we are executing on has to be in the roster at its own index, or the roster describes
     // a machine other than the one running this code. Nothing downstream can recover from that, but
@@ -321,8 +342,8 @@ pub fn bring_up_secondaries() {
             continue;
         }
         if !STARTABLE[id].load(Ordering::Relaxed) {
-            println!("  smp: cpu {id} is not startable by this kernel (the tree disabled it, or");
-            println!("       named an enable-method we do not speak); leaving it alone.");
+            println!("  smp: cpu {id} is not startable by this kernel (disabled, no supervisor");
+            println!("       mode, or an enable-method we do not speak); leaving it alone.");
             continue;
         }
         // The hardware id the machine gave this core, and the check the rest of the kernel needs it
@@ -598,6 +619,15 @@ mod tests {
                 cpu.hwid, id as u64,
                 "core {id} has a hardware id that is not its index: this kernel indexes hardware \
                  by logical id, so bring_up_secondaries would have refused it (see its BUGS)",
+            );
+            // The supervisor rule (bench, 2026-08-14) must change nothing on QEMU: every virt cpu
+            // is an S-mode hart, whichever generation of ISA-string spelling its tree uses, so
+            // the started set here is exactly what it was before the rule existed. A false
+            // `supervisor` on this machine means the parser read a modern string's silence, or a
+            // multi-letter extension, as a denial.
+            assert!(
+                cpu.usable && cpu.supervisor,
+                "core {id} would be excluded from bring-up on the suite's own machine",
             );
         }
     }
