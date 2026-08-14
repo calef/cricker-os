@@ -4,7 +4,10 @@
 //!
 //! - slot 0, a **report** endpoint: its verdict goes to whoever spawned it;
 //! - slot 1, a **display** endpoint (WRITE): it CALLs the driver here;
-//! - one mapping: the **surface**, `gfx::SURFACE_FRAMES` frames of pixels.
+//! - slot 2, an **untyped**: the budget the page tables for its own mappings come out of;
+//! - slots 3.., the **surface**: `gfx::SURFACE_FRAMES` `Frame` capabilities, one per page, which it
+//!   maps itself (milestone 108; before that the kernel mapped them in at spawn and the client held
+//!   nothing that said so).
 //!
 //! And that is all. It holds no `Virtio` capability, no interrupt, no device mapping, and it cannot
 //! name a physical address; it has never heard of virtio-gpu. The pixels are the only memory it
@@ -34,8 +37,13 @@ use user_rt::{call, exit, send};
 /// Capability slots, by convention with `kernel/src/user/display_service.rs`.
 const REPORT: u64 = 0;
 const DISPLAY: u64 = 1;
+/// The untyped this program spends on the page tables the surface needs.
+const BUDGET: u64 = 2;
+/// The first of `gfx::SURFACE_FRAMES` consecutive slots holding the scanout, a `Frame` per page.
+const SURFACE_FRAME: u64 = 3;
 
-/// Where the kernel maps the surface. Must match `display_service::SURFACE_VA_CLIENT`.
+/// Where this program puts the surface. **Its choice, not the kernel's**: it holds the frames and
+/// maps them (milestone 108).
 const SURFACE_VA: u64 = 0x0000_0000_0060_0000;
 
 /// Failure codes, reported in a `0xDEAD_...` word so a failure names its step.
@@ -43,6 +51,8 @@ const E_INFO: u64 = 0x01;
 const E_GEOMETRY: u64 = 0x02;
 const E_FLUSH: u64 = 0x03;
 const E_PARTIAL_FLUSH: u64 = 0x04;
+/// A surface frame would not map: this program was handed the pixels it could not put anywhere.
+const E_SURFACE: u64 = 0x05;
 
 fn px_write(i: usize, v: u32) {
     // SAFETY: `i` is below `gfx::PIXELS`, so this is inside the mapped surface; it is mapped
@@ -63,6 +73,15 @@ fn die(code: u64) -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_arg0: u64, _arg1: u64, _arg2: u64) -> ! {
+    // **Put the surface in our own address space** (milestone 108). One `MAP` per page, because a
+    // `Frame` names a page: the run is contiguous in physics and in virtual memory, and the object
+    // has no way to say so. See notes/frames.md's BUGS.
+    for k in 0..gfx::SURFACE_FRAMES as u64 {
+        if !user_rt::map_frame(SURFACE_FRAME + k, SURFACE_VA + k * 4096, true, BUDGET) {
+            die(E_SURFACE);
+        }
+    }
+
     // Ask the driver how big the surface is, rather than only trusting the compile-time constants.
     // Rung two hands a client a surface it did not choose, so the runtime question is the one that
     // will still make sense then.

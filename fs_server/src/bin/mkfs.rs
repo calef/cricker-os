@@ -95,9 +95,13 @@ const BLK: u64 = 1;
 const ENTROPY: u64 = 2;
 /// Where the verdict goes.
 const REPORT: u64 = 3;
+/// The page shared with the block server, `READ|WRITE`. Granted in **every** wiring, the two
+/// controls included, so a refusal can only be explained by the capability that is missing.
+const BLK_FRAME: u64 = 4;
 
-/// Where the kernel maps the page shared with the block server. Must match
-/// `kernel/src/user/disk_service.rs`.
+/// Where this program puts the page it shares with the block server. **Its choice**: it holds the
+/// frame and maps it (milestone 108). Clear of the heap, which runs from
+/// `user_rt::heap::DEFAULT_BASE` (1 GiB) for [`HEAP_MAX`].
 const BLK_PAGE: u64 = 0x5000_0000;
 
 /// One filesystem block / one shared page, in bytes. RedoxFS's `BLOCK_SIZE` and the blk wire's
@@ -150,6 +154,12 @@ pub const R_NO_FILE: u64 = 0x_4E_4F_46_4C_45;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
     HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
+
+    // The shared page, mapped out of the same budget the heap draws on (milestone 108). It is
+    // granted in all three wirings, so a failure here is a broken kernel rather than a control.
+    if !user_rt::map_frame(BLK_FRAME, BLK_PAGE, true, UNTYPED) {
+        user_rt::exit()
+    }
 
     // The disk first, because "I was given no disk" and "I was given no entropy" must be
     // distinguishable, and the cheapest question decides it.

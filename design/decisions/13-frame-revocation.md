@@ -31,6 +31,17 @@ A **mapping database, lite** (revoke.rs): every mapping of an untyped-derived pa
 va)`, recorded at `Untyped::MAP` and `Frame::MAP`, and forgotten when an address space is torn down
 (so a stale root is never walked after its tables are freed and reused). To revoke a page:
 
+> **Correction, 2026-08-05 (milestone 108).** "Every mapping" was false as written, and had been since
+> the `Frame` object existed. There are **three** routes into an address space and only two are
+> recorded: `Frame::MAP` and `Aspace::MAP_INTO` both reach the database, while **`Spawn::maps` does
+> not**, because `AddressSpace::map_physical` establishes the mapping and returns. A spawn-delivered page
+> **could not be revoked**: `Frame::REVOKE` found no capability to delete and no record to unmap, and
+> the mapping outlived the capability. That was true of every driver in the tree until milestone 108
+> migrated them to map their own pages. The mechanism below was never wrong; the population it covered
+> was smaller than this sentence claimed. `disk_tests::the_roster_can_be_revoked_out_from_under_its_holder`
+> now fails if the old shape returns.
+
+
 1. Delete every `Frame` capability to it from every cspace, so no `Frame::MAP` started afterward can
    re-establish a mapping.
 2. Unmap it from every address space that held it, with the broadcast TLB flush we already use, so
