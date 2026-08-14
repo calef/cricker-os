@@ -184,6 +184,25 @@ through SBI anyway, so this is OpenSBI's problem, not ours.
 **Timebase is 4 MHz** (`/cpus/timebase-frequency` [dtsi]), against QEMU `virt`'s 10 MHz. Already
 handled: `arch/riscv64/timer.rs` reads the rate from the DTB and panics rather than assumes.
 
+## PCIe
+
+The JH7110's PCIe is a PLDA XpressRICH controller (`starfive,jh7110-pcie` in mainline trees).
+That is not the `pci-host-ecam-generic` device QEMU's `virt` boards expose, and it has no driver
+here; driving it is its own milestone, not a bench fix.
+
+Since 2026-08-14 the kernel's PCIe windows (the ECAM config space and the 32-bit memory window
+BARs are placed in) come from the device tree: `memory::init` reads the generic-ECAM node's
+`reg` and `ranges`, `mmu::map_everything` maps the windows only when the node exists, and every
+probe in kernel/src/pci.rs reports nobody home when it does not (notes/pcie.md). On this board
+there is no such node, so nothing PCIe is mapped or touched, which is the honest statement of
+where the PLDA controller stands.
+
+Before that the windows were QEMU constants, and the first bench boot paid for it: the BAR
+constant 0x4000_0000 is this board's DRAM base (see the DRAM table above), so `map_everything`
+tried to lay a device mapping over memory step 1 had already direct-mapped, and the mapper's
+overwrite refusal panicked the boot right after the banner. The first DECISIONS §43 casualty
+proven on silicon rather than predicted.
+
 ## SBI extensions
 
 OpenSBI is the vendor firmware's M-mode resident, so TIME, IPI, RFENCE and **HSM** (the bring-up
@@ -333,13 +352,14 @@ Facts documentation could not settle, each an explicit measurement, none guessed
 
 ## BUGS
 
-The kernel has never run on this board, and the four driver gaps this note originally listed are
-now **built and QEMU-proven, none board-proven** (2026-08-14): the UART driver takes the DW-8250's
-stride, width, clock and busy quirk from the device tree; the PLIC context map comes from
-`interrupts-extended` with the QEMU formula as fallback; a disabled hart no longer narrows the ISA
-record (and was already refused at bring-up); and the boot page table reaches a DTB at U-Boot's
-default `fdt_addr_r`. QEMU cannot prove the JH7110 side of any of them, which is what "To measure
-at the bench" is for.
+The kernel first ran on this board on 2026-08-14 and got through its banner (DW-8250 console,
+DTB parse, paging, traps, timer, frame allocator) before panicking on the QEMU PCIe constants;
+the PCIe section above records that failure and its fix, which is QEMU-proven and awaits the
+next bench boot for its board proof. Of the four driver gaps this note originally listed, the
+banner is the board's word on two (the UART's DW-8250 shape, and the boot page table reaching
+the DTB); the PLIC context map and the disabled-hart handling sit past the point that boot
+reached and remain QEMU-proven only. What QEMU cannot prove is what "To measure at the bench"
+is for.
 
 Two limitations found while building those, honestly not fixed here:
 
