@@ -357,4 +357,33 @@ pub fn sync_icache(va: u64, len: usize) {
     let _ = (va, len);
     // SAFETY: `fence.i` only orders instruction fetch against prior stores on this hart.
     unsafe { asm!("fence.i", options(nostack, preserves_flags)) };
+    // The other harts' instruction fetch is not ordered by anything above, and RISC-V has no
+    // broadcast form: a thread scheduled onto another hart can fetch stale bytes for code this
+    // hart just wrote. TCG never shows this (its icache is perfectly coherent), and the U74 did,
+    // on first-silicon day (2026-08-14): init's freshly built child hung on the board and nowhere
+    // else. Push fence.i to every other online hart via SBI RFENCE, the mechanism the TLB
+    // shootdown already uses one FID over.
+    let others = crate::smp::online_harts_mask() & !(1 << crate::cpu::id());
+    if others != 0 {
+        sbi_remote_fence_i(others);
+    }
+}
+
+/// Execute `fence.i` on the harts in `hart_mask`, via the SBI RFENCE extension: the cross-hart
+/// half of [`sync_icache`], because `fence.i` is hart-local and instruction memory written on one
+/// hart is not otherwise ordered against another hart's fetch.
+pub fn sbi_remote_fence_i(hart_mask: usize) {
+    const SBI_REMOTE_FENCE_I_FID: usize = 0;
+    // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0). The
+    // firmware returns in a0/a1 (ignored); nothing else is touched.
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_RFENCE_EID,
+            in("a6") SBI_REMOTE_FENCE_I_FID,
+            inout("a0") hart_mask => _,
+            inout("a1") 0usize => _,
+            options(nostack),
+        );
+    }
 }
