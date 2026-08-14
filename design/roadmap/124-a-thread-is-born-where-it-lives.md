@@ -43,26 +43,44 @@ bottom** on a 4096-byte guard. Eight more bytes and there would have been no fau
 The per-instantiation spread is only about 700 bytes and tracks `size_of::<F>()`, so **the closure is
 the small part**. Roughly 3900 bytes is constant, and it is the `Thread` travelling by value.
 
-## What the work is
+## What the work was
 
-A `Thread` is built in `Thread::spawn`'s frame, returned by value, and stored by
-`Table::insert_with`, which is `self.slots[slot] = Some(f(name))`. The closure constructs it, returns
-it, it is wrapped in `Some`, and then it is stored. A debug build elides none of that, and a debug
-build is what CI runs.
+**This section proposed the wrong fix, and what replaced it is worth reading.** The proposal was
+`insert_in_place` on `crates/slots`, on the belief that `Table::insert_with` stored the `Thread`:
+`self.slots[slot] = Some(f(name))`, so the closure builds it, returns it, it is wrapped in `Some`,
+and then stored.
 
-The fix is to let the closure construct **into** the destination rather than hand a value back:
+**The table does not store a `Thread`. It stores a `TcbPtr`**, because a TCB lives on its own page,
+and `Threads::insert_at` is where the value actually lands:
 
 ```rust
-// crates/slots
-pub fn insert_in_place(&mut self, f: impl FnOnce(u64, &mut Option<T>)) -> Option<u64>
-
-// kernel/src/thread.rs
-fn spawn_into<F: FnOnce() + Send + 'static>(f: F, tid: Tid, dst: &mut Option<Thread>) -> bool
+let ptr = crate::arch::mmu::phys_to_virt(page) as *mut Thread;
+self.table.insert_with(|tid| { unsafe { ptr.write(f(tid)) }; TcbPtr(ptr) })
 ```
 
-`insert_in_place` has to decide what a closure that declines to fill the slot means, and say so:
-returning `None` without bumping `live` is the shape that matches today's failure path, where
-`Thread::spawn` can fail on `KernelStack::new`.
+So `crates/slots` was never touched. The copies were all between `Thread::spawn`'s frame and that
+`ptr.write`: build a `Thread`, return it by value, hold it in `spawn_on`, move it into a closure,
+return it from the closure, write it. Five hops, each a real memcpy in a debug build, and a debug
+build is what CI runs.
+
+What shipped instead:
+
+```rust
+// kernel/src/thread.rs
+pub unsafe fn spawn_into<F: FnOnce() + Send + 'static>(f: F, id: Tid, dst: *mut Thread) -> bool
+
+// kernel/src/sched.rs
+fn insert_in_place(&mut self, build: impl FnOnce(Tid, *mut Thread) -> bool) -> Option<Tid>
+```
+
+`Thread::spawn` survives as a thin `MaybeUninit` wrapper over `spawn_into`, because `sched::init`'s
+idle thread and `spawn_blocked` hold no TCB page when they build. They keep the copies, and nothing
+on their paths is near a guard page.
+
+The decline path is the part to read twice. `insert_at_in_place` mints the name before `build` runs,
+so a build that fails has to give it back, and `Table::remove` is the right primitive rather than a
+leak: the slot holds a `TcbPtr`, and dropping that drops a pointer. The `Thread` drop lives in
+`Threads::remove`, which this path never reaches because no `Thread` was ever constructed.
 
 ## A hypothesis that was measured and refuted, kept so nobody repeats it
 
@@ -82,12 +100,18 @@ restores it.
 
 Growing the stack is still worth considering on its own merits, and the two are independent.
 
-## What "done" means
+## What "done" meant, and what it measured
 
-Every `spawn_on` instantiation under 4096 bytes on both ISAs, `script/stack-frame-check`'s `RATCHET`
-entry for `kernel::sched::spawn_on::<` deleted rather than lowered, and the `slots` harnesses read
-and updated with the new method. The kernel suite is the check that matters: this is the spawn path,
-and every test that starts a program exercises it.
+Every `spawn_on` instantiation under 4096 bytes on both ISAs, and the `RATCHET` entry deleted rather
+than lowered. Both hold: the worst went 4592 to 1040, and the gate now reports "no ratchet" on
+aarch64 and riscv64. The `slots` harnesses needed no reading, for the reason above.
+
+**The independent confirmation is the better evidence.** The icount tripwire failed this branch on an
+*improvement*: `spawn_reap` moved 154725 against a 173742 baseline, 10.9% fewer instructions, and
+12.9% on riscv64. A benchmark with no idea what changed measured the memcpy that is no longer there.
+Both baselines were updated from CI's own numbers rather than computed, and the riscv64 case earned
+that discipline: scaling the aarch64 ratio would have written 25382 against a real 24835, which is
+both wrong and still outside the tolerance band.
 
 ## Prior art
 
@@ -101,17 +125,20 @@ proofs and tests run in a configuration nobody checks is not demonstrating.
 
 ## BUGS
 
-- **`crates/slots` is Kani-verified**, and `a_deleted_capability_stays_deleted` and
-  `delete_touches_only_its_slot` reason over this table. A new insert path is a new way for a slot to
-  become occupied, so the harnesses have to be read against it rather than assumed to still cover it.
-  That is the main cost of this milestone and the reason it is not a ten-minute change.
+- **The prediction that `crates/slots` was the main cost was wrong**, and it is kept here because it
+  is the plausible reading of `Table::insert_with` and the next person will make it too. The table
+  stores a `TcbPtr`; the `Thread` is on its own page. No harness moved.
+- **`Thread::spawn` still carries the copies** for `sched::init`'s idle thread and `spawn_blocked`,
+  which hold no page when they build. Nothing on those paths is near a guard page today, and if one
+  ever is, this is where to look first.
 - **`-Z emit-stack-sizes` measures frames, not call chains**, so "every instantiation under 4096"
   bounds one frame and not the depth of the path it sits in. The watermark in
   notes/stack-high-water.md is the other half, and neither is sufficient alone.
-- **The ratchet holds the line meanwhile**, so this is not urgent in the sense of a regression: the
-  ten frames cannot grow. It is urgent in the sense that a frame over the guard page turns a caught
-  overflow into a silent one, and that is the failure this tree can least afford to ship.
-- **A second overflow on riscv64 is unexplained.** #157 fixed the aarch64 one by shrinking
-  `reap_region_objects`; the riscv64 fault is a different chain on a different slot and this
-  milestone is the prime suspect rather than a proven cause. If fixing `spawn_on` does not stop it,
-  the call-graph walker is the next instrument and nothing in the tree has one.
+- **The ratchet is gone**, so nothing now holds these frames except the gate's own 4096-byte ceiling,
+  which is the state a ratchet exists to reach and then be deleted from.
+- **The riscv64 overflow is still unexplained, and this milestone did not prove it fixed.** #157
+  fixed the aarch64 one by shrinking `reap_region_objects`; the riscv64 fault was a different chain on
+  a different slot, and this was the prime suspect rather than a demonstrated cause. What closed here
+  is the separate hazard that ten frames could step over the guard entirely. **If it recurs, the
+  call-graph walker is the next instrument and nothing in the tree has one**, which is now the answer
+  to "why did we not catch this" twice over.
