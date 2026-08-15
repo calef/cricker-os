@@ -2,7 +2,7 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: DECISION, MILESTONE 65, MILESTONE 107.** The scoping decision comes before any code: the
+**Gate: DECISION.** (The former MILESTONE 65 and 107 halves cleared 2026-08-04; found stale 2026-08-15 with the statuses that hid them.) The scoping decision comes before any code: the
 subset of SMB3 that Time Machine needs, or a general SMB3 server. Milestone 65 holds the key
 `ntlm_response` computes with, and 107 is what lets a Mac connect at all. One dependency this block
 names was recorded here as unowned: `RENAME`. **That is no longer true** (corrected 2026-08-14):

@@ -4,10 +4,6 @@
 the test that would close it. Two milestones already on the roadmap need it and neither block says
 so, which is why it is here rather than folded into one of them.
 
-**Gate: NONE.** The gate's shape is known, `hostfwd` being the mirror of the `guestfwd` the
-outbound test already uses, and the scoping question inside it, whether the `std::net`
-`TcpListener` binding lands here or in milestone 27's follow-on, is the lane's to settle early.
-
 **The finding.** The socket contract has no listen verb. `notes/net.md`, under "Not proven by the
 gate": "**inbound connections.** A `LISTEN`/`accept` verb plus a QEMU `hostfwd` (host port to guest)
 is the way to test the guest accepting a connection, and that is future work; the contract has no
