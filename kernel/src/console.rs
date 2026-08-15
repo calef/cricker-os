@@ -23,6 +23,18 @@ const UART_PHYS: u64 = 0x0900_0000; // PL011
 #[cfg(target_arch = "riscv64")]
 const UART_PHYS: u64 = 0x1000_0000; // NS16550
 
+/// The console UART's node name in the device tree, pinned beside `UART_PHYS` and carrying its
+/// address in the unit suffix. Same hardcode-with-a-witness stance as the address itself: on
+/// riscv, both QEMU `virt` and the JH7110 spell UART0 exactly this way, and the fixture test
+/// (`crates/isa/tests/riscv64_jh7110.rs`) is the witness; on aarch64 it is QEMU `virt`'s PL011
+/// node, witnessed by `crates/dtb/tests/qemu_aarch64_virt.rs`. Two readers: this file's
+/// `configure_from_dtb` (riscv, the register shape) and `memory::init` (both, the interrupt
+/// line), which is why it is `pub(crate)` rather than local to either.
+#[cfg(target_arch = "aarch64")]
+pub(crate) const UART_NODE: &[u8] = b"pl011@9000000";
+#[cfg(target_arch = "riscv64")]
+pub(crate) const UART_NODE: &[u8] = b"serial@10000000";
+
 /// The console UART's address, as the kernel sees it.
 ///
 /// **Hardcoded on purpose, and it should stay that way.** Not a TODO.
@@ -82,12 +94,6 @@ pub fn init() {
 #[cfg(target_arch = "riscv64")]
 pub fn configure_from_dtb(dtb_ptr: usize) {
     use crate::drivers::ns16550::Shape;
-
-    /// The console node's name, pinned beside `UART_PHYS` and carrying its address in the unit
-    /// suffix: both QEMU `virt` and the JH7110 spell UART0 exactly this way. Same
-    /// hardcode-with-a-witness stance as the address itself; the fixture test
-    /// (`crates/isa/tests/riscv64_jh7110.rs`) is the witness.
-    const UART_NODE: &[u8] = b"serial@10000000";
 
     // SAFETY: the pointer firmware handed us in a1. Nothing has parsed it yet on this boot; the
     // magic check inside `from_ptr` is what makes a garbage pointer survivable, and on failure the
