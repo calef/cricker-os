@@ -160,6 +160,23 @@ exists](notes/stack.md), [what `no_std` actually removes](notes/no-std.md), [wha
 script is for](notes/linker-scripts.md), [what QEMU is](notes/qemu.md), and [how portable
 kernels are structured](notes/portability.md).
 
+## The rules a contributor is held to
+
+**They are in [`CLAUDE.md`](CLAUDE.md), and its name is misleading**, which milestone 117's first
+stranger run established by skipping it: a 50 KB file called `CLAUDE.md` at the root reads as tooling
+config for an agent, so a human contributor walks past it. It is not config. It is where the
+project's rules live, and several of them exist nowhere else.
+
+`script/lint` cites it by name in its own failure messages ("CLAUDE.md rule 7"), so a build can fail
+against a file the person who triggered it was never told to read. Until that is fixed properly, this
+paragraph is the pointer.
+
+What is in there and nowhere else: that all architecture-specific code lives under
+`kernel/src/arch/`; that a driver never reaches into a kernel global; that anything two binaries must
+agree on is a crate rather than a `#[path]` module, and why (a shared module in a `no_std` binary is
+unreachable by host tests and by Kani); that names are Chris's call; and the ladder that ranks
+"make the wrong state unrepresentable" above "a gate that fails loudly" above "a note nobody reads".
+
 ## The decisions
 
 Written down in [`design/decisions/`](design/decisions/README.md) as they were made, so the reasons survive
