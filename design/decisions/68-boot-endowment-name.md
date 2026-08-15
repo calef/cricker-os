@@ -1,6 +1,11 @@
-# 68. `BootEndowment::unused` wants a truer name
+# 68. `BootEndowment::unused` wants a truer name: it is `for_test_roles`
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, who names things.)
+**Status: DECIDED.** calef, 2026-08-15: **`for_test_roles`**. Refused `not_ours`, and the
+refusal sharpened the rule: "ours" is caller-relative, which is the same one-seat viewpoint bug
+`unused` had with the sign flipped; both callers read one struct, so the name must state whose
+the capabilities are absolutely. Refused `test_roles_only` for bolting an adverb onto a noun.
+`for_test_roles` is the possessive instinct this entry always had, made absolute, and "roles"
+earns its length because 19d's test roles is the greppable term of art. Renamed the same day.
 
 **What.** The field holds the capabilities aarch64's boot path is handed because it shares that path
 with milestone 19d's test roles: a report endpoint and a test SGI. The interactive system never uses
