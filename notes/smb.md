@@ -6,6 +6,13 @@ records why NFS and 9P were refused. What milestone 54 builds is the **adapter**
 holding one network endpoint and one share, translating SMB2 on the wire into the share seam on
 the other side, with no storage authority of its own.
 
+**A real Mac has mounted it** (2026-08-15, macOS 26 `mount_smbfs` against the QEMU guest): the
+share mounts, `ls` lists it, both fixture files read back byte-correct, the volume arrives
+read-only (macOS honours the `READ_ONLY_VOLUME` attribute, so a write is refused client-side
+before it reaches the wire), a clean unmount works, and a second mount proves the listener
+re-arms for a real client, not only for the test prober. The one correction the real client
+forced is recorded below under "the SMB1 probe".
+
 ## The pieces
 
 | Piece | Where | What it is |
@@ -42,6 +49,15 @@ so review can happen where the cost is:
 - **One share, named `share`**, read-only, flat (no subdirectories yet).
 - Compounds (macOS stats files as CREATE + QUERY_INFO + CLOSE related chains) are implemented;
   credits are granted as asked and never accounted.
+- **The SMB1 probe.** The machine overruled the assumption that a modern client opens with SMB2:
+  macOS's `mount_smbfs` still opens with an **SMB1** multi-protocol NEGOTIATE (`\xFFSMB`,
+  command `0x72`, dialect strings `NT LM 0.12`, `SMB 2.002`, `SMB 2.???`), and the first cut of
+  this server dropped it as not-SMB2, which presented as every real mount timing out while the
+  test suite stayed green (the suite's prober politely opened with SMB2). The fix is [MS-SMB2]
+  §3.3.5.3.1: answer the probe with an SMB2 NEGOTIATE response carrying the wildcard revision
+  `0x02FF`, after which the client negotiates properly. The captured bytes are pinned as a host
+  test in `smb_proto::server`, so the message a real client actually sends is now part of the
+  gate. An SMB1-only client (no SMB2 dialect strings) is still dropped.
 
 ## How it is tested
 
@@ -81,12 +97,11 @@ against a dead forward for a while.
 
 ## BUGS
 
-- **A real Finder mount is the finish line and has not been performed yet.** The wire is proven
-  end to end against this tree's own client (which shares no code path with macOS's) and against
-  the specification documents, but macOS's smbfs is the judge that matters and it has not ruled.
-  The most likely friction points, in order: a `QUERY_INFO` class it wants and we refuse, the
-  absent `CHANGE_NOTIFY` (answered `STATUS_NOT_SUPPORTED`; clients are supposed to degrade to
-  polling), and signing expectations on non-guest accounts (use Guest).
+- **`mount_smbfs` has ruled; Finder's dialog has not.** The command-line mount (which uses the
+  same smbfs kext Finder does) works end to end, but nobody has yet clicked through Connect to
+  Server and browsed the share in a Finder window; expect that to exercise `CHANGE_NOTIFY`
+  (answered `STATUS_NOT_SUPPORTED`; clients degrade to polling) and possibly more `QUERY_INFO`
+  classes. Non-guest accounts are untested and would meet signing expectations; connect as Guest.
 - **Guest means everyone.** Every AUTHENTICATE is accepted. Do not put anything on the share the
   local network may not read. There is also no rate limiting and no credit accounting.
 - **Read-only, flat, fixture-backed.** Writes, creates and `SET_INFO` return
@@ -104,13 +119,11 @@ against a dead forward for a while.
 
 ## What remains for milestone 54, in order
 
-1. **A real macOS mount**, which is the milestone's own finish line. Run the EXAMPLES above from
-   a Mac and fix what smbfs objects to; expect a lane of protocol-detail work, not a redesign.
-2. **The fs_proto-backed share**: `smb_server` holding a directory capability into the FS
+1. **The fs_proto-backed share**: `smb_server` holding a directory capability into the FS
    server, implementing `Share` over `fs_proto` calls (open/read/enumerate; milestone 47's
    rights split expresses "may write backups but not delete them" when writes come). This is
    what makes the adapter the roadmap's adapter rather than a demo of one.
-3. **The write path** (milestone 55 needs it): `WRITE`, create dispositions, `SET_INFO`, and the
+2. **The write path** (milestone 55 needs it): `WRITE`, create dispositions, `SET_INFO`, and the
    share trait's widening.
-4. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
+3. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
    be more than guest-readable. The seam is marked in `smb_proto::ntlmssp`.

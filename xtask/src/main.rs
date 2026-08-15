@@ -106,6 +106,32 @@ fn main() -> ExitCode {
                     TARGET,
                 ])
         }
+        "smb-serve" => {
+            // The SMB serve boot (milestone 54): the guest serves its share on port 445 and QEMU
+            // forwards a fixed host port into it, so a Mac (this one included) can attempt a real
+            // mount. Fixed rather than free: a mount instruction with a port that changes per run
+            // is an instruction nobody can follow. Ctrl-C quits; see notes/smb.md.
+            maybe_hvf();
+            eprintln!("--- booting nife as an SMB file server (milestone 54, Ctrl-C to quit) ---");
+            eprintln!("    mount: smb://127.0.0.1:10445/share  (connect as Guest; notes/smb.md)");
+            // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads.
+            // xtask is single-threaded here: main thread, before the child that reads these.
+            unsafe {
+                std::env::set_var("NIFE_SMB_HOSTFWD_PORT", "10445");
+                std::env::set_var("NIFE_SMB_GUEST_PORT", "445");
+            }
+            mkdisk()
+                && user()
+                && cargo(&[
+                    "run",
+                    "-p",
+                    "kernel",
+                    "--features",
+                    "smb_serve",
+                    "--target",
+                    TARGET,
+                ])
+        }
         "initrd-riscv" => initrd_riscv(),
         // The documentation store (milestone 40): build it, print what it costs, and optionally
         // answer a query against it with the same reader the guest uses.
@@ -134,7 +160,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(

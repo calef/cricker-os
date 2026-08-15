@@ -195,6 +195,10 @@ pub const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
 
 /// The one dialect this server offers and accepts: SMB 2.1. See the crate header for why.
 pub const DIALECT_0210: u16 = 0x0210;
+/// The wildcard revision ([MS-SMB2] §3.3.5.3.1): a server's answer to an **SMB1** multi-protocol
+/// negotiate whose dialect strings claim SMB2, telling the client to come back with a real SMB2
+/// NEGOTIATE. How every real client's first exchange with this server ends, macOS included.
+pub const DIALECT_WILDCARD: u16 = 0x02FF;
 
 /// The negotiated maxima, one value for all three of `MaxTransactSize`, `MaxReadSize`,
 /// `MaxWriteSize`. 64 KiB is the floor mainstream clients are written against ([MS-SMB2]

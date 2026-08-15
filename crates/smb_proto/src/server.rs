@@ -23,7 +23,8 @@ use crate::{
     CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_WRITE,
 };
 use crate::{
-    DIALECT_0210, H_COMMAND, H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND, H_SESSION_ID,
+    DIALECT_0210, DIALECT_WILDCARD, H_COMMAND, H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND,
+    H_SESSION_ID,
     H_TREE_ID, HDR_LEN, MAX_TRANSACT,
 };
 use crate::{
@@ -106,6 +107,20 @@ impl Connection {
     ///
     /// `out` must hold [`crate::MAX_MESSAGE`] bytes.
     pub fn handle(&mut self, msg: &[u8], out: &mut [u8], share: &impl Share) -> Option<usize> {
+        // The one SMB1 message this server answers, because it is how every real client arrives:
+        // macOS's own mount_smbfs opens with an SMB1 multi-protocol NEGOTIATE (captured
+        // 2026-08-15; the bytes are pinned in the test below), offering "NT LM 0.12",
+        // "SMB 2.002" and "SMB 2.???". [MS-SMB2] §3.3.5.3.1: when the strings claim SMB2, the
+        // answer is an SMB2 NEGOTIATE response carrying the wildcard revision 0x02FF, message id
+        // 0, and the client then sends a real SMB2 NEGOTIATE. A client that offers only SMB1
+        // dialects gets the same treatment as any other protocol this server does not speak:
+        // the connection drops.
+        if !self.negotiated && is_smb1_negotiate(msg) {
+            if !smb1_offers_smb2(msg) {
+                return None;
+            }
+            return Some(self.negotiate_response(out, 0, 1, DIALECT_WILDCARD));
+        }
         if !is_smb2(msg) {
             return None;
         }
@@ -237,13 +252,18 @@ impl Connection {
             return err(out, STATUS_NOT_SUPPORTED);
         }
         self.negotiated = true;
+        self.negotiate_response(out, msg_id, credits, DIALECT_0210)
+    }
 
+    /// The SMB2 NEGOTIATE response body, shared by the real negotiate and the SMB1 wildcard
+    /// answer below (which differ only in the dialect field and in whether negotiation is done).
+    fn negotiate_response(&self, out: &mut [u8], msg_id: u64, credits: u16, dialect: u16) -> usize {
         write_response_header(out, CMD_NEGOTIATE, STATUS_SUCCESS, msg_id, 0, 0, credits, 0);
         let b = HDR_LEN;
         out[b..b + 64].fill(0);
         w16(out, b, 65); // StructureSize
         w16(out, b + 2, 1); // SecurityMode: signing enabled, not required
-        w16(out, b + 4, DIALECT_0210);
+        w16(out, b + 4, dialect);
         // ServerGuid: fixed, recognisable, not pretending to be random. A GUID distinguishes
         // servers to a client that talks to several; one QEMU guest is one server.
         out[b + 8..b + 24].copy_from_slice(b"nife smb server!");
@@ -861,6 +881,20 @@ impl Connection {
     }
 }
 
+/// Is this an SMB1 multi-protocol NEGOTIATE (`\xFFSMB`, command `0x72`)? The only SMB1 shape
+/// this crate recognises at all.
+fn is_smb1_negotiate(msg: &[u8]) -> bool {
+    msg.len() >= 37 && msg[..4] == [0xFF, b'S', b'M', b'B'] && msg[4] == 0x72
+}
+
+/// Do the SMB1 negotiate's dialect strings claim SMB2? A byte scan for the two literals rather
+/// than a parse of the SMB1 dialect list, deliberately: this server refuses to speak SMB1, so
+/// growing a parser for its wire format to answer one yes/no question would be surface without a
+/// user. The strings cannot appear in an SMB1 negotiate except as dialect names.
+fn smb1_offers_smb2(msg: &[u8]) -> bool {
+    msg.windows(8).any(|w| w == b"SMB 2.??" || w == b"SMB 2.00")
+}
+
 /// The 4-byte "structure size 4" success body ECHO, FLUSH, LOGOFF and `TREE_DISCONNECT` share.
 fn simple_ok(out: &mut [u8], cmd: u16, msg_id: u64, sid: u64, tid: u32, credits: u16) -> usize {
     write_response_header(out, cmd, STATUS_SUCCESS, msg_id, sid, tid, credits, 0);
@@ -1141,6 +1175,44 @@ mod tests {
         w16(&mut req, 100, 0x0311);
         let resp = rt(&mut c, &req);
         assert_eq!(status(&resp), STATUS_NOT_SUPPORTED);
+    }
+
+    /// **The exact first message macOS sends**, captured byte for byte from `mount_smbfs` on
+    /// macOS 26 through a logging proxy on 2026-08-15: an SMB1 multi-protocol NEGOTIATE offering
+    /// `NT LM 0.12`, `SMB 2.002` and `SMB 2.???`. The first cut of this server dropped it as
+    /// not-SMB2 and every real mount timed out; the machine overruled the assumption that modern
+    /// clients open with SMB2. The answer is [MS-SMB2] §3.3.5.3.1's wildcard, and the client then
+    /// negotiates properly.
+    #[test]
+    fn the_smb1_probe_macos_opens_with_gets_the_wildcard_answer_and_smb2_proceeds() {
+        const MACOS_HEX: &str = "ff534d4272000000000801c8000000000000000000000000\
+                                 ffff0100ffff0000002200024e54204c4d20302e31320002\
+                                 534d4220322e3030320002534d4220322e3f3f3f00";
+        let bytes: Vec<u8> = (0..MACOS_HEX.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&MACOS_HEX[i..i + 2], 16).unwrap())
+            .collect();
+
+        let mut c = conn();
+        let resp = rt(&mut c, &bytes);
+        assert!(is_smb2(&resp), "the answer to the SMB1 probe is SMB2");
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(r64(&resp, H_MESSAGE_ID), 0, "the wildcard answer carries message id 0");
+        assert_eq!(client::negotiate_dialect(&resp), DIALECT_WILDCARD);
+
+        // And the connection then proceeds exactly as an SMB2-first one does.
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(&mut c, &client::create(9, sid, tid, b"hello.txt"));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+
+        // An SMB1-only client (no SMB2 dialect strings) is dropped, not answered.
+        let mut only_smb1 = bytes.clone();
+        let cut = only_smb1.windows(2).position(|w| w == [0x02, b'S']).unwrap();
+        only_smb1.truncate(cut);
+        // Keep the SMB1 header valid; the byte-count field no longer matters to our scan.
+        let mut fresh = conn();
+        let mut out = vec![0u8; MAX_MESSAGE];
+        assert_eq!(fresh.handle(&only_smb1, &mut out, &FIXTURE), None);
     }
 
     #[test]

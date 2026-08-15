@@ -458,8 +458,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   path. The `smb_proto` wire crate (SMB 2.1, guest sessions, NTLMSSP under minimal SPNEGO, the
   per-connection state machine as host-testable pure logic), the `smb_server` adapter holding one
   network endpoint and one share, the wire decisions listed for review, the two-prober QEMU gate
-  that rides milestone 107's spawn, the Finder mount instructions, and an honest BUGS section led
-  by the fact that macOS itself has not ruled yet.
+  that rides milestone 107's spawn, and the mount instructions a real macOS `mount_smbfs` has
+  already followed successfully (2026-08-15), with an honest BUGS section led by what Finder's
+  own dialog has not yet exercised.
 - [NTP: the wire format, and the client that carries it](ntp.md): milestone 51 lanes C and D. The
   48-byte NTPv4 packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for
   the 2036 rollover (and why picking the era nearest to "now" is worse), the offset and delay

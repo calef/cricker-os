@@ -418,6 +418,30 @@ pub fn start_net_stack_with_smb(
     Some((cli_report, smb_report))
 }
 
+/// **The serve-forever pair** (milestone 54's demo boot, `--features smb_serve`): the net server
+/// with a listen grant of exactly SMB's port, and the SMB adapter with `rounds = 0`, which is its
+/// "serve until the machine stops" mode. Returns `(the net server's DHCP report, the adapter's
+/// report)`; the adapter reports once, [`smb_proto` speaking, its OK word] when its listener is
+/// bound, and never again. The caller prints the lease and the mount instructions; see
+/// `user::smb_serve_boot` and notes/smb.md.
+///
+/// 445 is IANA's port for SMB direct TCP (`smb_proto::DIRECT_TCP_PORT`; spelled here as a literal
+/// so the kernel does not take the crate for one constant).
+#[cfg(feature = "smb_serve")]
+pub fn start_smb_serve(
+    net_stack_image: &'static [u8],
+    smb_image: &'static [u8],
+) -> Option<(EpId, EpId)> {
+    let dev = crate::virtio::find_net_device()?;
+    let transport = crate::virtio::Transport::Mmio {
+        mmio_phys: dev.mmio_phys,
+    };
+    let grant = socket_proto::listen_grant(445, 445);
+    let (report, stack) = wire_net_server(net_stack_image, transport, dev.intid, None, grant);
+    let smb_report = spawn_stack_client(smb_image, 0, 445, stack);
+    Some((report, smb_report))
+}
+
 /// The networked std client's heap budget and extra stack, both larger than the hand-written
 /// client's: it is a full std program (formatting, `Vec`, `String`), so it needs the same
 /// generous heap and stack the `std_exerciser` demo does.
