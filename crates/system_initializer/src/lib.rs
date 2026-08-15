@@ -151,7 +151,8 @@ use line_editor::proto;
 // The loader, and the tree's only one since milestone 96. Named here rather than qualified at every
 // call, because the point of the crate is that there is one of these.
 use supervision_proto::{
-    ChildEndowment, build_child, retype_frame_from as retype_frame, retype_obj_from as retype_obj, tcb_start,
+    ChildEndowment, build_child, retype_frame_from as retype_frame, retype_obj_from as retype_obj,
+    tcb_start,
 };
 use user_rt::{call, cap_delete, invoke, recv, recv_cap, send};
 

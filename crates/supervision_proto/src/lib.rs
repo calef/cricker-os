@@ -157,7 +157,12 @@ impl<'a> ChildEndowment<'a> {
 /// page tables freed under it when the child is reaped). `build_ut` is what the child itself is made
 /// of: its address space, frames, stack, and TCB. Passing a per-child region as `build_ut` is what
 /// makes a single `DESTROY` reap the whole instance.
-pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &ChildEndowment) -> Result<u64, ()> {
+pub fn build_child(
+    own_ut: u64,
+    build_ut: u64,
+    elf: &elf::Elf,
+    endow: &ChildEndowment,
+) -> Result<u64, ()> {
     let (tcb, aspace) = build_child_space(own_ut, build_ut, elf, endow)?;
     configure_child(tcb, aspace, elf.entry())?;
     Ok(tcb)
