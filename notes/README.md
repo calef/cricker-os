@@ -454,6 +454,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
+- [mDNS/DNS-SD: the Time Machine advertisement](mdns.md): milestone 55's second protocol. The
+  reference router's actual `_smb`/`_adisk`/`_device-info` records, captured 2026-08-15 and decoded
+  (one `_adisk` instance with the disks inside its TXT, SRV port 0 on the flag services, and a
+  measured `model=MacSamba` against a config that says TimeCapsule), which are `mdns_proto`'s test
+  vectors. Then the smoltcp 0.13.1 multicast verdict: the `multicast` feature exists and the tree
+  has it off, so receiving on 224.0.0.251 needs a feature line, a join call, and the three pieces
+  of socket surface the note lists; the responder program waits on those.
 - [NTP: the wire format, and the client that carries it](ntp.md): milestone 51 lanes C and D. The
   48-byte NTPv4 packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for
   the 2036 rollover (and why picking the era nearest to "now" is worse), the offset and delay

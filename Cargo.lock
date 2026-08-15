@@ -460,6 +460,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdns_proto"
+version = "0.1.0"
+
+[[package]]
 name = "measured_boot"
 version = "0.1.0"
 
