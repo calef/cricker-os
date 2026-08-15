@@ -22,7 +22,7 @@
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
 //!     refusals.
 //!
-//! One binary keeps the initrd inside its crickerfs directory limit (`MAX_FILES`, 31 entries when
+//! One binary keeps the initrd inside its nifefs directory limit (`MAX_FILES`, 31 entries when
 //! this was written and 76 since 2026-08-01) while still proving all three. The kernel test suite spawns it three ways and checks each transcript
 //! byte for byte, on both ISAs.
 
@@ -58,7 +58,7 @@ fn main() {
 fn offline_demo() {
     let t0 = Instant::now();
 
-    println!("hello from std on cricker-os");
+    println!("hello from std on nife");
     println!("os {}", std::env::consts::OS);
 
     // Vec: growth reallocations against the untyped-backed heap.
@@ -69,7 +69,7 @@ fn offline_demo() {
     // String: heap bytes whose length the receiver checks.
     let mut s = String::new();
     for _ in 0..100 {
-        s.push_str("cricker ");
+        s.push_str("nife ");
     }
     println!("string len {}", s.len());
 
@@ -152,7 +152,7 @@ const NOT_AFTER: Duration = Duration::from_secs(4_102_444_800);
 ///
 /// `motd` is already open when this runs: opening it was the probe that chose this branch.
 fn fs_demo(mut motd: File) {
-    println!("std fs on cricker-os");
+    println!("std fs on nife");
 
     // Bytes off a real RedoxFS image, through a confined FS server, reached with `Read` on an
     // ordinary `File`. Printed as well as asserted, so the kernel test compares the file's contents
@@ -268,7 +268,7 @@ fn fs_demo(mut motd: File) {
 /// a real RedoxFS image.
 ///
 /// **It cleans up before it starts, not after**, and that is deliberate rather than tidy.
-/// `CRICKER_KEEP_REDOXFS=1` runs the suite against an image a previous boot wrote, which is a
+/// `NIFE_KEEP_REDOXFS=1` runs the suite against an image a previous boot wrote, which is a
 /// supported mode (it is how the cross-boot write case is reached), so this has to be idempotent
 /// over an image that already carries what a previous run made. Cleaning up first also means the
 /// directory's contents are known by the time `read_dir` looks at them.
@@ -411,7 +411,7 @@ const ECHO_PEER: &str = "10.0.2.9:7777";
 /// shared frame; it writes to a socket and reads from it, the way any Rust program does. Runs when
 /// the program holds the network. `sock` is the already-bound UDP socket the probe opened.
 fn net_demo(sock: UdpSocket) {
-    println!("std net on cricker-os");
+    println!("std net on nife");
 
     // Assertions rather than printed status keep the transcript byte-stable: a failure faults (the
     // panic path), which the kernel test sees as a missing line and a timeout, not a wrong answer.
@@ -451,8 +451,8 @@ fn net_demo(sock: UdpSocket) {
 /// The name and body must match what `scripts/qemu-runner-*.sh` writes into `target/tftp`.
 fn udp_ok(sock: &UdpSocket) -> bool {
     const TFTP_SERVER: &str = "10.0.2.2:69";
-    const TFTP_NAME: &[u8] = b"cricker";
-    const TFTP_BODY: &[u8] = b"cricker-tftp!";
+    const TFTP_NAME: &[u8] = b"nife";
+    const TFTP_BODY: &[u8] = b"nife-tftp!";
 
     if sock.connect(TFTP_SERVER).is_err() {
         return false;
@@ -491,7 +491,7 @@ fn udp_ok(sock: &UdpSocket) -> bool {
 
 /// Connect to the echo peer over TCP, send a payload, and read the echo back whole.
 fn tcp_echo_ok() -> bool {
-    const MSG: &[u8] = b"cricker-std-net!";
+    const MSG: &[u8] = b"nife-std-net!";
     let Ok(mut stream) = TcpStream::connect(ECHO_PEER) else {
         return false;
     };

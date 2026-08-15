@@ -7,7 +7,7 @@ this note's name is provisional.)*
 Milestone 25 is done except for `sel4bench`, which times single operations through the PMU cycle
 counter that neither QEMU-TCG nor Apple HVF provides (notes/benchmarks.md, notes/pmu.md). Milestone
 74 is the driver that will read that counter; this survey picks the board it reads it on. The
-purpose constrains the choice more than usual: the point is cricker-os and seL4 **on the same
+purpose constrains the choice more than usual: the point is nife and seL4 **on the same
 silicon**, so a board seL4 merely boots on fails the milestone even if our port to it is easy.
 
 ## The deciding criterion: where sel4bench really runs
@@ -85,7 +85,7 @@ Hardkernel's shop pages for C2/C4 status, and eBay listings for the used prices.
 
 ## The port cost, per candidate
 
-What is genuinely new for cricker-os on each board, given rule 1's board boundary and the
+What is genuinely new for nife on each board, given rule 1's board boundary and the
 VisionFive 2 experience (a board directory, not a diff across the tree). Every board below shares
 three items, so they are the baseline rather than rows: an **EL2 to EL1 entry drop** in `boot.s`
 (every real bootloader here enters at EL2; QEMU's ELF path enters at EL1, so this code does not
@@ -111,7 +111,7 @@ strongest purchasable seL4 story with the most expensive port.
 The argument, in one paragraph. The TX1 is the silicon under the only published aarch64 seL4
 numbers, the very 413-plus-426-cycle pair notes/benchmarks.md already compares against, and that
 page was regenerated from CI the day before this survey, so the platform is actively benchmarked,
-not historically. Measuring cricker-os on it retires the largest caveat in the benchmarks note ("a
+not historically. Measuring nife on it retires the largest caveat in the benchmarks note ("a
 large part of the gap closing is the machine, not the kernel; the only fix is the same kernel
 measured on comparable silicon"): comparable becomes identical, and our own sel4bench run can be
 sanity-checked against the Foundation's published figures before we trust it against ourselves.

@@ -1,6 +1,6 @@
 # Delegating a capability
 
-For most of this project cricker-os *called* itself a capability system while quietly not being one
+For most of this project nife *called* itself a capability system while quietly not being one
 in the way that matters. Capabilities existed, rights existed, `GRANT` existed, and `derive` (copy a
 capability with narrowed rights) was written and unit-tested. But a running process could not use any
 of it. Every capability was minted by the kernel and placed in a process's table at spawn, and there

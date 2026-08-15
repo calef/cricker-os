@@ -1,4 +1,4 @@
-/* cricker-os kernel image layout, RISC-V (milestone 20, notes/riscv-port.md).
+/* nife kernel image layout, RISC-V (milestone 20, notes/riscv-port.md).
  *
  * THE KERNEL IS LINKED HIGH AND LOADED LOW, exactly like the aarch64 script, and for the same
  * reason: the kernel lives in the high (kernel) half of the address space, so the portable

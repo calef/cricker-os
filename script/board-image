@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.."
 TARGET=riscv64imac-unknown-none-elf
 ELF="target/$TARGET/release/kernel"
 OUT="target/board"
-IMG="$OUT/cricker-vf2.img"
+IMG="$OUT/nife-vf2.img"
 
 cargo build -p kernel --release --target "$TARGET"
 
@@ -33,7 +33,7 @@ cargo build -p kernel --release --target "$TARGET"
 # file. cargo xtask initrd-riscv writes target/initrd-riscv.img; the copy beside the kernel image
 # keeps the card's contents one directory's worth of truth.
 cargo xtask initrd-riscv
-cp target/initrd-riscv.img "$OUT/cricker-initrd.img"
+cp target/initrd-riscv.img "$OUT/nife-initrd.img"
 
 # llvm-objcopy from the pinned toolchain's llvm-tools component, found the same way xtask finds it
 # (rustc --print sysroot). The Homebrew/system objcopy is deliberately not a fallback: a silent
@@ -65,11 +65,11 @@ fi
 # sits outside the kernel's boot page table, so until the gigapage-1 fix lands, first boots should
 # use the manual commands printed below, which move the DTB somewhere the kernel can read.
 cat > "$OUT/extlinux/extlinux.conf" <<'EOF'
-default cricker
+default nife
 timeout 3
 
-label cricker
-    kernel /cricker-vf2.img
+label nife
+    kernel /nife-vf2.img
 EOF
 
 SIZE="$(wc -c < "$IMG" | tr -d ' ')"
@@ -77,7 +77,7 @@ echo
 echo "built:"
 echo "  $IMG  ($SIZE bytes, Image header verified)"
 echo "  $OUT/extlinux/extlinux.conf"
-echo "  $OUT/cricker-initrd.img  (the userspace archive; optional third file on the card)"
+echo "  $OUT/nife-initrd.img  (the userspace archive; optional third file on the card)"
 echo
 cat <<'EOF'
 To prepare a microSD card (macOS; nothing below has been run for you):
@@ -85,17 +85,17 @@ To prepare a microSD card (macOS; nothing below has been run for you):
   1. Find the card, and be certain of the name; dd to the wrong disk destroys it:
        diskutil list
   2. One FAT32 partition is all U-Boot needs (this erases the card):
-       diskutil eraseDisk FAT32 CRICKER MBR /dev/diskN
+       diskutil eraseDisk FAT32 NIFE MBR /dev/diskN
   3. Copy the payload:
-       cp target/board/cricker-vf2.img /Volumes/CRICKER/
-       mkdir -p /Volumes/CRICKER/extlinux
-       cp target/board/extlinux/extlinux.conf /Volumes/CRICKER/extlinux/
+       cp target/board/nife-vf2.img /Volumes/NIFE/
+       mkdir -p /Volumes/NIFE/extlinux
+       cp target/board/extlinux/extlinux.conf /Volumes/NIFE/extlinux/
        diskutil eject /dev/diskN
 
 First boots: interrupt U-Boot's countdown and drive it by hand, so the DTB lands inside the
 kernel's boot map (see notes/visionfive2.md, "The microSD payload"):
 
-  StarFive # load mmc 1:1 ${kernel_addr_r} /cricker-vf2.img
+  StarFive # load mmc 1:1 ${kernel_addr_r} /nife-vf2.img
   StarFive # fdt addr ${fdtcontroladdr}
   StarFive # fdt move ${fdtcontroladdr} 0x86000000
   StarFive # booti ${kernel_addr_r} - 0x86000000
@@ -104,8 +104,8 @@ With the userspace archive (the kernel's boot tour then runs user programs, the 
 included; U-Boot writes /chosen/linux,initrd-* exactly as QEMU's -initrd does). 0x90000000 is
 clear of the kernel (ends ~0x8029_0000) and the moved DTB (0x8600_0000):
 
-  StarFive # load mmc 1:1 ${kernel_addr_r} /cricker-vf2.img
-  StarFive # load mmc 1:1 0x90000000 /cricker-initrd.img
+  StarFive # load mmc 1:1 ${kernel_addr_r} /nife-vf2.img
+  StarFive # load mmc 1:1 0x90000000 /nife-initrd.img
   StarFive # fdt addr ${fdtcontroladdr}
   StarFive # fdt move ${fdtcontroladdr} 0x86000000
   StarFive # booti ${kernel_addr_r} 0x90000000:${filesize} 0x86000000
@@ -113,6 +113,6 @@ clear of the kernel (ends ~0x8029_0000) and the moved DTB (0x8600_0000):
 TFTP instead of the card (cordoba serves; board side only, see the note):
 
   StarFive # dhcp
-  StarFive # tftpboot ${kernel_addr_r} cricker-vf2.img
+  StarFive # tftpboot ${kernel_addr_r} nife-vf2.img
   ...then the same fdt move and booti.
 EOF

@@ -1,6 +1,6 @@
 # Rust `std` on the native ABI
 
-*(Milestone 27. The first wall an application hits on cricker-os was "no std": you could write a
+*(Milestone 27. The first wall an application hits on nife was "no std": you could write a
 `no_std` binary against `crates/user_rt`, and nothing else. This milestone makes ordinary Rust,
 `Vec` and `String` and `println!` and `Instant`, compile and run on the capability ABI. See
 DECISIONS.md §22 for the decision and why; notes/abi.md for the ABI it binds to.)*
@@ -15,7 +15,7 @@ crates.io, without smuggling in the POSIX assumptions the ABI deliberately exclu
 
 ## What a std program is given
 
-A std program is an ordinary cricker-os ELF (notes/abi.md §3): entered at `_start`, linked at
+A std program is an ordinary nife ELF (notes/abi.md §3): entered at `_start`, linked at
 `0x40_0000`, cspace populated by its parent. std's runtime contract needs two things, and the ABI's
 out-of-band convention (notes/abi.md §4) grants them at fixed slots:
 
@@ -50,23 +50,23 @@ kernel-side wiring places slot 4 while leaving 2 and 3 empty, and why the gap ma
 
 ## The PAL surface, and what each piece binds to
 
-The backend lives in `patches/std-cricker/overlay/std/src/sys/` and is materialized into a patched
+The backend lives in `patches/std-nife/overlay/std/src/sys/` and is materialized into a patched
 std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 
-| std concept | cricker binding |
+| std concept | nife binding |
 |---|---|
-| `GlobalAlloc` | `untyped::MAP` from slot 0, grow-on-demand (`sys/alloc/cricker`) |
-| `stdout` / `stderr` | `endpoint::SEND` on slot 1 (`sys/stdio/cricker.rs`) |
-| `Instant`, `SystemTime` | the virtual counter, `CNTVCT_EL0` / `rdtime` (`sys/time/cricker.rs`) |
+| `GlobalAlloc` | `untyped::MAP` from slot 0, grow-on-demand (`sys/alloc/nife`) |
+| `stdout` / `stderr` | `endpoint::SEND` on slot 1 (`sys/stdio/nife.rs`) |
+| `Instant`, `SystemTime` | the virtual counter, `CNTVCT_EL0` / `rdtime` (`sys/time/nife.rs`) |
 | `panic!` | print, then `brk`/`ebreak`: a fault the kernel attributes. No unwinding. |
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
-| `net` (`TcpStream`, outbound `UdpSocket`) | net_stack's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
-| `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/cricker.rs`), or `Unsupported` when no directory was granted |
-| `std::random::SystemRng` | the entropy service's endpoint on slot 6 (`sys/random/cricker.rs`), or a **panic** when not granted |
+| `net` (`TcpStream`, outbound `UdpSocket`) | net_stack's socket contract on slots 2/3 (`sys/net/connection/nife.rs`), or `Unsupported` when not granted |
+| `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/nife.rs`), or `Unsupported` when no directory was granted |
+| `std::random::SystemRng` | the entropy service's endpoint on slot 6 (`sys/random/nife.rs`), or a **panic** when not granted |
 | `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
-| `std::env::consts::OS` | `"cricker"` (patched into `env_consts.rs`) |
+| `std::env::consts::OS` | `"nife"` (patched into `env_consts.rs`) |
 
-The syscall glue (`sys/pal/cricker/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
+The syscall glue (`sys/pal/nife/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
 not restated: `abi.rs` is generated verbatim from `crates/abi` by `std-src`, so the numbers cannot
 drift. Likewise `user_heap.rs` from `crates/user_heap` (the host-tested heap algorithm is the only heap
@@ -88,13 +88,13 @@ builds one:
 2. **Replace the `src` subtree with a real copy** (independent inodes), so patching it never
    touches the shared rustup toolchain.
 3. **Patch that copy**: drop in the overlay PAL files, generate `abi.rs`/`user_heap.rs`, and insert a
-   `target_os = "cricker"` arm into std's `cfg_select!` dispatchers (pal, alloc, stdio, random,
+   `target_os = "nife"` arm into std's `cfg_select!` dispatchers (pal, alloc, stdio, random,
    thread, time, io/error, thread_local storage and guard) plus `env_consts` and the
    `restricted_std` chain in std's `build.rs`.
-4. **Link it** as the `cricker-dev` toolchain (`rustup toolchain link`).
+4. **Link it** as the `nife-dev` toolchain (`rustup toolchain link`).
 
 `cargo xtask std-exerciser` then builds the `std_exerciser` demo for both custom targets against it. The build
-sets `RUSTUP_TOOLCHAIN=cricker-dev` explicitly rather than `+cricker-dev`, because the cargo proxy
+sets `RUSTUP_TOOLCHAIN=nife-dev` explicitly rather than `+nife-dev`, because the cargo proxy
 that launched xtask already exports `RUSTUP_TOOLCHAIN=nightly`, which would override a `+` selector
 and silently build std from the *unpatched* sysroot.
 
@@ -104,10 +104,10 @@ its build-std cache survive across runs and only a PAL change forces std to reco
 
 ### The target specs
 
-`targets/{aarch64,riscv64}-unknown-cricker.json`, built with `-Zbuild-std` and `-Zjson-target-spec`.
+`targets/{aarch64,riscv64}-unknown-nife.json`, built with `-Zbuild-std` and `-Zjson-target-spec`.
 The load-bearing fields:
 
-- `"os": "cricker"` selects our `sys` backend through every dispatcher.
+- `"os": "nife"` selects our `sys` backend through every dispatcher.
 - `"panic-strategy": "abort"` means unwinding machinery is never even linked; `panic!` prints and
   faults.
 - `"singlethread": true` turns off `target_has_threads`, so std uses its `no_threads` sync
@@ -121,7 +121,7 @@ the bare target.
 
 ## `std::net` over the socket contract (milestone 27 phase two)
 
-`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to net_stack's socket
+`sys/net/connection/nife.rs` binds std's `TcpStream` and outbound `UdpSocket` to net_stack's socket
 contract (DECISIONS §25, notes/net.md, `crates/socket_proto/src/lib.rs`). The PAL is a **client** of the
 frozen contract, nothing more: it holds the `Stack` endpoint (slot 2) and a frame untyped (slot 3),
 and for each socket it mints a shared `Frame`, maps it, delegates it to net_stack (`SEND_CAP`,
@@ -130,7 +130,7 @@ the message; bytes sit in the shared frame. This is the exact path the hand-writ
 walks, reached through std's blocking API instead.
 
 The wire constants are not restated: `netproto.rs` is generated verbatim from `crates/socket_proto/src/lib.rs`
-into `sys/pal/cricker/netproto.rs` by `std-src`, the same anti-drift discipline as `abi.rs` and
+into `sys/pal/nife/netproto.rs` by `std-src`, the same anti-drift discipline as `abi.rs` and
 `user_heap.rs`. If the contract changes, the PAL's numbers change with it, because there is one source.
 
 What binds, and how it maps to the contract:
@@ -163,10 +163,10 @@ sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
 
 ## `std::fs` over the FS-service contract (milestone 27 phase two)
 
-`sys/fs/cricker.rs` binds std's `File` to the FS server's file contract (DECISIONS §27,
+`sys/fs/nife.rs` binds std's `File` to the FS server's file contract (DECISIONS §27,
 notes/fs-server.md, `crates/fs_proto`). Like the net PAL it is a **client** of a frozen contract and
 nothing more, and like the net PAL its wire constants are generated verbatim (`fs_proto` becomes
-`sys/pal/cricker/fsproto.rs` by `std-src`), so the PAL's numbers cannot drift from the server's.
+`sys/pal/nife/fsproto.rs` by `std-src`), so the PAL's numbers cannot drift from the server's.
 
 ### The interesting part: `File::open` takes a path, and there is no global namespace
 
@@ -257,7 +257,7 @@ feature. The FS server had been dispatching all six since milestones 47 and 48, 
 the PAL's own comments went on saying "no verb in the contract backs it". A refusal outlived its
 reason by two milestones, and nothing caught it, because a refusal that is correct-looking reads the
 same as a refusal that is correct. Milestone 64 found it by asking fifty crates.io crates what they
-actually needed (notes/crates-io-on-cricker.md), which put `create_dir` and `read_dir` near the top
+actually needed (notes/crates-io-on-nife.md), which put `create_dir` and `read_dir` near the top
 of real demand.
 
 Four behaviours are worth knowing before you use them:
@@ -415,7 +415,7 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
   (marked as one), descends into that directory and finds it empty, gets refused unlinking a
   directory and rmdir-ing a file, renames the file it created and asserts the *source name is gone*
   as well as the destination's contents, then removes both. It cleans up before it starts rather
-  than after, because `CRICKER_KEEP_REDOXFS=1` runs the suite against an image a previous boot
+  than after, because `NIFE_KEEP_REDOXFS=1` runs the suite against an image a previous boot
   wrote. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability` spawns it this
   way.
 - **Granted the network** (slots 2 and 3, alongside a running net_stack): the bind succeeds, and the
@@ -434,10 +434,10 @@ byte stream off the endpoint and compare it byte for byte, on **both** ISAs out 
 initrd (the parity gate, DECISIONS §19). The fs transcript splices the file's own bytes into the
 expected buffer from the shared fixture, so that one comparison covers the whole path: disk,
 DMA-confined block server, FS server running an engine we did not write, the file contract, the PAL,
-and the stdout endpoint. One binary also keeps the initrd inside its crickerfs directory limit
-(`crickerfs::MAX_FILES`, 31 entries when this was written and 76 since 2026-08-01).
+and the stdout endpoint. One binary also keeps the initrd inside its nifefs directory limit
+(`nifefs::MAX_FILES`, 31 entries when this was written and 76 since 2026-08-01).
 `cargo xtask test` builds the demo for both targets first, so both initrds carry it; both test legs
-attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer and the RedoxFS image as the
+attach a virtio-net NIC (`NIFE_NET`) with the guestfwd echo peer and the RedoxFS image as the
 second disk.
 
 **One boot has one FS service**, because the block server owns the RedoxFS device: a second wiring

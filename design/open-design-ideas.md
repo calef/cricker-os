@@ -23,7 +23,7 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
 
 - [Driver domains, and the DMA-confinement design space](driver-domains.md): the
   principled version of the DMA hole we closed in software (notes/dma.md): run each driver in its
-  own VM with cricker-os as the hypervisor at EL2, and confine its DMA with the SMMU's stage-2. The
+  own VM with nife as the hypervisor at EL2, and confine its DMA with the SMMU's stage-2. The
   strongest driver isolation there is, and the opposite of a shortcut: it needs EL2, an SMMU
   driver, and is impossible under HVF. Parked as the most interesting unbuilt direction.
 

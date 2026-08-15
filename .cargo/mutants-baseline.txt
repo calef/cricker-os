@@ -14,7 +14,7 @@ compositor 209 14 0 10
 coremark 106 2 1 0
 cred 127 3 1 16
 cred_proto 72 2 0 13
-crickerfs 107 0 0 8
+nifefs 107 0 0 8
 dma_validator 79 0 0 6
 dtb 294 1 20 10
 elf 98 0 0 4

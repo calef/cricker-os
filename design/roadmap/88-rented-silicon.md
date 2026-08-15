@@ -1,4 +1,4 @@
-# 88. cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU
+# 88. nife on rented silicon: Oracle's free tier first, Graviton metal for the PMU
 
 **Status: NOT-STARTED.** Raised 2026-08-03, from the observation that several open milestones are
 hardware-gated and a cloud instance is hardware without a purchase. Oracle-first is calef's call
@@ -12,10 +12,10 @@ path shares.
 
 **What this buys that no machine on the desk can.** Every benchmark in this tree so far runs on
 hardware the reader has to take our word about. A cloud instance is the same silicon for everyone:
-"cricker-os against Linux on the same free shape, here is the image, rerun it on your own free
+"nife against Linux on the same free shape, here is the image, rerun it on your own free
 account" is a credibility claim no desk machine can make, and it is the demonstrator thesis
 (DECISIONS §14) applied to the *audience* rather than the code. Second, an always-free instance
-can stay up, which opens a door no burst rental does: a public, always-on cricker-os demo
+can stay up, which opens a door no burst rental does: a public, always-on nife demo
 instance, its own decision later because exposing this kernel to the internet is a security
 posture question, not a deployment step. Third, milestone 25's deferred `sel4bench` needs a real
 PMU, no VM exposes one, and Graviton `.metal` rents one by the hour; that stage stays AWS.

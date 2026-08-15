@@ -157,10 +157,6 @@ name = "cred_proto"
 version = "0.1.0"
 
 [[package]]
-name = "crickerfs"
-version = "0.1.0"
-
-[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,7 +357,6 @@ dependencies = [
  "coremark",
  "cpu_set",
  "cred_proto",
- "crickerfs",
  "dma_validator",
  "dtb",
  "elf",
@@ -375,6 +370,7 @@ dependencies = [
  "isa",
  "line_editor",
  "measured_boot",
+ "nifefs",
  "ntp_proto",
  "nvme",
  "paging",
@@ -472,6 +468,10 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "nifefs"
+version = "0.1.0"
 
 [[package]]
 name = "ntlm"
@@ -702,11 +702,11 @@ name = "system_initializer"
 version = "0.1.0"
 dependencies = [
  "abi",
- "crickerfs",
  "elf",
  "grant_plan",
  "line_editor",
  "measured_boot",
+ "nifefs",
  "sink_proto",
  "supervision_proto",
  "user_rt",
@@ -822,7 +822,6 @@ dependencies = [
  "coremark",
  "cred",
  "cred_proto",
- "crickerfs",
  "elf",
  "entropy_proto",
  "fs_proto",
@@ -831,6 +830,7 @@ dependencies = [
  "grant_plan",
  "line_editor",
  "manual",
+ "nifefs",
  "ntp_proto",
  "sink_proto",
  "smoltcp",
@@ -881,8 +881,8 @@ name = "virtio"
 version = "0.1.0"
 dependencies = [
  "abi",
- "crickerfs",
  "fs_proto",
+ "nifefs",
  "user_rt",
 ]
 
@@ -922,12 +922,12 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "compositor",
- "crickerfs",
  "fs_proto",
  "gfx_proto",
  "gpt",
  "manual",
  "measured_boot",
+ "nifefs",
  "video_terminal",
 ]
 

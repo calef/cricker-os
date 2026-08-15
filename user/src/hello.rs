@@ -286,7 +286,7 @@ fn revoke_demo() -> ! {
 /// Where the kernel maps the initrd into init (must match user.rs `INITRD_VA`).
 const INITRD_VA: u64 = 0x2000_0000;
 
-/// The bytes of the program named `name` in the initrd (milestone 19f). The initrd is a crickerfs
+/// The bytes of the program named `name` in the initrd (milestone 19f). The initrd is a nifefs
 /// archive the kernel maps read-only at [`INITRD_VA`]; init indexes it by name rather than treating
 /// the whole blob as a single ELF. `initrd_len` (the archive length) arrives in `x1` at entry.
 /// Returns `None` if the archive will not parse or holds no such program.
@@ -299,7 +299,7 @@ fn program(initrd_len: u64, name: &str) -> Option<&'static [u8]> {
     // reserved RAM that outlives every process, so the 'static lifetime is honest.
     let archive =
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    crickerfs::Fs::parse(archive).ok()?.read(name)
+    nifefs::Fs::parse(archive).ok()?.read(name)
 }
 
 /// **The archive entry holding this binary**, which is not the same name on both machines.
@@ -559,7 +559,7 @@ fn init_console(initrd_len: u64) -> ! {
     check(tcb_start(tcb, 0, 0, 0)); // no role selector: console is its own binary
 
     // Now init is the client. Write a line into the shared page, ask the server to print it.
-    let msg = b"cricker-os: the console server was built and started by userspace init.
+    let msg = b"nife: the console server was built and started by userspace init.
 ";
     // SAFETY: init mapped the shared page read/write at SHARED_VA above.
     unsafe {

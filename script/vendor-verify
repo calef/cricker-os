@@ -59,7 +59,7 @@ write = mode == "--write-patch"
 # The tarballs land here rather than in the repo: they are large, immutable, and re-fetchable, which
 # is the definition of a cache. CI keys a cache on the pin files so a run costs one HTTP request at
 # most, and usually none.
-cache = os.environ.get("CRICKER_VENDOR_CACHE") or os.path.expanduser("~/.cache/cricker-vendor")
+cache = os.environ.get("NIFE_VENDOR_CACHE") or os.path.expanduser("~/.cache/nife-vendor")
 
 
 def read_pin(path):
@@ -175,7 +175,7 @@ for pin_path in pins:
         continue
 
     # Extract, patch, compare. The extraction is thrown away; only the verdict survives.
-    work = tempfile.mkdtemp(prefix="cricker-vendor-")
+    work = tempfile.mkdtemp(prefix="nife-vendor-")
     try:
         with tarfile.open(tarball) as tf:
             tf.extractall(work, filter="data")

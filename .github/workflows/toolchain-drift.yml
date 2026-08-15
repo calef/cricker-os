@@ -12,7 +12,7 @@ name: toolchain drift
 # information, not a defect in the commit that happened to trigger the run. When it goes red, the fix
 # is a bump commit with evidence, at a time of our choosing.
 #
-# The `std` overlay is the point of this job. `patches/std-cricker` patches std's own source, so it
+# The `std` overlay is the point of this job. `patches/std-nife` patches std's own source, so it
 # tracks upstream *internals* rather than any stable API, and it is where drift lands first: on
 # 2026-07-30 upstream added `set_perm_nofollow` to `sys::fs` and our overlay's re-export list did not
 # carry it, which reddened CI on commits that had touched nothing but markdown.
@@ -72,7 +72,7 @@ jobs:
       # overlay against a fresh rust-src. A clean farm is the point, so this must not reuse a cached one.
       - name: Build the std overlay (the fragile part)
         run: |
-          rm -rf target/cricker-farm
+          rm -rf target/nife-farm
           cargo xtask std-exerciser
 
       # Then the ordinary build and the host-logic tests. The QEMU suite is deliberately skipped: this
@@ -95,6 +95,6 @@ jobs:
             echo 'commit is broken. `main` is unaffected and still builds on the pinned toolchain.'
             echo
             echo 'To resolve, deliberately: raise the date in `rust-toolchain.toml`, `rm -rf'
-            echo 'target/cricker-farm`, then `script/test`. Expect the overlay'"'"'s'
-            echo '`pub use unsupported_fs::{...}` list in `sys/fs/cricker.rs` to need new names.'
+            echo 'target/nife-farm`, then `script/test`. Expect the overlay'"'"'s'
+            echo '`pub use unsupported_fs::{...}` list in `sys/fs/nife.rs` to need new names.'
           } >> "$GITHUB_STEP_SUMMARY"

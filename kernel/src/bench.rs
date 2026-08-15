@@ -656,8 +656,8 @@ fn spawn_el0() {
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches
 /// no OS primitive: it is pure computation (the CoreMark-derived kernel, `crates/coremark`), so its
-/// cost is the *core's*, not cricker-os's. It is here because the same crate runs as an EL0 workload
-/// and later on macOS and Linux, and this line is where the cricker-os compute number is recorded,
+/// cost is the *core's*, not nife's. It is here because the same crate runs as an EL0 workload
+/// and later on macOS and Linux, and this line is where the nife compute number is recorded,
 /// on the same two instruments as everything else. Running it in the kernel is fine: compute is
 /// privilege-independent, so this number equals the EL0 workload's. `SINK` keeps it live.
 fn coremark_compute() {

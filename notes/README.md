@@ -1,6 +1,6 @@
 # Concept notes
 
-Running glossary for cricker-os. Written as concepts come up, not up front. If something
+Running glossary for nife. Written as concepts come up, not up front. If something
 in the code or the conversation doesn't make sense, it belongs here.
 
 ## Start here
@@ -176,10 +176,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   truncate verb, monotonic-only clock, non-crypto random" caveats this line used to list are all
   gone: milestone 31 phase 2 bound `CREATE` and `TRUNCATE`, milestone 51 gave `SystemTime` a real
   wall clock, and milestone 56 put `std::random` on the entropy service.
-- [Somebody else's crate on cricker](crates-io-on-cricker.md): milestone 64's measurement phase:
+- [Somebody else's crate on nife](crates-io-on-nife.md): milestone 64's measurement phase:
   fifty crates.io crates built against the patched `std` to find out what actually stops them. 35 of
   50 build unchanged, and of the 15 failures **eight are one crate that is not part of std**
-  (`getrandom` has no `cricker` backend). The four failure classes, the prioritised gap list
+  (`getrandom` has no `nife` backend). The four failure classes, the prioritised gap list
   milestones 99 and 66 consume, why five of the top gaps are **bindings rather than missing verbs**,
   and the sting: `tempfile` compiles, links, and returns "not supported" from every call, which is
   gitoxide's whole atomic-write path.
@@ -494,7 +494,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   proofs above. Starts with the question that decides whether it is worth having at all, given 107
   Kani harnesses: **what does fuzzing find that Kani does not**, answered against three worked cases
   in this tree rather than in general (`elf`'s totality proof that did not return, `dtb`'s proved
-  leaves under unproved walkers, and `crickerfs`, where the gap was not a bound at all but a property
+  leaves under unproved walkers, and `nifefs`, where the gap was not a bound at all but a property
   nobody had written down). Four targets chosen on one rule, does this read bytes from outside the
   trust boundary, with the crates deliberately *not* fuzzed named and argued. Three bugs, one found by
   the fuzzer, one by a round-trip property, and one by reading the code while writing a target that
@@ -775,7 +775,7 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [How portable kernels are written](portability.md): what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.
-- [Where cricker-os could actually run](target-hardware.md): the ISA is almost never the
+- [Where nife could actually run](target-hardware.md): the ISA is almost never the
   constraint. What decides bootability, why a Pi 4 is the next port, and why the port
   *after* it should probably be a UEFI/ACPI machine rather than another Device Tree board.
 - [The aarch64 board for the seL4 comparison](aarch64-board-survey.md): milestone 25's leftover
@@ -841,7 +841,7 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [ELF](elf.md): the container the kernel ships in. Sections vs. segments, where the
   entry point lives, what QEMU actually does with `-kernel` (almost nothing), and what a
   magic number is (the `BadMagic` that caught the 19f archive fed to the ELF loader).
-- [crickerfs](crickerfs.md): the boot archive, and the 2026-08-01 change that widened its names
+- [nifefs](nifefs.md): the boot archive, and the 2026-08-01 change that widened its names
   from 24 bytes to 32. What the wider entry cost (`MAX_FILES`, `DIR_BLOCKS`, and a kernel-stack
   charge that turned out to have been retired already), why the magic bumped this time when it
   did not last time, the three readers a format change has to reach, and the silent name

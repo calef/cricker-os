@@ -1,7 +1,7 @@
 //! The worker: a whole program in one job.
 //!
 //! Milestone 19f.2, the first program that is its **own binary** rather than a role of `hello`.
-//! init loads it out of the initrd archive by the name `"worker"` (crickerfs), builds a child
+//! init loads it out of the initrd archive by the name `"worker"` (nifefs), builds a child
 //! address space and TCB at this ELF's own entry, and `START`s it with the input `n` in `x1`. The
 //! worker squares `n`, `SEND`s the answer on the one endpoint init granted it (slot 0), and exits.
 //! That is the entire program: no role byte to dispatch on, no capabilities beyond the single one

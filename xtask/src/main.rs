@@ -1,4 +1,4 @@
-//! Build orchestration for cricker-os.
+//! Build orchestration for nife.
 //!
 //! A normal Rust binary that runs on the *host*. Building a kernel means a custom
 //! target, a linker script, and driving QEMU with the right flags, none of which fits
@@ -69,9 +69,7 @@ fn main() -> ExitCode {
         "shell" => {
             // Boot straight to the interactive shell (the milestone tour compiled out).
             maybe_hvf();
-            eprintln!(
-                "--- booting cricker-os to an interactive shell (type `help`, Ctrl-C to quit) ---"
-            );
+            eprintln!("--- booting nife to an interactive shell (type `help`, Ctrl-C to quit) ---");
             // **The filesystem the prompt's `>` and `<` need** (milestone 50). The FS server first,
             // because `user()` packs the initrd and the boot loads it out of there by name, and the
             // RedoxFS image because the runner attaches it only when the file exists. Both are
@@ -95,7 +93,7 @@ fn main() -> ExitCode {
             // Milestone 19d.2c: boot with userspace init as the boot path (it brings up the
             // console). Add --hvf for the real core.
             maybe_hvf();
-            eprintln!("--- booting cricker-os via userspace init (Ctrl-C to quit) ---");
+            eprintln!("--- booting nife via userspace init (Ctrl-C to quit) ---");
             mkdisk()
                 && user()
                 && cargo(&[
@@ -118,7 +116,7 @@ fn main() -> ExitCode {
         //   cargo xtask std-stamp                        # in the main checkout
         //   git worktree add /tmp/w HEAD && (cd /tmp/w && cargo xtask std-stamp)
         // The two must print the same value. If they ever diverge, something location-dependent has
-        // crept back into `std_inputs_stamp`, and `cricker-dev` will start being stolen again.
+        // crept back into `std_inputs_stamp`, and `nife-dev` will start being stolen again.
         "std-stamp" => {
             println!("{:016x}", std_inputs_stamp());
             true
@@ -178,24 +176,24 @@ fn user() -> bool {
 // ===========================================================================================
 // Rust `std` on the native ABI (milestone 27).
 //
-// std's Platform Abstraction Layer for cricker-os lives in patches/std-cricker (the Hermit shape:
+// std's Platform Abstraction Layer for nife lives in patches/std-nife (the Hermit shape:
 // a `sys` backend on the capability ABI, not a libc shim). `std-src` materializes a patched
-// rust-src into a linked `cricker-dev` toolchain; `std-exerciser` builds the `std_exerciser` program for the
+// rust-src into a linked `nife-dev` toolchain; `std-exerciser` builds the `std_exerciser` program for the
 // custom targets with -Zbuild-std against it. See notes/std.md.
 // ===========================================================================================
 
 /// The custom-target triples the std demo builds for, one per supported ISA. The name is the
 /// JSON spec's file stem, which is also cargo's target-dir subdirectory.
-const STD_TARGETS: [&str; 2] = ["aarch64-unknown-cricker", "riscv64-unknown-cricker"];
+const STD_TARGETS: [&str; 2] = ["aarch64-unknown-nife", "riscv64-unknown-nife"];
 
-/// The linked toolchain name (`rustup toolchain link`) whose rust-src carries the cricker PAL.
-const CRICKER_TOOLCHAIN: &str = "cricker-dev";
+/// The linked toolchain name (`rustup toolchain link`) whose rust-src carries the nife PAL.
+const NIFE_TOOLCHAIN: &str = "nife-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
 const STD_SRC_PATCH_VERSION: u32 = 5;
 
 fn farm_dir() -> PathBuf {
-    workspace_root().join("target/cricker-farm")
+    workspace_root().join("target/nife-farm")
 }
 
 /// The real nightly sysroot the farm is hardlink-cloned from.
@@ -250,19 +248,19 @@ fn std_inputs_stamp() -> u64 {
         // to either must rebuild the farm or the PAL silently drifts from the service.
         root.join("crates/clock_proto/src/lib.rs"),
         root.join("crates/entropy_proto/src/lib.rs"),
-        root.join("targets/aarch64-unknown-cricker.json"),
-        root.join("targets/riscv64-unknown-cricker.json"),
+        root.join("targets/aarch64-unknown-nife.json"),
+        root.join("targets/riscv64-unknown-nife.json"),
     ];
-    collect_files(&root.join("patches/std-cricker/overlay"), &mut files);
+    collect_files(&root.join("patches/std-nife/overlay"), &mut files);
     files.sort();
     for f in files {
         // **Hash the path RELATIVE to the workspace root, never the absolute path.** An absolute path
         // makes the stamp a function of *where the checkout lives*, so two trees with byte-identical
         // inputs never match, `std_src` rebuilds the farm unconditionally, and `rustup toolchain link`
-        // repoints `cricker-dev`, which is global to the machine, not to the worktree. That is the
+        // repoints `nife-dev`, which is global to the machine, not to the worktree. That is the
         // race behind three broken toolchains on 2026-07-31: an agent worktree ran `script/test`, took
-        // the link, and deleting that worktree left `cricker-dev` dangling for everything else, failing
-        // far from the cause as "override toolchain 'cricker-dev' is not installed".
+        // the link, and deleting that worktree left `nife-dev` dangling for everything else, failing
+        // far from the cause as "override toolchain 'nife-dev' is not installed".
         //
         // The stamp is meant to answer "are the farm's *inputs* unchanged", and a checkout's location
         // is not one of its inputs. `strip_prefix` cannot fail here (every path is built from `root` or
@@ -291,20 +289,20 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// **Materialize the patched `cricker-dev` toolchain** (milestone 27).
+/// **Materialize the patched `nife-dev` toolchain** (milestone 27).
 ///
 /// build-std reads std's source from the sysroot of the rustc it invokes, so a patched std means
 /// a toolchain whose sysroot IS patched. We hardlink-clone the real nightly (`cp -al`, near-zero
 /// disk since blocks are shared) so rustc resolves *this* directory as its sysroot, then replace
 /// the `src` subtree with a real (independent-inode) copy and patch that copy: the overlay PAL
-/// files, the ABI/heap crates generated verbatim, and a `target_os = "cricker"` arm inserted into
+/// files, the ABI/heap crates generated verbatim, and a `target_os = "nife"` arm inserted into
 /// std's `cfg_select!` dispatchers. The real toolchain is never touched.
 ///
 /// Idempotent: a stamp of all inputs guards the rebuild, so a warm farm (and its build-std cache)
 /// survives across runs and only a PAL change forces std to recompile.
 fn std_src() -> bool {
     let stamp = std_inputs_stamp();
-    let stamp_file = farm_dir().join(".cricker-stamp");
+    let stamp_file = farm_dir().join(".nife-stamp");
     if farm_std_src().is_dir()
         && std::fs::read_to_string(&stamp_file).ok().as_deref() == Some(&stamp.to_string())
     {
@@ -316,7 +314,7 @@ fn std_src() -> bool {
         return false;
     };
     let farm = farm_dir();
-    eprintln!("--- std-src: building the patched cricker-dev toolchain (this recompiles std) ---");
+    eprintln!("--- std-src: building the patched nife-dev toolchain (this recompiles std) ---");
 
     // Fresh farm. `cp -al` clones bin+lib as hardlinks; the src subtree is then a real copy so
     // patching it never mutates the shared rustup toolchain.
@@ -343,13 +341,13 @@ fn std_src() -> bool {
         return false;
     }
 
-    // Link (or relink) the farm as `cricker-dev`. Idempotent: rustup replaces an existing link to
+    // Link (or relink) the farm as `nife-dev`. Idempotent: rustup replaces an existing link to
     // the same path.
     if !run(
         "rustup",
-        &["toolchain", "link", CRICKER_TOOLCHAIN, &s(farm.clone())],
+        &["toolchain", "link", NIFE_TOOLCHAIN, &s(farm.clone())],
     ) {
-        eprintln!("std-src: `rustup toolchain link {CRICKER_TOOLCHAIN}` failed");
+        eprintln!("std-src: `rustup toolchain link {NIFE_TOOLCHAIN}` failed");
         return false;
     }
 
@@ -365,9 +363,9 @@ fn s(p: PathBuf) -> String {
     p.display().to_string()
 }
 
-/// Copy the PAL overlay (`patches/std-cricker/overlay/std/src/...`) over the farm's std source.
+/// Copy the PAL overlay (`patches/std-nife/overlay/std/src/...`) over the farm's std source.
 fn std_apply_overlay() -> bool {
-    let overlay = workspace_root().join("patches/std-cricker/overlay/std/src");
+    let overlay = workspace_root().join("patches/std-nife/overlay/std/src");
     let dst_root = farm_std_src();
     let mut files = Vec::new();
     collect_files(&overlay, &mut files);
@@ -393,23 +391,23 @@ fn std_generate_modules() -> bool {
     let jobs = [
         (
             root.join("crates/abi/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/abi.rs"),
+            farm_std_src().join("sys/pal/nife/abi.rs"),
         ),
         (
             root.join("crates/user_heap/src/lib.rs"),
-            farm_std_src().join("sys/alloc/cricker/user_heap.rs"),
+            farm_std_src().join("sys/alloc/nife/user_heap.rs"),
         ),
         // The net_stack socket-contract wire format, verbatim, so the net PAL cannot drift from the
         // server it talks to (same discipline as the ABI and heap crates above).
         (
             root.join("crates/socket_proto/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/netproto.rs"),
+            farm_std_src().join("sys/pal/nife/netproto.rs"),
         ),
         // The FS-service wire protocol (DECISIONS §27), so `std::fs`'s PAL cannot drift from the
         // server it opens files through. Same discipline as the three above.
         (
             root.join("crates/fs_proto/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/fsproto.rs"),
+            farm_std_src().join("sys/pal/nife/fsproto.rs"),
         ),
         // The wall-clock contract (DECISIONS §43), so the time PAL reads the clock page with the
         // same seqlock and the same layout the clock service publishes it with. Same discipline as
@@ -417,14 +415,14 @@ fn std_generate_modules() -> bool {
         // read of a timestamp rather than a compile error.
         (
             root.join("crates/clock_proto/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/clockproto.rs"),
+            farm_std_src().join("sys/pal/nife/clockproto.rs"),
         ),
         // The entropy contract (DECISIONS §44), so the random PAL packs its requests and reads its
         // replies exactly the way the entropy service serves them. Same discipline as the five
         // above; a drift here would be a program reading the wrong bytes as a key.
         (
             root.join("crates/entropy_proto/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/entropyproto.rs"),
+            farm_std_src().join("sys/pal/nife/entropyproto.rs"),
         ),
         // The byte-sink contract (milestone 50), so `println!`'s framing and the classification of
         // a failed SEND are one definition shared with every sink and with the kernel-side tests.
@@ -432,7 +430,7 @@ fn std_generate_modules() -> bool {
         // in `GONE` would be a program that keeps printing into a pipe whose reader has exited.
         (
             root.join("crates/sink_proto/src/lib.rs"),
-            farm_std_src().join("sys/pal/cricker/sinkproto.rs"),
+            farm_std_src().join("sys/pal/nife/sinkproto.rs"),
         ),
     ];
     for (src, dst) in jobs {
@@ -487,8 +485,8 @@ fn patch_after(path: &Path, anchor: &str, insert: &str) -> bool {
     true
 }
 
-/// Add a `target_os = "cricker"` arm to std's `cfg_select!` dispatchers so they pick the cricker
-/// backend, and add cricker to std's `build.rs` known-platform chain (so std is not
+/// Add a `target_os = "nife"` arm to std's `cfg_select!` dispatchers so they pick the nife
+/// backend, and add nife to std's `build.rs` known-platform chain (so std is not
 /// `restricted_std` and ordinary programs need no `#![feature]`). These string anchors couple us
 /// to the pinned nightly's std internals; a rustc bump that reshapes them fails loudly here, which
 /// is the intended tripwire (see notes/std.md).
@@ -497,86 +495,86 @@ fn std_patch_dispatch() -> bool {
     patch_after(
         &sys.join("pal/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        pub(crate) mod cricker;\n        pub use self::cricker::*;\n    }",
+        "    target_os = \"nife\" => {\n        pub(crate) mod nife;\n        pub use self::nife::*;\n    }",
     ) && patch_after(
         &sys.join("alloc/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
     ) && patch_after(
         &sys.join("stdio/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::*;\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::*;\n    }",
     ) && patch_after(
         // random: `fill_bytes` AND `hashmap_random_keys`, because milestone 56 splits them. The
         // first promises cryptographic strength and panics without the entropy capability; the
         // second is a hash seed and degrades to the old counter-seeded stream. Exporting both means
         // std's blanket `hashmap_random_keys` (the `#[cfg(not(any(...)))]` fallback at the bottom of
-        // the same file) must exclude cricker, or the two definitions collide; that is the next
+        // the same file) must exclude nife, or the two definitions collide; that is the next
         // patch, and it is anchored on the wasi line because "xous" appears twice in the file.
         &sys.join("random/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::{fill_bytes, hashmap_random_keys};\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::{fill_bytes, hashmap_random_keys};\n    }",
     ) && patch_after(
         &sys.join("random/mod.rs"),
         "    all(target_os = \"wasi\", not(target_env = \"p1\")),",
-        "    target_os = \"cricker\",",
+        "    target_os = \"nife\",",
     ) && patch_after(
         &sys.join("thread/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::{Thread, available_parallelism, current_os_id, set_name, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::{Thread, available_parallelism, current_os_id, set_name, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n    }",
     ) && patch_after(
         &sys.join("time/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
     ) && patch_after(
         // net: TcpStream + outbound UdpSocket over the net_stack socket contract (milestone 27 phase
-        // two). The first cfg_select in connection/mod.rs is the backend dispatcher; the cricker
+        // two). The first cfg_select in connection/mod.rs is the backend dispatcher; the nife
         // arm precedes the `_ =>` unsupported fallback that phase one used. hostname has its own
         // `_ =>` fallback to unsupported, so it needs no arm.
         &sys.join("net/connection/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::*;\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::*;\n    }",
     ) && patch_after(
         // fs: File open/read/metadata over the FS-service contract (milestone 27 phase two). The
         // arm precedes the `_ =>` unsupported fallback phase one used, and mirrors the shape of
-        // the other single-backend arms (`use cricker as imp`).
+        // the other single-backend arms (`use nife as imp`).
         &sys.join("fs/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+        "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
     ) && patch_after(
-        // io/error has no fallback arm; route cricker to the generic backend.
+        // io/error has no fallback arm; route nife to the generic backend.
         &sys.join("io/error/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod generic;\n        pub use generic::*;\n    }",
+        "    target_os = \"nife\" => {\n        mod generic;\n        pub use generic::*;\n    }",
     ) && patch_after(
         // Single-threaded, no native TLS: storage is a plain static (no_threads).
         &sys.join("thread_local/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod no_threads;\n        pub use no_threads::{EagerStorage, LazyStorage, thread_local_inner};\n        pub(crate) use no_threads::{LocalPointer, local_pointer};\n    }",
+        "    target_os = \"nife\" => {\n        mod no_threads;\n        pub use no_threads::{EagerStorage, LazyStorage, thread_local_inner};\n        pub(crate) use no_threads::{LocalPointer, local_pointer};\n    }",
     ) && patch_after(
         // ... and the TLS-destructor guard is a no-op.
         &sys.join("thread_local/mod.rs"),
         "pub(crate) mod guard {\n    cfg_select! {",
-        "        target_os = \"cricker\" => {\n            pub(crate) fn enable() {}\n        }",
+        "        target_os = \"nife\" => {\n            pub(crate) fn enable() {}\n        }",
     ) && patch_after(
         // std::env::consts::OS. `cfg_unordered!` turns each arm's cfg into the fallback's
-        // exclusion set, so adding a cricker arm both defines OS and keeps the fallback off it.
+        // exclusion set, so adding a nife arm both defines OS and keeps the fallback off it.
         &sys.join("env_consts.rs"),
         "cfg_unordered! {",
-        "#[cfg(target_os = \"cricker\")]\npub mod os {\n    pub const FAMILY: &str = \"\";\n    pub const OS: &str = \"cricker\";\n    pub const DLL_PREFIX: &str = \"\";\n    pub const DLL_SUFFIX: &str = \"\";\n    pub const DLL_EXTENSION: &str = \"\";\n    pub const EXE_SUFFIX: &str = \"\";\n    pub const EXE_EXTENSION: &str = \"\";\n}",
+        "#[cfg(target_os = \"nife\")]\npub mod os {\n    pub const FAMILY: &str = \"\";\n    pub const OS: &str = \"nife\";\n    pub const DLL_PREFIX: &str = \"\";\n    pub const DLL_SUFFIX: &str = \"\";\n    pub const DLL_EXTENSION: &str = \"\";\n    pub const EXE_SUFFIX: &str = \"\";\n    pub const EXE_EXTENSION: &str = \"\";\n}",
     ) && patch_after(
-        // cricker has a real PAL: not restricted_std.
+        // nife has a real PAL: not restricted_std.
         &farm_std_src().parent().unwrap().join("build.rs"),
         "        || target_os == \"vexos\"\n",
-        "        || target_os == \"cricker\"",
+        "        || target_os == \"nife\"",
     )
 }
 
 /// **Build the `std_exerciser` program for both custom targets** (milestone 27), via -Zbuild-std against
-/// the patched `cricker-dev` toolchain. panic=abort and singlethread come from the target specs;
+/// the patched `nife-dev` toolchain. panic=abort and singlethread come from the target specs;
 /// `compiler-builtins-mem` supplies memcpy/memset for the bare target.
 ///
-/// `RUSTUP_TOOLCHAIN` is set explicitly rather than via `+cricker-dev`, because the cargo proxy
+/// `RUSTUP_TOOLCHAIN` is set explicitly rather than via `+nife-dev`, because the cargo proxy
 /// that launched this xtask already exports `RUSTUP_TOOLCHAIN=nightly`, which would override a
 /// `+` selector and silently build std from the *unpatched* sysroot.
 fn std_exerciser() -> bool {
@@ -587,7 +585,7 @@ fn std_exerciser() -> bool {
     for triple in STD_TARGETS {
         let spec = s(workspace_root().join(format!("targets/{triple}.json")));
         let ok = Command::new("cargo")
-            .env("RUSTUP_TOOLCHAIN", CRICKER_TOOLCHAIN)
+            .env("RUSTUP_TOOLCHAIN", NIFE_TOOLCHAIN)
             .args([
                 "build",
                 "--release",
@@ -686,12 +684,12 @@ fn measurement_table(files: &[(&str, &[u8])]) -> String {
 
 /// Hash the boot-program entries out of the archive we just packed and write the manifest.
 ///
-/// It parses the packed image back with `crickerfs` rather than hashing the input file, deliberately:
+/// It parses the packed image back with `nifefs` rather than hashing the input file, deliberately:
 /// what must be measured is the bytes **the kernel will read out of the archive**, not the bytes we
 /// meant to put in. If packing ever mangled an entry, this measures the mangling and the boot fails,
 /// which is the correct direction to be wrong in.
 fn write_measure_manifest(arch: &str, image: &[u8]) -> bool {
-    let fs = match crickerfs::Fs::parse(image) {
+    let fs = match nifefs::Fs::parse(image) {
         Ok(fs) => fs,
         Err(e) => {
             eprintln!("measure: the archive we just packed does not parse: {e:?}");
@@ -741,7 +739,7 @@ fn write_measure_manifest(arch: &str, image: &[u8]) -> bool {
 // pixel format or scanout rectangle would pass it and show garbage on a real screen.
 //
 // QEMU's monitor closes that gap, and it works headlessly: `screendump FILE` writes a PPM of the
-// scanout even with no display backend. So the runners take a monitor socket (CRICKER_GPU_MON), and
+// scanout even with no display backend. So the runners take a monitor socket (NIFE_GPU_MON), and
 // this drives it **while the ordinary test run is happening**, rather than paying for a second boot:
 // the suite is minutes long per ISA and the pattern stays on the scanout from the display test until
 // QEMU exits, so there is no need to synchronize with the guest at all. Poll, dump, compare; the
@@ -756,7 +754,7 @@ fn write_measure_manifest(arch: &str, image: &[u8]) -> bool {
 /// must fit in 104 bytes, and a worktree checkout plus `target/` gets close enough to that limit to
 /// break on someone else's machine. The PPM it dumps goes under `target/`, where path length is free.
 fn gpu_mon_socket(arch: &str) -> String {
-    format!("/tmp/cricker-gpu-{arch}-{}.sock", std::process::id())
+    format!("/tmp/nife-gpu-{arch}-{}.sock", std::process::id())
 }
 
 fn gpu_shot_path(arch: &str) -> PathBuf {
@@ -952,7 +950,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let mut referee = ScanoutReferee::new(arch);
     // The other host-side actor (milestone 107): a process that connects INTO the guest, which is
     // the one thing no in-guest test can stage. Constructed before the child for the same reason
-    // the referee is: it is what sets `CRICKER_HOSTFWD_PORT`, and the runner reads it from the
+    // the referee is: it is what sets `NIFE_HOSTFWD_PORT`, and the runner reads it from the
     // environment the child inherits.
     let prober = InboundProber::new(arch);
     let mut child = match Command::new("cargo").args(test_args).spawn() {
@@ -1026,7 +1024,7 @@ impl ScanoutReferee {
         // that reads it is spawned, and the threads xtask ever starts (the transcript reader in
         // shell_check_leg, and this referee's driver in hvf_kernel_leg) copy pipe bytes and poll a
         // socket, and neither touches the environment.
-        unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
+        unsafe { std::env::set_var("NIFE_GPU_MON", &sock) };
 
         let missing = String::from("no screendump was ever taken (did QEMU get a monitor?)");
         Self {
@@ -1158,8 +1156,8 @@ impl ScanoutReferee {
 /// match `user/src/socket_test_client.rs` (`IN_MSG`/`OUT_MSG`), and they are deliberately different
 /// strings: an echo would pass even if the guest were only reflecting our own bytes, and the point
 /// of this gate is that the guest **composed** an answer to a connection it did not make.
-const INBOUND_IN: &[u8] = b"cricker-in!";
-const INBOUND_OUT: &[u8] = b"cricker-out!";
+const INBOUND_IN: &[u8] = b"nife-in!";
+const INBOUND_OUT: &[u8] = b"nife-out!";
 /// How many connections the prober must complete. **Two, and the second is the load-bearing one:**
 /// a listener that accepts one connection and then goes deaf is a listener a file server cannot
 /// use, and nothing but a second accept proves the re-arm (milestone 107).
@@ -1199,7 +1197,7 @@ struct InboundProber {
 
 impl InboundProber {
     /// Pick the port, tell the runner about it, and start poking. Call this **before** the child is
-    /// spawned: the runner reads `CRICKER_HOSTFWD_PORT` from the environment it inherits.
+    /// spawned: the runner reads `NIFE_HOSTFWD_PORT` from the environment it inherits.
     fn new(arch: &str) -> Self {
         let Some(port) = free_loopback_port() else {
             eprintln!("inbound prober ({arch}): could not get a free loopback port");
@@ -1213,7 +1211,7 @@ impl InboundProber {
         // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads. This runs
         // on the main thread before both the child that reads it and the prober thread below, and
         // that thread only touches sockets; no thread xtask starts ever writes the environment.
-        unsafe { std::env::set_var("CRICKER_HOSTFWD_PORT", port.to_string()) };
+        unsafe { std::env::set_var("NIFE_HOSTFWD_PORT", port.to_string()) };
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_thread = stop.clone();
@@ -1387,13 +1385,13 @@ fn riscv_initrd_path() -> String {
 
 /// **Build the RISC-V userspace archive** (milestone 20, the richer-initrd step). Compiles the two
 /// portable programs the second architecture runs (`builder`, the minimal init, and `worker`, the
-/// child it loads) for the riscv target, and packs them into a crickerfs archive: `builder` under
+/// child it loads) for the riscv target, and packs them into a nifefs archive: `builder` under
 /// the name `init` (the entry the kernel loads first), `worker` under `worker` (the one init loads by
-/// name). Point `CRICKER_INITRD` at the result and boot the riscv kernel, e.g.:
+/// name). Point `NIFE_INITRD` at the result and boot the riscv kernel, e.g.:
 ///
 /// ```text
 /// cargo xtask initrd-riscv
-/// CRICKER_INITRD=target/initrd-riscv.img cargo run -p kernel --target riscv64imac-unknown-none-elf
+/// NIFE_INITRD=target/initrd-riscv.img cargo run -p kernel --target riscv64imac-unknown-none-elf
 /// ```
 fn initrd_riscv() -> bool {
     if !run(
@@ -1650,10 +1648,10 @@ fn initrd_riscv() -> bool {
             }
         }
     }
-    // The std demo (milestone 27), built through the cricker-dev toolchain for the riscv custom
+    // The std demo (milestone 27), built through the nife-dev toolchain for the riscv custom
     // target, rides along when present, exactly as on aarch64. `test` builds it first.
     if let Ok(bytes) = read_stripped(
-        &std_exerciser_elf("riscv64-unknown-cricker")
+        &std_exerciser_elf("riscv64-unknown-nife")
             .display()
             .to_string(),
     ) {
@@ -1674,11 +1672,11 @@ fn initrd_riscv() -> bool {
     // something. Parity is the point (§19): the same table, the same parser, the same policy.
     let table = measurement_table(&files);
     files.push((measured_boot::PROGRAM_MEASUREMENTS, table.as_bytes()));
-    let size = crickerfs::image_size(&files);
+    let size = nifefs::image_size(&files);
     let mut img = std::vec![0u8; size];
     // Carry the reason. "could not build the archive" with the error thrown away sent me hunting
     // through MAX_FILES, image_size and write_image's bounds check by hand; the error names which.
-    if let Err(e) = crickerfs::write_image(&files, &mut img) {
+    if let Err(e) = nifefs::write_image(&files, &mut img) {
         eprintln!(
             "initrd-riscv: could not build the archive: {e:?} ({} files, {} bytes)",
             files.len(),
@@ -1703,7 +1701,7 @@ fn initrd_riscv() -> bool {
 
 /// Pack the built user ELF into the initrd archive the kernel hands init (milestone 19f).
 ///
-/// The initrd is a **crickerfs image**, the same format the virtio disk uses, so one parser serves
+/// The initrd is a **nifefs image**, the same format the virtio disk uses, so one parser serves
 /// both the RAM archive and the disk. It holds `init` (the `hello` binary, which the kernel loads
 /// and init re-enters at its remaining roles) plus the distinct binaries lifted out of hello:
 /// `worker` (19f.2) and `console` (19f.3). The kernel reads the `init` entry to boot; init loads the
@@ -1950,7 +1948,7 @@ fn mkinitrd() -> bool {
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.
     let std_exerciser = read_stripped(
-        &std_exerciser_elf("aarch64-unknown-cricker")
+        &std_exerciser_elf("aarch64-unknown-nife")
             .display()
             .to_string(),
     )
@@ -1977,9 +1975,9 @@ fn mkinitrd() -> bool {
     let table = measurement_table(&files);
     files.push((measured_boot::PROGRAM_MEASUREMENTS, table.as_bytes()));
 
-    let size = crickerfs::image_size(&files);
+    let size = nifefs::image_size(&files);
     let mut img = std::vec![0u8; size];
-    if crickerfs::write_image(&files, &mut img).is_err() {
+    if nifefs::write_image(&files, &mut img).is_err() {
         eprintln!("mkinitrd: could not build the initrd archive");
         return false;
     }
@@ -2009,15 +2007,15 @@ fn maybe_hvf() {
         // threads. xtask is single-threaded here: this runs on the main thread before the child
         // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
         // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-        unsafe { std::env::set_var("CRICKER_ACCEL", "hvf") };
+        unsafe { std::env::set_var("NIFE_ACCEL", "hvf") };
         eprintln!("--- on the real Apple Silicon core via Hypervisor.framework ---");
     }
 }
 
-/// Where the crickerfs disk image is written.
+/// Where the nifefs disk image is written.
 fn disk_path() -> String {
     workspace_root()
-        .join("target/crickerfs.img")
+        .join("target/nifefs.img")
         .display()
         .to_string()
 }
@@ -2025,19 +2023,19 @@ fn disk_path() -> String {
 /// The PCIe transport's copy of the disk image, a sibling of [`disk_path`]. Two files because
 /// both transports are now attached **writable** (milestone 32's write path) and QEMU's image
 /// locking refuses to attach one file to two devices once either attachment can write. The
-/// runner derives this name from `CRICKER_DISK`, so the two stay in lockstep.
+/// runner derives this name from `NIFE_DISK`, so the two stay in lockstep.
 fn disk_pci_path() -> String {
     workspace_root()
-        .join("target/crickerfs-pci.img")
+        .join("target/nifefs-pci.img")
         .display()
         .to_string()
 }
 
-/// Build the crickerfs disk images the virtio-blk driver will read and write.
+/// Build the nifefs disk images the virtio-blk driver will read and write.
 ///
 /// **The disk is generated, not checked in**, the same way the flat kernel image is: a binary
 /// blob in git is a blob nobody can review. The contents are a couple of tiny files, written
-/// through the same `crickerfs::write_image` the userspace filesystem server reads back, so the
+/// through the same `nifefs::write_image` the userspace filesystem server reads back, so the
 /// format has exactly one definition.
 ///
 /// `scratch` is the write-path tests' one-block playground: the driver writes a pattern into its
@@ -2048,7 +2046,7 @@ fn mkdisk() -> bool {
     let files: [(&str, &[u8]); 3] = [
         (
             "motd",
-            b"cricker-os: read from a virtio disk, by a driver at EL0.\n",
+            b"nife: read from a virtio disk, by a driver at EL0.\n",
         ),
         (
             "readme",
@@ -2056,9 +2054,9 @@ fn mkdisk() -> bool {
         ),
         ("scratch", &[0u8; 512]),
     ];
-    let size = crickerfs::image_size(&files).max(64 * 1024); // pad to a friendly size
+    let size = nifefs::image_size(&files).max(64 * 1024); // pad to a friendly size
     let mut img = std::vec![0u8; size];
-    if crickerfs::write_image(&files, &mut img).is_err() {
+    if nifefs::write_image(&files, &mut img).is_err() {
         eprintln!("mkdisk: could not build the image");
         return false;
     }
@@ -2311,10 +2309,10 @@ fn manual_store(term: Option<String>) -> bool {
 }
 
 /// Where the RedoxFS test image is written. The runners derive exactly this name from
-/// `CRICKER_DISK` (`${CRICKER_DISK%.img}-redoxfs.img`), so the two stay in lockstep.
+/// `NIFE_DISK` (`${NIFE_DISK%.img}-redoxfs.img`), so the two stay in lockstep.
 fn redoxfs_disk_path() -> String {
     workspace_root()
-        .join("target/crickerfs-redoxfs.img")
+        .join("target/nifefs-redoxfs.img")
         .display()
         .to_string()
 }
@@ -2340,14 +2338,14 @@ fn redoxfs_host(args: &[&str]) -> bool {
 /// one image serves both ISA test legs.
 fn mkredoxfs() -> bool {
     let img = redoxfs_disk_path();
-    // **`CRICKER_KEEP_REDOXFS=1` keeps an existing image instead of rebuilding it.** This is the
+    // **`NIFE_KEEP_REDOXFS=1` keeps an existing image instead of rebuilding it.** This is the
     // deliberate way to run the second-boot case: run the suite once normally, then again with this
     // set, and every mount in the second run is a mount of an image a previous *boot* wrote. That is
     // the condition the cross-boot write failure needs, and doing it this way keeps it independent of
     // which ISA leg happens to run first (the order-coupling that hid the bug for three rounds).
     // Absent the variable, each leg gets a fresh fixture, which is what makes the legs reproducible.
-    if std::env::var_os("CRICKER_KEEP_REDOXFS").is_some() && std::path::Path::new(&img).exists() {
-        eprintln!("mkredoxfs: keeping the existing image (CRICKER_KEEP_REDOXFS)");
+    if std::env::var_os("NIFE_KEEP_REDOXFS").is_some() && std::path::Path::new(&img).exists() {
+        eprintln!("mkredoxfs: keeping the existing image (NIFE_KEEP_REDOXFS)");
         return true;
     }
     // Stage the fixture contents in temp files (the host tool's `put` takes a host file), then load
@@ -2441,10 +2439,10 @@ fn stage_subtree() -> Option<String> {
 }
 
 /// Where the **crash test's** RedoxFS image is written (milestone 37). The runners derive exactly
-/// this name from `CRICKER_DISK`, the way they derive the shared one.
+/// this name from `NIFE_DISK`, the way they derive the shared one.
 fn crash_disk_path() -> String {
     workspace_root()
-        .join("target/crickerfs-redoxfs-crash.img")
+        .join("target/nifefs-redoxfs-crash.img")
         .display()
         .to_string()
 }
@@ -2456,7 +2454,7 @@ fn crash_disk_path() -> String {
 /// half-written on purpose. Pointing it at the shared fixture would make every other FS test's
 /// result depend on whether this one had run first, and keeping the image across runs would make
 /// each run's starting state a function of the last one's damage. Both are the order-coupled fixture
-/// DECISIONS §27 spent a day on, so `CRICKER_KEEP_REDOXFS` deliberately does **not** apply here: the
+/// DECISIONS §27 spent a day on, so `NIFE_KEEP_REDOXFS` deliberately does **not** apply here: the
 /// cross-boot case is interesting for the shared disk and is nothing but noise for this one.
 fn mkredoxfs_crash() -> bool {
     let img = crash_disk_path();
@@ -2471,10 +2469,10 @@ fn mkredoxfs_crash() -> bool {
 }
 
 /// Where the GPT-partitioned test image is written. The runners derive exactly this name from
-/// `CRICKER_DISK` (`${CRICKER_DISK%.img}-gpt.img`), so the two stay in lockstep.
+/// `NIFE_DISK` (`${NIFE_DISK%.img}-gpt.img`), so the two stay in lockstep.
 fn gpt_disk_path() -> String {
     workspace_root()
-        .join("target/crickerfs-gpt.img")
+        .join("target/nifefs-gpt.img")
         .display()
         .to_string()
 }
@@ -2525,20 +2523,20 @@ fn mkgptdisk() -> bool {
     true
 }
 
-/// Where the blank test disk is written. The runners derive exactly this name from `CRICKER_DISK`
-/// (`${CRICKER_DISK%.img}-blank.img`), so the two stay in lockstep.
+/// Where the blank test disk is written. The runners derive exactly this name from `NIFE_DISK`
+/// (`${NIFE_DISK%.img}-blank.img`), so the two stay in lockstep.
 fn blank_disk_path() -> String {
     workspace_root()
-        .join("target/crickerfs-blank.img")
+        .join("target/nifefs-blank.img")
         .display()
         .to_string()
 }
 
-/// Where the NVMe test image is written; the runners take the full path in `CRICKER_NVME` rather
-/// than deriving it, because unlike the mmio disks it does not ride beside `CRICKER_DISK`.
+/// Where the NVMe test image is written; the runners take the full path in `NIFE_NVME` rather
+/// than deriving it, because unlike the mmio disks it does not ride beside `NIFE_DISK`.
 fn nvme_disk_path() -> String {
     workspace_root()
-        .join("target/cricker-nvme.img")
+        .join("target/nife-nvme.img")
         .display()
         .to_string()
 }
@@ -2563,7 +2561,7 @@ fn mknvmedisk() -> bool {
 /// It carries no table, no filesystem and no fixture, because what the guest is going to do to it is
 /// write both. Regenerated every run and never shared, for milestone 37's reason (DECISIONS §27): a
 /// test that partitions a disk cannot be pointed at an image another test reads, and a test whose
-/// starting state is last run's damage is not reproducible on its own. `CRICKER_KEEP_REDOXFS` does
+/// starting state is last run's damage is not reproducible on its own. `NIFE_KEEP_REDOXFS` does
 /// not apply here for the same reason it does not apply to the crash image.
 fn mkblankdisk() -> bool {
     let path = blank_disk_path();
@@ -2648,16 +2646,15 @@ fn blank_check_after_run() -> bool {
     }
     if !parts
         .iter()
-        .any(|(_, p)| p.type_guid == gpt::guid::types::CRICKER_DATA)
+        .any(|(_, p)| p.type_guid == gpt::guid::types::NIFE_DATA)
     {
-        eprintln!("BLANK IMAGE CHECK FAILED: no cricker-os data partition on the guest's disk");
+        eprintln!("BLANK IMAGE CHECK FAILED: no nife data partition on the guest's disk");
         return false;
     }
 
     // The filesystem inside it, opened by the pinned engine on the host, at the offset the tool
     // works out from the same table this function just checked.
-    let data_type =
-        String::from_utf8_lossy(&gpt::guid::types::CRICKER_DATA.to_ascii()).into_owned();
+    let data_type = String::from_utf8_lossy(&gpt::guid::types::NIFE_DATA.to_ascii()).into_owned();
     let out = capture(
         "cargo",
         &[
@@ -3116,7 +3113,7 @@ impl ArchLegs {
 /// Three flags narrow what runs, and all three default to today's behaviour:
 ///
 /// - `--arch aarch64|riscv64` runs one ISA leg instead of both (milestone 59).
-/// - `--cpu <model>` picks the emulated CPU model (`CRICKER_CPU`, read by both QEMU runners).
+/// - `--cpu <model>` picks the emulated CPU model (`NIFE_CPU`, read by both QEMU runners).
 ///   Unset means `cortex-a72` on aarch64 and `rv64` on riscv64, exactly as before (milestone 59).
 /// - `--hvf` runs the aarch64 kernel leg on the physical Apple Silicon core (milestone 81). It is
 ///   aarch64-only by construction, so it narrows the run to that leg and refuses `--cpu`; see
@@ -3159,29 +3156,29 @@ fn test() -> bool {
     // cannot silently change what a plain `script/test` means.
     match flag_value("--cpu") {
         Some(model) => {
-            eprintln!("--- CPU model: {model} (CRICKER_CPU) ---");
+            eprintln!("--- CPU model: {model} (NIFE_CPU) ---");
             // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
             // threads. xtask is single-threaded here: this runs on the main thread before the child
             // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
             // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-            unsafe { std::env::set_var("CRICKER_CPU", model) };
+            unsafe { std::env::set_var("NIFE_CPU", model) };
         }
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
         // threads. xtask is single-threaded here: this runs on the main thread before the child
         // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
         // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-        None => unsafe { std::env::remove_var("CRICKER_CPU") },
+        None => unsafe { std::env::remove_var("NIFE_CPU") },
     }
 
     // Nothing cargo starts inherits an accelerator choice. The default leg is TCG, which is the
     // right place for reproducible tests (deterministic, identical on any host), and the HVF leg
-    // does not go through cargo at all: it sets `CRICKER_ACCEL` on the one child that needs it
+    // does not go through cargo at all: it sets `NIFE_ACCEL` on the one child that needs it
     // (see `hvf_kernel_leg`), so a stale value from the caller's shell cannot reach anything else.
     // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::remove_var("CRICKER_ACCEL") };
+    unsafe { std::env::remove_var("NIFE_ACCEL") };
     if hvf {
         eprintln!(
             "--- host tests, the vendored redoxfs round trip and the fs_server core: SKIPPED under \
@@ -3288,7 +3285,7 @@ fn test() -> bool {
 
     // Build the std demo (milestone 27) for both custom targets first, so both initrds carry it:
     // mkinitrd (inside `user`) packs the aarch64 std_exerciser, initrd_riscv packs the riscv one. Outside
-    // the leg guards below because BOTH legs need it, and the crickerfs data disk with it: it is
+    // the leg guards below because BOTH legs need it, and the nifefs data disk with it: it is
     // arch-neutral, and the riscv leg reads it whether or not the aarch64 leg ran.
     if !std_exerciser() || !mkdisk() {
         return false;
@@ -3302,7 +3299,7 @@ fn test() -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_GPU", "1") };
+    unsafe { std::env::set_var("NIFE_GPU", "1") };
     // And a virtio keyboard (milestone 29's input), on the same terms and for the same reason: a
     // test-leg device only, on both ISA legs, and the keyboard test ASSERTS one is present rather
     // than skipping, so a leg that lost this line fails loudly instead of quietly proving nothing.
@@ -3310,7 +3307,7 @@ fn test() -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_KBD", "1") };
+    unsafe { std::env::set_var("NIFE_KBD", "1") };
     // And two virtio-rng devices, one per transport (milestone 56, the entropy half), on the same
     // terms again: a test-leg device only, both ISA legs, and the entropy tests ASSERT a device on
     // each bus rather than skipping. Out of the benchmark boot for the same reason as the GPU: it
@@ -3319,7 +3316,7 @@ fn test() -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_RNG", "1") };
+    unsafe { std::env::set_var("NIFE_RNG", "1") };
     // And an NVMe controller (milestone 53's storage half), on the same terms: a test-leg device
     // only (the benchmark boot shares the runner and must not grow devices its instrument never
     // measured), on both ISA legs because parity is the gate (§19), and the NVMe test ASSERTS the
@@ -3329,7 +3326,7 @@ fn test() -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_NVME", nvme_disk_path()) };
+    unsafe { std::env::set_var("NIFE_NVME", nvme_disk_path()) };
 
     if legs.aarch64() {
         eprintln!();
@@ -3375,7 +3372,7 @@ fn test() -> bool {
         // The riscv userspace tests (parity C) load programs from the initrd and read the disk, so
         // build the riscv archive and point the runner at IT, not at the aarch64 archive `cargo()`
         // exports: the riscv ELF loader must never be handed aarch64 ELFs. The disk is arch-neutral
-        // (a crickerfs data image) and was built by mkdisk() above.
+        // (a nifefs data image) and was built by mkdisk() above.
         // The riscv FS server, before the riscv archive that packs it.
         if !fs_server_build(RISCV_TARGET) || !initrd_riscv() {
             return false;
@@ -3395,17 +3392,17 @@ fn test() -> bool {
         // threads. xtask is single-threaded here: this runs on the main thread before the child
         // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
         // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-        unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
+        unsafe { std::env::set_var("NIFE_INITRD", riscv_initrd_path()) };
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
         // threads. xtask is single-threaded here: this runs on the main thread before the child
         // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
         // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-        unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+        unsafe { std::env::set_var("NIFE_DISK", disk_path()) };
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
         // threads. xtask is single-threaded here: this runs on the main thread before the child
         // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
         // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-        unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
+        unsafe { std::env::set_var("NIFE_NET", "1") }; // a virtio-net NIC for the net test (m30)
         if !cargo_test_with_scanout_check(
             "riscv64",
             &["test", "-p", "kernel", "--target", RISCV_TARGET],
@@ -3470,11 +3467,11 @@ fn hvf_kernel_leg() -> bool {
     eprintln!();
     eprintln!("--- kernel tests, aarch64, ON THE PHYSICAL CORE (QEMU + Hypervisor.framework) ---");
 
-    // Constructed before the child, because it is what sets `CRICKER_GPU_MON`: the runner reads
+    // Constructed before the child, because it is what sets `NIFE_GPU_MON`: the runner reads
     // that when it builds the QEMU command line, so a referee born later would find no monitor.
     let referee = ScanoutReferee::new("aarch64");
     // And the inbound prober, for the same reason and on the same terms: it sets
-    // `CRICKER_HOSTFWD_PORT` before the child exists, and it runs on its own thread throughout. The
+    // `NIFE_HOSTFWD_PORT` before the child exists, and it runs on its own thread throughout. The
     // accept test is not accelerator-sensitive, but it is in the suite, so a leg without a prober
     // would fail it. Its "before the child" placement is load-bearing exactly as the referee's is.
     let prober = InboundProber::new("aarch64");
@@ -3483,12 +3480,12 @@ fn hvf_kernel_leg() -> bool {
     cmd.arg(&elf);
     // The one child that gets the accelerator. `test()` cleared it from our own environment, so
     // nothing else in this process can inherit it.
-    cmd.env("CRICKER_ACCEL", "hvf");
+    cmd.env("NIFE_ACCEL", "hvf");
     // The same devices the TCG leg attaches, set by `test()` and `cargo()` in our environment and
     // inherited from there: the initrd, the disks, the NIC, the GPU, the keyboard, the RNGs.
-    cmd.env("CRICKER_INITRD", initrd_path());
-    cmd.env("CRICKER_DISK", disk_path());
-    cmd.env("CRICKER_NET", "1");
+    cmd.env("NIFE_INITRD", initrd_path());
+    cmd.env("NIFE_DISK", disk_path());
+    cmd.env("NIFE_NET", "1");
     cmd.stdout(std::process::Stdio::piped());
 
     let mut child = match cmd.spawn() {
@@ -3743,7 +3740,7 @@ fn shell_check() -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::remove_var("CRICKER_ACCEL") };
+    unsafe { std::env::remove_var("NIFE_ACCEL") };
     if legs.aarch64() && !shell_check_leg(false) {
         return false;
     }
@@ -3992,14 +3989,14 @@ fn shell_check_leg(riscv: bool) -> bool {
     });
     cmd.arg(format!("target/{target}/{}/kernel", profile_dir()));
     cmd.env(
-        "CRICKER_INITRD",
+        "NIFE_INITRD",
         if riscv {
             riscv_initrd_path()
         } else {
             initrd_path()
         },
     );
-    cmd.env("CRICKER_DISK", disk_path());
+    cmd.env("NIFE_DISK", disk_path());
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
 
@@ -4074,7 +4071,7 @@ fn shell_check_leg(riscv: bool) -> bool {
     // The banner is the first claim: init built the console, the line editor, the input driver and
     // the shell, and gave the shell every capability it needs to say hello. A boot that dies in any
     // of that prints nothing, which is the symptom all three of this milestone's bugs shared.
-    if !wait_after(0, "cricker-os capability shell", SHELL_CHECK_BOOT_SECS) {
+    if !wait_after(0, "nife capability shell", SHELL_CHECK_BOOT_SECS) {
         failed.push(format!(
             "no prompt banner within {SHELL_CHECK_BOOT_SECS}s: the `--features shell` boot never \
              reached a shell"
@@ -4146,10 +4143,10 @@ fn shell_check_leg(riscv: bool) -> bool {
     let transcript = seen.lock().expect("transcript lock").clone();
     // The transcript is printed on failure below, because that is when somebody needs it. This
     // prints it on success too, and it exists because the notes in this tree quote real prompt
-    // sessions: `CRICKER_SHOW_TRANSCRIPT=1 script/shell-check --arch aarch64` is where the EXAMPLES
+    // sessions: `NIFE_SHOW_TRANSCRIPT=1 script/shell-check --arch aarch64` is where the EXAMPLES
     // in notes/swish-language.md and notes/pipes.md come from, rather than from somebody retyping
     // what they remember the shell saying.
-    if std::env::var_os("CRICKER_SHOW_TRANSCRIPT").is_some() {
+    if std::env::var_os("NIFE_SHOW_TRANSCRIPT").is_some() {
         eprintln!("--- shell-check ({arch}) transcript ---");
         eprintln!("{transcript}");
     }
@@ -4299,7 +4296,7 @@ fn bench() -> bool {
     let mut cmd = Command::new(RUNNER);
     cmd.arg(kernel_elf());
     if real {
-        cmd.env("CRICKER_ACCEL", "hvf");
+        cmd.env("NIFE_ACCEL", "hvf");
         if smp {
             // The full machine, for the aggregate-throughput bench. The per-core primitive magnitudes
             // in this same run are then NOT per-core clean (the reap-heavy ones, spawn_el0 and
@@ -4307,7 +4304,7 @@ fn bench() -> bool {
             // single-hart run instead. See notes/benchmarks.md, the multi-hart section.
             // "4" matches the kernel's MAX_CPUS and the runner's default; the throughput bench reads
             // the actual online count at runtime, so this only needs to be more than one.
-            cmd.env("CRICKER_SMP", "4");
+            cmd.env("NIFE_SMP", "4");
             eprintln!(
                 "--- bench: HVF, 4 harts (for smp_throughput; primitives are not per-core here) ---"
             );
@@ -4319,13 +4316,13 @@ fn bench() -> bool {
             // goes ~13.6 us and swings wildly there; spawn_reap likewise). So the default `--real`
             // run is single-hart and clean; `--real --smp` boots the whole machine for the throughput
             // bench, which needs more than one core to mean anything.
-            cmd.env("CRICKER_SMP", "1");
+            cmd.env("NIFE_SMP", "1");
             eprintln!(
                 "--- bench: HVF, single hart, per-core magnitudes (statistical; medians matter) ---"
             );
         }
     } else {
-        cmd.env_remove("CRICKER_ACCEL");
+        cmd.env_remove("NIFE_ACCEL");
         cmd.args(["-icount", "shift=0,sleep=off"]);
         // One hart, the same reason the riscv path forces it (bench_riscv): a primitive benchmark
         // measures per-core path length, and the counter it reads (CNTVCT) advances with QEMU's
@@ -4336,13 +4333,13 @@ fn bench() -> bool {
         // wildly and non-physically across today's merges: coremark, pure compute, moved 63%. See
         // notes/benchmarks.md, the 2026-07-28 attribution. The aarch64 default is 4 (SMP tests);
         // the icount bench pins 1 to match riscv and measure the primitive, not the machine.
-        cmd.env("CRICKER_SMP", "1");
+        cmd.env("NIFE_SMP", "1");
         eprintln!(
             "--- bench: aarch64, single hart, TCG + icount (deterministic instruction counts) ---"
         );
     }
-    cmd.env("CRICKER_INITRD", initrd_path());
-    cmd.env("CRICKER_DISK", disk_path());
+    cmd.env("NIFE_INITRD", initrd_path());
+    cmd.env("NIFE_DISK", disk_path());
 
     run_bench(
         cmd,
@@ -4382,12 +4379,12 @@ fn bench_riscv(check: bool, save: bool) -> bool {
     // icount pins virtual time (rdtime) to the instruction stream; sleep=off so it never waits on the
     // wall clock. This is what makes the riscv counts deterministic and comparable to aarch64's.
     cmd.args(["-icount", "shift=0,sleep=off"]);
-    cmd.env("CRICKER_INITRD", riscv_initrd_path());
+    cmd.env("NIFE_INITRD", riscv_initrd_path());
     // One hart: a primitive benchmark measures per-core cost. With more harts, a thread that waits
     // for a spawned child leaves its hart idling in `wfi`, and under `-icount` a `wfi` jumps virtual
     // time to the next timer tick, inflating the spawn primitives to timer-quantized nonsense. The
     // single-core costs are what compare to aarch64 anyway.
-    cmd.env("CRICKER_SMP", "1");
+    cmd.env("NIFE_SMP", "1");
     eprintln!(
         "--- bench: riscv64, single hart, TCG + icount (deterministic instruction counts) ---"
     );
@@ -4711,7 +4708,7 @@ fn read_stripped(path: &str) -> std::io::Result<Vec<u8>> {
     // program cannot overwrite each other's stripped copy.
     let tag = if path.contains(RISCV_TARGET) {
         "riscv"
-    } else if path.contains("cricker") {
+    } else if path.contains("nife") {
         "std"
     } else {
         "host"
@@ -4767,19 +4764,19 @@ fn cargo(args: &[&str]) -> bool {
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_INITRD", initrd_path()) };
+    unsafe { std::env::set_var("NIFE_INITRD", initrd_path()) };
     // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    unsafe { std::env::set_var("NIFE_DISK", disk_path()) };
     // Attach a virtio-net NIC too (milestone 30): slirp needs no host file, so it is always on for
     // tests, and the net driver's DHCP round-trip test exercises it.
     // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
     // threads. xtask is single-threaded here: this runs on the main thread before the child
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
-    unsafe { std::env::set_var("CRICKER_NET", "1") };
+    unsafe { std::env::set_var("NIFE_NET", "1") };
 
     run("cargo", args)
 }

@@ -5,7 +5,7 @@ installed by the package that owns it. The pure logic is `crates/manual`; the pr
 `user/src/doc.rs`; the store is built by `cargo xtask manual`. Names are provisional.)*
 
 The project's own argument is written in markdown: 328 files, three megabytes, `design/decisions/`
-and a hundred notes. A cricker-os that serves them, on itself, through a viewer that can name
+and a hundred notes. A nife that serves them, on itself, through a viewer that can name
 nothing is a better demonstration of the component story than another synthetic test, and it costs
 the documentation nothing because it already exists.
 
@@ -32,8 +32,8 @@ computed column widths, thematic breaks, and the inline set (`**strong**`, `*emp
 `std::collections::HashMap`. Taking it means either a permanent fork of somebody else's parser or a
 std program.
 
-**And a std program on this system cannot be this program.** The cricker PAL's `Stdin::read` returns
-`Ok(0)` unconditionally (`patches/std-cricker/overlay/std/src/sys/stdio/cricker.rs`) and there is no
+**And a std program on this system cannot be this program.** The nife PAL's `Stdin::read` returns
+`Ok(0)` unconditionally (`patches/std-nife/overlay/std/src/sys/stdio/nife.rs`) and there is no
 argv. A std viewer could neither read a keypress to page nor be told which page to show. The
 roadmap's premise that "milestone 27's std is what makes this buildable at all" is true of the
 parser and false of the program.

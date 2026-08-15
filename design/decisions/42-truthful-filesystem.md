@@ -50,7 +50,7 @@ missing verb rather than a refinement.
 
 **A backend that cannot meet a verb's guarantee does not offer that verb.** It still mounts, and it is
 still useful. FAT offers read, write, create and remove but not `rename`; an object store offers no
-`rename` because it has no directories at all; the read-only initrd (crickerfs) offers neither
+`rename` because it has no directories at all; the read-only initrd (nifefs) offers neither
 `remove` nor `create`. All three fail `mv` on **authority**, uniformly, and none of them is excluded
 from the system.
 

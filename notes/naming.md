@@ -1,4 +1,4 @@
-# Naming things in cricker-os
+# Naming things in nife
 
 What the tree's names mean, which conventions are rules, and which of those a machine checks.
 
@@ -107,13 +107,13 @@ often the only thing that says what a program can *do*.
 cost nothing to learn. This tenet is a naming authority, not a renaming mandate, and renaming `elf`
 would destroy the recognition the whole thing exists to buy.
 
-**One constraint:** `crickerfs` caps archive names at `NAME_LEN = 32` bytes, so a program's name is
+**One constraint:** `nifefs` caps archive names at `NAME_LEN = 32` bytes, so a program's name is
 bounded. Crates are not in the archive and are unbounded.
 
 It was 24 until 2026-08-01, when it had started deciding names rather than bounding them: two settled
 names were within four bytes of it and `os_primitives_benchmarker` exceeded it. Raising it costs
 directory entries per block, and nothing else now that `Fs` no longer holds an entry array. See
-[crickerfs.md](crickerfs.md) for the numbers. The rule that survives the raise: **do not let the
+[nifefs.md](nifefs.md) for the numbers. The rule that survives the raise: **do not let the
 limit pick a name, and do not spend a format change on bytes nothing needs.** 32 clears the longest
 settled name by seven bytes, which is a budget rather than the three bytes that were left before.
 
@@ -128,7 +128,7 @@ is a known gap rather than a decision.
   `socket_proto`, `sink_proto`, `cred_proto`, `clock_proto`, `entropy_proto`, `gfx_proto`,
   `ntp_proto`, `supervision_proto`, `swap_proto`. Plus `abi`, which is the syscall boundary and
   predates the suffix.
-- **Format and hardware parsers**: `elf`, `dtb`, `pci`, `gpt`, `crickerfs`.
+- **Format and hardware parsers**: `elf`, `dtb`, `pci`, `gpt`, `nifefs`.
 - **Userspace libraries**: `user_rt`, `grant_plan`, `virtio`, `video_terminal`, `line_editor`,
   `bitfont`, `glob`, `calendar`, `cred`, `compositor`, `coremark`, `c_seam`.
 
@@ -151,7 +151,7 @@ What the names actually do, over the 39 directories under `crates/`:
 **Milestone 63 deleted the third bullet, which used to read "run together when the result is one
 word".** It was a real observation (`capsh`, `lineedit`, `uheap`, `crickerfs`, `bitfont`), and it was
 the rule that produced every abbreviation a reader had to decode. **Two of the five survive it, not
-one**, and this sentence said otherwise until milestone 115 checked the history: `crickerfs` stayed
+one**, and this sentence said otherwise until milestone 115 checked the history: `crickerfs` (now `nifefs`, milestone 120) stayed
 with a reason, because `procfs` is the shape of a filesystem name outside this project and nobody
 writes `proc_fs`, and **`bitfont` stayed with none**, having never been renamed at all. Three moved,
 to `grant_plan`, `line_editor` and `user_heap`. The boundary that
@@ -522,7 +522,7 @@ nothing was broken. The case was internal consistency, 36 crates against 3, and 
 that way rather than as a correctness fix.
 
 **Two things that look alike and are not:** `target/` is gitignored build output and `targets/` is
-the tracked custom target JSON (`aarch64-unknown-cricker.json`). Nothing enforces the distinction.
+the tracked custom target JSON (`aarch64-unknown-nife.json`). Nothing enforces the distinction.
 
 ## Where a document goes
 

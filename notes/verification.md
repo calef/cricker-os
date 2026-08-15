@@ -264,7 +264,7 @@ Four in `crates/elf/src/lib.rs`:
 | `a_passing_check_has_no_address_overflow` | if the check passes, `vaddr + memsz` did not wrap, so `validate`'s later unchecked add cannot panic |
 | `page_range_is_panic_free_and_ordered` | for any `vaddr`/`memsz`, the saturating page arithmetic neither panics nor returns an inverted range (a `pub` helper that must be safe on its own) |
 
-Two in `crates/crickerfs/src/lib.rs`, the initrd parser the kernel runs on boot input
+Two in `crates/nifefs/src/lib.rs`, the initrd parser the kernel runs on boot input
 (the archive format the initrd and disk images use; kept over tar by the reuse record in
 notes/prior-art.md, and proved because the kernel-side parse is TCB code):
 

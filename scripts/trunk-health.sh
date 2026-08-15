@@ -13,7 +13,7 @@
 # execution. A developer works one milestone in one lane and cannot see `main` by design. The
 # steward watches pull request checks, conflicts, at-risk work and idle lanes, and its charter never
 # mentioned the trunk. The maintainer is told to keep hygiene, and that list is prune the worktree,
-# delete the branch, relink `cricker-dev`, leave no QEMU. So the role that merges is the role that
+# delete the branch, relink `nife-dev`, leave no QEMU. So the role that merges is the role that
 # breaks `main`, and the role that exists to compensate for the merger being busy was not pointed at
 # the thing merging breaks.
 #
@@ -47,7 +47,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-REPO="calef/cricker-os"
+REPO="calef/nife"
 once=""
 [ "$1" = "--once" ] && once=1
 

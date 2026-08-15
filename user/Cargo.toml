@@ -502,7 +502,7 @@ cred = { version = "0.1.0", path = "../crates/cred" }
 cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 compositor = { version = "0.1.0", path = "../crates/compositor" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
-crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+nifefs = { version = "0.1.0", path = "../crates/nifefs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }

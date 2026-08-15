@@ -45,24 +45,24 @@ IMG="$ELF.img"
 # tree it generates. The kernel finds it there. Nothing about the binary is compiled into the
 # kernel. See notes/elf.md and kernel/src/memory.rs.
 INITRD=""
-if [ -n "$CRICKER_INITRD" ] && [ -f "$CRICKER_INITRD" ]; then
-    INITRD="-initrd $CRICKER_INITRD"
+if [ -n "$NIFE_INITRD" ] && [ -f "$NIFE_INITRD" ]; then
+    INITRD="-initrd $NIFE_INITRD"
 fi
 
-# Attach the crickerfs image as a virtio-blk device. `if=none` + `-device virtio-blk-device`
+# Attach the nifefs image as a virtio-blk device. `if=none` + `-device virtio-blk-device`
 # gives us a virtio-mmio block device on the `virt` machine, which is what the userspace driver
 # probes for and reads. Without a disk, the kernel simply finds no block device and says so.
 #
-# A SET CRICKER_DISK naming a missing file is an error, not a silent no-op. The old behaviour
+# A SET NIFE_DISK naming a missing file is an error, not a silent no-op. The old behaviour
 # (quietly booting diskless) had the kernel truthfully reporting "no block device", which reads
 # like a machine fact when it is actually a build-order mistake; it very likely produced the
 # false "riscv virt has no mmio disk" record in notes/riscv-parity-scope.md.
 DISK=""
-if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
-    echo "qemu-runner-aarch64: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
+if [ -n "$NIFE_DISK" ] && [ ! -f "$NIFE_DISK" ]; then
+    echo "qemu-runner-aarch64: NIFE_DISK=$NIFE_DISK does not exist (run mkdisk first)" >&2
     exit 1
 fi
-if [ -n "$CRICKER_DISK" ]; then
+if [ -n "$NIFE_DISK" ]; then
     # force-legacy=false selects MODERN virtio-mmio (version 2), whose split register interface
     # (separate physical addresses for the descriptor table and the two rings) is the current
     # design and the one worth learning. Without it QEMU gives legacy (version 1), a different
@@ -72,7 +72,7 @@ if [ -n "$CRICKER_DISK" ]; then
     # is why there are two image files rather than one attached twice: QEMU's image locking
     # refuses to open one file for two devices once either can write. mkdisk writes the sibling
     # alongside the main image with identical contents; missing sibling = stale build, fail loud
-    # (the readonly-era silent-degradation lesson, see the CRICKER_DISK check above).
+    # (the readonly-era silent-degradation lesson, see the NIFE_DISK check above).
     #
     # iommu_platform=on is what puts the PCI disk BEHIND the SMMU (milestone 16b): the device then
     # emits IOVAs the SMMU translates through the domain the kernel built, and offers
@@ -80,72 +80,72 @@ if [ -n "$CRICKER_DISK" ]; then
     # bypasses the SMMU silently, and the confinement test (which asserts the hardware faults an
     # out-of-region DMA) fails loudly rather than passing on a fiction. The mmio disk (hd0) has no
     # IOMMU in front of it on this machine, so it takes no such flag.
-    PCI_DISK="${CRICKER_DISK%.img}-pci.img"
+    PCI_DISK="${NIFE_DISK%.img}-pci.img"
     if [ ! -f "$PCI_DISK" ]; then
         echo "qemu-runner-aarch64: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
     # The RedoxFS image (milestone 32 phase 2), the SECOND mmio block device. It is placed on the
-    # command line BEFORE the crickerfs disk on purpose: QEMU's `virt` assigns virtio-mmio devices
+    # command line BEFORE the nifefs disk on purpose: QEMU's `virt` assigns virtio-mmio devices
     # to slots in REVERSE command-line order (the last -device gets the lowest-address slot), and
-    # the kernel finds block devices by ascending slot. So the crickerfs disk must be the LAST mmio
-    # device to keep slot 0 (find_block_device -> crickerfs, the phase-1 driver tests), which leaves
+    # the kernel finds block devices by ascending slot. So the nifefs disk must be the LAST mmio
+    # device to keep slot 0 (find_block_device -> nifefs, the phase-1 driver tests), which leaves
     # the RedoxFS disk at slot 1 (find_block_device_n(1) -> RedoxFS, the FS server's block server).
     # Getting this backwards silently hands the phase-1 tests the wrong disk; that is exactly the
     # bug this ordering fixes. Soft: present only when the test flow built it (cargo xtask test),
     # absent for a plain interactive boot, which just skips the FS-server test. Created host-side by
     # tools/redoxfs_host; the server only ever opens it.
-    REDOXFS_DISK="${CRICKER_DISK%.img}-redoxfs.img"
+    REDOXFS_DISK="${NIFE_DISK%.img}-redoxfs.img"
     REDOXFS_MMIO=""
     if [ -f "$REDOXFS_DISK" ]; then
         REDOXFS_MMIO="-drive file=$REDOXFS_DISK,if=none,format=raw,id=hd2 -device virtio-blk-device,drive=hd2"
     fi
     # The crash test's OWN RedoxFS image (milestone 37), the THIRD mmio block device, at slot 2. It
     # goes FIRST on the command line because the slot assignment is reverse of the command-line
-    # order, so the three land at crickerfs=0, redoxfs=1, crash=2, which is what
+    # order, so the three land at nifefs=0, redoxfs=1, crash=2, which is what
     # `find_block_device_n` counts. A dedicated disk is the point: the crash test deliberately leaves
     # a filesystem half-written, and doing that to the shared image would couple every other FS
     # test's result to whether this one ran first (DECISIONS §27's order-coupled gate). Soft, like
     # the others: present only when the test flow built it.
-    CRASH_DISK="${CRICKER_DISK%.img}-redoxfs-crash.img"
+    CRASH_DISK="${NIFE_DISK%.img}-redoxfs-crash.img"
     CRASH_MMIO=""
     if [ -f "$CRASH_DISK" ]; then
         CRASH_MMIO="-drive file=$CRASH_DISK,if=none,format=raw,id=hd3 -device virtio-blk-device,drive=hd3"
     fi
     # The GPT-partitioned image (milestone 57), the FOURTH mmio block device, at slot 3. It goes
     # FIRST on the command line because the slot assignment is the reverse of command-line order, so
-    # the four land at crickerfs=0, redoxfs=1, crash=2, gpt=3, which is what `find_block_device_n`
+    # the four land at nifefs=0, redoxfs=1, crash=2, gpt=3, which is what `find_block_device_n`
     # counts and what `disk_service::GPT_DISK` asks for. This one carries no filesystem at all: the
     # bytes are the `sgdisk` fixture from crates/gpt/tests/fixtures, so the guest reads a partition
     # table written by gptfdisk rather than by us. Soft, like the others: present only when the test
     # flow built it (cargo xtask test).
-    GPT_DISK_IMG="${CRICKER_DISK%.img}-gpt.img"
+    GPT_DISK_IMG="${NIFE_DISK%.img}-gpt.img"
     GPT_MMIO=""
     if [ -f "$GPT_DISK_IMG" ]; then
         GPT_MMIO="-drive file=$GPT_DISK_IMG,if=none,format=raw,id=hd4 -device virtio-blk-device,drive=hd4"
     fi
     # The blank image (milestone 57's write half), the FIFTH mmio block device, at slot 4. It goes
     # FIRST on the command line for the same reason as the others: slot assignment is the reverse of
-    # command-line order, so the five land at crickerfs=0, redoxfs=1, crash=2, gpt=3, blank=4, which
+    # command-line order, so the five land at nifefs=0, redoxfs=1, crash=2, gpt=3, blank=4, which
     # is what `find_block_device_n` counts and what `disk_service::BLANK_DISK` asks for. This one
     # arrives as 64 MiB of ZEROS: the guest writes the partition table and then the filesystem
     # inside it, and the post-run host check reads both back. Its own disk, regenerated every run,
     # because a test that partitions a disk must not touch an image another test reads. Soft, like
     # the others: present only when the test flow built it.
-    BLANK_DISK_IMG="${CRICKER_DISK%.img}-blank.img"
+    BLANK_DISK_IMG="${NIFE_DISK%.img}-blank.img"
     BLANK_MMIO=""
     if [ -f "$BLANK_DISK_IMG" ]; then
         BLANK_MMIO="-drive file=$BLANK_DISK_IMG,if=none,format=raw,id=hd5 -device virtio-blk-device,drive=hd5"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $BLANK_MMIO $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    DISK="-global virtio-mmio.force-legacy=false $BLANK_MMIO $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$NIFE_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
-# Attach a virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone
+# Attach a virtio-net NIC on QEMU user-mode (slirp) networking when NIFE_NET is set (milestone
 # 30). slirp NATs the guest with a built-in DHCP server (10.0.2.0/24, gateway 10.0.2.2) and DNS
 # resolver (10.0.2.3), and needs no host setup, so the net tests run with zero privilege. Two NICs
 # mirror the two disks: the mmio NIC (net0) has no IOMMU in front of it, the PCI NIC (net1) sits
 # behind the SMMU (iommu_platform=on), the same hardware confinement the PCI disk gets. There is no
-# image file to fail loud on here; the manufactured-fact hazard (CRICKER_NET set but no NIC
+# image file to fail loud on here; the manufactured-fact hazard (NIFE_NET set but no NIC
 # enumerated) is caught by the net test, which asserts a NIC is present rather than skipping.
 #
 # guestfwd adds a deterministic TCP echo peer at 10.0.2.9:7777 inside slirp: a connection to it is
@@ -164,14 +164,14 @@ GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
 # `printf` writes it with no trailing newline so the client can assert the bytes exactly.
 TFTPDIR="$(dirname "$0")/../target/tftp"
 mkdir -p "$TFTPDIR"
-printf 'cricker-tftp!' > "$TFTPDIR/cricker"
+printf 'nife-tftp!' > "$TFTPDIR/nife"
 
 # hostfwd is guestfwd's mirror and the inbound gate's whole mechanism (milestone 107): QEMU listens
 # on a HOST port and forwards connections to the guest's 10.0.2.15:7778, so a host process can
 # connect INTO the guest. Everything this project had proved over the network was the guest as a
 # client; this is the other direction.
 #
-# Only on the mmio NIC, and only when CRICKER_HOSTFWD_PORT names a port. Both restrictions are
+# Only on the mmio NIC, and only when NIFE_HOSTFWD_PORT names a port. Both restrictions are
 # deliberate. This is the one QEMU flag here that **binds a port on the developer's machine**, so it
 # does not belong on a plain `cargo xtask run` or on the benchmark boot, both of which share this
 # runner; and the port is chosen by xtask (a free one, asked of the OS) rather than fixed here,
@@ -179,16 +179,16 @@ printf 'cricker-tftp!' > "$TFTPDIR/cricker"
 # would fail to start QEMU at all. The guest address is spelled out rather than defaulted so the
 # line says which guest it means.
 HOSTFWD=""
-if [ -n "$CRICKER_HOSTFWD_PORT" ]; then
-    HOSTFWD=",hostfwd=tcp:127.0.0.1:$CRICKER_HOSTFWD_PORT-10.0.2.15:7778"
+if [ -n "$NIFE_HOSTFWD_PORT" ]; then
+    HOSTFWD=",hostfwd=tcp:127.0.0.1:$NIFE_HOSTFWD_PORT-10.0.2.15:7778"
 fi
 
 NET=""
-if [ -n "$CRICKER_NET" ]; then
+if [ -n "$NIFE_NET" ]; then
     NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
-# Attach a virtio-gpu when CRICKER_GPU is set (milestone 29, the display ladder's rung one).
+# Attach a virtio-gpu when NIFE_GPU is set (milestone 29, the display ladder's rung one).
 #
 # PCIe only, and that is not a shortcut: there is no virtio-gpu on this machine's virtio-mmio bus in
 # any configuration, so unlike the disk and the NIC there is no mmio twin to attach. The parity that
@@ -201,15 +201,15 @@ fi
 # shadow-ring validator never sees them and the IOMMU is the only thing that bounds them. Drop the
 # flag and the GPU could name any physical address (see notes/framebuffer-contract.md).
 #
-# There is no image file to fail loud on, as with the NIC. The manufactured-fact hazard (CRICKER_GPU
+# There is no image file to fail loud on, as with the NIC. The manufactured-fact hazard (NIFE_GPU
 # set but no GPU enumerated) is caught in the kernel test, which ASSERTS a GPU is present rather than
 # skipping, and asserts the IOMMU is active while one is.
 GPU=""
-if [ -n "$CRICKER_GPU" ]; then
+if [ -n "$NIFE_GPU" ]; then
     GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
 fi
 
-# Attach a virtio keyboard when CRICKER_KBD is set (milestone 29's input).
+# Attach a virtio keyboard when NIFE_KBD is set (milestone 29's input).
 #
 # PCIe here is a CHOICE, not a constraint: unlike the GPU, this machine does offer a
 # virtio-keyboard-device on the virtio-mmio bus. The keyboard rides PCIe anyway so it lands in the
@@ -220,16 +220,16 @@ fi
 # the guest can press one. QEMU drops key events until a driver sets DRIVER_OK, so xtask can send
 # them from the start of the run with nothing to synchronize.
 KBD=""
-if [ -n "$CRICKER_KBD" ]; then
+if [ -n "$NIFE_KBD" ]; then
     KBD="-device virtio-keyboard-pci,disable-legacy=on,iommu_platform=on"
 fi
 
-# Attach two virtio-rng devices when CRICKER_RNG is set (milestone 56, the entropy half).
+# Attach two virtio-rng devices when NIFE_RNG is set (milestone 56, the entropy half).
 #
 # BOTH transports, because the entropy service must be the same binary on either bus (DECISIONS §18)
 # and a random source that works on one is not a random source. The mmio one goes on the mmio bus
 # alongside the disks; it is a slot the block-device scan skips, since that scan matches on DeviceID
-# and an RNG reports 4, so the crickerfs=0 / redoxfs=1 / crash=2 ordering above is unaffected.
+# and an RNG reports 4, so the nifefs=0 / redoxfs=1 / crash=2 ordering above is unaffected.
 #
 # The PCI one is behind the SMMU (iommu_platform=on) on the same terms as the GPU and the keyboard:
 # the buffer this device writes into is where the system's key material comes from, so it is the last
@@ -241,14 +241,14 @@ fi
 # notes/entropy.md carries the caveat.
 #
 # There is no image file to fail loud on, as with the NIC and the GPU. The manufactured-fact hazard
-# (CRICKER_RNG set but no device enumerated) is caught in the kernel test, which ASSERTS a device is
+# (NIFE_RNG set but no device enumerated) is caught in the kernel test, which ASSERTS a device is
 # present on each bus rather than skipping.
 RNG=""
-if [ -n "$CRICKER_RNG" ]; then
+if [ -n "$NIFE_RNG" ]; then
     RNG="-device virtio-rng-device -device virtio-rng-pci,disable-legacy=on,iommu_platform=on"
 fi
 
-# Attach an NVMe controller when CRICKER_NVME names an image (milestone 53's storage half): the
+# Attach an NVMe controller when NIFE_NVME names an image (milestone 53's storage half): the
 # first NON-virtio DMA device this project drives, which is the whole point of it. No
 # iommu_platform flag, because that knob is virtio's opt-in; a real PCI device model's DMA always
 # goes through the PCI address space, so with iommu=smmuv3 on the machine the controller sits
@@ -256,19 +256,19 @@ fi
 # controller can fetch a single command (kernel/src/nvme.rs). serial= is mandatory (QEMU refuses
 # the device without one); the value is arbitrary identity, not configuration.
 #
-# A set CRICKER_NVME naming a missing file is an error, the CRICKER_DISK lesson above: a silently
+# A set NIFE_NVME naming a missing file is an error, the NIFE_DISK lesson above: a silently
 # absent controller would read as a machine fact when it is a build-order mistake. The kernel test
 # ASSERTS the controller is present rather than skipping, like the GPU's.
 NVME=""
-if [ -n "$CRICKER_NVME" ]; then
-    if [ ! -f "$CRICKER_NVME" ]; then
-        echo "qemu-runner-aarch64: CRICKER_NVME=$CRICKER_NVME does not exist (xtask's mknvmedisk writes it)" >&2
+if [ -n "$NIFE_NVME" ]; then
+    if [ ! -f "$NIFE_NVME" ]; then
+        echo "qemu-runner-aarch64: NIFE_NVME=$NIFE_NVME does not exist (xtask's mknvmedisk writes it)" >&2
         exit 1
     fi
-    NVME="-drive file=$CRICKER_NVME,if=none,format=raw,id=nvme0 -device nvme,serial=cricker-nvme,drive=nvme0"
+    NVME="-drive file=$NIFE_NVME,if=none,format=raw,id=nvme0 -device nvme,serial=nife-nvme,drive=nvme0"
 fi
 
-# A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
+# A QEMU monitor on a unix socket, when NIFE_GPU_MON names one (milestone 29). This is how the
 # **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
 # and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
 # guest cannot read back. xtask drives it while the suite runs (see gpu_shot); nothing else uses it,
@@ -277,8 +277,8 @@ fi
 # The path must stay under 104 bytes: that is the OS limit on a unix socket path, and a worktree
 # checkout plus target/ gets close, which is why xtask puts the socket in /tmp and not in target/.
 MON=""
-if [ -n "$CRICKER_GPU_MON" ]; then
-    MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
+if [ -n "$NIFE_GPU_MON" ]; then
+    MON="-monitor unix:$NIFE_GPU_MON,server,nowait"
 fi
 
 # shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU, $KBD, $RNG and $NVME are deliberately word-split or empty
@@ -288,7 +288,7 @@ fi
 # cortex-a72. That is deterministic and runs identically on any host, which is what the test
 # harness wants.
 #
-# Set CRICKER_ACCEL=hvf to run under Apple's Hypervisor.framework instead: HVF puts the kernel on
+# Set NIFE_ACCEL=hvf to run under Apple's Hypervisor.framework instead: HVF puts the kernel on
 # the real Apple Silicon core at guest EL1, using the hardware virtualization the chip already
 # has. The coincidence that makes this a flag and not a port is that the host and the guest are the
 # same ISA (aarch64). Two consequences:
@@ -298,11 +298,11 @@ fi
 #     not speak. QEMU emulates the GIC either way (Apple cores use their own AIC natively) and
 #     injects interrupts through HVF, so the MMIO GICv2 driver keeps working.
 #
-# CRICKER_CPU overrides the TCG model (milestone 59, the parity twin of the riscv runner's flag).
+# NIFE_CPU overrides the TCG model (milestone 59, the parity twin of the riscv runner's flag).
 # Under HVF there is nothing to override: the guest runs on the physical Apple core, so `-cpu host`
 # is the only answer and asking for anything else is a mistake worth failing on rather than
 # silently ignoring.
-if [ "$CRICKER_ACCEL" = "hvf" ]; then
+if [ "$NIFE_ACCEL" = "hvf" ]; then
     # iommu=smmuv3 is on BOTH paths since milestone 81, and this is a correction: it used to be
     # TCG-only, on the recorded belief that "smmuv3 emulation alongside HVF acceleration is the
     # fragile combination". Nobody had run it. The suite on the physical core says otherwise, and
@@ -314,8 +314,8 @@ if [ "$CRICKER_ACCEL" = "hvf" ]; then
     # execute; the SMMU is in front of the PCIe root complex and translates DEVICE traffic, which
     # QEMU emulates in the host process either way. The two are orthogonal, and the suite proves it.
     MACHINE="virt,accel=hvf,gic-version=2,iommu=smmuv3"
-    if [ -n "$CRICKER_CPU" ] && [ "$CRICKER_CPU" != "host" ]; then
-        echo "qemu-runner-aarch64: CRICKER_CPU=$CRICKER_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
+    if [ -n "$NIFE_CPU" ] && [ "$NIFE_CPU" != "host" ]; then
+        echo "qemu-runner-aarch64: NIFE_CPU=$NIFE_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
         exit 1
     fi
     CPU="host"
@@ -325,12 +325,12 @@ else
     # the bus. A plain boot without a PCI disk still gets the SMMU; it just has nothing to confine.
     # The HVF branch above takes the same flag, since milestone 81.
     MACHINE="virt,gic-version=2,iommu=smmuv3"
-    CPU="${CRICKER_CPU:-cortex-a72}"
+    CPU="${NIFE_CPU:-cortex-a72}"
 fi
 
 # Number of cores. Four by default, matching cpu::MAX_CPUS and the SMP tests (§11). QEMU brings
 # up core 0 running; the kernel starts the rest itself via PSCI CPU_ON (see smp.rs).
-SMP="${CRICKER_SMP:-4}"
+SMP="${NIFE_SMP:-4}"
 
 exec qemu-system-aarch64 \
     -machine "$MACHINE" \

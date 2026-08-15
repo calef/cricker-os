@@ -1,6 +1,6 @@
 //! **`grant_plan`: the grant-expression logic of the capability shell** (milestone 31, phase 1).
 //!
-//! This crate is the pure logic behind the shell's one idea: on a cricker-os command line,
+//! This crate is the pure logic behind the shell's one idea: on a nife command line,
 //! *designation is authorization* (Mark Miller's principle). Naming a resource in a command is
 //! how you grant it; a program that names nothing gets nothing beyond the report channel every
 //! spawn carries. There is no ambient authority to fall back on, so the failure when a program
@@ -178,7 +178,7 @@ impl Prog {
         }
     }
 
-    /// The name init loads it by in the initrd (crickerfs), and the shell prints.
+    /// The name init loads it by in the initrd (nifefs), and the shell prints.
     pub fn name(self) -> &'static str {
         match self {
             Prog::Worker => "worker",

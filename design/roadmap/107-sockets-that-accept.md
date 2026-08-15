@@ -16,7 +16,7 @@ listen verb yet."
 Everything proved so far is outbound. The TCP gate opens a socket, connects to a slirp `guestfwd`
 echo peer, sends, receives and closes: a complete round trip with the handshake and the teardown in
 it, and every byte of it initiated by the guest. The UDP gate is a DNS query. The DHCP bring-up is a
-client. cricker-os can reach the network and cannot be reached.
+client. nife can reach the network and cannot be reached.
 
 **Why it is not a detail.** Milestone 54 (a network file service a Mac can actually mount) and
 milestone 55 (Time Machine over SMB3 with Apple's extensions) are both **servers**. The mount is a

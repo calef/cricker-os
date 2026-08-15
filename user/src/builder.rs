@@ -5,11 +5,11 @@
 //! one thing that matters for the demonstrator's thesis on a second ISA, which is that **userspace,
 //! not the kernel, composes the system.**
 //!
-//! The kernel loads this program from the initrd's `init` entry, maps the whole crickerfs archive
+//! The kernel loads this program from the initrd's `init` entry, maps the whole nifefs archive
 //! read-only, and grants it two capabilities: a large untyped budget (slot 0) and a report endpoint
 //! (slot 1). From those, and nothing else, this program:
 //!
-//! 1. parses the archive (crickerfs) and reads the `worker` program out of it by name,
+//! 1. parses the archive (nifefs) and reads the `worker` program out of it by name,
 //! 2. parses that ELF (the `elf` crate, linked into userspace),
 //! 3. builds a child process out of its own budget through the granular capability verbs (retype an
 //!    address space, copy each segment into retyped frames and map them, retype a TCB, endow it,
@@ -54,7 +54,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let archive =
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
 
-    let Ok(fs) = crickerfs::Fs::parse(archive) else {
+    let Ok(fs) = nifefs::Fs::parse(archive) else {
         fail(0xE1);
     };
     let Some(worker_bytes) = fs.read("worker") else {

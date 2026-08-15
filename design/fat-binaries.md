@@ -49,7 +49,7 @@ implementation of this idea ever shipped, and they live at the registry, not in 
 
 ---
 
-## Why it's live for cricker-os specifically
+## Why it's live for nife specifically
 
 **Our two targets straddle the line.**
 

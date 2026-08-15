@@ -1,5 +1,5 @@
 #!/bin/sh
-# script/initboot: boot cricker-os with userspace init as the boot path (milestone 19d.2c).
+# script/initboot: boot nife-os with userspace init as the boot path (milestone 19d.2c).
 # init brings up the console (and, in the interactive build, input and the shell) out of its own
 # budget through the granular verbs; the kernel stops wiring services itself. Add --hvf for the
 # real Apple Silicon core. See design/init-and-granular-spawn.md.

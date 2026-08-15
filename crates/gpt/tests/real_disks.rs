@@ -108,8 +108,11 @@ fn sgdisk_writes_a_table_we_accept_whole() {
 
     // The one that matters for this OS: our own type GUID, recognised on a disk written by a tool
     // that has never heard of it. This is the recovery story in one assertion.
-    assert_eq!(parts[2].1.type_guid, types::CRICKER_DATA);
-    assert_eq!(types::name(parts[2].1.type_guid), Some("cricker-os data"));
+    assert_eq!(parts[2].1.type_guid, types::NIFE_DATA);
+    assert_eq!(types::name(parts[2].1.type_guid), Some("nife data"));
+    // The label embedded in the fixture is "cricker data": the image was written before the
+    // milestone 120 rename, and it stays that way on purpose. A pre-rename disk is exactly the
+    // recovery case, and the line above proves the GUID, not the label, is what we recognise.
     assert_eq!(name_of(&parts[2].1), "cricker data");
     assert_eq!(parts[2].1.last_lba, table.last_usable_lba());
 }

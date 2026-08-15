@@ -368,7 +368,7 @@ Known limitations, next to the feature rather than only in a tracker.
 - **`std::fs::rename` is still `Unsupported`.** The verb exists on the wire and in the server; the
   std PAL has not been bound to it. Milestone 55 depends on this (`fruit:posix_rename` in the
   reference Samba config), so it is the next step rather than a permanent gap. Binding it is a change
-  to `patches/std-cricker`, which rebuilds the std farm and moves the `std_exerciser` transcript, and it
+  to `patches/std-nife`, which rebuilds the std farm and moves the `std_exerciser` transcript, and it
   was kept out of this lane deliberately.
 - ~~**`UNLINK` does not exist.**~~ Built by the commands lane, along with the unlink/revoke split the
   roadmap argues for: see [shell-navigation.md](shell-navigation.md). `REMOVE` now gates two verbs.

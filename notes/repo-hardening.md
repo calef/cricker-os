@@ -5,7 +5,7 @@ Milestone 44 splits cleanly in two. The files are in the tree (`SECURITY.md`, `d
 which live in GitHub's web UI and cannot be committed. This note is the exact procedure for those,
 written to be followed rather than interpreted. The reasoning behind each is DECISIONS.md §36.
 
-Everything below needs admin on `calef/cricker-os`.
+Everything below needs admin on `calef/nife`.
 
 ## 1. Private vulnerability reporting
 
@@ -23,10 +23,10 @@ vulnerability reporting** → **Enable**.
 Or, in one command:
 
 ```
-gh api -X PUT repos/calef/cricker-os/private-vulnerability-reporting
+gh api -X PUT repos/calef/nife/private-vulnerability-reporting
 ```
 
-**Verify:** open <https://github.com/calef/cricker-os/security/advisories> and confirm the "Report a
+**Verify:** open <https://github.com/calef/nife/security/advisories> and confirm the "Report a
 vulnerability" button is present.
 
 ## 2. The ruleset on `main`
@@ -147,8 +147,8 @@ want turns out to be unavailable by default.
 To re-check the coverage number after a future run:
 
 ```
-gh run list --repo calef/cricker-os --workflow CodeQL --limit 1 --json databaseId --jq '.[0].databaseId' \
-  | xargs -I{} gh run view {} --repo calef/cricker-os --log \
+gh run list --repo calef/nife --workflow CodeQL --limit 1 --json databaseId --jq '.[0].databaseId' \
+  | xargs -I{} gh run view {} --repo calef/nife --log \
   | grep -E "scanned .* out of|extracted with"
 ```
 

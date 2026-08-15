@@ -127,14 +127,14 @@ See [dma.md](dma.md).
 
 ```
       a driver at EL0 read the file 'motd' off a virtio disk,
-      through a crickerfs superblock it parsed itself,
+      through a nifefs superblock it parsed itself,
       woken by the device's interrupt delivered as a message.
       the kernel issued no virtio command and touched no DMA.
 ```
 
-## crickerfs
+## nifefs
 
-The filesystem is [`crates/crickerfs`](../crates/crickerfs/src/lib.rs): read-only, flat, fixed
+The filesystem is [`crates/nifefs`](../crates/nifefs/src/lib.rs): read-only, flat, fixed
 everything, host-tested, with one definition of the format shared by the disk-building tool and the
 reader. Block 0 is a superblock (magic, a small directory of name → start-block/length); files
 follow, block-aligned. The driver reads block 0, walks the directory to find `motd`, and reads its
@@ -143,7 +143,7 @@ as `crates/elf`: milestone 9 is about drivers and block I/O, not filesystem desi
 
 The driver is the format's **third reader** (the kernel and `xtask` are the others), and the only one
 that walks the directory without holding the whole image: it has one block buffered, so it can see
-`crickerfs::ENTRIES_IN_FIRST_BLOCK` entries and no more. It used to restate the offsets by hand and
+`nifefs::ENTRIES_IN_FIRST_BLOCK` entries and no more. It used to restate the offsets by hand and
 was the one place that had to be found by hand when the entry layout widened on 2026-08-01. It now
-depends on `crickerfs` for them, which is CLAUDE.md's rule 7 (what two binaries must agree on is a
-crate). See [crickerfs.md](crickerfs.md).
+depends on `nifefs` for them, which is CLAUDE.md's rule 7 (what two binaries must agree on is a
+crate). See [nifefs.md](nifefs.md).

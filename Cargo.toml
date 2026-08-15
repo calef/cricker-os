@@ -16,7 +16,7 @@ members = [
     "crates/cred",
     "crates/cred_proto",
     "crates/clock_proto",
-    "crates/crickerfs",
+    "crates/nifefs",
     "crates/dma_validator",
     "crates/dtb",
     "crates/elf",

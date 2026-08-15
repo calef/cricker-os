@@ -1,6 +1,6 @@
 # Stack high-water: measuring kernel stack depth
 
-Milestone 84. The FS-server stack bug (notes/crickerfs.md, notes/fs-server.md) was a kernel stack
+Milestone 84. The FS-server stack bug (notes/nifefs.md, notes/fs-server.md) was a kernel stack
 overflow found the expensive way, and until this instrument existed nothing measured depth on any
 kernel stack: "the stacks are big enough" was an argument. This note records the instrument, the
 inventory it covers, and the numbers it measured.

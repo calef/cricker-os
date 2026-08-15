@@ -87,7 +87,7 @@ pub extern "C" fn _start(role: u64, initrd_len: u64, _a2: u64) -> ! {
     // SAFETY: the kernel mapped `initrd_len` bytes of reserved RAM read-only at INITRD_VA.
     let archive =
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(fs) = crickerfs::Fs::parse(archive) else {
+    let Ok(fs) = nifefs::Fs::parse(archive) else {
         bail(1)
     };
 
@@ -117,7 +117,7 @@ pub extern "C" fn _start(role: u64, initrd_len: u64, _a2: u64) -> ! {
 // The default rung: the endpoint is the stable name and nothing stands in the data path.
 // ===============================================================================================
 
-fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
+fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
     let v1 = image(fs, "rust_swappable", 2);
     let v2 = image(fs, "c_swappable", 3);
     let client_img = image(fs, "chatty", 4);
@@ -334,7 +334,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
 // absent consumer.
 // ===============================================================================================
 
-fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
+fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
     let v1 = image(fs, "rust_swappable", 2);
     let v2 = image(fs, "c_swappable", 3);
     let client_img = image(fs, "chatty", 4);
@@ -563,7 +563,7 @@ fn expect_note(note: u64, want: u64, stage: u64) {
     }
 }
 
-fn image<'a>(fs: &crickerfs::Fs<'a>, name: &str, stage: u64) -> elf::Elf<'a> {
+fn image<'a>(fs: &nifefs::Fs<'a>, name: &str, stage: u64) -> elf::Elf<'a> {
     match fs.read(name).map(elf::Elf::parse) {
         Some(Ok(e)) => e,
         _ => bail(stage),

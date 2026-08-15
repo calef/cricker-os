@@ -64,7 +64,7 @@ is the session key.* The proof is computed inside and compared inside; it never 
 Folding the comparison into the operation is the same move `VERIFY` makes for a password, and it is
 strictly stronger, because anything that can obtain the expected proof can do the comparison
 itself. The unfolded version is what an SMB **client** needs, and nothing in this tree is one.
-Milestone 55 is a server: calef's Mac connects to cricker-os as a Time Machine target.
+Milestone 55 is a server: calef's Mac connects to nife as a Time Machine target.
 
 If an SMB client ever arrives, the unfolded operation is a new opcode and a decision to make on
 purpose, not a gap to fill in quietly.

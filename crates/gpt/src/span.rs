@@ -2,7 +2,7 @@
 //! actually moves.
 //!
 //! This is still no I/O (nothing here touches a device); it is the arithmetic between two block
-//! sizes, and it exists because on cricker-os those two sizes are never the same number.
+//! sizes, and it exists because on nife those two sizes are never the same number.
 //!
 //! A GPT is written in *logical* blocks, almost always 512 bytes: the primary header is at LBA 1,
 //! the entry array at LBA 2, the backup header at the last LBA. The block service a program holds

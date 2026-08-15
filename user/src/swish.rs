@@ -950,7 +950,7 @@ const TIMING_DONE: &[u8] = b"== timings done\n";
 /// The interactive prompt. `rights` is the [`_start`] convention: the `fs_proto::dir` rights of the
 /// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
 fn interactive(rights: u64) -> ! {
-    print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
+    print(b"\nnife capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], time <command>, xargs <command>,\n");
     print(b"          cd, pwd, ls, mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
     print(b"          'quote a whole word'   and   ;  &&  ||   with  echo $?  for the status\n");

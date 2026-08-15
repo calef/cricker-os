@@ -1,4 +1,4 @@
-//! Page-map (fault-in) latency on the host OS, lmbench's `lat_mmap`, and the host side of cricker-os's
+//! Page-map (fault-in) latency on the host OS, lmbench's `lat_mmap`, and the host side of nife's
 //! EL0 `map_el0` bench (notes/benchmarks.md, milestone 25).
 //!
 //! What "map one page" costs, as apples-to-apples with our `MAP_INTO` as a stock OS allows. Neither a

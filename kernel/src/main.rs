@@ -1,4 +1,4 @@
-//! cricker-os
+//! nife
 //!
 //! # Why the attributes at the top
 //!
@@ -123,7 +123,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // table). If this reads 0xffffffc0_8020_xxxx, Sv39 is on and the kernel is in the high half.
         let pc = kernel_main as *const () as usize;
         println!();
-        println!("cricker-os on RISC-V (rv64, S-mode, Sv39)");
+        println!("nife on RISC-V (rv64, S-mode, Sv39)");
         println!("  hart 0 booted: high-half kernel, .bss, and the NS16550 console are up.");
         println!("  running at  : {pc:#018x}  (high half: Sv39 paging is on)");
         println!("  device tree : {dtb:#018x}");
@@ -419,11 +419,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
         // Running a real compiled ELF at U-mode, two ways, depending on the initrd.
         if let Some(initrd) = user::initrd() {
-            // A crickerfs archive with an "init" entry means the richer path: the kernel loads only
+            // A nifefs archive with an "init" entry means the richer path: the kernel loads only
             // "init" (the portable `builder`), maps the whole archive into it, grants it a budget and
             // a report endpoint, and init loads "worker" from the archive and builds it as a child.
             // Anything else is treated as a single bare ELF and run directly (the simpler path).
-            let is_archive = crickerfs::Fs::parse(initrd)
+            let is_archive = nifefs::Fs::parse(initrd)
                 .map(|fs| fs.read("init").is_some())
                 .unwrap_or(false);
             if is_archive {
@@ -515,7 +515,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             let started = user::initrd()
                 .filter(|a| {
-                    crickerfs::Fs::parse(a)
+                    nifefs::Fs::parse(a)
                         .map(|fs| fs.read("driver").is_some())
                         .unwrap_or(false)
                 })
@@ -546,7 +546,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         sched::note_boot_stage(7);
 
         // virtio block device discovery (parity C). Probe the virtio-mmio slots the `virt` machine
-        // lays out (0x1000_1000..); a block device shows up when a disk is attached (CRICKER_DISK).
+        // lays out (0x1000_1000..); a block device shows up when a disk is attached (NIFE_DISK).
         // The kernel owns the transport and will hand a userspace driver the device's registers, an
         // Irq capability, and a DMA region; here we just prove the discovery works on RISC-V.
         match virtio::find_block_device() {
@@ -555,9 +555,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 dev.mmio_phys, dev.intid,
             ),
             None => {
-                println!(
-                    "  virtio      : no block device attached (pass CRICKER_DISK to attach one)"
-                );
+                println!("  virtio      : no block device attached (pass NIFE_DISK to attach one)");
             }
         }
         sched::note_boot_stage(8);
@@ -579,13 +577,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 d.isr,
                 d.intid,
             ),
-            None => println!(
-                "  pcie        : no virtio-blk on the bus (pass CRICKER_DISK to attach one)"
-            ),
+            None => {
+                println!("  pcie        : no virtio-blk on the bus (pass NIFE_DISK to attach one)");
+            }
         }
         sched::note_boot_stage(9);
 
-        println!("cricker-os: the capability core runs on RISC-V.");
+        println!("nife: the capability core runs on RISC-V.");
         sched::note_boot_stage(10);
         arch::halt();
     }
@@ -659,7 +657,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         use tock_registers::interfaces::Readable;
 
         println!();
-        println!("cricker-os");
+        println!("nife");
         println!("  exception level : EL{}", CurrentEL.read(CurrentEL::EL));
         arch::isa::print_summary();
         println!("  stack top       : {:#018x}", stack_top());
@@ -768,16 +766,16 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                         );
                         if let Some(report) = user::virtio_service::start(image_for_virtio()) {
                             // The driver reads block 0 and sends us its first 8 bytes. We check they
-                            // are the crickerfs magic, which proves real disk bytes crossed DMA and
+                            // are the nifefs magic, which proves real disk bytes crossed DMA and
                             // the EL0 boundary. This RECV blocks until the driver has done the read.
                             let word = sched::ipc_recv(report)[0];
                             let head = word.to_le_bytes();
                             println!();
-                            if &head == b"cricker-" {
+                            if &head == b"nife: re" {
                                 println!(
                                     "      a driver at EL0 read the file 'motd' off a virtio disk,"
                                 );
-                                println!("      through a crickerfs superblock it parsed itself,");
+                                println!("      through a nifefs superblock it parsed itself,");
                                 println!(
                                     "      woken by the device's interrupt delivered as a message."
                                 );
@@ -805,7 +803,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                         );
                         if let Some(report) = user::virtio_service::start_pci(image_for_virtio()) {
                             let word = sched::ipc_recv(report)[0];
-                            if &word.to_le_bytes() == b"cricker-" {
+                            if &word.to_le_bytes() == b"nife: re" {
                                 println!(
                                     "      the same file, over the transport real hardware uses."
                                 );
@@ -915,7 +913,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // is kept only as dead code for reference.
         if let Some(image) = user::initrd() {
             println!();
-            println!("cricker-os: handing the system to userspace init.");
+            println!("nife: handing the system to userspace init.");
             user::boot_via_init(image);
             // The boot thread's work is done; init and the services it builds run until halt.
         }

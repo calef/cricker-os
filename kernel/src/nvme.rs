@@ -426,7 +426,7 @@ mod tests {
     /// sequence lives in one place with the ordering visible.
     #[test_case]
     fn the_nvme_disk_serves_the_block_interface_end_to_end() {
-        // The test flow always attaches a controller (xtask sets CRICKER_NVME on both ISA legs),
+        // The test flow always attaches a controller (xtask sets NIFE_NVME on both ISA legs),
         // so absence is a lost QEMU flag, not a machine without a disk: assert, don't skip.
         let mut disk = bring_up().expect("the test boot attaches an NVMe controller; none came up");
 

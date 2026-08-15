@@ -54,7 +54,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-REPO="calef/cricker-os"
+REPO="calef/nife"
 HELD_LABEL="needs-architect"
 once=""
 [ "$1" = "--once" ] && once=1

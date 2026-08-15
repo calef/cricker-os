@@ -22,7 +22,7 @@
 //!
 //! [`span`] does not break that rule and is worth saying why: it computes *where* to read, and
 //! arithmetic between two block sizes is exactly the kind of thing this crate is for. A GPT counts
-//! in 512-byte logical blocks; the block service a cricker-os program holds moves 4096 bytes per
+//! in 512-byte logical blocks; the block service a nife program holds moves 4096 bytes per
 //! request. Somebody has to reconcile those, and doing it in a driver means doing it three times.
 //!
 //! # What a GPT actually is, in the order the bytes appear
@@ -86,7 +86,7 @@
 //!     disk_guid,
 //!     512,
 //!     131_072, // a 64 MiB disk
-//!     &[Entry::new(types::CRICKER_DATA, part_guid, 2048, 131_038).with_name("cricker data")?],
+//!     &[Entry::new(types::NIFE_DATA, part_guid, 2048, 131_038).with_name("nife data")?],
 //!     &mut array,
 //! )?;
 //!
@@ -767,7 +767,7 @@ pub mod testing {
     use crate::guid::types;
     use crate::{ENTRY_ARRAY_BYTES, Entry, Gpt, Guid};
 
-    /// A 64 MiB, 512-byte-block disk carrying one cricker-os data partition, as a contiguous
+    /// A 64 MiB, 512-byte-block disk carrying one nife data partition, as a contiguous
     /// buffer: LBA 0 is at offset 0, so slicing by `lba * 512` gets any block.
     ///
     /// Only the first 34 blocks are real; the rest is zeros. Enough for the primary table, which is
@@ -776,12 +776,12 @@ pub mod testing {
         let mut disk = [0u8; 512 * 34];
         let mut array = [0u8; ENTRY_ARRAY_BYTES];
         let part = Entry::new(
-            types::CRICKER_DATA,
+            types::NIFE_DATA,
             Guid::from_bytes([0x11; 16]),
             2048,
             131_038,
         )
-        .with_name("cricker data")
+        .with_name("nife data")
         .expect("twelve characters fit");
         let table = Gpt::create(
             Guid::from_bytes([0x22; 16]),
@@ -1040,7 +1040,7 @@ mod verification {
             kani::any(),
             kani::any(),
         );
-        let b = Entry::new(types::CRICKER_DATA, Guid::ZERO, kani::any(), kani::any());
+        let b = Entry::new(types::NIFE_DATA, Guid::ZERO, kani::any(), kani::any());
         kani::assume(a.first_lba <= a.last_lba && b.first_lba <= b.last_lba);
 
         let shared = a.first_lba.max(b.first_lba) <= a.last_lba.min(b.last_lba);
@@ -1075,7 +1075,7 @@ mod verification {
     #[kani::proof]
     fn create_never_lays_out_a_table_parse_would_reject() {
         let part = Entry::new(
-            types::CRICKER_DATA,
+            types::NIFE_DATA,
             Guid::from_bytes([7; 16]),
             kani::any(),
             kani::any(),

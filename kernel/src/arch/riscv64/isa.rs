@@ -59,7 +59,7 @@ pub fn init(dtb_ptr: usize) {
     let missing = cpu.missing_requirements();
     if missing.any() {
         println!();
-        println!("cricker-os cannot run on this machine:");
+        println!("nife cannot run on this machine:");
         if missing.base {
             println!(
                 "  base ISA    : the device tree declares {}, not rv64i",

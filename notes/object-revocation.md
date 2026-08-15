@@ -16,7 +16,7 @@ To reclaim an object you must guarantee no live capability can still reach it. s
 a capability walks the subtree deleting every descendant. It is powerful (revoke one delegation, leave
 its siblings) and it is exactly the machinery milestone 19 declined to build.
 
-cricker-os has a different lever already in hand, and it decided the whole design:
+nife has a different lever already in hand, and it decided the whole design:
 
 - **Objects carry generational names.** A `Tcb`, `Endpoint`, or `Aspace` capability holds a
   `(generation, slot)` name into a registry (`crates/slots`, notes/generational-names.md). Free the

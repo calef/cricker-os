@@ -2,7 +2,7 @@
 
 **Status:** open idea. Not decided. It is the principled version of a hole we already closed in
 software (see notes/dma.md), and it would only be worth building alongside a real SMMU driver and a
-decision to run cricker-os at EL2.
+decision to run nife at EL2.
 
 **Owner:** calef
 
@@ -26,7 +26,7 @@ strongest answer the industry has is: **put the driver in its own virtual machin
 
 ## The three points in the design space
 
-### 1. Software-mediated validation (what cricker-os does today)
+### 1. Software-mediated validation (what nife does today)
 
 The kernel keeps the two DMA-critical powers (the queue's ring addresses and the notify) and
 validates every descriptor stays inside the driver's DMA region before the device sees it. See
@@ -50,10 +50,10 @@ hardware, real work.
 
 ### 3. Driver domains (this proposal)
 
-Run each driver in its **own virtual machine**, with cricker-os as the hypervisor at EL2. The
+Run each driver in its **own virtual machine**, with nife as the hypervisor at EL2. The
 driver at guest EL1/EL0 talks to a device, and its DMA is confined by the SMMU's stage-2 tables
-that cricker-os, as the hypervisor, programs for that domain. A compromised or crashed driver takes
-down its VM and nothing else; cricker-os restarts the VM. This is the Xen "driver domain" / stub
+that nife, as the hypervisor, programs for that domain. A compromised or crashed driver takes
+down its VM and nothing else; nife restarts the VM. This is the Xen "driver domain" / stub
 domain model, and the QubesOS "sys-net / sys-usb" model: the most dangerous, most bug-prone code
 (drivers) runs in disposable, DMA-confined boxes.
 
@@ -61,24 +61,24 @@ Most isolation, most infrastructure.
 
 ## Why the driver-domain point is compelling
 
-- **It confines DMA generically, like an IOMMU, but self-programmed.** cricker-os owns the SMMU
+- **It confines DMA generically, like an IOMMU, but self-programmed.** nife owns the SMMU
   stage-2 for each domain, so a driver's device is boxed into that domain's memory. No per-device
   validator in the kernel. The virtio transport could go back into the (untrusted) driver, undoing
   the one compromise notes/dma.md made.
 - **It is the strongest fault isolation there is.** A driver domain is a hard boundary: separate
   address space *and* separate exception-level context. A driver that corrupts itself corrupts a
-  VM, which cricker-os tears down and respawns. This is the "kill a driver, watch it come back"
+  VM, which nife tears down and respawns. This is the "kill a driver, watch it come back"
   demo from the application-ideas discussion, at its strongest.
 - **It composes with the capability model.** A domain is handed exactly the device MMIO, interrupt,
   and DMA window it needs, as capabilities, and nothing else. A driver domain is a process with a
   harder wall.
-- **It walks cricker-os toward what real high-assurance systems look like.** seL4 is often deployed
+- **It walks nife toward what real high-assurance systems look like.** seL4 is often deployed
   as a hypervisor running Linux driver VMs; the microkernel-as-hypervisor is a well-trodden
   high-assurance pattern.
 
 ## What it requires, and what blocks it
 
-- **cricker-os must run at EL2.** Today it boots to EL1 on purpose. Becoming a hypervisor means a
+- **nife must run at EL2.** Today it boots to EL1 on purpose. Becoming a hypervisor means a
   second exception-level story: EL2 setup, `VTTBR_EL2` stage-2 tables per domain, trapping and
   emulating (or paravirtualizing) the guest's device access, virtual interrupt injection (the GIC
   virtualization extensions, `ICH_*` list registers), and a vCPU/scheduling model for domains. This
@@ -90,7 +90,7 @@ Most isolation, most infrastructure.
   domains are "option 2 (an SMMU driver) plus being a hypervisor," strictly more than option 2, not
   less.
 - **Under HVF it is impossible as-is.** On the dev Mac, EL2 belongs to Hypervisor.framework, and
-  HVF does not expose nested virtualization, so cricker-os cannot become a hypervisor while itself
+  HVF does not expose nested virtualization, so nife cannot become a hypervisor while itself
   running as an HVF guest. This would be a bare-metal-only (QEMU with `virtualization=on`, or a
   real board) capability. See notes/virtualization.md for why we are a guest under HVF.
 - **The device transport must be reachable behind the SMMU.** On QEMU `virt` that again points at
@@ -103,7 +103,7 @@ Becoming a hypervisor adds EL2 mechanism, a vGIC, stage-2 management, and a vCPU
 which cuts against "small." The counter-argument, and the reason seL4 does exactly this, is that the
 added mechanism is *general* (it isolates any guest, not any specific device), so the privileged
 core stays conceptually simple even as it grows: it is still "isolate and route," now with VMs as
-the unit of isolation. Whether that trade is worth it for cricker-os depends entirely on whether
+the unit of isolation. Whether that trade is worth it for nife depends entirely on whether
 driver isolation at VM strength is a goal, or whether process-strength isolation plus software DMA
 validation is enough. For a learning OS, the latter has already taught the lesson; the former is a
 second, larger course.
@@ -113,10 +113,10 @@ second, larger course.
 - Is the goal driver *confinement* (which software validation already gives) or driver *fault
   recovery and disposability* (which needs the VM boundary)? Only the second justifies the cost.
 - Full VMs, or a lighter "protection domain" that is a separate address space *and* a separate
-  SMMU context but shares cricker-os's scheduler, without a full vCPU/EL2 story? The lighter form
+  SMMU context but shares nife's scheduler, without a full vCPU/EL2 story? The lighter form
   might get most of the DMA benefit for much less mechanism, and is arguably where the real design
   work is.
-- Paravirtual device backends (cricker-os presents a virtio backend to the driver domain, and owns
+- Paravirtual device backends (nife presents a virtio backend to the driver domain, and owns
   the real device) versus device pass-through with SMMU confinement. The first keeps the real
   device out of the untrusted domain entirely; the second is closer to true driver isolation but
   needs the SMMU.
@@ -125,7 +125,7 @@ second, larger course.
 
 Parked, and honestly the most interesting unbuilt direction in the project, but it is a milestone in
 its own right, not a fix. It only makes sense to reach for it once (a) there is a real SMMU driver,
-which is the same work option 2 needs, and (b) there is a reason to run cricker-os at EL2 on bare
+which is the same work option 2 needs, and (b) there is a reason to run nife at EL2 on bare
 metal. The software validation in notes/dma.md closed the actual hole; this is the principled shape
 the hole would take if the project decided driver isolation at VM strength was a goal worth its
 weight. If it is ever built, notes/dma.md's "the software version of the hypervisor's DMA-remapping

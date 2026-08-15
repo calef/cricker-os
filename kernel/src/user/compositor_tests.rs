@@ -624,7 +624,7 @@ fn focus_routes_a_keystroke_to_one_terminals_grid_and_not_its_neighbours() {
 fn three_clients_compose_into_one_scanout_and_the_host_sees_it() {
     let display = program("display").expect("no display program in the initrd archive");
     let (driver_report, display, screen) = display_service::start_driver(display).expect(
-        "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
+        "no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg, or \
          the -device virtio-gpu-pci line from the runner?",
     );
     assert!(

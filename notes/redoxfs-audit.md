@@ -38,7 +38,7 @@ lz4_flex, seahash, bitflags, endian-num, base64ct, uuid-core, redox_syscall) com
 - **What is std-gated in the core types is exactly creation**: `FileSystem::create`,
   `Header::new` (uuid v4), `Key::new` (getrandom). **Opening and operating an existing
   filesystem is fully no_std**, which matches the plan: `mkfs` and image inspection stay on
-  the host (the FUSE half), cricker-os opens and serves.
+  the host (the FUSE half), nife opens and serves.
 
 ## The real costs, priced
 

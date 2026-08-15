@@ -19,7 +19,7 @@
 # graph nothing ships. None of them enter the kernel, `user`, or any binary that boots.
 
 [package]
-name = "cricker_fuzz"
+name = "nife_fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -35,7 +35,7 @@ libfuzzer-sys = "0.4"
 
 # The crates under test. Path dependencies with no version on purpose: they resolve to the bytes in
 # this repository, which git pins harder than semver would (see deny.toml's `allow-wildcard-paths`).
-crickerfs = { path = "../crates/crickerfs" }
+nifefs = { path = "../crates/nifefs" }
 dtb = { path = "../crates/dtb" }
 elf = { path = "../crates/elf" }
 gpt = { path = "../crates/gpt" }
@@ -75,8 +75,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "crickerfs_roundtrip"
-path = "fuzz_targets/crickerfs_roundtrip.rs"
+name = "nifefs_roundtrip"
+path = "fuzz_targets/nifefs_roundtrip.rs"
 test = false
 doc = false
 bench = false

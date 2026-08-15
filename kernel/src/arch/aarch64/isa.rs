@@ -96,7 +96,7 @@ pub fn init(dtb_ptr: usize) {
     let missing = cpu.missing_requirements();
     if missing.any() {
         println!();
-        println!("cricker-os cannot run on this machine:");
+        println!("nife cannot run on this machine:");
         if missing.granule_4k {
             println!(
                 "  granule     : no 4 KiB stage-1 granule (ID_AA64MMFR0_EL1.TGran4), and every \

@@ -13,7 +13,7 @@ of the *same* ISA, with no PL011, its own device discovery, and its own boot han
 
 **Why it matters.** Proves the `arch/` **board** boundary on a second machine without buying one
 (cheaper than 16's silicon, distinct from 20's second ISA): if rule 1 has been kept, this is a new
-directory, not a diff across the tree. It also lets cricker-os run under the same VMM that runs
+directory, not a diff across the tree. It also lets nife run under the same VMM that runs
 macOS and Linux guests on the dev machine. Optional; a portability exercise, **not** a
 benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent, and the HVF leg
 already runs the physical core under QEMU's board).

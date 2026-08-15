@@ -1,11 +1,11 @@
-# Working on cricker-os
+# Working on nife
 
 *This file is `AGENTS.md`, the cross-tool convention; `CLAUDE.md` is a symlink to it so Claude
 Code keeps finding it (decided 2026-08-14). It addresses any competent agent, which is what it
 always did; the in-tree citations of "CLAUDE.md" keep resolving through the symlink and were
 deliberately not rewritten, per this file's own blind-sed scar. The architect is **calef**
 (GitHub username; Chris Alef): older records and commits may say Chris, and both are the same
-person, renamed 2026-08-15 at his request.*
+person, renamed 2026-08-15 at his request. The OS itself was renamed the same day: **nife**, formerly cricker-os (milestone 120), and older records, commits, and quoted transcripts keep the old name where they describe the past.*
 
 ## What this project is
 
@@ -234,7 +234,7 @@ are new.
 
 - **Maintainer.** One per session, the session itself. Briefs developers, gates and merges their
   work, mints anything global to the tree (`DECISIONS.md` sections, milestone numbers, names calef
-  has ratified), and keeps hygiene: prune the worktree, delete the branch, relink `cricker-dev`,
+  has ratified), and keeps hygiene: prune the worktree, delete the branch, relink `nife-dev`,
   leave no QEMU. Holds merge authority when calef grants it. **Maintainer, not project manager**,
   because the name has to predict the authority: this role writes code, resolves conflicts and
   merges, and a coordinate-only reading of it would leave the tree unowned.
@@ -250,7 +250,7 @@ are new.
 - **Steward.** Runs on an interval and holds a *lent* authority, which is what the name says: it
   merges what has earned it (green on every check, from a developer briefed this session, touching
   no syscall surface, no `DECISIONS.md` section and no dependency addition), cleans up behind
-  finished work (delete the branch, prune the worktree, relink `cricker-dev`), reports queue depth
+  finished work (delete the branch, prune the worktree, relink `nife-dev`), reports queue depth
   against the target, and raises what has stalled or gone unanswered. It exists because the
   maintainer is structurally bad at noticing its own idleness: when it is busy, it is busy.
 
@@ -264,7 +264,7 @@ are new.
   this system that destroys rather than delays. That check earns its keep more than the idle one.
 
   **It must never hold the main checkout while a developer's gate is running**, which is the race
-  that took the `cricker-dev` link out from under a lane on 2026-08-04. `caretaker` and
+  that took the `nife-dev` link out from under a lane on 2026-08-04. `caretaker` and
   `undertaker` were unavailable as names: this tree already spends both on capability-narrowing
   programs.
 
@@ -324,7 +324,7 @@ the honest move is fewer lanes, said out loud as a decision rather than by quiet
 which is how it failed three times that evening.
 
 **Prune a lane's worktree the moment its pull request merges**, in the same breath as deleting the
-branch and relinking `cricker-dev`. Eight finished worktrees had accumulated by the time anyone
+branch and relinking `nife-dev`. Eight finished worktrees had accumulated by the time anyone
 looked, and one of them alone held 3.3 GB.
 
 **The maintainer starts the two watchers at the beginning of every session**, because both are
@@ -392,12 +392,12 @@ Two kinds bit us on 2026-07-30:
 one, so a well-formed wrong citation is invisible to it. This has already produced two of them.
 
 **Some shared state is global to the *machine*, not the repo, and `rustup toolchain link` is the one
-that has bitten.** The `cricker-dev` toolchain the `std` farm needs is a symlink in
+that has bitten.** The `nife-dev` toolchain the `std` farm needs is a symlink in
 `~/.rustup/toolchains`, so `xtask std-src` repoints a **user-account-wide** name at whichever
 worktree ran it last. Two lanes building the farm race for it, and the loser silently compiles
 against a farm inside someone else's worktree; deleting that worktree then breaks the toolchain for
-everything, surfacing far from the cause as "override toolchain 'cricker-dev' is not installed"
-during an unrelated build. Fix: `rustup toolchain link cricker-dev "$(pwd)/target/cricker-farm"` from
+everything, surfacing far from the cause as "override toolchain 'nife-dev' is not installed"
+during an unrelated build. Fix: `rustup toolchain link nife-dev "$(pwd)/target/nife-farm"` from
 the main checkout. This is the same rule as the paragraph above, one level out: the integrator owns
 what is shared, and "shared" is wider than this repository.
 
@@ -408,10 +408,10 @@ the gate takes the account-wide link.** Two instructions this file gave together
 obeyed.
 
 Until `xtask test` grows a flag that skips the farm, the honest rule for the integrator is: **expect
-every lane to take `cricker-dev`, and relink from the main checkout at merge**, in the same breath as
+every lane to take `nife-dev`, and relink from the main checkout at merge**, in the same breath as
 pruning the worktree. Do not tell a lane not to do the thing gating requires; tell it what to say in
 its report so the relink is not forgotten. That lane also demonstrated the workaround worth knowing:
-symlink the worktree's `target/cricker-farm` at the main checkout's farm after checking the stamps
+symlink the worktree's `target/nife-farm` at the main checkout's farm after checking the stamps
 match (`cargo xtask std-stamp`), and `std_src()` early-returns instead of rebuilding.
 
 **Delete a lane's worktree too, and do it before the disk decides for you.** On 2026-07-31 the data
@@ -635,11 +635,11 @@ It is also the same guard rail as "standard terms are already right", applied to
 vocabulary. We do not rename `elf`, and we should not respell `supply-chain` either: a name whose
 shape a reader already knows from outside costs them nothing.
 
-**One constraint to know:** `crickerfs` caps archive names at `NAME_LEN = 32` bytes, raised from 24 on
+**One constraint to know:** `nifefs` caps archive names at `NAME_LEN = 32` bytes, raised from 24 on
 2026-08-01 so `os_primitives_benchmarker` would fit. It can be raised again, and there is no data
 migration because every image regenerates from that crate, but it costs directory entries per block.
 (The old warning that it also costs kernel stack was stale: `Fs` stopped holding entries as a fixed
-array when the FS-server stack bug was fixed. See notes/crickerfs.md.) Do not let it pick a name; do
+array when the FS-server stack bug was fixed. See notes/nifefs.md.) Do not let it pick a name; do
 not spend a format change on bytes nothing needs.
 
 ## The syscall surface is a boundary, not a habit
@@ -726,7 +726,7 @@ reread for months:
 
 ## Never leave QEMU running
 
-A cricker-os kernel that has finished its work calls `arch::halt()`, which is `loop { wfi }`.
+A nife kernel that has finished its work calls `arch::halt()`, which is `loop { wfi }`.
 It never exits. So QEMU never exits either, unless something kills it or the kernel asks the
 host to terminate via semihosting (which only the test build does).
 
@@ -758,11 +758,11 @@ Two consequences:
   **That check is not sufficient after you kill a harness, and on 2026-08-02 it took four attempts
   to notice.** Killing a loop script does not kill its descendants: `pkill -f hunt-...` left
   `cargo xtask test` running, which kept starting fresh QEMUs. So every check honestly reported "no
-  qemu" and the next command found one holding `target/crickerfs.img`, which then failed unrelated
+  qemu" and the next command found one holding `target/nifefs.img`, which then failed unrelated
   test runs with `Failed to get "write" lock` and looked like a bug in the code under test.
 
   Two habits fix it. **Ask who holds the file, not whether a process matches a name**:
-  `lsof target/crickerfs.img` names the holder even when your pattern does not. And **kill the tree
+  `lsof target/nifefs.img` names the holder even when your pattern does not. And **kill the tree
   at its root**: walk `ps -o pid,ppid,command` up to the harness and kill that, or the loop simply
   starts another child. `pgrep -l qemu` is also worth preferring to `pgrep -x qemu-system-aarch64`,
   because it matches both architectures and does not depend on getting the full name right.

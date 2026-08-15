@@ -47,7 +47,7 @@ wakes it, so its blocking `ipc_recv`/`ipc_send` returns an error (the endpoint i
 stranding the reclaim or dangling on a freed page. `endpoint_of` became fallible so a stale endpoint
 capability fails cleanly instead of panicking; the check folds into the existing IPC locks, so the
 hot path does not regress. The EL0 `lat_proc` spawn benchmark also landed (notes/benchmarks.md):
-cricker-os builds a process faster than Linux or macOS, with the honest caveat that a
+nife builds a process faster than Linux or macOS, with the honest caveat that a
 capability-microkernel process is a lighter object than a Unix one.
 
 ## Amendment (milestone 31): untyped becomes delegable by rights *inheritance*, with a delegable root

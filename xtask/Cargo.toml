@@ -9,7 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
-crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+nifefs = { version = "0.1.0", path = "../crates/nifefs" }
 # The documentation store (milestone 40). The index is built HERE, on a host with a heap and no
 # constraints, because the guest has neither: there is no directory iteration in this system, so
 # "what pages exist" cannot be discovered at runtime and has to be computed at image time. Only the

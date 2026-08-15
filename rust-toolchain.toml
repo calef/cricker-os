@@ -14,7 +14,7 @@
 # carry it. The change was unrelated to anything in the failing commits, which is the signature of
 # this class of failure and the reason it wastes so much time: the diff never explains the break.
 #
-# The `std` overlay (patches/std-cricker) is the most exposed part of the tree, because it patches
+# The `std` overlay (patches/std-nife) is the most exposed part of the tree, because it patches
 # std's own source and therefore tracks upstream's internals rather than a stable API.
 #
 # BUMPING THIS IS A DELIBERATE COMMIT, and `script/toolchain-bump` does it end to end: it raises the

@@ -243,7 +243,7 @@ Three things worth keeping from doing it, because the analysis below could not h
 - **The bug bit on CI before the fix landed**, on 2026-08-02, exactly as this section forecast and in
   the forecast's own words. `reclaim_frees_a_started_then_exited_childs_regions` ran **90 s against a
   budget it normally clears in under 5**, tripping the watchdog on a pull request that had touched
-  only `dtb` and `crickerfs`. The starvation reaches a test on a branch that cannot have caused it,
+  only `dtb` and `nifefs`. The starvation reaches a test on a branch that cannot have caused it,
   which is what made it look like a flake worth re-running. **It was not a flake.**
 - **The probe was proven to bite before being believed.** Leaking the spinner on purpose fails it,
   `1 thread(s) are still runnable after the suite quiesced`, with the dump. A reordered probe that
@@ -389,8 +389,8 @@ riscv kernel with the runner's exact flags (QEMU 11.0.2, `-global virtio-mmio.fo
 -device virtio-blk-device`) finds a modern virtio-mmio block device at slot 7 (0x10008000, PLIC
 IRQ 8); `find_block_device` reports it and the kernel registers the transport. The most likely
 mechanism for the false record, stated as inference: both runners silently dropped the disk when
-`CRICKER_DISK` named a file that did not exist (`[ -f ]` guard), and no riscv xtask path builds
-`crickerfs.img`, so a riscv run on a clean target directory booted disklessly and every slot
+`NIFE_DISK` named a file that did not exist (`[ -f ]` guard), and no riscv xtask path builds
+`nifefs.img`, so a riscv run on a clean target directory booted disklessly and every slot
 honestly read device-id 0 ("empty"). The conclusion "QEMU prefers PCIe for riscv" was reasonable
 and wrong; the machine was never asked the question. Both runners now fail loudly on a missing
 disk file so this class of record cannot be manufactured again. The machine overrules the
@@ -425,13 +425,13 @@ this is a transport-availability gap on riscv, not a kernel defect. Original sco
 
 ### C (original scope). virtio-blk + on-disk filesystem: M. The driver + DMA model.
 
-aarch64 runs a userspace virtio-blk driver that reads crickerfs off a virtio-mmio disk, with the
+aarch64 runs a userspace virtio-blk driver that reads nifefs off a virtio-mmio disk, with the
 kernel touching no DMA. RISC-V has the MMIO constants (`VIRTIO_MMIO_BASE`, `VIRTIO_IRQ_BASE`) but no
 driver run. The virtio-mmio driver is largely portable (MMIO + virtqueues + DMA).
 
 - Kernel: `find_block_device` (from the DTB `virtio_mmio@` nodes or by probing), route the device's
   PLIC IRQ to the userspace driver (the routing mechanism is done), hand it DMA-capable frames.
-- Runner: attach a `virtio-blk` disk (`CRICKER_DISK`, as aarch64 does).
+- Runner: attach a `virtio-blk` disk (`NIFE_DISK`, as aarch64 does).
 - **Proves:** userspace device drivers *with DMA* on the second arch, and the "kernel issued no
   virtio command and touched no DMA" claim on riscv. Self-contained; depends on nothing else here.
 

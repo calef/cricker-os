@@ -43,7 +43,7 @@ fn clock() -> clock_service::Wiring {
 fn entropy() -> crate::sched::EpId {
     let image = program("entropy").expect("no entropy program in the initrd archive");
     let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)
-        .expect("no virtio-rng device on the mmio bus: is CRICKER_RNG missing from the test leg?");
+        .expect("no virtio-rng device on the mmio bus: is NIFE_RNG missing from the test leg?");
     if let Some(report) = w.wait_for_ready() {
         assert_eq!(
             report[0],

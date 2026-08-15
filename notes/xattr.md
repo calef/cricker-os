@@ -16,7 +16,7 @@ in DECISIONS §34's 2026-07-31 amendment.
 ```text
   a client                    the FS server                    RedoxFS
   ────────                    ─────────────                    ───────
-  GETXATTR  h "user.x"  ──►   node = handle h names            /.cricker-attrs/0000002a
+  GETXATTR  h "user.x"  ──►   node = handle h names            /.nife-attrs/0000002a
   SETXATTR  h "user.x" v ─►   blob = read the node's file  ──► (one file per node,
   LISTXATTR h            ─►   apply the change                  named for its TreePtr id)
   REMOVEXATTR h "user.x" ►    write the blob back
@@ -116,7 +116,7 @@ assertion the interesting half of the test would go quietly vacuous the day the 
 
 ### 2. The store must be invisible, in both directions
 
-`.cricker-attrs` is refused by every name-taking verb (`check_component`) and filtered out of every
+`.nife-attrs` is refused by every name-taking verb (`check_component`) and filtered out of every
 listing (`Server::read_dir`). A store a client could name would be part of the namespace, and then
 "the attributes of a file" would be reachable as ordinary bytes by anything holding the directory
 they live in.
@@ -134,7 +134,7 @@ so the engine's own check *is* the emptiness test and there is nothing to enumer
 removal and accepting the refusal costs one lookup, on the removals that emptied a blob.
 
 The reason to bother is on the recovery side rather than the byte. `redoxfs_host extract` copies the
-store out with the tree, so a leftover empty `.cricker-attrs` would land in somebody's recovered
+store out with the tree, so a leftover empty `.nife-attrs` would land in somebody's recovered
 Documents folder as a directory nothing explains. A filesystem with no attributes on it is now
 indistinguishable from one that never had any.
 
@@ -263,7 +263,7 @@ counted and named. See [notes/host-recovery.md](host-recovery.md).
 
 Named here because a reader who meets the feature deserves to meet its edges at the same time.
 
-- **You cannot create a file called `.cricker-attrs` anywhere**, at any rights, in any directory.
+- **You cannot create a file called `.nife-attrs` anywhere**, at any rights, in any directory.
   The refusal is `EINVAL`, the same one `..` gets, because the name is not expressible here rather
   than not permitted. Reserving it in every directory instead of only in the root is a deliberate
   trade: the rule a client has to remember is one sentence.

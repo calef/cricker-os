@@ -5,7 +5,7 @@
 //! byte buffer), each folded into a CRC so the compiler cannot optimize the work away and a run
 //! self-validates. It is **not** an EEMBC-certified CoreMark: the certified score requires the
 //! unmodified reference C. This is a Rust reimplementation whose value is that the *identical source*
-//! compiles for cricker-os, macOS, and Linux, so the compute comparison across those three is one
+//! compiles for nife, macOS, and Linux, so the compute comparison across those three is one
 //! program on three OSs (notes/benchmarks.md).
 //!
 //! `run(iters)` does `iters` core iterations over a fixed, seeded dataset and returns a CRC. Same
@@ -198,10 +198,10 @@ pub fn run(iters: u32) -> u16 {
 }
 
 /// The CRC of `run(64)`, pinned so every OS and every build agrees. Verified by the host test below
-/// and re-asserted by the cricker-os workload; a mismatch anywhere means the compute diverged.
+/// and re-asserted by the nife workload; a mismatch anywhere means the compute diverged.
 pub const PINNED_CRC_64: u16 = 0x7954;
 
-/// The iteration count the cricker-os workload runs, and the value `PINNED_CRC_64` is the checksum
+/// The iteration count the nife workload runs, and the value `PINNED_CRC_64` is the checksum
 /// of. Kept beside the pin so the two never drift apart.
 pub const PINNED_ITERS: u32 = 64;
 

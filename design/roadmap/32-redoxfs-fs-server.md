@@ -31,7 +31,7 @@ trait, implemented over blk IPC.
 rule was written: a real CoW, transactional filesystem in Rust, MIT-licensed, shipping daily in
 Redox, and only loosely coupled to Redox's syscalls precisely because it also runs on
 Linux/FUSE, which is itself a gift (images can be created and inspected on the host with the
-same code that serves them on cricker-os). It is the flagship form of the userspace-reuse
+same code that serves them on nife). It is the flagship form of the userspace-reuse
 thesis: the kernel confining a serious component we did not write.
 
 **The port plan, fixed by the audit** (notes/redoxfs-audit.md; done against 0.9.1, by

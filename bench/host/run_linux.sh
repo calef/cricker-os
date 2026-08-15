@@ -2,7 +2,7 @@
 # Same-hardware Linux run of the primitive suite (milestone 25). Cross-compiles the static Linux
 # bench (rust-lld, no C toolchain), downloads an Alpine aarch64 kernel (generated, not checked in,
 # like the disk and initrd), builds a one-file initramfs, and boots it under QEMU-HVF on the SAME
-# M-series core and the SAME virtualization tier as cricker-os. Prints the null-syscall and IPC
+# M-series core and the SAME virtualization tier as nife. Prints the null-syscall and IPC
 # round-trip medians, then the guest powers itself off.
 #
 # Needs: rustup target add aarch64-unknown-linux-musl; qemu-system-aarch64; network (once, for the
@@ -10,7 +10,7 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-WORK=${WORK:-/tmp/cricker-hostbench}
+WORK=${WORK:-/tmp/nife-hostbench}
 mkdir -p "$WORK"
 
 KERNEL="$WORK/vmlinuz-virt"

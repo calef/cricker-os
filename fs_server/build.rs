@@ -1,4 +1,4 @@
-//! The FS-server EL0 binary is an ordinary cricker-os ELF, so it links against the SAME linker
+//! The FS-server EL0 binary is an ordinary nife ELF, so it links against the SAME linker
 //! script the `user` crate and `std_exerciser` use (linked at 0x40_0000, explicit W^X PHDRS). The
 //! link args are scoped to the `fs_server` bin (`rustc-link-arg-bin`), never the lib or the host
 //! test binary, which are plain host artifacts and must link the host way.

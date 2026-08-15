@@ -7,7 +7,7 @@ What the loader does is unchanged, and the steps below are still the steps.)*
 
 ## The one thing 19d moves, and why it matters
 
-Until 19d, when a program ran on cricker-os the **kernel** read its file and set it up: it parsed
+Until 19d, when a program ran on nife the **kernel** read its file and set it up: it parsed
 the ELF (the standard "here is a program: code here, data there, start at this address" format),
 copied the pieces into memory, and started it. That parser lived inside the kernel.
 
@@ -90,7 +90,7 @@ argument survives the crossing: the worker reports `n*n`, not `n` and not garbag
 
 Through 19d/19e the initrd *was* one ELF: the kernel parsed the whole blob as the init program, and
 init, to load a child, parsed that same blob again (children were roles of the one binary). 19f
-turns the blob into a **crickerfs archive**, the same named-file format the virtio disk uses, so one
+turns the blob into a **nifefs archive**, the same named-file format the virtio disk uses, so one
 parser serves both the RAM archive and the disk. `cargo xtask` packs it (`mkinitrd`); it holds one
 entry today, `init`.
 
@@ -99,10 +99,10 @@ Two readers changed, each in its own domain:
 - The **kernel** (`spawn_init`) reads the superblock, looks up the `"init"` entry, and loads *that*
   as the ELF. This is the same honest residue as before ("something has to load the first program"),
   now naming that program through a fixed archive index instead of assuming it sits at offset 0. The
-  kernel gains a crickerfs read, which is proportionate to the ELF parse it already does for init and
+  kernel gains a nifefs read, which is proportionate to the ELF parse it already does for init and
   is bounded (a 512-byte superblock, count capped at 15). The milestone tour and the kernel-wired
   demos load a program the same way, through `user::program("init")`.
-- **init** (`hello.rs` `program()`) parses `INITRD_VA` as a crickerfs archive and looks up a program
+- **init** (`hello.rs` `program()`) parses `INITRD_VA` as a nifefs archive and looks up a program
   by name, rather than treating the whole blob as one ELF.
 
 Why the archive rides *beside* the kernel (handed in via the device tree) rather than baked into

@@ -126,7 +126,7 @@ DMA and nothing else".
 ## The test disk is the fourth one, and command-line order is reversed
 
 QEMU's `virt` assigns virtio-mmio devices to slots in **reverse** command-line order, so the GPT
-image goes **first** on the line to land at slot 3, leaving crickerfs at 0, RedoxFS at 1 and the
+image goes **first** on the line to land at slot 3, leaving nifefs at 0, RedoxFS at 1 and the
 crash image at 2. Both runner scripts explain this where they do it; getting it backwards silently
 hands a test the wrong disk. Its own image, for the same reason milestone 37's crash test has one:
 a test that shares a fixture couples its result to whether some other test ran first.
@@ -140,7 +140,7 @@ above: **there is now a fifth mmio disk, at slot 4, and it is blank on purpose.*
 - **`disk_partitioner`** (provisional name) writes the table `disk_surveyor` reads, drawing its
   unique GUIDs from the entropy service. notes/gpt.md has the details, including why every write is
   a read-modify-write.
-- **`mkfs`** (provisional name) creates a RedoxFS filesystem inside the cricker-os data
+- **`mkfs`** (provisional name) creates a RedoxFS filesystem inside the nife data
   partition of that table. notes/fs-server.md has the details, including the vendor divergence it
   needed and why the first attempt at that divergence did not work.
 

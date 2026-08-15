@@ -46,7 +46,7 @@ const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fs_server.rs FI
 const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fs_test_client.rs FILE_VA)
 
 /// A std program's half of the same agreement (notes/abi.md §4, notes/std.md). Both constants
-/// MUST match the std PAL's `sys/pal/cricker/rt.rs`: the slot it looks for the FS-service
+/// MUST match the std PAL's `sys/pal/nife/rt.rs`: the slot it looks for the FS-service
 /// endpoint in, and the VA it expects the shared file page at. A std program's slot layout
 /// differs from the hand-written client's because std already owes slots 0 and 1 to its heap and
 /// its stdout, and 2 and 3 to `std::net`.
@@ -1150,7 +1150,7 @@ const STD_FS_STACK_PAGES: u64 = 32;
 /// This is the one spawn site that makes `std::fs` work: an ordinary std ELF, given the std slot
 /// convention (heap untyped at 0, stdout at 1) **plus the FS-service endpoint at slot 4** and
 /// the page it shares with the FS server, mapped at the VA the PAL expects
-/// (`sys/pal/cricker/rt.rs::FS_PAGE`). Slots 2 and 3 are deliberately left EMPTY, which is why
+/// (`sys/pal/nife/rt.rs::FS_PAGE`). Slots 2 and 3 are deliberately left EMPTY, which is why
 /// the grants go in by explicit slot instead of in order: this program holds a filesystem and no
 /// network, and `std::net` must be able to tell.
 ///

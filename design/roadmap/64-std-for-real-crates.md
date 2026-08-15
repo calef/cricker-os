@@ -1,7 +1,7 @@
 # 64. Enough `std` to run somebody else's crate
 
 **Status: PARTIAL** since 2026-08-04 (PR #113). The measurement phase is done and its deliverable,
-the prioritised gap list that milestones 99 and 66 consume, is in `notes/crates-io-on-cricker.md`:
+the prioritised gap list that milestones 99 and 66 consume, is in `notes/crates-io-on-nife.md`:
 **50 crates.io crates, 35 built with no change, 15 failed**, and the gaps are ranked by demand
 rather than by the function counts below. Five ranks turned out to be bindings rather than verbs
 (`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename` were all dispatched by the FS
@@ -21,7 +21,7 @@ question is a design fork inside it, to be raised before code and answered joint
 ## What 27 actually delivered, and where it stops
 
 `std` on the native ABI is **BUILT**, and the proof program is real: `println!`, `Vec`, `String`,
-`Instant`, `SystemTime` and `std::random` all work through the PAL in `patches/std-cricker/`.
+`Instant`, `SystemTime` and `std::random` all work through the PAL in `patches/std-nife/`.
 
 The bound is in the PAL's own answers:
 

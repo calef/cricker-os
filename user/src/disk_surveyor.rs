@@ -52,7 +52,7 @@
 //!     table  : 3 partitions, disk GUID 1A2B3C4D-5E6F-4718-9A0B-C1D2E3F40506
 //!              1  EFI system    2048..10239
 //!              2  linux root   10240..30719
-//!              3  cricker data 30720..131038
+//!              3  nife data 30720..131038
 //!     backup : agrees with the primary
 //! ```
 //!
@@ -63,7 +63,7 @@
 //!   device's logical block size on the wire, so there is nothing here to read it from. A 4Kn disk
 //!   would be read as though its LBA 1 were at byte 512, which is a wrong answer rather than an
 //!   error. The fix is a field in `fs_proto::blk`, not a change here.
-//! - **It does not write.** Partitioning a disk from cricker-os needs a unique GUID per partition,
+//! - **It does not write.** Partitioning a disk from nife needs a unique GUID per partition,
 //!   which needs randomness, which this program is not endowed with. `crates/gpt` refuses to invent
 //!   one and notes/gpt.md says why. That is milestone 57's remaining half and it is a decision
 //!   rather than a task; see design/roadmap/57-partitioning-and-xattrs.md.
@@ -143,8 +143,8 @@ pub const F_MBR: u64 = 1 << 2;
 pub const F_PRIMARY: u64 = 1 << 3;
 /// The backup table at the far end of the disk agrees with the primary.
 pub const F_BACKUP: u64 = 1 << 4;
-/// A partition of type `CRICKER_DATA` is on the disk (DECISIONS §45).
-pub const F_CRICKER: u64 = 1 << 5;
+/// A partition of type `NIFE_DATA` is on the disk (DECISIONS §45).
+pub const F_NIFE: u64 = 1 << 5;
 /// Every partition's name decoded as UTF-8 (`sgdisk` writes them; macOS does not, notes/gpt.md).
 pub const F_NAMES: u64 = 1 << 6;
 
@@ -228,7 +228,7 @@ fn survey() -> ! {
 
     let mut flags = roster_ok;
     let mut partitions = 0u64;
-    let mut cricker_first_lba = 0u64;
+    let mut nife_first_lba = 0u64;
 
     // How big is the disk? This is the question only a *holder* can ask: the roster deliberately
     // carries no capacity, because a size is a fact about the device rather than about the machine
@@ -237,15 +237,15 @@ fn survey() -> ! {
     if size > 0 && (size as u64).is_multiple_of(LBA) {
         flags |= F_SIZE;
         let block_count = size as u64 / LBA;
-        flags |= read_table(block_count, &mut partitions, &mut cricker_first_lba);
+        flags |= read_table(block_count, &mut partitions, &mut nife_first_lba);
     }
 
-    send(REPORT, flags, partitions, cricker_first_lba);
+    send(REPORT, flags, partitions, nife_first_lba);
     user_rt::exit()
 }
 
 /// Read and judge both halves of the table. Returns the flags it established.
-fn read_table(block_count: u64, partitions: &mut u64, cricker_first_lba: &mut u64) -> u64 {
+fn read_table(block_count: u64, partitions: &mut u64, nife_first_lba: &mut u64) -> u64 {
     let mut flags = 0;
 
     // LBA 0..=33 in one run: the protective MBR, the primary header, and the whole entry array.
@@ -300,9 +300,9 @@ fn read_table(block_count: u64, partitions: &mut u64, cricker_first_lba: &mut u6
     let mut named = 0;
     for (_, part) in table.partitions() {
         *partitions += 1;
-        if part.type_guid == types::CRICKER_DATA {
-            flags |= F_CRICKER;
-            *cricker_first_lba = part.first_lba;
+        if part.type_guid == types::NIFE_DATA {
+            flags |= F_NIFE;
+            *nife_first_lba = part.first_lba;
         }
         let mut label = [0u8; 4 * gpt::entry::NAME_UNITS];
         if part.name_utf8(&mut label).is_ok() {

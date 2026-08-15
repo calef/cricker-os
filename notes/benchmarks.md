@@ -230,7 +230,7 @@ what any cross-OS comparison can and cannot show.
 
 **Compute is OS-independent.** A tight compute loop, once it is running in userspace, does not touch
 the OS: the CPU executes the same instructions no matter who scheduled it. So a compute benchmark
-(CoreMark, Dhrystone) run on cricker-os, macOS, and Linux on the same core comes out *nearly
+(CoreMark, Dhrystone) run on nife, macOS, and Linux on the same core comes out *nearly
 identical*, and the small gaps are compiler codegen or allocator noise, not OS quality. That is a
 real result ("we add no hidden compute overhead") but a null one by design. It cannot show OS
 strengths or liabilities, because the OS is not in the loop.
@@ -241,7 +241,7 @@ from us. But the same source cannot measure them across three OSs, because "the 
 not exist on all three: you invoke each OS's own primitive (`getpid` on Linux, a Mach/BSD call on
 macOS, our `svc` null-invoke). So the OS-revealing benchmark is a **matched harness per OS** (one
 metric definition, three native implementations), which is exactly what lmbench is and how the
-L4/seL4 papers compare to Linux. Our own microbenchmarks above are the cricker-os side of it.
+L4/seL4 papers compare to Linux. Our own microbenchmarks above are the nife side of it.
 
 ### The CoreMark workload (`crates/coremark`, `user/src/coremark.rs`)
 
@@ -255,7 +255,7 @@ kernel's target, which is the property a cross-OS comparison rests on.
 
 It is a **Rust reimplementation, not EEMBC-certified CoreMark**: a certified score needs the
 unmodified reference C. The Rust choice buys the thing that matters for *our* comparison, that the
-identical source compiles for cricker-os, macOS, and Linux, so the compute run is one program on
+identical source compiles for nife, macOS, and Linux, so the compute run is one program on
 three OSs. This binary reports correctness, not yet a score; timing a run needs a userspace clock
 (enabling the EL0 virtual-counter read, as Linux does for its vDSO), which lands with the cross-OS
 suite rather than here.
@@ -280,7 +280,7 @@ build on the same `user_rt::now`. The existing kernel-side suite stays, for gati
 cross-OS honesty. The two will differ by roughly the trap cost, and that difference is itself a
 number worth having.
 
-### The first EL0 numbers (cricker-os, M-series host, HVF, debug build)
+### The first EL0 numbers (nife, M-series host, HVF, debug build)
 
 The `os_primitives_benchmarker` program (`user/src/os_primitives_benchmarker.rs`), spawned by the bench boot, self-times each primitive
 from EL0 and reports it as a normal bench line. So far:
@@ -330,29 +330,29 @@ but it is not comparable to Linux's ~534 ns, most of which is the page zeroing o
 apples-to-apples comparison is our `map_new` (fresh page, allocate + zero + map), ~524 ns, plus one trap
 (~28 ns) for the EL0 crossing the host's fault includes: ~552 ns, against Linux ~534 ns and macOS ~556
 ns. That is a **three-way tie**, and it makes sense: page provisioning is dominated by zeroing 4 KiB,
-which is the same silicon and the same bandwidth for all three. cricker-os's lean mechanism is real (the
+which is the same silicon and the same bandwidth for all three. nife's lean mechanism is real (the
 91 ns), but on the operation an application actually pays for, getting a usable page, it does not and
 cannot win, because the win would have to come from zeroing memory faster than the other two, and nobody
 can. A fair EL0 map that *does* provision a fresh page waits on retype-from-untyped reaching userspace
 (a later milestone); until then the kernel-side `map_new` is the honest stand-in for the comparison.
 
-### The first cross-OS numbers (cricker-os vs Linux vs macOS)
+### The first cross-OS numbers (nife vs Linux vs macOS)
 
 `bench/host/` holds the host side of each metric: `null_syscall.rs` (a raw `getpid` through the
 syscall gate, not libc's cached `getpid` which never traps), `ipc_rtt.rs` (a pipe round trip between
 two forked processes, lmbench's `lat_pipe`), `ctx_switch.rs` (the derived context switch),
 `mmap.rs` (first-touch fault-in, lmbench's `lat_mmap`), and `spawn.rs` (fork+exit, lmbench's
 `lat_proc`). Two ways to run them: natively on macOS
-(`rustc -O ... && ./bin`), and on **Linux at the same tier** as cricker-os, `bench/host/run_linux.sh`
+(`rustc -O ... && ./bin`), and on **Linux at the same tier** as nife, `bench/host/run_linux.sh`
 cross-compiles a static musl binary (`linux_all.rs`, the five metrics combined), packs it as `/init`
-in a one-file initramfs, and boots it under QEMU-HVF, the exact machine cricker-os boots on. So Linux
-and cricker-os sit on the **same M-series core at the same virtualization tier**; native macOS is the
+in a one-file initramfs, and boots it under QEMU-HVF, the exact machine nife boots on. So Linux
+and nife sit on the **same M-series core at the same virtualization tier**; native macOS is the
 bare-metal ceiling.
 
-Run cricker-os optimized (`cargo xtask bench --release`, which builds an opt-level-3 kernel and
+Run nife optimized (`cargo xtask bench --release`, which builds an opt-level-3 kernel and
 userspace and implies `--real`), and compare on the same core:
 
-| metric | cricker-os **release** (HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
+| metric | nife **release** (HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
 |---|---|---|---|
 | null syscall | **~27 ns** | ~139 ns | ~76 ns |
 | context switch (per switch, derived) | **~28 ns** | ~415 ns | ~818 ns |
@@ -361,7 +361,7 @@ userspace and implies `--real`), and compare on the same core:
 | map mechanism only (aliased, no zeroing) | ~91 ns (`map_el0`) | n/a (fault always zeroes) | n/a |
 | spawn (build + run + reap + reclaim) | **~7.7 µs** (`spawn_el0`) | ~19.7 µs (fork+exit) | ~291 µs (fork+exit) |
 
-**cricker-os wins four and ties one, and saying which is which is the point.** Same M-series core, same
+**nife wins four and ties one, and saying which is which is the point.** Same M-series core, same
 HVF tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs 139) and
 **~5x faster at the IPC round trip** (337 vs 1723), it beats native macOS at both, and it builds a
 process faster than either (spawn, below). These are seL4-class microkernel numbers, an IPC round trip
@@ -380,17 +380,17 @@ revocation reclaims each child (notes/object-revocation.md). At ~7.7 µs it beat
 (~19.7 µs) by ~2.6x and macOS by ~38x, on the same core, and it does so while paying **more** boundary
 crossings than Unix: ~10 `svc`s per spawn against `fork`+`wait`'s two. That the heavier-trapping side
 still wins is the honest part of the result. The caveat is the operations differ: `fork` **duplicates**
-the parent (its address space copy-on-write, its descriptor table, its signal state), where cricker-os
+the parent (its address space copy-on-write, its descriptor table, its signal state), where nife
 **builds a fresh minimal process from nothing**. A capability-microkernel process is a lighter object
 than a Unix one, so the gap is mostly that structural difference, not a faster version of the same work.
 We use `fork`+`exit`, not `fork`+`exec`, precisely to keep the Unix side as light as it gets (no binary
-loaded); it still carries the weight of duplication that cricker-os's from-scratch build does not. The
+loaded); it still carries the weight of duplication that nife's from-scratch build does not. The
 number stands, with its meaning stated: building a process is cheap when a process is a small thing.
 
 The **context switch** is the softest of the three and its number the least load-bearing. No OS lets
 you time a bare switch, so it is *derived*: on the host, `bench/host/ctx_switch.rs` measures a
 two-process pipe round trip (two switches plus two pipe passes) and subtracts a self-pipe pass (a
-`write`+`read` with no switch), leaving one switch = `round_trip/2 - self_pipe`. cricker-os's
+`write`+`read` with no switch), leaving one switch = `round_trip/2 - self_pipe`. nife's
 `ctx_switch` bench is a yield round trip (two switches plus two `SYS_YIELD`s); subtracting the trap
 (`~2 x null_syscall`) leaves ~28 ns per switch. The subtraction is approximate and the *mechanisms
 differ* (our lightweight yield versus a pipe pass), so read the ~15x gap to Linux as directional, not
@@ -398,7 +398,7 @@ exact. It points the same way the other two do, and that consistency, three metr
 all favoring the minimal kernel, is the real signal.
 
 The story the debug build told first was the *opposite* at IPC, and the gap between them is the whole
-lesson. Debug cricker-os: null syscall ~42 ns, ctx switch ~692 ns, IPC ~2272 ns. So `-O0` was a ~1.5x
+lesson. Debug nife: null syscall ~42 ns, ctx switch ~692 ns, IPC ~2272 ns. So `-O0` was a ~1.5x
 tax on the bare syscall (which still won) but a **~6.7x tax on IPC** (which lost to Linux at 1723 ns
 until this). The heavier a path, the more the optimizer matters, and the IPC path, two context
 switches plus four traps plus the rendezvous, is heavy. The null-syscall win survived the debug
@@ -442,7 +442,7 @@ on its measurement core) or giving it a real PMU.
 
 **So the seL4 comparison is deferred to real hardware**, which also aligns with the planned second-board
 port (design/roadmap/24-second-aarch64-board.md): a Raspberry Pi has a real PMU, sel4bench runs on it natively, and
-it is the board cricker-os is heading toward anyway. The build recipe, reproducible when a Pi is on hand
+it is the board nife is heading toward anyway. The build recipe, reproducible when a Pi is on hand
 (rebuild with the Pi `PLATFORM` instead of `qemu-arm-virt`), via the official seL4 Podman image:
 
 ```
@@ -460,13 +460,13 @@ podman run --rm -v "$PWD":/sel4bench:Z docker.io/trustworthysystems/sel4 bash -l
 ### The cross-OS comparison, when we build it
 
 - **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds
-  on both), **`sel4bench`** for seL4. We write the cricker-os side (the microbenchmarks above,
+  on both), **`sel4bench`** for seL4. We write the nife side (the microbenchmarks above,
   extended to match the metric set), not the whole thing.
 - **The peers.** seL4 is the direct one: a capability microkernel that targets the *same* QEMU
   `aarch64 virt` machine we do, so it runs on the identical instrument (QEMU-HVF) and publishes
   comparable cycle counts. L4Re/Fiasco and Genode are more effort for less marginal insight.
 - **Match the virtualization tier.** QEMU with `-accel hvf` *is* virtualization (Hypervisor.framework
-  on the real core), not emulation, so cricker-os and Linux run virtualized under QEMU-HVF; macOS runs
+  on the real core), not emulation, so nife and Linux run virtualized under QEMU-HVF; macOS runs
   as a guest under Apple's Virtualization.framework (same underlying hypervisor, different VMM shell);
   native macOS is the bare-metal ceiling reference. For guest-internal microbenchmarks the VMM layer
   is off the hot path (no VM exit on a null syscall or context switch), so the QEMU-vs-VZ difference
@@ -506,7 +506,7 @@ were not measuring what they claimed to.
 The bench reads `CNTVCT_EL0` (`arch::timer::now()`) around each loop. Under `-icount shift=0` all
 vCPUs share **one** deterministic virtual-instruction clock, so that counter advances with the
 *global* instruction stream across every hart, not just the core running the benchmark. The aarch64
-runner defaults to `-smp 4` (`CRICKER_SMP:-4`, matching the SMP tests), and the bench never overrode
+runner defaults to `-smp 4` (`NIFE_SMP:-4`, matching the SMP tests), and the bench never overrode
 it. So each measured window silently counted three other harts: their idle loops, and, worse, under
 `-icount` an idle secondary hart parked in `wfi` **jumps virtual time forward to the next timer
 tick**, dumping a large quantized lump of ticks into whatever window happened to be open. Add the
@@ -537,13 +537,13 @@ the old baseline froze one sample of and today's merges reshuffled.
 
 ### This was a known bug on one ISA and an unfixed one on the other
 
-The riscv bench path already pins `CRICKER_SMP=1`, with a comment describing this exact failure
+The riscv bench path already pins `NIFE_SMP=1`, with a comment describing this exact failure
 ("a `wfi` jumps virtual time to the next timer tick, inflating the spawn primitives to
 timer-quantized nonsense"). That fix landed with the riscv icount bench (commit 494514b) and was
 never mirrored to aarch64. So the aarch64 icount instrument has been measuring four-hart noise since
 milestone 21; the old baseline was noise too, internally consistent enough to pass `--check` until a
 day of merges moved the interleaving far enough to trip it. **The fix is one line**, the aarch64
-icount path now sets `CRICKER_SMP=1` like riscv, and the baseline is re-saved at single hart. Real
+icount path now sets `NIFE_SMP=1` like riscv, and the baseline is re-saved at single hart. Real
 per-core magnitudes still come from `--real` (HVF), where each core keeps its own counter and
 parallel harts do not inflate elapsed time, so SMP there is not a confound.
 
@@ -632,7 +632,7 @@ cores, its next rendezvous is a cross-core wake, an SGI to a vCPU the host has d
 guest looked idle a moment earlier. Waking a descheduled vCPU costs host reschedule latency that the
 co-located pair never pays. So the IPC-heavy parallel workload spends its time in HVF's wake path, not
 in the kernel. This is the **same** reason the icount suite is pinned to one hart and the same reason a
-same-machine seL4 number is deferred to real hardware: the instrument underneath, not cricker-os, sets
+same-machine seL4 number is deferred to real hardware: the instrument underneath, not nife, sets
 the ceiling. On real silicon with four dedicated cores and no descheduling, the pipelines would scale
 the way compute does here; measuring that is a real-hardware follow-up (milestone 16), and the bench is
 already written to report it when the wakes are cheap.

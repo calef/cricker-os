@@ -89,7 +89,7 @@ rather than merely equivalent, which is what a demonstrator exists to produce.
 
 ## The finding: stdout is already a capability in a slot
 
-`patches/std-cricker/.../pal/cricker/rt.rs` fixes `STDOUT_SLOT = 1`, and `sys/stdio/cricker.rs`
+`patches/std-nife/.../pal/nife/rt.rs` fixes `STDOUT_SLOT = 1`, and `sys/stdio/nife.rs`
 implements `println!` as a SEND on that slot. So **a program's output destination is a capability the
 spawner chose**, and redirection is putting a different capability in that slot. No kernel change, no
 new object, no `dup2`. The existing doc comment even anticipates the case: a failed SEND is swallowed
@@ -159,7 +159,7 @@ integer with a convention attached.
 
 ## What is genuinely missing
 
-- **stdin.** `sys/stdio/cricker.rs` returns honest EOF because "nothing grants a std program input
+- **stdin.** `sys/stdio/nife.rs` returns honest EOF because "nothing grants a std program input
   yet". Both `< file` and a pipe's read end need an input-slot convention that does not exist.
 - **`>>`.** Append is expressible with `FSTAT`/`SIZE` then write-at-offset, but that is racy if the
   file is shared. Decide whether append is a mode on open or a sink property; do not over-solve it.

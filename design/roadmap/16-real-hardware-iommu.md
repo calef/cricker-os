@@ -4,7 +4,7 @@
 
 **Gate: NONE.** 16b is built, the board arrived 2026-08-14, and the bench delivered first silicon
 the same day: eleven boots across two sessions, ending with the full tour completing on three harts
-("cricker-os: the capability core runs on RISC-V"), the four predicted code changes landed plus the
+("nife: the capability core runs on RISC-V"), the four predicted code changes landed plus the
 ones the bench actually demanded, and notes/visionfive2.md carrying the whole narrative. What
 remains of 16a is engineering, not hardware, and each piece is lane-sized: the on-board test-suite
 exit (the `sifive_test` device does not exist on silicon; the note proposes a UART pass/fail

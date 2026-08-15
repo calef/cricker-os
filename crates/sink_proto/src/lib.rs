@@ -298,8 +298,8 @@ mod tests {
     /// first word IS its length, which is the wire std's stdout sent before this contract existed.
     #[test]
     fn a_bytes_messages_first_word_is_its_length() {
-        let (w0, _, _, _) = pack(b"cricker");
-        assert_eq!(w0, 7);
+        let (w0, _, _, _) = pack(b"nife");
+        assert_eq!(w0, 4);
     }
 
     /// EOF is distinguishable from every byte count, including zero, which is the property that

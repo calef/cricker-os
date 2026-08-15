@@ -14,7 +14,7 @@ tree**, committed for their own reasons and tested by their own tests:
 | `dtb_walk` | `crates/dtb/tests/fixtures/` | three real device trees, dumped from the boards we boot |
 | `gpt_table` | `crates/gpt/tests/fixtures/` | two real disks, formatted by `sgdisk` and by Apple's Disk Utility |
 | `elf_parse` | here | the file below, because nothing else in the tree is a small ELF |
-| `crickerfs_roundtrip` | nothing | the input is a *structure*, not bytes; the fuzzer builds file sets from scratch and reaches the interesting shapes immediately |
+| `nifefs_roundtrip` | nothing | the input is a *structure*, not bytes; the fuzzer builds file sets from scratch and reaches the interesting shapes immediately |
 
 `script/fuzz` passes those fixture directories to libFuzzer as read-only corpora. Copying them here
 would make a second copy of bytes that already have one, and a second copy drifts.

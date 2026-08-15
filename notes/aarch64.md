@@ -37,7 +37,7 @@ This is the thing an OS lives and dies on.
 | Level | Who lives here |
 |---|---|
 | **EL0** | Userspace. Programs. Least privilege. |
-| **EL1** | **The kernel. This is where cricker-os lives.** |
+| **EL1** | **The kernel. This is where nife lives.** |
 | **EL2** | Hypervisor. Runs virtual machines. |
 | **EL3** | Secure firmware. Below everything. |
 

@@ -30,7 +30,7 @@ const ET_EXEC: u16 = 2;
 /// `e_type` for a PIE / shared object. Needs relocation, which we do not do.
 const ET_DYN: u16 = 3;
 
-/// `e_machine` for the two architectures cricker-os runs on. Any one build uses exactly one of
+/// `e_machine` for the two architectures nife runs on. Any one build uses exactly one of
 /// these as [`EXPECTED_MACHINE`] and compiles the other's branch out, so from that build's point of
 /// view the other constant is unused; we keep both named because the crate documents both machines
 /// it knows, and the tests check rejection of the non-native one.
@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(Elf::parse(&b.build()).err(), Some(Error::WrongMachine));
     }
 
-    /// **A binary for the *other* cricker-os architecture is refused too.** These host tests build
+    /// **A binary for the *other* nife architecture is refused too.** These host tests build
     /// with `EXPECTED_MACHINE == EM_AARCH64`, so a riscv ELF (243) is a foreign machine here, exactly
     /// as an aarch64 ELF would be to the riscv kernel. The check is symmetric, not aarch64-privileged.
     #[test]

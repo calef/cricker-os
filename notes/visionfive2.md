@@ -541,7 +541,7 @@ boot page table (see DRAM above), so the extlinux path is the second step, after
 boot proves the kernel. The manual path controls the DTB address exactly:
 
 ```
-StarFive # load mmc 1:1 ${kernel_addr_r} /cricker-vf2.img
+StarFive # load mmc 1:1 ${kernel_addr_r} /nife-vf2.img
 StarFive # fdt addr ${fdtcontroladdr}
 StarFive # fdt move ${fdtcontroladdr} 0x86000000
 StarFive # booti ${kernel_addr_r} - 0x86000000
@@ -551,7 +551,7 @@ StarFive # booti ${kernel_addr_r} - 0x86000000
 and of `kernel_comp_addr_r` = 0x8800_0000 [uboot-cfg].
 
 **TFTP alternative** (not built): cordoba is the designated PXE/TFTP host (milestone 87's scope
-note). The board side is just `dhcp; tftpboot ${kernel_addr_r} cricker-vf2.img` followed by the
+note). The board side is just `dhcp; tftpboot ${kernel_addr_r} nife-vf2.img` followed by the
 same `fdt move` + `booti`; the cordoba side (dnsmasq or tftpd serving the image) is its own small
 piece of work and turns the flash-a-card loop into a rebuild-and-reset loop. Worth building the
 moment the card loop gets annoying, which history says is the second bench session.
@@ -573,7 +573,7 @@ prompt for the manual commands, then `## Flattened Device Tree`/`Starting kernel
 a blank line and
 
 ```
-cricker-os on RISC-V (rv64, S-mode, Sv39)
+nife on RISC-V (rv64, S-mode, Sv39)
 ```
 
 (`kernel/src/main.rs`; the console comes up before the DTB is touched, so this line precedes any

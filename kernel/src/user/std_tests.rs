@@ -205,7 +205,7 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
     );
     let mut n = 0;
     for part in [
-        b"std fs on cricker-os\n".as_slice(),
+        b"std fs on nife\n".as_slice(),
         fs_proto::fixture::MOTD,
         b"read_to_string 70\nmetadata len 70\n".as_slice(),
         b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
@@ -232,12 +232,12 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
 /// The exact bytes `std_exerciser` prints, in order. `println!` is line-buffered and every line
 /// ends in `\n`, so the whole transcript is flushed by the time the program exits. Pinned here
 /// so a drift in std's behaviour, the PAL, or the demo is a loud diff rather than a mystery.
-/// `os cricker` proves `std::env::consts::OS` resolves through the patched `env_consts`; the
+/// `os nife` proves `std::env::consts::OS` resolves through the patched `env_consts`; the
 /// two `unsupported` lines prove `fs`/`net` refuse honestly rather than pretend.
-pub(super) const EXPECTED: &[u8] = b"hello from std on cricker-os\n\
-    os cricker\n\
+pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
+    os nife\n\
     vec sum 149985000\n\
-    string len 800\n\
+    string len 500\n\
     map lookup 1369\n\
     fs honestly unsupported\n\
     net honestly unsupported\n\

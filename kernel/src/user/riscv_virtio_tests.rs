@@ -167,7 +167,7 @@ fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"cricker-",
+        b"nife: re",
         "the driver reported the wrong file contents",
     );
     assert!(
@@ -556,7 +556,7 @@ fn std_exerciser_image() -> &'static [u8] {
 }
 
 /// The exact transcript `std_exerciser` prints when it is granted the network.
-const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
+const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 
 /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
 /// two): the riscv twin of the aarch64 std-net test. The `std_exerciser` std binary, given the
@@ -627,7 +627,7 @@ fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"cricker-",
+        b"nife: re",
         "the driver reported the wrong file contents over pci",
     );
     assert!(

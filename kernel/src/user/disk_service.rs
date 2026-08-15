@@ -45,7 +45,7 @@ use crate::cap::{Rights, endpoint_cap, frame_cap, untyped_cap};
 use crate::sched::EpId;
 
 /// Which mmio block device the surveyor is given. The runners attach the GPT-partitioned image as
-/// the FOURTH mmio disk, after crickerfs (0), RedoxFS (1) and the crash image (2); see
+/// the FOURTH mmio disk, after nifefs (0), RedoxFS (1) and the crash image (2); see
 /// `scripts/qemu-runner-*.sh`, which explain why command-line order is reversed.
 const GPT_DISK: usize = 3;
 

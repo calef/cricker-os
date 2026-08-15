@@ -202,7 +202,7 @@ gates in one line.
 
 The other thirteen are ordinary clippy, in crates nobody suspected: `doc_markdown` (4),
 `manual_range_contains` (4), `manual_let_else` (2), `len_zero` (2), `needless_range_loop` (1),
-`assertions_on_constants` (1), across `asid`, `calendar`, `cred_proto`, `crickerfs`, `dma_validator`,
+`assertions_on_constants` (1), across `asid`, `calendar`, `cred_proto`, `nifefs`, `dma_validator`,
 `paging`, `pci` and `slots`. That half is the answer to "does this find anything besides unsafe",
 and it is yes: **half of what the pass finds has nothing to do with unsafe at all.** One of them,
 `dma_validator`'s `assert!(RING_END <= RING_BLOCK)` over two constants, became a `const {}` assertion
@@ -401,7 +401,7 @@ reads rather than in a report:
 | `user/src/sink.rs:133` `get` | "callers clamp `i` to the page" |
 | `user/src/swish.rs:616` `put_page` | "every caller is behind a `dir.is_some()` check" |
 | `user/src/line_editor.rs:217` `copy_in` | "offset+len is bounded by PAGE by every caller" |
-| `patches/std-cricker/overlay/std/src/sys/fs/cricker.rs:161` `put` | "callers clamp to it" |
+| `patches/std-nife/overlay/std/src/sys/fs/nife.rs:161` `put` | "callers clamp to it" |
 | `crates/user_heap/src/lib.rs:100` `effective_size` | "the caller provides the locking" (a data-race obligation, not an addressing one) |
 
 Eight of the nine rows are the same clamp-to-a-page obligation, which suggests the answer there is

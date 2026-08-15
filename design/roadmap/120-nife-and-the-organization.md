@@ -1,11 +1,17 @@
 # 120. The rename: the OS becomes `nife`, and the project gets an organization
 
-**Status: NOT-STARTED.** Minted 2026-08-13 by calef, who chose the name and the shape in the same
-conversation that established why the merge queue could not be switched on.
-
-**Gate: NONE.** The naming is decided and nothing technical blocks a start. Two steps are calef's to
-perform rather than to decide, because they need his GitHub account: creating the organization and
-transferring the repository. The in-tree rename can be prepared before either.
+**Status: BUILT.** Minted 2026-08-13 by calef, who chose the name and the shape in the same
+conversation that established why the merge queue could not be switched on. Executed 2026-08-15, in
+the order the Ordering section demanded: queue drained to zero (#151 closed with its reasons; a
+dead lane's branch, `fix/max-cpus-fifth-hart`, parked pushed and unmerged for post-rename review),
+repository transferred to `crickertech` (ruleset, Actions and history survived; the one casualty
+was the `TOOLCHAIN_BUMP_PAT` secret, which does not transfer and is calef's to re-mint), then the
+rename in one reviewed pass. The counts at execution: 1,095 occurrences across 272 files at the
+frozen commit, up from the 1,001 this file recorded, which is why it said to recount. The hazards
+held: the magic stays `CRKR0002`, §45's GUID did not move (its file now records the exercise), the
+toolchain relink is `nife-dev`, and no second build was created. `basalt` is reserved as an empty
+repository under the organization. Step 5, the merge queue, is milestone 119's and remains open.
+Records that describe the past keep the old name, per the bridge note at the top of AGENTS.md.
 
 ## What changes
 

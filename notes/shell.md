@@ -35,7 +35,7 @@ behalf and reads no device on anyone's behalf.
 ## What a session looks like
 
 ```
-cricker-os shell. every command below runs at EL0.
+nife shell. every command below runs at EL0.
 commands: help, echo <text>, run <n>
 $ help
   help        this text
@@ -103,7 +103,7 @@ only that it can name it, which is the point: the interface is a capability eith
 the service to userspace later changes nothing the shell can observe.
 
 **And the worker is a role of one binary, not a separate file on disk.** A richer shell would read
-a named ELF from the crickerfs filesystem (milestone 9) and exec it. The pieces are all present:
+a named ELF from the nifefs filesystem (milestone 9) and exec it. The pieces are all present:
 the disk driver reads files, the ELF loader runs arbitrary binaries, and wiring `run <file>` to
 them is the natural next step. What milestone 10 proves is the harder half: a process, spawned on a
 typed command, running at EL0, reporting back, and exiting.

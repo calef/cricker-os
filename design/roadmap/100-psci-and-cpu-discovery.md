@@ -37,7 +37,7 @@ be "the one place the kernel assumes a board" is one site short. Fix the claim h
 carry it forward.
 
 **What it costs, and who needs it.** Milestone 24 (a second aarch64 board, Virtualization.framework)
-and milestone 88 (cricker-os on rented silicon) both boot a machine that is not QEMU `virt`. A
+and milestone 88 (nife on rented silicon) both boot a machine that is not QEMU `virt`. A
 bring-up that reports success while starting nothing is the worst way to learn that, because the
 symptom arrives later as a scheduler that never balances.
 

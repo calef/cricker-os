@@ -1,6 +1,6 @@
 # Running under virtualization on Apple Silicon
 
-cricker-os is aarch64. So is the Mac it is developed on (an M-series chip). That coincidence,
+nife is aarch64. So is the Mac it is developed on (an M-series chip). That coincidence,
 noted in CLAUDE.md from the start, means running the kernel under **hardware virtualization** on the
 Mac is a flag, not a port: Apple's Hypervisor.framework (HVF) can put the kernel on the real core
 at guest EL1, using the virtualization the chip already has, instead of QEMU translating every
@@ -9,7 +9,7 @@ instruction (TCG).
 ## How to run it
 
 ```
-cargo xtask run --hvf          # or:  CRICKER_ACCEL=hvf cargo xtask run
+cargo xtask run --hvf          # or:  NIFE_ACCEL=hvf cargo xtask run
 ```
 
 The runner swaps two things and nothing else:
@@ -26,7 +26,7 @@ filesystem read, and the shell spawning processes, all on the M3.
 
 ## Tests stay on TCG, on purpose
 
-`cargo xtask test` forces TCG even if `CRICKER_ACCEL=hvf` is set, and that is not a limitation to
+`cargo xtask test` forces TCG even if `NIFE_ACCEL=hvf` is set, and that is not a limitation to
 work around. The test harness exits and reports pass/fail through **semihosting**, and semihosting
 does not survive the move to real hardware (see below). TCG is also the right home for tests
 regardless: deterministic, and identical on any host.

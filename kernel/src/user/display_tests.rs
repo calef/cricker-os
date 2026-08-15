@@ -44,7 +44,7 @@ fn a_confined_userspace_driver_puts_a_known_pattern_in_a_framebuffer() {
     // clothes, the hazard the runners were taught to fail loudly on. The test legs always attach
     // one, so absence is a failure, not a skip.
     let (driver_report, client_report) = display_service::start(display, painter).expect(
-        "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
+        "no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg, or \
          the -device virtio-gpu-pci line from the runner?",
     );
 
@@ -190,7 +190,7 @@ fn a_backing_outside_the_grant_is_refused_by_the_iommu() {
     while crate::iommu::take_fault().is_some() {}
 
     let (report, victim) = display_service::start_backing_escape(display)
-        .expect("no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg?");
+        .expect("no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg?");
     assert!(
         crate::iommu::active(),
         "a virtio-gpu is present but the IOMMU is not active: nothing would refuse this escape, \
@@ -288,7 +288,7 @@ fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
         program("display_terminal").expect("no display_terminal program in the initrd archive");
 
     let w = display_service::start_terminal(display, display_terminal).expect(
-        "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
+        "no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg, or \
          the -device virtio-gpu-pci line from the runner?",
     );
 
@@ -410,7 +410,7 @@ fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
 fn a_keystroke_from_a_virtio_keyboard_becomes_a_terminal_byte() {
     let kbd = program("kbd").expect("no kbd program in the initrd archive");
     let mut w = keyboard_service::start(kbd).expect(
-        "no virtio-input function on the bus: is CRICKER_KBD missing from the test leg, or the \
+        "no virtio-input function on the bus: is NIFE_KBD missing from the test leg, or the \
          -device virtio-keyboard-pci line from the runner?",
     );
     assert!(

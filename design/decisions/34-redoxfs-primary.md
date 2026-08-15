@@ -57,8 +57,8 @@ question that deserves an answer before the label hardens.
 
 ## Alternatives considered
 
-`crickerfs` is not among them, because it is not a competitor: a boot archive and a read-write
-filesystem are different jobs, and the initrd wants exactly what crickerfs is. It stays.
+`nifefs` is not among them, because it is not a competitor: a boot archive and a read-write
+filesystem are different jobs, and the initrd wants exactly what nifefs is. It stays.
 
 - **Write our own.** Rejected on the same grounds as milestone 32 originally: the thesis is the kernel
   confining the filesystem, not the filesystem. A crash-consistent CoW filesystem is a large, subtle
@@ -288,7 +288,7 @@ afterwards with the pinned engine and agrees.
 This test deliberately leaves a filesystem half-written. On the shared fixture, every other FS test's
 result would have depended on whether this one ran first, which is precisely the order-coupled gate
 that manufactured three incompatible root causes from three honest investigations. The fixture is
-regenerated every run, `CRICKER_KEEP_REDOXFS` deliberately does not apply to it, and on the host every
+regenerated every run, `NIFE_KEEP_REDOXFS` deliberately does not apply to it, and on the host every
 fault point starts from a byte-identical clone of one image built in-process.
 
 **What is still a design claim.** Ordering and durability at the device, above. Repair and recovery

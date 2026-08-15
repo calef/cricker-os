@@ -32,8 +32,7 @@ pub const ROWS: u32 = 8;
 ///   this is the byte stream a real program's output actually becomes;
 /// - **descenders and an underscore** (`y`, `_`), which are the glyph rows a font table truncated to
 ///   seven rows would lose.
-pub const GREETING: &[u8] =
-    b"cricker-os\r\n\x1b[32mglyphs_ok\x1b[0m\r\nby a vt\r\n\x1b[7mFOCUS\x1b[0m";
+pub const GREETING: &[u8] = b"nife\r\n\x1b[32mglyphs_ok\x1b[0m\r\nby a vt\r\n\x1b[7mFOCUS\x1b[0m";
 
 /// **What the user types.** Delivered as `OP_BYTES`, the terminal contract's driver half, which is
 /// the same framing the compositor uses to route a keystroke to the focused client (DECISIONS §33).
@@ -48,7 +47,7 @@ pub const TYPED: &[u8] = b"\r\n> hi";
 /// run, including the ones where the terminal drew the wrong thing. One letter, because a wholly
 /// different screen would be rejected by a much weaker check.
 pub const GREETING_TYPO: &[u8] =
-    b"cricker-os\r\n\x1b[32mglyphs_0k\x1b[0m\r\nby a vt\r\n\x1b[7mFOCUS\x1b[0m";
+    b"nife\r\n\x1b[32mglyphs_0k\x1b[0m\r\nby a vt\r\n\x1b[7mFOCUS\x1b[0m";
 
 /// **The banner each terminal in the compositor test prints**, indexed by window.
 ///

@@ -64,7 +64,7 @@ impl Guid {
     ///
     /// **This crate has no randomness and this function does not invent any**: the caller brings the
     /// bytes, from a source that is genuinely unpredictable, and all this does is set the six bits
-    /// the format reserves. On cricker-os the caller is `disk_partitioner`, which holds an entropy
+    /// the format reserves. On nife the caller is `disk_partitioner`, which holds an entropy
     /// endpoint; a GUID built from a counter would be unique on one disk and collide with every
     /// other machine's, which is the failure the format's uniqueness rule exists to prevent.
     ///
@@ -267,14 +267,14 @@ pub mod types {
         [0xAA, 0x11, 0x00, 0x30, 0x65, 0x43, 0xEC, 0xAC],
     );
 
-    /// **A cricker-os data partition**, holding a RedoxFS volume (DECISIONS §34).
+    /// **A nife data partition**, holding a RedoxFS volume (DECISIONS §34).
     ///
     /// A random version-4 GUID, generated once on 2026-07-30 and fixed forever. It has to be random:
     /// a type GUID's whole job is to not collide with anybody else's, and there is no registry to
     /// ask. **Never change this value.** A disk written by one release and read by another has only
     /// this number to agree on, and the recovery story (milestone 57's "the board is dead, can I get
     /// my data") depends on a `sgdisk -p` five years from now still showing it.
-    pub const CRICKER_DATA: Guid = Guid::from_fields(
+    pub const NIFE_DATA: Guid = Guid::from_fields(
         0xEC5C_C08B,
         0xD749,
         0x4434,
@@ -297,7 +297,7 @@ pub mod types {
             LINUX_LUKS => "Linux LUKS",
             APPLE_HFS_PLUS => "Apple HFS+",
             APPLE_APFS => "Apple APFS",
-            CRICKER_DATA => "cricker-os data",
+            NIFE_DATA => "nife data",
             _ => return None,
         })
     }
@@ -331,7 +331,7 @@ mod tests {
             b"C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
         );
         assert_eq!(
-            &types::CRICKER_DATA.to_ascii(),
+            &types::NIFE_DATA.to_ascii(),
             b"EC5CC08B-D749-4434-AC38-A274C50385BA"
         );
         assert_eq!(
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn text_round_trips_and_junk_is_refused() {
-        for g in [types::EFI_SYSTEM, types::CRICKER_DATA, Guid::ZERO] {
+        for g in [types::EFI_SYSTEM, types::NIFE_DATA, Guid::ZERO] {
             assert_eq!(Guid::try_from_ascii(&g.to_ascii()), Some(g));
         }
         // Lowercase in, canonical uppercase out.
@@ -420,7 +420,7 @@ mod tests {
             types::LINUX_LUKS,
             types::APPLE_HFS_PLUS,
             types::APPLE_APFS,
-            types::CRICKER_DATA,
+            types::NIFE_DATA,
         ];
         for (i, a) in all.iter().enumerate() {
             assert!(types::name(*a).is_some(), "{a} has no name");

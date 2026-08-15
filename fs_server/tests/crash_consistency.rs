@@ -61,7 +61,7 @@ const NAMES: [&str; 4] = ["motd", "scratch", "made", "renamed"];
 /// One name's whole observable state: its bytes, and its extended attributes in store order.
 ///
 /// The attributes are part of the state rather than a second test, and that is the point (milestone
-/// 57). They live in a **separate file** from the data they describe (`.cricker-attrs/<node id>`),
+/// 57). They live in a **separate file** from the data they describe (`.nife-attrs/<node id>`),
 /// so "the file and its metadata survive a cut together" is a claim about two writes reaching the
 /// platter in one commit, which is exactly what a prefix-consistency sweep can decide and nothing
 /// else here can. Before this the property was an argument from the transaction boundary.

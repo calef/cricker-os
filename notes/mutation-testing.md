@@ -61,7 +61,7 @@ compositor         209      14        0        10     233    93.7
 coremark           106       2        1         0     109    98.2
 cred               127       3        1        16     147    97.7
 cred_proto          72       2        0        13      87    97.3
-crickerfs          107       0        0         8     115   100.0
+nifefs          107       0        0         8     115   100.0
 dma_validator       79       0        0         6      85   100.0
 dtb                294       1       20        10     325    99.7
 elf                 98       0        0         4     102   100.0
@@ -94,7 +94,7 @@ TOTAL             4654     391       96       410    5551    92.4
 one is a detected hang (below). It is over viable mutants, so `unviable` is excluded from the
 denominator: an unviable mutant does not compile, which says nothing about the tests.
 
-**Five crates scored 100%**: `crickerfs`, `dma_validator`, `elf`, `regions` and `bitfont`. The first
+**Five crates scored 100%**: `nifefs`, `dma_validator`, `elf`, `regions` and `bitfont`. The first
 two are the trust-boundary parsers, and they got there the hard way, by having every one of their
 24 first-pass survivors turn out to be a real gap that a test then closed. That is the number to
 compare a crate against next week.
@@ -220,7 +220,7 @@ input that also trips check A.
   the test that was supposed to hold it named the ceiling as `Cost::MAX_M_KIB` on both sides of its
   own assertion: `1024 / 1024` is 1, which falls below `MIN_M_COST` and fails, but `1024 + 1024` is
   2048, which is a legal cost, so every symbolic check passed while every real policy was refused.
-  The ceiling is now pinned as `1_048_576`, hand-computed, which is the crickerfs lesson applied to
+  The ceiling is now pinned as `1_048_576`, hand-computed, which is the nifefs lesson applied to
   a constant instead of an image. The redacting `Debug` could also be
   replaced with one that prints nothing; killed by `the_longest_identity_and_secret_are_legal`,
   `the_cost_is_what_it_says_up_to_the_real_ceiling`, `a_store_is_empty_until_it_is_not`, and
@@ -245,7 +245,7 @@ input that also trips check A.
   min/max selections at equal operands, `|` vs `^` over disjoint masked bit fields, `intersect`'s
   early return (the arithmetic path returns EMPTY anyway), and a max-accumulate's `>` at equality.
 
-- **crickerfs** (12) and **dma_validator** (12): all 24 were real gaps, none equivalent, which
+- **nifefs** (12) and **dma_validator** (12): all 24 were real gaps, none equivalent, which
   fits both crates' role as trust-boundary parsers. Two recurring causes: layout constants with
   no independent pin (every test compared an image against the constant it was built from, so
   both sides moved together; the documented values are now hand-computed in the tests), and
@@ -574,7 +574,7 @@ The crates that were not re-audited (`grant_plan`, `isa`, `measured_boot`, `ntp_
 claims rest on argument alone, and the weekly run is what will check them.
 
 **The alarming survivors, named.** A survivor in a security boundary is worth more attention than
-fifty in a display crate, so: `capability`, `regions`, `dma_validator`, `crickerfs` and `elf` have
+fifty in a display crate, so: `capability`, `regions`, `dma_validator`, `nifefs` and `elf` have
 **zero real survivors** between them, and the three trust-boundary parsers score 100%. The one
 security-relevant survivor the run found anywhere was `fs_proto::xattr::store::write_record`, whose
 value limit stopped being enforced under a single `||` to `&&`, on a path that re-emits records

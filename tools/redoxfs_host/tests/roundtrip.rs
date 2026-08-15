@@ -24,7 +24,7 @@ fn an_image_round_trips_a_file_through_the_real_engine() {
 
     // A payload larger than one 4 KiB block, so the write exercises real record logic, with a
     // recognizable head and a position-dependent tail so shifts and truncation cannot pass.
-    let mut payload = b"made on the host, served on cricker-os\n".to_vec();
+    let mut payload = b"made on the host, served on nife\n".to_vec();
     payload.extend((0..10_000u32).map(|i| (i % 251) as u8));
 
     redoxfs_host::put(&img, "motd", &payload).expect("put failed");

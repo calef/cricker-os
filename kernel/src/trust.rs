@@ -108,7 +108,7 @@ pub fn require(name: &str, bytes: &[u8]) {
 /// A **missing** table halts, for [`require`]'s reason one level down: an init that cannot vouch for
 /// what it loads must not be handed the archive at all.
 #[cfg_attr(feature = "bench", allow(dead_code))]
-pub fn require_program_measurements(fs: &crickerfs::Fs<'_>) {
+pub fn require_program_measurements(fs: &nifefs::Fs<'_>) {
     let name = measured_boot::PROGRAM_MEASUREMENTS;
     match fs.read(name) {
         Some(bytes) => require(name, bytes),

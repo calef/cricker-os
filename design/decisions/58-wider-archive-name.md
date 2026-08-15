@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-2026-08-01, ahead of milestone 63's rename sweep. `crates/crickerfs`. See `notes/crickerfs.md`.
+2026-08-01, ahead of milestone 63's rename sweep. `crates/nifefs`. See `notes/nifefs.md`.
 
 | | Before | After |
 |---|---|---|
@@ -55,7 +55,7 @@ which is the parity discipline (§19) failing at the level of an estimate rather
   `Error::NameTooLong`, checked before a byte is written. Silent truncation in a *writer* is the same
   class of bug as a missing magic bump in a reader.
 - **The format had a third reader nobody tracked.** `crates/virtio` restated the offsets by hand:
-  stride 32, start block at +24, a literal `min(15)` bound. It now depends on `crickerfs` for
+  stride 32, start block at +24, a literal `min(15)` bound. It now depends on `nifefs` for
   `HEADER_LEN`, `ENTRY_LEN`, `NAME_LEN` and `ENTRIES_IN_FIRST_BLOCK`. It had to be found by hand,
   which is the argument for the magic bump restated as a fact.
 

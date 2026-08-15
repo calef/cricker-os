@@ -3,7 +3,7 @@
 //!
 //! The claim this closes is calef's, and it is the one that decides whether the backup is credible:
 //! *if I am struggling to get the data off, the backup has failed at its job.* Before this, the
-//! attributes came out of an image as `.cricker-attrs/0000002a`, a blob whose owner you had to work
+//! attributes came out of an image as `.nife-attrs/0000002a`, a blob whose owner you had to work
 //! out by hand. A Time Machine sparsebundle carries Apple metadata in exactly those attributes, so
 //! "by hand" was the recovery story for the part of the backup a Mac needs to make sense of the rest.
 //!
@@ -70,7 +70,7 @@ fn host_holds_attributes(dir: &Path) -> bool {
     let probe = dir.join("attribute-probe");
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(&probe, b"probe").unwrap();
-    let ok = redoxfs_host::host_xattr::set(&probe, b"user.cricker.probe", b"1").is_ok();
+    let ok = redoxfs_host::host_xattr::set(&probe, b"user.nife.probe", b"1").is_ok();
     let _ = std::fs::remove_file(&probe);
     ok
 }
@@ -126,11 +126,11 @@ fn attributes_written_by_the_fs_server_come_back_onto_host_files() {
         let nested = srv
             .open_dir(fs::ROOT as u32, "nested", dir::ALL)
             .expect("descend into nested");
-        srv.set_xattr(nested, b"user.cricker.kind", xattr::RAW, b"directory")
+        srv.set_xattr(nested, b"user.nife.kind", xattr::RAW, b"directory")
             .unwrap();
 
         let note = srv.open_file_at(nested, "note.txt").unwrap();
-        srv.set_xattr(note, b"user.cricker.note", xattr::RAW, b"deep")
+        srv.set_xattr(note, b"user.nife.note", xattr::RAW, b"deep")
             .unwrap();
     }
 
@@ -224,12 +224,12 @@ fn attributes_written_by_the_fs_server_come_back_onto_host_files() {
         "the typed attribute's bytes must survive even though its type code cannot",
     );
     assert_eq!(
-        get(&out.join("nested"), "user.cricker.kind"),
+        get(&out.join("nested"), "user.nife.kind"),
         b"directory",
         "a DIRECTORY's attributes must be reattached too, not only a file's",
     );
     assert_eq!(
-        get(&out.join("nested/note.txt"), "user.cricker.note"),
+        get(&out.join("nested/note.txt"), "user.nife.note"),
         b"deep",
         "an attribute below the top level did not come back",
     );
@@ -255,7 +255,7 @@ fn attributes_written_by_the_fs_server_come_back_onto_host_files() {
             .expect("run the system xattr");
         let listed = String::from_utf8_lossy(&out_bytes.stdout);
         assert!(
-            listed.contains("user.cricker.note"),
+            listed.contains("user.nife.note"),
             "the system's own xattr(1) does not see the attribute we reattached:\n{listed}",
         );
     }

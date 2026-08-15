@@ -58,7 +58,7 @@ in this tree names them and no grep over this tree can find them.
 
 That fact runs through every adjudication below, so it is worth stating as a rule:
 
-> **An ordering edge in cricker-os comes from one of four places, and only the first is greppable.**
+> **An ordering edge in nife comes from one of four places, and only the first is greppable.**
 >
 > 1. **An explicit fence or an ordered atomic**, in this tree. 63 sites plus 12 fences.
 > 2. **The `SCHED` lock**, taken by every `SEND`, `RECV`, `CALL` and `REPLY`. A blocking IPC
@@ -142,7 +142,7 @@ would try to reconcile three against four.
 | Boot roster | `kernel/src/smp.rs` | `ROSTER`, `DESCRIBED`, `ONLINE`, `ONLINE_MASK`: relaxed arrays under a release flag, acquire flag then relaxed arrays. Textbook array publication, single-shot at boot |
 | IRQ routing table | `kernel/src/sched.rs` `IRQ_ROUTES` | Release store, acquire load, same array. Paired |
 | One-shot service wiring | `fs_service`, `entropy_service`, `disk_service`, `credential_service` | **Four instances of one correct idiom**: relaxed fields, then a release flag; readers acquire the flag, then read the fields relaxed |
-| Spin locks | `crates/user_rt`, `patches/std-cricker` (3), `fs_server/src/bin/second_mount.rs` | Acquire CAS, release store. **The one shape that cannot be one-sided**, because the lock is both halves |
+| Spin locks | `crates/user_rt`, `patches/std-nife` (3), `fs_server/src/bin/second_mount.rs` | Acquire CAS, release store. **The one shape that cannot be one-sided**, because the lock is both halves |
 | Benchmark start barrier | `kernel/src/bench.rs` `TP_GO` | Release store, acquire spin. Paired. The `SeqCst` reset is over-strong and has no reader yet, so it orders nothing and costs nothing |
 | Secret wipe | `crates/cred_proto` | `compiler_fence`, no cross-core meaning, no partner wanted |
 

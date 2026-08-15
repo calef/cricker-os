@@ -54,12 +54,12 @@ rm -f rust-toolchain.toml.bak
 # internals rather than a stable API. A stale farm would hide exactly the breakage we are checking
 # for, which is how the 2026-07-30 incident stayed invisible on a developer machine for two days.
 echo "==> Rebuilding the std overlay from scratch (the fragile part)"
-rm -rf target/cricker-farm
+rm -rf target/nife-farm
 if ! cargo xtask std-exerciser; then
     echo >&2
     echo "toolchain-bump: the std overlay does not build on $new." >&2
     echo "  This is the expected failure mode. Look for a symbol upstream added to sys::fs that" >&2
-    echo "  patches/std-cricker/overlay/std/src/sys/fs/cricker.rs does not re-export from" >&2
+    echo "  patches/std-nife/overlay/std/src/sys/fs/nife.rs does not re-export from" >&2
     echo "  unsupported_fs, add it to that list, and re-run." >&2
     exit 1
 fi

@@ -18,7 +18,7 @@
 //!   finding the only filesystem on the disk, and that asking for the wrong one fails cleanly.
 //! - **2, misaligned on purpose**: it starts at an odd LBA, so its first byte is not on a 4096-byte
 //!   filesystem block. The tool must refuse it rather than round it in.
-//! - **3, the cricker-os data partition**, holding the filesystem.
+//! - **3, the nife data partition**, holding the filesystem.
 //!
 //! And one test uses a **320 MiB** device with the data partition past 256 MiB, because that is
 //! where the capability is genuinely new rather than cosmetic. See
@@ -125,7 +125,7 @@ fn build_device(device: &Path, payload: &[u8], data: (u64, u64), device_blocks: 
 
     let parts = [
         Entry::new(types::EFI_SYSTEM, guid(0x11), ESP.0, ESP.1)
-            .with_name("cricker boot")
+            .with_name("nife boot")
             .unwrap(),
         Entry::new(
             types::LINUX_FILESYSTEM,
@@ -133,8 +133,8 @@ fn build_device(device: &Path, payload: &[u8], data: (u64, u64), device_blocks: 
             MISALIGNED.0,
             MISALIGNED.1,
         ),
-        Entry::new(types::CRICKER_DATA, guid(0x33), data.0, data.1)
-            .with_name("cricker data")
+        Entry::new(types::NIFE_DATA, guid(0x33), data.0, data.1)
+            .with_name("nife data")
             .unwrap(),
     ];
     let mut array = [0u8; gpt::ENTRY_ARRAY_BYTES];
@@ -197,7 +197,7 @@ fn a_filesystem_inside_a_partition_reads_back_through_the_tool() {
     let payload = b"CRK110: this filesystem lives in partition 3 of a device\n";
     build_device(&device, payload, DATA, DEVICE_BLOCKS);
     let dev = device.display().to_string();
-    let data_type = String::from_utf8(types::CRICKER_DATA.to_ascii().to_vec()).unwrap();
+    let data_type = String::from_utf8(types::NIFE_DATA.to_ascii().to_vec()).unwrap();
 
     let before = digest(&std::fs::read(&device).unwrap());
 
@@ -208,11 +208,11 @@ fn a_filesystem_inside_a_partition_reads_back_through_the_tool() {
         "the listing does not say what block size it found: {listing}"
     );
     assert!(
-        listing.contains("cricker-os data") && listing.contains("EFI system"),
+        listing.contains("nife data") && listing.contains("EFI system"),
         "the listing does not name the partition types: {listing}"
     );
     assert!(
-        listing.contains("cricker data"),
+        listing.contains("nife data"),
         "the listing dropped the GPT label: {listing}"
     );
 

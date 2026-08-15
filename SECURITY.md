@@ -1,6 +1,6 @@
 # Security policy
 
-cricker-os is a capability microkernel built as a **demonstrator** (DECISIONS §14): a small
+nife is a capability microkernel built as a **demonstrator** (DECISIONS §14): a small
 machine-checked core that confines unverified workloads. Nobody runs it in production, including us.
 It boots under QEMU and under HVF on an Apple Silicon laptop, and it has never run on physical
 hardware.
@@ -15,10 +15,10 @@ report between other things, not a triage queue. Both halves of that are honest 
 ## Reporting
 
 **Use GitHub's private vulnerability reporting**: the [Security
-tab](https://github.com/calef/cricker-os/security) of this repository, "Report a vulnerability".
+tab](https://github.com/calef/nife/security) of this repository, "Report a vulnerability".
 That opens a private advisory only you and the maintainer can see, with a place to attach a fix.
 
-If that is unavailable, email **chris@crickertech.com** with `cricker-os security` in the subject.
+If that is unavailable, email **chris@crickertech.com** with `nife security` in the subject.
 There is no PGP key; if you need one before you will send details, say so in a first message and we
 will sort out a channel.
 

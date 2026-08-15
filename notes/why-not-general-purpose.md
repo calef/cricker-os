@@ -1,4 +1,4 @@
-# Why cricker-os isn't suited to general-purpose applications
+# Why nife isn't suited to general-purpose applications
 
 Two answers, layered. The first is about intent, the second about mechanics, and the third
 is the nuance that keeps both honest.
@@ -23,12 +23,12 @@ general-purpose readiness on purpose:
 ## What an application would actually hit
 
 A "general-purpose application" (a browser, a database, `curl`, anything people wrote) needs
-a world to run in. cricker-os does not provide it, roughly in order of severity:
+a world to run in. nife does not provide it, roughly in order of severity:
 
 | Gap | What breaks |
 |---|---|
 | **No POSIX, no libc, no `std` target** | The big one. Real programs are written against an API (POSIX, Win32) and linked with a libc. Nothing targets our tiny capability syscall surface. You cannot drop in existing software; every program is hand-written against our ABI, which is why the only programs are the handful in `user/` that we wrote. |
-| **No writable filesystem** | `crickerfs` is read-only, one block, built at compile time by `xtask`. Apps read config and write output and keep state; there is nowhere to do any of that at runtime. |
+| **No writable filesystem** | `nifefs` is read-only, one block, built at compile time by `xtask`. Apps read config and write output and keep state; there is nowhere to do any of that at runtime. |
 | **No networking** | No TCP/IP, no sockets. A huge fraction of general-purpose software is a network client or server. |
 | **No display, GUI, or input beyond a serial console** | No framebuffer, windowing, keyboard, or mouse. The only I/O to a human is a UART. |
 | **No dynamic linking** | Static only; every program is a standalone ELF baked into the initrd. No shared libraries, no `dlopen`, no loading code from a filesystem you populate. |
@@ -42,7 +42,7 @@ against and no subsystems for it to touch once running.
 ## The nuance: the model is not the barrier
 
 A capability-based microkernel is exactly what **Fuchsia / Zircon** ships as a
-general-purpose OS on real devices. cricker-os is not unsuited because capabilities cannot
+general-purpose OS on real devices. nife is not unsuited because capabilities cannot
 do general-purpose work. It is unsuited because it is a deliberately small **teaching subset**
 of that model.
 

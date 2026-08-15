@@ -9,7 +9,7 @@ aarch64 was accidentally load-bearing. So this step does the subset that needs n
 
 **Deliverable.**
 
-1. **A concrete arch-boundary audit.** Make notes/portability.md cricker-os-specific: the exact
+1. **A concrete arch-boundary audit.** Make notes/portability.md nife-specific: the exact
    files (`arch/aarch64/*`), the crates that are secretly machine-dependent (`paging` carries the
    aarch64 descriptor format; `dtb` is the device-tree discovery path), and the driver assumptions
    (`pl011`, `gic`, virtio-mmio are MMIO; semihosting is the test-exit). This is the map milestone 20

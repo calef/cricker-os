@@ -19,7 +19,7 @@ exit. We have no `fork`, on purpose, and cannot get one cheaply. So the question
 ## Why there is no fork, and why that is not a gap to fill
 
 Spawning here is **build-from-parts**: retype an address space and a TCB, map pages, insert
-capabilities, configure, start. That is what makes a cricker-os process a lighter object than a Unix
+capabilities, configure, start. That is what makes a nife process a lighter object than a Unix
 one, which is a claim the benchmarks rest on. `fork` would need copy-on-write duplication of an
 address space *and* duplication of a capability space, neither of which exists.
 

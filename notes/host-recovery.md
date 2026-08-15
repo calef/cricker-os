@@ -88,7 +88,7 @@ Concretely, that means the backup's off-site copy carries one of:
 
 1. a built `redoxfs_host` binary for the host you would recover on (fine, but binaries rot across
    OS versions and architectures), or
-2. the cricker-os commit hash plus `vendor/redoxfs` at 0.9.1 and `patches/`, which is enough to
+2. the nife commit hash plus `vendor/redoxfs` at 0.9.1 and `patches/`, which is enough to
    rebuild the tool with nothing but a Rust toolchain, or
 3. both, which costs a few megabytes.
 
@@ -145,7 +145,7 @@ below writes with upstream's archiver rather than with our own `put`.
 
 ## Extended attributes come back on the files (milestone 57)
 
-An image written by cricker-os carries a directory in its root called **`.cricker-attrs`**, holding
+An image written by nife carries a directory in its root called **`.nife-attrs`**, holding
 one small file per node that has extended attributes, named for that node's `TreePtr` id in hex.
 `redoxfs_host ls` shows it, `extract` copies it out, and upstream's FUSE mount would too.
 
@@ -191,7 +191,7 @@ A whole recovery, on a Mac, with the attributes on the other end. This is a real
 
 ```console
 $ redoxfs_host ls backup.img /
-dir         4096  .cricker-attrs
+dir         4096  .nife-attrs
 dir         4096  nested
 file@         13  photo.jpg
 
@@ -205,7 +205,7 @@ Family
 $ redoxfs_host extract backup.img / recovered
 redoxfs_host: recovered/photo.jpg: attribute user.com.apple.metadata:_kMDItemUserTags kept its
   6 bytes but not its type code 0x43535452; host filesystems have no field for it (see
-  .cricker-attrs in the extracted tree)
+  .nife-attrs in the extracted tree)
 extracted / to recovered: 4 files, 3 directories, 0 symlinks, 165 bytes,
   3 attributes reattached, 1 type codes dropped
 
@@ -241,7 +241,7 @@ is the Mac's own addition to a freshly written file, not something out of the im
   privilege here for a namespace to mean. Linux does have one, and `lsetxattr` answers `EPERM` for a
   name outside it. The tool reports the errno rather than rewriting the name: silently turning `foo`
   into `user.foo` would hand back a file whose metadata does not say what the backup said. In
-  practice Samba writes `user.`-prefixed names, so this bites a name cricker-os invented, not a name
+  practice Samba writes `user.`-prefixed names, so this bites a name nife invented, not a name
   that came from a client.
 - **Linux refuses attributes on a symlink at all**, for any `user.*` name. macOS takes them
   (`XATTR_NOFOLLOW`). So the same image extracted on the two hosts can differ in exactly that one
@@ -250,9 +250,9 @@ is the Mac's own addition to a freshly written file, not something out of the im
   named. `MAX_VALUE` here is 3 KiB, well under any host's limit, so this is a guard rather than a
   case anyone has hit.
 - **The tool has no attribute call for a platform that is neither macOS nor Linux.** It refuses with
-  a message saying the attributes are still in the extracted `.cricker-attrs`, rather than compiling
+  a message saying the attributes are still in the extracted `.nife-attrs`, rather than compiling
   to a silent success. FreeBSD spells this `extattr_set_link` and is not wired up.
-- **`extract` still copies `.cricker-attrs` out**, even now that the attributes are also on the
+- **`extract` still copies `.nife-attrs` out**, even now that the attributes are also on the
   files. That is deliberate (it is the only home the type codes have, and the last-resort record if
   a host refused everything) and it does mean a recovered tree carries one directory a user did not
   put there. An image with no attributes left on it no longer has the directory at all, since
@@ -316,34 +316,34 @@ actually happened and names the flag that removes the guess.
 
 ### EXAMPLES
 
-A real transcript, against `target/crickerfs-blank.img` after a test run. Nothing on that disk was
+A real transcript, against `target/nifefs-blank.img` after a test run. Nothing on that disk was
 written by the host: **the guest partitioned it and made the filesystem**, and this is a Mac reading
 it back with no `dd` in front of it.
 
 ```console
-$ redoxfs_host partitions target/crickerfs-blank.img
+$ redoxfs_host partitions target/nifefs-blank.img
 512-byte logical blocks, disk GUID 8784494D-E9F9-48FB-AFC9-F57D43A563B8
   #   first LBA    last LBA          size  type
-  1        2048       10239       4.0 MiB  EFI system  cricker boot
-  2       10240       30719      10.0 MiB  Linux filesystem  cricker root
-  3       30720      129023      48.0 MiB  cricker-os data  cricker data
+  1        2048       10239       4.0 MiB  EFI system  nife boot
+  2       10240       30719      10.0 MiB  Linux filesystem  nife root
+  3       30720      129023      48.0 MiB  nife data  nife data
 
-$ redoxfs_host ls target/crickerfs-blank.img / --partition 3
+$ redoxfs_host ls target/nifefs-blank.img / --partition 3
 file          63  made-on-target
 
-$ redoxfs_host extract target/crickerfs-blank.img / /tmp/recovered --partition 3
+$ redoxfs_host extract target/nifefs-blank.img / /tmp/recovered --partition 3
 extracted / to /tmp/recovered: 1 files, 1 directories, 0 symlinks, 63 bytes, 0 attributes reattached
 ```
 
 And what it says if you forget the selector, which is the correction above made audible:
 
 ```console
-$ redoxfs_host cat target/crickerfs-blank.img made-on-target
-redoxfs_host: target/crickerfs-blank.img has a GUID partition table (512-byte blocks, 3
+$ redoxfs_host cat target/nifefs-blank.img made-on-target
+redoxfs_host: target/nifefs-blank.img has a GUID partition table (512-byte blocks, 3
 partitions), so it is a device rather than an image. Read whole, the engine takes whichever
 filesystem its scan meets first and sizes itself from the whole device. Name the partition with
 --partition N (`redoxfs_host partitions` prints them).
-CRK57: this filesystem was created by cricker-os on the target
+CRK57: this filesystem was created by nife on the target
 ```
 
 ### How it is proven

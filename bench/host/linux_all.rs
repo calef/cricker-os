@@ -1,6 +1,6 @@
 //! Same-hardware Linux side of the primitive suite (milestone 25). Built as a static aarch64 binary
 //! and booted as PID 1 in a one-file initramfs under QEMU-HVF, so it runs on the *same* M-series core
-//! at the *same* virtualization tier as cricker-os. It measures null syscall and IPC round trip (the
+//! at the *same* virtualization tier as nife. It measures null syscall and IPC round trip (the
 //! same metrics as bench/host/null_syscall.rs and ipc_rtt.rs), prints them, and powers the machine
 //! off (it is PID 1: exiting would panic the kernel).
 //!
@@ -70,7 +70,7 @@ fn null_syscall() -> f64 {
     t.elapsed().as_nanos() as f64 / iters as f64
 }
 
-/// Page-map (fault-in) latency, lmbench's `lat_mmap`: the host side of cricker-os's `map_el0`. `mmap`
+/// Page-map (fault-in) latency, lmbench's `lat_mmap`: the host side of nife's `map_el0`. `mmap`
 /// a large anonymous region, then touch one byte per page; the first touch faults and the kernel
 /// installs the PTE. See bench/host/mmap.rs for the method and the two asymmetries to our `MAP_INTO`
 /// (fault vs syscall trigger; the host also allocates and zeroes a page where we alias one frame).
@@ -108,7 +108,7 @@ fn map_fault() -> f64 {
 
 /// Process-creation latency, lmbench's `lat_proc` (fork+exit): the host side of `spawn_el0`. `fork`
 /// a child that exits at once, reap it. See bench/host/spawn.rs for the method and the caveat that
-/// this duplicates a Unix process where cricker-os builds a minimal one.
+/// this duplicates a Unix process where nife builds a minimal one.
 fn spawn_fork_exit() -> f64 {
     let iters: u64 = 2_000;
     let go = |n: u64| -> f64 {

@@ -135,9 +135,9 @@ globbing is merely its only caller today. `subtree_` rather than `directory_`, b
 is the exact defect `dwarden` has and this rename exists to fix.
 
 **Two costs, recorded rather than discovered later.** `fs_subtree_caretaker` and
-`fs_nameset_caretaker` are 20 bytes against `crickerfs`'s archive limit (`NAME_LEN`), which was 24
+`fs_nameset_caretaker` are 20 bytes against `nifefs`'s archive limit (`NAME_LEN`), which was 24
 when this was written, so four bytes of headroom and a four-part name would not fit; that constraint
-was load-bearing and is what led to raising the limit to 32 on 2026-08-01 (notes/crickerfs.md).
+was load-bearing and is what led to raising the limit to 32 on 2026-08-01 (notes/nifefs.md).
 And `fs_file_caretaker` says filesystem twice, which is the price of the scheme being uniform.
 
 The rename also resolves an inconsistency already in the source: `dwarden.rs`'s header says

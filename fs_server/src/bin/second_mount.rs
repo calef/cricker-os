@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! cargo run --manifest-path fs_server/Cargo.toml --bin second_mount            # 8 MiB, the device cap
-//! CRICKER_HEAP_MIB=64 cargo run --manifest-path fs_server/Cargo.toml --bin second_mount
+//! NIFE_HEAP_MIB=64 cargo run --manifest-path fs_server/Cargo.toml --bin second_mount
 //! ```
 //!
 //! If mount 2's write fails at 8 MiB and succeeds at 64, the failure is heap exhaustion and the
@@ -40,10 +40,10 @@ const PAGE: usize = 4096;
 /// The FS server's growth floor (`user_rt::heap::MIN_GROW_PAGES`).
 const MIN_GROW_PAGES: usize = 8;
 
-/// The heap cap in bytes, from `CRICKER_HEAP_MIB`, defaulting to the FS server's 8 MiB
+/// The heap cap in bytes, from `NIFE_HEAP_MIB`, defaulting to the FS server's 8 MiB
 /// (`fs_server.rs::HEAP_MAX`, which `FS_BUDGET_PAGES` in kernel/src/user.rs matches).
 fn heap_cap() -> usize {
-    std::env::var("CRICKER_HEAP_MIB")
+    std::env::var("NIFE_HEAP_MIB")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(8)
@@ -229,7 +229,7 @@ fn mount_and_write(pass: u8) -> syscall::error::Result<()> {
 /// failure is *accumulated* state (each cycle advances the header generation, lengthens the allocator
 /// log, and leaves more live tree blocks) rather than merely "not the first".
 fn mount_count() -> u8 {
-    std::env::var("CRICKER_MOUNTS")
+    std::env::var("NIFE_MOUNTS")
         .ok()
         .and_then(|s| s.parse::<u8>().ok())
         .unwrap_or(2)
@@ -240,7 +240,7 @@ fn main() {
     let mounts = mount_count();
     mark(&format!(
         "second_mount: heap cap {cap_mib} MiB, {mounts} mount cycles \
-         (CRICKER_HEAP_MIB / CRICKER_MOUNTS override)"
+         (NIFE_HEAP_MIB / NIFE_MOUNTS override)"
     ));
 
     // Build the fixture the way the host tool does: an empty filesystem plus the two files.

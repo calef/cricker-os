@@ -81,7 +81,7 @@ drove hardware directly. Which is exactly why one bad program took down the mach
 viruses were trivial. Protected mode plus the MMU is the invention that made modern computing
 possible.
 
-## Where cricker-os is right now
+## Where nife is right now
 
 **There is no userspace at all.** Every line we have written runs at EL1, at full privilege.
 Our `println!` could rewrite the page tables if it wanted. There are no processes, no

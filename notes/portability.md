@@ -74,7 +74,7 @@ it.
 
 **Actionable: the second architecture should come early and be as different as possible.**
 
-## What this means for cricker-os
+## What this means for nife
 
 ### We got lucky on the memory model
 

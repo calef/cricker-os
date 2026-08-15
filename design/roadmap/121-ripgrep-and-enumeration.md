@@ -1,4 +1,4 @@
-# 121. `ripgrep` on cricker-os: enumeration as a capability, and what the walk costs
+# 121. `ripgrep` on nife: enumeration as a capability, and what the walk costs
 
 **Status: NOT-STARTED.** Minted 2026-08-13 by calef. A third "somebody else's real application"
 target beside milestone 66's Vaultwarden and milestone 99's git, chosen for a reason neither of those
@@ -46,7 +46,7 @@ is the TCB boundary, and userspace should actively prefer porting.
 The paragraph above was written believing that `read_dir` being bound made the walk nearly free. It
 does not, and the first draft of this block was wrong about the central thing it proposes to build.
 
-**The `std` PAL grants one name, not a path.** `one_name` in `patches/std-cricker` refuses absolute
+**The `std` PAL grants one name, not a path.** `one_name` in `patches/std-nife` refuses absolute
 paths, `..`, **and nested paths**. The overlay is careful about the flat case: `read_dir(".")` yields
 `./name`, `one_name` accepts it, and feeding an entry's `path()` straight back to `File::open` works
 exactly as a caller expects.

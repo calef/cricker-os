@@ -3,7 +3,7 @@
 The stated destination: eventually, something like COSMIC driving a GPU for display. That
 decomposes into rungs, each independently a demo, and the decomposition is what makes the ambition
 honest. COSMIC's shape is Rust clients rendering into shared buffers, a compositor compositing
-them to scanout, everything message-passing; cricker-os already has shared frames and endpoints,
+them to scanout, everything message-passing; nife already has shared frames and endpoints,
 so the *architecture* is aligned even where the drivers are mountains.
 
 **Status (2026-07-30): rungs one and two are built, and rung one's deferred VT engine now is too.**

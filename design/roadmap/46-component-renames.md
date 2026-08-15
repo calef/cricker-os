@@ -42,7 +42,7 @@ Looking for the tree's naming conventions on 2026-07-30 turned up three real inc
 them anybody's decision:
 
 - **Word separation in crate names is split down the middle.** `fs_proto`, `gfx_proto`,
-  `dma_validator`, `user_rt` use underscores; `grant_plan`, `crickerfs`, `bitfont`, `line_editor`, `coremark`
+  `dma_validator`, `user_rt` use underscores; `grant_plan`, `nifefs`, `bitfont`, `line_editor`, `coremark`
   run the words together. Two habits, no rule.
 - **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
   `socket_proto` (a module, no underscore), and `line_editor::proto` (a submodule). One concept.
