@@ -16,6 +16,9 @@
  *                the clock as a `clocks` phandle; the `clock-frequency` here is the shape vendor
  *                and U-Boot trees carry, and it is the only form this kernel reads (a tree without
  *                it means "do not reprogram the divisor", which is also correct on this board).
+ *                `interrupts = <32>` is UART0's PLIC line per the dtsi, and `interrupt-parent`
+ *                sits on /soc as mainline writes it, NOT on the serial node: reading the line on
+ *                this tree requires the spec's property inheritance, which is the point.
  *
  * Two deliberate departures from the dtsi, both defensive shapes rather than copied facts:
  * the S7 carries `mmu-type = "riscv,none"` (binding-legal for an MMU-less core, and the worst case
@@ -124,6 +127,8 @@
 		compatible = "simple-bus";
 		#address-cells = <2>;
 		#size-cells = <2>;
+		/* Mainline's shape: the parent is declared ONCE here and inherited by every device. */
+		interrupt-parent = <0x20>;
 		ranges;
 
 		/* The JH7110 spells its PLIC node `interrupt-controller@...`, not QEMU's `plic@...`. */
@@ -134,6 +139,7 @@
 			#interrupt-cells = <1>;
 			#address-cells = <0>;
 			riscv,ndev = <136>;
+			phandle = <0x20>;
 			interrupts-extended = <&cpu0_intc 11>,
 					      <&cpu1_intc 11>, <&cpu1_intc 9>,
 					      <&cpu2_intc 11>, <&cpu2_intc 9>,
@@ -147,6 +153,7 @@
 			reg-shift = <2>;
 			reg-io-width = <4>;
 			clock-frequency = <24000000>;
+			interrupts = <32>;
 			status = "okay";
 		};
 	};

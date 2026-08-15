@@ -534,12 +534,27 @@ pub const INIT_TEST_SGI: u32 = 10;
 /// The console UART's receive interrupt on QEMU `virt`. init routes and delegates it so the input
 /// driver it builds (19d.2c) can wait on keystrokes. aarch64's PL011 is SPI 1 = INTID 33; RISC-V's
 /// NS16550 is PLIC source 10.
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// **The documented fallback, not the answer.** The boot paths ask the machine first
+/// ([`uart_irq_and_source`]): on the JH7110, UART0 interrupts on PLIC line 32, and a kernel that
+/// armed this constant there enabled an unrelated source, proven on silicon when a key press at
+/// boot 13's completed tour reached nothing (notes/visionfive2.md, BUGS). This number is what a
+/// tree that does not say falls back to, which on QEMU is also the right answer.
 #[cfg(target_arch = "aarch64")]
 pub const UART_RX_INTID: u32 = 33;
-#[cfg_attr(not(test), allow(dead_code))]
 #[cfg(target_arch = "riscv64")]
 pub const UART_RX_INTID: u32 = 10;
+
+/// The console UART's interrupt line and which source decided it: the device tree's answer when
+/// it gave one (`memory::uart_irq`), else [`UART_RX_INTID`], QEMU `virt`'s constant. The source
+/// string exists to be printed: a bench transcript that names the number's origin is diagnosable,
+/// and the one that did not already cost a boot (notes/visionfive2.md).
+pub fn uart_irq_and_source() -> (u32, &'static str) {
+    match crate::memory::uart_irq() {
+        Some(n) => (n, "device tree"),
+        None => (UART_RX_INTID, "QEMU-virt fallback; the tree did not say"),
+    }
+}
 
 /// The console UART's registers, physically. aarch64 `virt` puts a PL011 at `0x0900_0000`; RISC-V
 /// `virt` puts an NS16550 at `0x1000_0000`. init holds a device capability for it and delegates it
@@ -590,12 +605,17 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     crate::sched::bind_irq(INIT_TEST_SGI, crate::sched::create_endpoint());
     crate::arch::irq::enable(INIT_TEST_SGI);
     // And the UART receive interrupt (19d.2c): the input driver init builds waits on it. Route and
-    // enable it here, so init can delegate the Irq cap to that driver. On RISC-V these are the SAME
-    // source (see INIT_TEST_SGI), and binding it twice would leave the first endpoint routed to
-    // nothing while the test waits on it, so bind once and grant twice.
-    if UART_RX_INTID != INIT_TEST_SGI {
-        crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
-        crate::arch::irq::enable(UART_RX_INTID);
+    // enable it here, so init can delegate the Irq cap to that driver. The number is the machine's
+    // (uart_irq_and_source; on the JH7110 the QEMU constant armed the wrong PLIC source, see its
+    // doc), and the line names the source so a transcript is diagnosable. On QEMU RISC-V the
+    // discovered line and INIT_TEST_SGI are the SAME source (see INIT_TEST_SGI), and binding it
+    // twice would leave the first endpoint routed to nothing while the test waits on it, so bind
+    // once and grant twice.
+    let (uart_rx_intid, uart_irq_source) = uart_irq_and_source();
+    crate::println!("  uart irq  : {uart_rx_intid} ({uart_irq_source})");
+    if uart_rx_intid != INIT_TEST_SGI {
+        crate::sched::bind_irq(uart_rx_intid, crate::sched::create_endpoint());
+        crate::arch::irq::enable(uart_rx_intid);
     }
 
     // The initrd is a nifefs archive (milestone 19f), not a bare ELF: it carries init plus the
@@ -722,9 +742,11 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant test irq");
-        // The UART receive interrupt (slot 4), for the input driver init builds (19d.2c).
+        // The UART receive interrupt (slot 4), for the input driver init builds (19d.2c). The
+        // same discovered number the route above was bound with, or the cap would name a source
+        // no endpoint serves.
         crate::sched::grant(crate::cap::irq_cap_rights(
-            UART_RX_INTID,
+            uart_rx_intid,
             crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant uart rx irq");
