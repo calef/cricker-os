@@ -303,7 +303,10 @@ mod tests {
         assert_eq!(r64(&out, H_SESSION_ID), 0x11);
         assert_eq!(r32(&out, H_TREE_ID), 0x22);
         assert_eq!(r16(&out, H_CREDIT), 33);
-        assert_eq!(r32(&out, H_FLAGS) & FLAG_SERVER_TO_REDIR, FLAG_SERVER_TO_REDIR);
+        assert_eq!(
+            r32(&out, H_FLAGS) & FLAG_SERVER_TO_REDIR,
+            FLAG_SERVER_TO_REDIR
+        );
         assert_eq!(&out[H_SIGNATURE..H_SIGNATURE + 16], &[0u8; 16]);
     }
 

@@ -1584,7 +1584,8 @@ fn smb_session(
     s: &mut std::net::TcpStream,
     stop: &std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
-    use smb_proto::{H_SESSION_ID, H_STATUS, H_TREE_ID, client, r32, r64, share::FIXTURE};
+    use smb_proto::share::FIXTURE;
+    use smb_proto::{H_SESSION_ID, H_STATUS, H_TREE_ID, client, r32, r64};
 
     let status = |resp: &[u8]| r32(resp, H_STATUS);
 
@@ -1616,7 +1617,10 @@ fn smb_session(
     smb_send(s, &client::session_setup_authenticate(3, sid))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
-        return Err(format!("session setup (auth leg): status {:#x}", status(&resp)));
+        return Err(format!(
+            "session setup (auth leg): status {:#x}",
+            status(&resp)
+        ));
     }
 
     smb_send(s, &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"))?;
@@ -1630,7 +1634,11 @@ fn smb_session(
     smb_send(s, &client::create(5, sid, tid, name))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
-        return Err(format!("create {}: status {:#x}", String::from_utf8_lossy(name), status(&resp)));
+        return Err(format!(
+            "create {}: status {:#x}",
+            String::from_utf8_lossy(name),
+            status(&resp)
+        ));
     }
     let fid = client::create_file_id(&resp);
     let size = client::create_end_of_file(&resp);

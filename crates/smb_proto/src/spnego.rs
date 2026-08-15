@@ -152,8 +152,17 @@ const fn wrap_len(content_len: usize) -> usize {
 }
 
 /// The final `NegTokenResp`: negState accept-completed, no token. Nine bytes, fixed.
-pub const ACCEPT_COMPLETED_RESP: [u8; 9] =
-    [0xa1, 0x07, 0x30, 0x05, 0xa0, 0x03, 0x0a, 0x01, ACCEPT_COMPLETED];
+pub const ACCEPT_COMPLETED_RESP: [u8; 9] = [
+    0xa1,
+    0x07,
+    0x30,
+    0x05,
+    0xa0,
+    0x03,
+    0x0a,
+    0x01,
+    ACCEPT_COMPLETED,
+];
 
 /// The `NegTokenInit2` hint a server may put in its NEGOTIATE response's security buffer, saying "I
 /// speak NTLMSSP". Advisory: clients that ignore it (or get an empty buffer) try NTLMSSP anyway,

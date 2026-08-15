@@ -12,27 +12,17 @@
 //! refused with a real NT status, because a client's retry logic keys on them.
 
 use crate::share::{Node, Share};
-use crate::{ntlmssp, spnego};
-use crate::{
-    ascii_to_utf16le, is_smb2, r16, r32, r64, utf16le_to_ascii_lower, w16, w32, w64,
-    write_response_header,
-};
 use crate::{
     CMD_CHANGE_NOTIFY, CMD_CLOSE, CMD_CREATE, CMD_ECHO, CMD_FLUSH, CMD_IOCTL, CMD_LOCK, CMD_LOGOFF,
     CMD_NEGOTIATE, CMD_QUERY_DIRECTORY, CMD_QUERY_INFO, CMD_READ, CMD_SESSION_SETUP, CMD_SET_INFO,
-    CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_WRITE,
-};
-use crate::{
-    DIALECT_0210, DIALECT_WILDCARD, H_COMMAND, H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND,
-    H_SESSION_ID,
-    H_TREE_ID, HDR_LEN, MAX_TRANSACT,
-};
-use crate::{
-    STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_END_OF_FILE,
-    STATUS_FILE_CLOSED, STATUS_FILE_IS_A_DIRECTORY, STATUS_FS_DRIVER_REQUIRED,
-    STATUS_INVALID_PARAMETER, STATUS_MORE_PROCESSING_REQUIRED, STATUS_NO_MORE_FILES,
-    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_SUCCESS, STATUS_USER_SESSION_DELETED,
+    CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_WRITE, DIALECT_0210, DIALECT_WILDCARD, H_COMMAND,
+    H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND, H_SESSION_ID, H_TREE_ID, HDR_LEN, MAX_TRANSACT,
+    STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_END_OF_FILE, STATUS_FILE_CLOSED,
+    STATUS_FILE_IS_A_DIRECTORY, STATUS_FS_DRIVER_REQUIRED, STATUS_INVALID_PARAMETER,
+    STATUS_MORE_PROCESSING_REQUIRED, STATUS_NO_MORE_FILES, STATUS_NOT_SUPPORTED,
+    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SUCCESS,
+    STATUS_USER_SESSION_DELETED, ascii_to_utf16le, is_smb2, ntlmssp, r16, r32, r64, spnego,
+    utf16le_to_ascii_lower, w16, w32, w64, write_response_header,
 };
 
 /// How many files (and the root) one connection may hold open at once. macOS keeps a handful open
@@ -324,7 +314,8 @@ impl Connection {
                 let blen = if wrapped {
                     spnego::build_challenge_resp(&mut out[buf_at..], &challenge[..challenge_len])
                 } else {
-                    out[buf_at..buf_at + challenge_len].copy_from_slice(&challenge[..challenge_len]);
+                    out[buf_at..buf_at + challenge_len]
+                        .copy_from_slice(&challenge[..challenge_len]);
                     challenge_len
                 };
                 w16(out, b + 4, buf_at as u16);
@@ -917,12 +908,12 @@ fn encode_dir_entry(
     let wide_len = name.len() * 2;
     // (fixed part before the name, whether the prefix is the full 64-byte one)
     let (fixed, full_prefix) = match class {
-        1 => (64, true),                     // FileDirectoryInformation
-        2 => (68, true),                     // FileFullDirectoryInformation
-        3 => (94, true),                     // FileBothDirectoryInformation
-        37 => (104, true),                   // FileIdBothDirectoryInformation
-        38 => (80, true),                    // FileIdFullDirectoryInformation
-        12 => (12, false),                   // FileNamesInformation
+        1 => (64, true),   // FileDirectoryInformation
+        2 => (68, true),   // FileFullDirectoryInformation
+        3 => (94, true),   // FileBothDirectoryInformation
+        37 => (104, true), // FileIdBothDirectoryInformation
+        38 => (80, true),  // FileIdFullDirectoryInformation
+        12 => (12, false), // FileNamesInformation
         _ => return None,
     };
     if fixed + wide_len > out.len() {
@@ -944,9 +935,8 @@ fn encode_dir_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client;
     use crate::share::FIXTURE;
-    use crate::{H_NEXT_COMMAND, H_STATUS, MAX_MESSAGE, r32};
+    use crate::{H_NEXT_COMMAND, H_STATUS, MAX_MESSAGE, client, r32};
 
     fn conn() -> Connection {
         Connection::new([0xA5; 8])
@@ -955,7 +945,9 @@ mod tests {
     /// Drive one request through the machine and return the response bytes.
     fn rt(c: &mut Connection, req: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; MAX_MESSAGE];
-        let n = c.handle(req, &mut out, &FIXTURE).expect("smb2 in, smb2 out");
+        let n = c
+            .handle(req, &mut out, &FIXTURE)
+            .expect("smb2 in, smb2 out");
         out.truncate(n);
         out
     }
@@ -1053,7 +1045,10 @@ mod tests {
         let fid = client::create_file_id(&resp);
 
         // Class 37 (FileIdBothDirectoryInformation) is what macOS asks for.
-        let resp = rt(&mut c, &client::query_directory(6, sid, tid, &fid, 37, b"*"));
+        let resp = rt(
+            &mut c,
+            &client::query_directory(6, sid, tid, &fid, 37, b"*"),
+        );
         assert_eq!(status(&resp), STATUS_SUCCESS);
         let names: Vec<Vec<u8>> = client::dir_entries(&resp, 37)
             .map(|n| n.as_bytes().to_vec())
@@ -1069,7 +1064,10 @@ mod tests {
         );
 
         // Exhausted: the protocol's end-of-listing status, and it stays ended.
-        let resp = rt(&mut c, &client::query_directory(7, sid, tid, &fid, 37, b"*"));
+        let resp = rt(
+            &mut c,
+            &client::query_directory(7, sid, tid, &fid, 37, b"*"),
+        );
         assert_eq!(status(&resp), STATUS_NO_MORE_FILES);
         // A restart scan rewinds.
         let resp = rt(
@@ -1197,7 +1195,11 @@ mod tests {
         let resp = rt(&mut c, &bytes);
         assert!(is_smb2(&resp), "the answer to the SMB1 probe is SMB2");
         assert_eq!(status(&resp), STATUS_SUCCESS);
-        assert_eq!(r64(&resp, H_MESSAGE_ID), 0, "the wildcard answer carries message id 0");
+        assert_eq!(
+            r64(&resp, H_MESSAGE_ID),
+            0,
+            "the wildcard answer carries message id 0"
+        );
         assert_eq!(client::negotiate_dialect(&resp), DIALECT_WILDCARD);
 
         // And the connection then proceeds exactly as an SMB2-first one does.
@@ -1207,7 +1209,10 @@ mod tests {
 
         // An SMB1-only client (no SMB2 dialect strings) is dropped, not answered.
         let mut only_smb1 = bytes.clone();
-        let cut = only_smb1.windows(2).position(|w| w == [0x02, b'S']).unwrap();
+        let cut = only_smb1
+            .windows(2)
+            .position(|w| w == [0x02, b'S'])
+            .unwrap();
         only_smb1.truncate(cut);
         // Keep the SMB1 header valid; the byte-count field no longer matters to our scan.
         let mut fresh = conn();

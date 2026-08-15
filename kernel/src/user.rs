@@ -798,7 +798,9 @@ pub fn smb_serve_boot() {
         return;
     };
     let Some((lease, smb)) = virtio_service::start_smb_serve(net_stack, smb_server) else {
-        println!("smb-serve: no virtio-net device to serve on (the runner attaches one when NIFE_NET is set)");
+        println!(
+            "smb-serve: no virtio-net device to serve on (the runner attaches one when NIFE_NET is set)"
+        );
         return;
     };
     let ip = crate::sched::ipc_recv(lease)[0];
@@ -814,8 +816,12 @@ pub fn smb_serve_boot() {
     if word == 1 {
         println!("smb-serve: the SMB adapter is listening on guest port 445.");
         println!("smb-serve: on the Mac (assuming xtask's default forward, 127.0.0.1:10445):");
-        println!("smb-serve:   Finder > Go > Connect to Server: smb://127.0.0.1:10445/share  (as Guest)");
-        println!("smb-serve:   or: mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share");
+        println!(
+            "smb-serve:   Finder > Go > Connect to Server: smb://127.0.0.1:10445/share  (as Guest)"
+        );
+        println!(
+            "smb-serve:   or: mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share"
+        );
         println!("smb-serve: read-only fixture share; see notes/smb.md, including its BUGS.");
     } else {
         println!("smb-serve: the adapter failed to bind its port (code {word:#x})");

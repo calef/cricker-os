@@ -84,7 +84,10 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 // full boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
 // The smb_serve boot parks before the tour the same way the riscv tour does: the code after
 // either stays compiled and is deliberately unreachable.
-#[cfg_attr(any(target_arch = "riscv64", feature = "smb_serve"), allow(unreachable_code))]
+#[cfg_attr(
+    any(target_arch = "riscv64", feature = "smb_serve"),
+    allow(unreachable_code)
+)]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
     DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
