@@ -291,7 +291,10 @@ impl SqState {
 
     /// Record the controller's consumption, from a completion's `sq_head`.
     pub fn note_head(&mut self, head: u16) {
-        assert!(head < self.entries, "controller reported an impossible head");
+        assert!(
+            head < self.entries,
+            "controller reported an impossible head"
+        );
         self.head = head;
     }
 }

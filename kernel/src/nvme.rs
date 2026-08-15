@@ -140,10 +140,7 @@ impl Nvme {
         // The admin queue pair, by register: attributes (both depths, 0-based), then the two
         // page-aligned ring bases. The rings are zeroed pages, which is what makes the phase
         // discipline sound: the controller's first lap writes phase 1 into memory that reads 0.
-        c.wr32(
-            regs::AQA,
-            (ENTRIES as u32 - 1) << 16 | (ENTRIES as u32 - 1),
-        );
+        c.wr32(regs::AQA, (ENTRIES as u32 - 1) << 16 | (ENTRIES as u32 - 1));
         c.wr64(regs::ASQ, dma_phys + ADMIN_SQ_PAGE * frames::FRAME_SIZE);
         c.wr64(regs::ACQ, dma_phys + ADMIN_CQ_PAGE * frames::FRAME_SIZE);
         c.wr32(regs::CC, nvme::cc_enabled());
@@ -244,8 +241,8 @@ impl Nvme {
         // SAFETY: slot < ENTRIES and ENTRIES 64-byte entries fit one frame, so the write stays
         // inside the submission ring's page of our own DMA region.
         unsafe {
-            let dst = (self.dma_va + sq_page * frames::FRAME_SIZE + slot as u64 * 64)
-                as *mut [u32; 16];
+            let dst =
+                (self.dma_va + sq_page * frames::FRAME_SIZE + slot as u64 * 64) as *mut [u32; 16];
             core::ptr::write_volatile(dst, cmd.0);
         }
         // Publish the command before the doorbell: the controller is another observer, and the
@@ -270,7 +267,8 @@ impl Nvme {
         } else {
             self.io_cq.head()
         };
-        let cqe = (self.dma_va + cq_page * frames::FRAME_SIZE + head as u64 * 16) as *const [u32; 4];
+        let cqe =
+            (self.dma_va + cq_page * frames::FRAME_SIZE + head as u64 * 16) as *const [u32; 4];
         let mut done: Option<Completion> = None;
         for _ in 0..SPIN_BOUND {
             // SAFETY: head < ENTRIES and ENTRIES 16-byte entries fit one frame; reads of our own
@@ -454,12 +452,17 @@ mod tests {
         disk.buffer().fill(0xaa);
         disk.read_block(BLOCK).expect("read");
         for (i, b) in disk.buffer().iter().enumerate() {
-            assert_eq!(*b, (i as u64 % 251) as u8, "byte {i} of the block came back wrong");
+            assert_eq!(
+                *b,
+                (i as u64 % 251) as u8,
+                "byte {i} of the block came back wrong"
+            );
         }
 
         // A block this test never wrote is still the image's zeros: the write landed where it
         // said, not everywhere.
-        disk.read_block(BLOCK + 1).expect("read of an untouched block");
+        disk.read_block(BLOCK + 1)
+            .expect("read of an untouched block");
         assert!(disk.buffer().iter().all(|b| *b == 0));
     }
 }
