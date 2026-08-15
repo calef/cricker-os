@@ -1079,6 +1079,23 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     // init reads the archive length from its second argument (a1), as the worker reads its input.
     crate::sched::start_tcb(tid, [0, initrd_len, 0]).expect("start");
 
+    // Bench diagnostics (2026-08-14, first-silicon session): the tour hung inside this demo on the
+    // VisionFive 2 with nothing on the wire, because the recv below blocks silently. Narrate the
+    // stages and, while the boot thread is parked in recv, have a watcher print the thread table a
+    // few times so the serial log says what init and its child are DOING during the silence. Cheap,
+    // honest, and QEMU boots print a few extra lines; remove or keep at merge, integrator's call.
+    crate::println!("    init : measured, built, started; waiting for the child's word");
+    crate::sched::spawn(|| {
+        for i in 1..=5u32 {
+            crate::arch::timer::spin_for(crate::arch::timer::frequency() * 2);
+            crate::println!("    diag : +{}s, svc={}", i * 2, {
+                use core::sync::atomic::Ordering;
+                crate::arch::exceptions::SVC_COUNT.load(Ordering::Relaxed)
+            });
+            crate::sched::dump_threads();
+        }
+    });
+
     // The word the child SENDs home (init built the pipe; the child sent through it).
     Ok(crate::sched::ipc_recv(report)[0])
 }

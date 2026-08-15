@@ -1,0 +1,143 @@
+/dts-v1/;
+
+/*
+ * The VisionFive 2's VENDOR device tree, as the flashed firmware actually hands it over: the
+ * shape read from the live board at the U-Boot prompt (fdt print), bench session 2026-08-14.
+ * The sibling `jh7110.dts` models the mainline dtsi; this fixture exists because the two trees
+ * lie differently, and the vendor one is what the board really serves.
+ *
+ * Measured at the bench, verbatim:
+ *
+ *   - all five cpu nodes carry status = "okay", the S7 monitor core included;
+ *   - cpu@0 (the S7) carries riscv,isa = "rv64imacu" AND mmu-type = "riscv,sv39";
+ *   - cpu@1 carries riscv,isa = "rv64imafdcbsux" and mmu-type = "riscv,sv39".
+ *
+ * The S7 has no MMU and no S-mode, so its "okay" and its "sv39" are both false. The one truthful
+ * property is its own ISA string: the old-generation spelling that lists privilege letters, with
+ * user mode present and supervisor omitted. Its U74 siblings spell the s. Honoring status and
+ * mmu-type here started hart 0 and crashed vendor OpenSBI (M-mode load access fault at its own
+ * scratch, mepc in firmware); the tests against this fixture hold the rule that prevents it.
+ *
+ * Not measured, modeled: cpu@2..4 are U74s identical to cpu@1 (the silicon's, and mainline's,
+ * word); the PLIC wiring is the SoC's own (same interrupts-extended as the mainline dtsi: the S7
+ * contributes only a machine context, so hart h's S context is 2h), and the tree is trimmed to
+ * what the tests read.
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "starfive,jh7110";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <4000000>;
+
+		cpu@0 {
+			compatible = "sifive,s7", "riscv";
+			device_type = "cpu";
+			reg = <0>;
+			riscv,isa = "rv64imacu";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x10>;
+			};
+		};
+
+		cpu@1 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <1>;
+			riscv,isa = "rv64imafdcbsux";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu1_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x11>;
+			};
+		};
+
+		cpu@2 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <2>;
+			riscv,isa = "rv64imafdcbsux";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu2_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x12>;
+			};
+		};
+
+		cpu@3 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <3>;
+			riscv,isa = "rv64imafdcbsux";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu3_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x13>;
+			};
+		};
+
+		cpu@4 {
+			compatible = "sifive,u74-mc", "riscv";
+			device_type = "cpu";
+			reg = <4>;
+			riscv,isa = "rv64imafdcbsux";
+			mmu-type = "riscv,sv39";
+			status = "okay";
+
+			cpu4_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				#interrupt-cells = <1>;
+				phandle = <0x14>;
+			};
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x1 0x0>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		interrupt-controller@c000000 {
+			compatible = "starfive,jh7110-plic", "sifive,plic-1.0.0";
+			reg = <0x0 0xc000000 0x0 0x4000000>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			riscv,ndev = <136>;
+			interrupts-extended = <&cpu0_intc 11>,
+					      <&cpu1_intc 11>, <&cpu1_intc 9>,
+					      <&cpu2_intc 11>, <&cpu2_intc 9>,
+					      <&cpu3_intc 11>, <&cpu3_intc 9>,
+					      <&cpu4_intc 11>, <&cpu4_intc 9>;
+		};
+	};
+};

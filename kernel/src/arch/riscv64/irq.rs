@@ -94,8 +94,11 @@ fn target_context(source: u32) -> usize {
     if existing != CTX_UNASSIGNED {
         return existing as usize;
     }
-    let n = crate::smp::online_count();
-    let hart = NEXT_IRQ_HART.fetch_add(1, Ordering::Relaxed) % n;
+    // The k-th ONLINE hart, not index k (first-silicon sweep, 2026-08-14): on the VisionFive 2 the
+    // online set is {1,2,3}, and `cursor % count` as an index would route a source to parked hart
+    // 0's PLIC context, where it sits pending forever with nothing claiming it (the same wedge as
+    // the boot_s_context bug below), and would never route one to online hart 3.
+    let hart = crate::smp::nth_online(NEXT_IRQ_HART.fetch_add(1, Ordering::Relaxed));
     let ctx = s_context_of(hart);
     // Open the target hart's context before the first source lands on it. The boot hart runs the
     // enables (test wiring, driver spawn), and the threshold register is global MMIO, so it can open
@@ -186,7 +189,10 @@ mod tests {
                 .expect("device tree is unreadable");
         let ctx = isa::plic::PlicContexts::from_device_tree(&dt).expect("the PLIC wiring parses");
 
-        for hart in 0..crate::smp::online_count() {
+        // The online set, so the loop's claim ("every online hart") is the loop's shape. On QEMU
+        // virt the set is contiguous from zero and this is the same harts as `0..count`; the 2h+1
+        // assertion below is about this machine only either way.
+        for hart in crate::smp::online_cpus() {
             let parsed = ctx
                 .s_context(hart)
                 .expect("an online hart has an S context in the tree");
