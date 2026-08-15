@@ -414,7 +414,7 @@ mod trace {
         /// healthy boot this event never appears, so its presence in a bench dump is the finding.
         WakeRefused = 9,
         /// This core set `ipc_served` on `tid`: a delivery completed the thread's parked IPC.
-        /// `aux` names the delivering site (1 send, 2 recv-collect, 3 send_cap, 4 recv_cap-collect,
+        /// `aux` names the delivering site (1 send, 2 recv-collect, 3 `send_cap`, 4 `recv_cap`-collect,
         /// 5 call, 6 reply, 7 irq signal, 8 death message), so a bench dump answers "who served
         /// this thread" by reading the ring instead of inferring it from a frozen syscall count,
         /// which is the inference boots 7 through 9 got wrong (notes/visionfive2.md, fifth stop).
@@ -529,7 +529,7 @@ pub fn note_boot_stage(stage: u32) {
 /// **A corruption tripwire over the scheduler's registries** (first-silicon diagnostics,
 /// 2026-08-15; module name provisional). Armed around the initrd demo on the board tour, it
 /// re-reads the watched ranges on the timer tick and prints every byte that changed since the
-/// last look: address, tick, before and after. A legal change (a spawn writing a fresh TcbPtr, a
+/// last look: address, tick, before and after. A legal change (a spawn writing a fresh `TcbPtr`, a
 /// reap bumping a generation) prints as a recognizable delta at a table offset; a stray write
 /// prints as bytes nothing in the choreography explains. The instrument does not judge, it shows,
 /// because boots 7 through 9 proved the judging is the part that goes wrong.

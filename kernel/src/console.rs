@@ -215,7 +215,7 @@ pub fn _print(args: core::fmt::Arguments) {
     #[cfg(test)]
     crate::testing::note_progress();
     // Writing to a UART cannot fail in any way we can act on, so drop the Result.
-    let _ = CountedWrites(&mut *CONSOLE.lock()).write_fmt(args);
+    let _ = CountedWrites(&mut CONSOLE.lock()).write_fmt(args);
 }
 
 #[macro_export]
