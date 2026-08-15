@@ -60,6 +60,9 @@ gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 pci = { version = "0.1.0", path = "../crates/pci" }
+# The NVMe queue mechanics (milestone 53's storage half): pure logic, host-tested and proved; the
+# kernel's nvme module is its volatile half, the same split as `pci` above.
+nvme = { version = "0.1.0", path = "../crates/nvme" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }

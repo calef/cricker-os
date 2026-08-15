@@ -1,0 +1,14 @@
+[package]
+name = "nvme"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# no_std for the kernel, std for host tests, like every §7 pure-logic crate. The crate owns the
+# NVMe queue mechanics only (register field decode, command building, submission/completion ring
+# arithmetic with the phase tag, doorbell addressing, PRP construction, identify parsing); the
+# kernel supplies the volatile MMIO accessors and the DMA memory, so all of this tests on the host
+# in milliseconds and is reachable by the model checker.
+
+[lints]
+workspace = true

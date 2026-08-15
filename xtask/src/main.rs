@@ -2534,6 +2534,30 @@ fn blank_disk_path() -> String {
         .to_string()
 }
 
+/// Where the NVMe test image is written; the runners take the full path in `CRICKER_NVME` rather
+/// than deriving it, because unlike the mmio disks it does not ride beside `CRICKER_DISK`.
+fn nvme_disk_path() -> String {
+    workspace_root()
+        .join("target/cricker-nvme.img")
+        .display()
+        .to_string()
+}
+
+/// The NVMe test image (milestone 53's storage half): 8 MiB of zeros behind QEMU's `-device nvme`.
+/// Zeros because the boot test's negative check is that an untouched block still reads as the
+/// image's zeros after a neighboring block was written; 8 MiB because the test asserts IDENTIFY's
+/// size answer against exactly this number, so the file and the assertion must move together
+/// (kernel/src/nvme.rs). Regenerated per leg like the blank disk, and for the same reason: the
+/// test writes it, and a leg starting from the previous leg's damage is not reproducible alone.
+fn mknvmedisk() -> bool {
+    let path = nvme_disk_path();
+    if let Err(e) = std::fs::write(&path, std::vec![0u8; 8 * 1024 * 1024]) {
+        eprintln!("mknvmedisk: could not write {path}: {e}");
+        return false;
+    }
+    true
+}
+
 /// Build milestone 57's write-half disk: 64 MiB of **zeros**, and that is the whole point.
 ///
 /// It carries no table, no filesystem and no fixture, because what the guest is going to do to it is
@@ -3296,6 +3320,16 @@ fn test() -> bool {
     // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
     // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_RNG", "1") };
+    // And an NVMe controller (milestone 53's storage half), on the same terms: a test-leg device
+    // only (the benchmark boot shares the runner and must not grow devices its instrument never
+    // measured), on both ISA legs because parity is the gate (§19), and the NVMe test ASSERTS the
+    // controller is present rather than skipping. The variable carries the image path; each leg
+    // regenerates the image below, beside the other write-target disks.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
+    unsafe { std::env::set_var("CRICKER_NVME", nvme_disk_path()) };
 
     if legs.aarch64() {
         eprintln!();
@@ -3308,6 +3342,7 @@ fn test() -> bool {
             || !mkredoxfs_crash()
             || !mkgptdisk()
             || !mkblankdisk()
+            || !mknvmedisk()
         {
             return false;
         }
@@ -3353,7 +3388,7 @@ fn test() -> bool {
         // cross-boot write failure it separates out is real, and notes/fs-server.md carries it as a
         // tracked open item with the exact recipe to reproduce it (run one leg, then the other,
         // without regenerating in between).
-        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() || !mkblankdisk() {
+        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() || !mkblankdisk() || !mknvmedisk() {
             return false;
         }
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other

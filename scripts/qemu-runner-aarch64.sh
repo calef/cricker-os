@@ -248,6 +248,26 @@ if [ -n "$CRICKER_RNG" ]; then
     RNG="-device virtio-rng-device -device virtio-rng-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# Attach an NVMe controller when CRICKER_NVME names an image (milestone 53's storage half): the
+# first NON-virtio DMA device this project drives, which is the whole point of it. No
+# iommu_platform flag, because that knob is virtio's opt-in; a real PCI device model's DMA always
+# goes through the PCI address space, so with iommu=smmuv3 on the machine the controller sits
+# behind the SMMU with no flag to forget, and the kernel must confine its requester id before the
+# controller can fetch a single command (kernel/src/nvme.rs). serial= is mandatory (QEMU refuses
+# the device without one); the value is arbitrary identity, not configuration.
+#
+# A set CRICKER_NVME naming a missing file is an error, the CRICKER_DISK lesson above: a silently
+# absent controller would read as a machine fact when it is a build-order mistake. The kernel test
+# ASSERTS the controller is present rather than skipping, like the GPU's.
+NVME=""
+if [ -n "$CRICKER_NVME" ]; then
+    if [ ! -f "$CRICKER_NVME" ]; then
+        echo "qemu-runner-aarch64: CRICKER_NVME=$CRICKER_NVME does not exist (xtask's mknvmedisk writes it)" >&2
+        exit 1
+    fi
+    NVME="-drive file=$CRICKER_NVME,if=none,format=raw,id=nvme0 -device nvme,serial=cricker-nvme,drive=nvme0"
+fi
+
 # A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
 # **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
 # and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
@@ -261,7 +281,7 @@ if [ -n "$CRICKER_GPU_MON" ]; then
     MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
 fi
 
-# shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU, $KBD and $RNG are deliberately word-split or empty
+# shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU, $KBD, $RNG and $NVME are deliberately word-split or empty
 # CPU and accelerator.
 #
 # By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
@@ -326,5 +346,6 @@ exec qemu-system-aarch64 \
     $GPU \
     $KBD \
     $RNG \
+    $NVME \
     $MON \
     "$@"

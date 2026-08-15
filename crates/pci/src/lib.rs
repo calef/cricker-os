@@ -49,10 +49,18 @@ impl Bdf {
 // Standardized config-space header offsets (type 0).
 pub const VENDOR_ID: u64 = 0x00;
 pub const COMMAND: u64 = 0x04;
+/// Class code (24 bits) over revision id (8): `cfg_read32(bdf, CLASS_REVISION) >> 8` is the class.
+pub const CLASS_REVISION: u64 = 0x08;
 pub const HEADER_TYPE: u64 = 0x0e;
 pub const BAR0: u64 = 0x10;
 pub const CAP_PTR: u64 = 0x34;
 pub const INTERRUPT_PIN: u64 = 0x3d;
+
+/// The NVMe class code: mass storage (0x01) / non-volatile memory (0x08) / NVMe I/O (0x02).
+/// Matched by class rather than by vendor/device id on purpose: QEMU's controller is Red Hat
+/// 1b36:0010, real drives are anything at all, and the class triple is the one identity the spec
+/// requires of every one of them (NVMe 1.4 §3.1's PCI header requirements).
+pub const CLASS_NVME: u32 = 0x01_08_02;
 
 /// Command register bits we set to bring a device up.
 pub const CMD_MEMORY_SPACE: u16 = 1 << 1;

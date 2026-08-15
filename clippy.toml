@@ -36,6 +36,7 @@ doc-valid-idents = [
     # and CLAUDE.md's naming tenet says a term a reader already knows from outside costs them
     # nothing; rendering it as code costs them the recognition.
     "PCIe",
+    "NVMe",
     "SMMUv3",
     "GICv2",
     "NTPv4",

@@ -41,6 +41,13 @@ mod panic;
 // decode logic is crates/pci, and each arch supplies its window/irq constants. See
 // kernel/src/pci.rs.
 mod pci;
+// The NVMe block driver (milestone 53's storage half): the volatile half of crates/nvme, brought
+// up over the PCIe transport above and confined behind the machine's IOMMU. See kernel/src/nvme.rs.
+// Only the test boot drives it today (nothing production-wired rides NVMe until the block-server
+// question in notes/nvme.md's BUGS is decided), so the non-test build allows it dead rather than
+// cfg-gating a module whose next caller is already known.
+#[cfg_attr(not(test), allow(dead_code))]
+mod nvme;
 mod revoke;
 mod sched;
 mod smp;

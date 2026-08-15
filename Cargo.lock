@@ -376,6 +376,7 @@ dependencies = [
  "line_editor",
  "measured_boot",
  "ntp_proto",
+ "nvme",
  "paging",
  "pci",
  "regions",
@@ -494,6 +495,10 @@ checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
  "windows-sys",
 ]
+
+[[package]]
+name = "nvme"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"
