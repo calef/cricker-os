@@ -474,7 +474,8 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     crate::sched::run_idle()
 }
 
-// The SMP tests need more than one core online (the runner passes `-smp 4`). They run on both
+// The SMP tests need more than one core online (the runners default to `-smp 4`; NIFE_SMP moves
+// it, up to MAX_CPUS). They run on both
 // architectures now that RISC-V brings up secondary harts via SBI HSM (parity workstream A): the
 // bring-up, cross-core work placement (inbox + reschedule IPI), and load balancing are all portable
 // and exercised identically on the GIC/SGI and PLIC/SBI-IPI paths.
@@ -630,9 +631,22 @@ mod tests {
             list.described,
             "the roster and a fresh read of the tree disagree about how many cores exist",
         );
-        assert_eq!(
-            list.described, MAX_CPUS,
-            "the runner passes -smp {MAX_CPUS}, and the tree should say so",
+        // The tree's count is the runner's `-smp`, which is no longer required to equal MAX_CPUS:
+        // the constant is a ceiling (it sizes the per-CPU statics), not the machine. What the suite
+        // does require is at least two cores (or the SMP tests prove nothing) and no more than the
+        // statics can seat (a bigger `-smp` would park real cores, and
+        // `every_core_the_tree_described_is_running` below would fail on the honest count anyway;
+        // this names the cause first).
+        assert!(
+            list.described >= 2,
+            "the SMP suite needs -smp of at least 2; the tree describes {}",
+            list.described,
+        );
+        assert!(
+            list.described <= MAX_CPUS,
+            "the runner passed -smp {} but this kernel seats only {MAX_CPUS}: cores would stay \
+             parked, so run the suite at or below cpu::MAX_CPUS",
+            list.described,
         );
 
         for (id, cpu) in list.cpus().iter().enumerate() {
@@ -715,13 +729,17 @@ mod tests {
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.
     ///
     /// `bring_up_secondaries` already waited for the count before `test_main` ran, so the other
-    /// cores are online by now. The runner passes `-smp 4`, so we expect `MAX_CPUS - 1`.
+    /// cores are online by now. The expectation is the machine's own core count (whatever `-smp`
+    /// the runner passed), not `MAX_CPUS`: the constant is capacity, and a leg run at `-smp 5`
+    /// on an eight-slot kernel has four secondaries, honestly.
     #[test_case]
     fn all_secondaries_came_online() {
         assert_eq!(
             ONLINE.load(Ordering::Acquire),
-            MAX_CPUS - 1,
-            "not all secondary cores came online (is the runner passing -smp {MAX_CPUS}?)",
+            super::described_count() - 1,
+            "not every core the tree describes came online (described {}, online {})",
+            super::described_count(),
+            online_count(),
         );
     }
 
@@ -808,7 +826,7 @@ mod tests {
         let here = cpu::id();
         assert!(
             n >= 2,
-            "a cross-core placement test needs at least two online cores (runner passes -smp {MAX_CPUS})",
+            "a cross-core placement test needs at least two online cores; this machine has {n}",
         );
 
         // Every ONLINE core but this one, placed from here: the remote path, inbox plus SGI. The

@@ -4302,7 +4302,7 @@ fn bench() -> bool {
             // in this same run are then NOT per-core clean (the reap-heavy ones, spawn_el0 and
             // spawn_reap, inflate and go noisy under cross-core reap lag); read those from the default
             // single-hart run instead. See notes/benchmarks.md, the multi-hart section.
-            // "4" matches the kernel's MAX_CPUS and the runner's default; the throughput bench reads
+            // "4" matches the runner's default; the throughput bench reads
             // the actual online count at runtime, so this only needs to be more than one.
             cmd.env("NIFE_SMP", "4");
             eprintln!(
