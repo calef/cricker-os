@@ -25,8 +25,8 @@
 
 #![no_main]
 
-use nifefs::{Fs, MAX_FILES, NAME_LEN, image_size, write_image};
 use libfuzzer_sys::fuzz_target;
+use nifefs::{Fs, MAX_FILES, NAME_LEN, image_size, write_image};
 
 fuzz_target!(|files: Vec<(String, Vec<u8>)>| {
     // The writer's own limits, applied here so the target explores the accepted region rather than

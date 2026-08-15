@@ -578,7 +578,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 d.intid,
             ),
             None => {
-                println!("  pcie        : no virtio-blk on the bus (pass NIFE_DISK to attach one)")
+                println!("  pcie        : no virtio-blk on the bus (pass NIFE_DISK to attach one)");
             }
         }
         sched::note_boot_stage(9);
