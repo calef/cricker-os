@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn every_mask_up_to_a_byte_yields_its_own_bits() {
-        // Exhaustive over 8-bit masks (MAX_CPUS is 4 today; this covers doubling it): the iterator
+        // Exhaustive over 8-bit masks, which since the 2026-08-14 bump is exactly MAX_CPUS: the iterator
         // yields exactly the set bits, ascending, and its length is the popcount.
         for mask in 0usize..256 {
             let got: Vec<usize> = cpus_in(mask).collect();

@@ -56,7 +56,7 @@
 
 use dtb::{Dtb, Error};
 
-/// The most CPU nodes [`Isa::from_device_tree`] will read. Sixteen is four times the kernel's
+/// The most CPU nodes [`Isa::from_device_tree`] will read. Sixteen is twice the kernel's
 /// `MAX_CPUS` and costs one pointer pair each on the stack; a machine with more is reported as
 /// truncated ([`Isa::harts`] saturates) rather than silently half-read.
 pub const MAX_HARTS: usize = 16;
