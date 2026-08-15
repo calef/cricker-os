@@ -12,7 +12,7 @@ person, renamed 2026-08-15 at his request.*
 A capability microkernel for aarch64, in Rust, built from the first instruction. **It is a
 demonstration OS** (DECISIONS.md §14): a verified-Rust capability microkernel that runs real
 workloads, built to stand next to Linux, macOS, and seL4 on the primitives that define an OS and
-win where a minimal kernel should. calef (calef Alef) is an experienced software engineer and engineering
+win where a minimal kernel should. calef (Chris Alef) is an experienced software engineer and engineering
 leader; on this project he is the **architect and reviewer**, not the line-by-line builder.
 
 That should drive your judgment calls. **A complete, correct, well-documented, benchmarked
