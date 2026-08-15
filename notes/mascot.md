@@ -35,7 +35,8 @@ may hear homage, ruled acceptable by the artist being of that generation.
 
 ## BUGS
 
-- The artwork is not yet in the tree; this note records the decision so it lives in a file
-  rather than a conversation. Until the art lands, Cobble exists as a name and a ruling.
+- The artwork in the tree (`art/cobble-first-draft.jpg`, also on the README) is the first
+  draft, photographed from Clay's screen rather than exported; it stands in until Clay calls a
+  draft final and exports it properly.
 - No icon-size rendering exists yet. The draft passes the squint test (boxy head, red eyes,
   center gear), but a real small-size cut is future work for when the art is final.

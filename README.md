@@ -2,6 +2,11 @@
 
 *Formerly cricker-os; renamed 2026-08-15, milestone 120. Old links redirect.*
 
+<img src="art/cobble-first-draft.jpg" alt="Cobble, the nife mascot: a stone golem with red eyes and mossy shoulders, holding a gear" width="300">
+
+*Cobble, guardian of the machinery. First draft, by Clay. The full naming record is
+[notes/mascot.md](notes/mascot.md).*
+
 [![CI](https://github.com/crickertech/nife/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/crickertech/nife/actions/workflows/ci.yml)
 
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
