@@ -256,6 +256,17 @@ pub fn flush(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16]) -> Msg {
     msg(h + 24, b)
 }
 
+/// A LOGOFF: the clean end of a session, and what lets the server end the connection without
+/// waiting out a receive timeout (see `smb_server`'s BUGS).
+pub fn logoff(msg_id: u64, sid: u64) -> Msg {
+    let mut b = [0u8; MSG_MAX];
+    request_header(&mut b, 0, crate::CMD_LOGOFF, msg_id, sid, 0);
+    let h = HDR_LEN;
+    w16(&mut b, h, 4);
+    w16(&mut b, h + 2, 0);
+    msg(h + 4, b)
+}
+
 /// An ECHO.
 pub fn echo(msg_id: u64) -> Msg {
     let mut b = [0u8; MSG_MAX];

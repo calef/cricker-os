@@ -837,6 +837,7 @@ dependencies = [
  "nifefs",
  "ntp_proto",
  "sink_proto",
+ "smb_proto",
  "smoltcp",
  "socket_proto",
  "supervision_proto",
@@ -932,6 +933,7 @@ dependencies = [
  "manual",
  "measured_boot",
  "nifefs",
+ "smb_proto",
  "video_terminal",
 ]
 

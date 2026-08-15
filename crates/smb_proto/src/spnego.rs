@@ -38,7 +38,7 @@ fn expect(b: &[u8], want: u8) -> Option<&[u8]> {
 }
 
 /// Walk a SEQUENCE's children looking for context tag `want`, skipping earlier fields. RFC 4178's
-/// token bodies are SEQUENCEs of optional context-tagged fields in ascending order, so a linear
+/// token bodies are SEQUENCE bodies of optional context-tagged fields in ascending order, so a linear
 /// scan that ignores what it does not need is exactly the grammar.
 fn field(mut seq: &[u8], want: u8) -> Option<&[u8]> {
     while !seq.is_empty() {

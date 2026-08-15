@@ -303,8 +303,6 @@ pub fn start_net_stack(
     pci: bool,
     listen_grant: u64,
 ) -> Option<EpId> {
-    use crate::cap::untyped_cap;
-
     let (transport, intid, rid) = if pci {
         let d = crate::pci::find_net_device()?;
         (crate::virtio::Transport::pci(&d), d.intid, Some(d.rid))
@@ -320,9 +318,24 @@ pub fn start_net_stack(
     };
 
     let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid, listen_grant);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack);
 
-    // The client: WRITE on the shared stack endpoint, its own untyped, a report endpoint. Two
-    // extra stack pages cover its DNS-query building and IPC; it links no heap.
+    // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
+    // enters its serve loop (the client's first request blocks until it does). This also
+    // confirms DHCP completed before the client's exchange runs. The client, spawned above,
+    // waits at its first request meanwhile.
+    crate::sched::ipc_recv(net_stack_report);
+
+    Some(cli_report)
+}
+
+/// Spawn one client of a `Stack` endpoint: WRITE on the shared endpoint, its own untyped, a
+/// report endpoint, two extra stack pages, no heap. The shared body of [`start_net_stack`]'s
+/// socket-contract client and the SMB adapter below; `arg0`/`arg1` are the client's, and mean
+/// whatever its `_start` says they mean.
+fn spawn_stack_client(image: &'static [u8], arg0: u64, arg1: u64, stack: EpId) -> EpId {
+    use crate::cap::untyped_cap;
+
     let cli_report = crate::sched::create_endpoint();
     let cli_budget =
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the net client");
@@ -345,10 +358,10 @@ pub fn start_net_stack(
 
     crate::sched::spawn(move || {
         run(
-            image, // the net_stack binary again; a nonzero entry role runs its client half
+            image,
             Spawn {
-                arg0: cli_arg,
-                arg1: 0,
+                arg0,
+                arg1,
                 arg2: 0,
                 grants: &[
                     endpoint_cap(cli_report, Rights::WRITE), // slot 0: report the verdict
@@ -362,14 +375,47 @@ pub fn start_net_stack(
         )
     })
     .expect("could not spawn the net client");
+    cli_report
+}
 
-    // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
-    // enters its serve loop (the client's first request blocks until it does). This also
-    // confirms DHCP completed before the client's exchange runs. The client, spawned above,
-    // waits at its first request meanwhile.
+/// **Spawn the net server, the inbound socket-contract client, AND the SMB adapter** (milestones
+/// 107 and 54), all on one NIC and one `Stack` endpoint. Returns
+/// `(socket client's report, smb server's report)`, or `None` with no NIC.
+///
+/// One spawn serves two milestones for the same reason milestone 107's grant checks ride in its
+/// accept exchange: **a second `net_stack` does not fit the test boot.** Its 192-page untyped
+/// region is never reclaimed, and the aarch64 suite already ran out of contiguous memory the day
+/// someone tried (see `virtio::MAX_DEVICES`). So the SMB adapter is spawned as a *second client
+/// of the same stack*, which the socket contract permits (clients sharing an endpoint share its
+/// grant and its socket table; `socket_proto`'s BUGS): the echo client owns socket ids 0 and 1, the
+/// SMB adapter 2 and 3, and the listen grant is widened to the two-port range
+/// `[NET_LISTEN_PORT, smb_port]`, keeping the denied-port check (8080) meaningful.
+///
+/// `smb_rounds` connections must be served by the adapter before it reports; the host side is
+/// xtask's SMB prober, the mirror of the inbound echo prober, driving a real
+/// negotiate-through-read exchange through the second `hostfwd`.
+pub fn start_net_stack_with_smb(
+    image: &'static [u8],
+    smb_image: &'static [u8],
+    cli_arg: u64,
+    echo_port: u16,
+    smb_port: u16,
+    smb_rounds: u64,
+) -> Option<(EpId, EpId)> {
+    let dev = crate::virtio::find_net_device()?;
+    let transport = crate::virtio::Transport::Mmio {
+        mmio_phys: dev.mmio_phys,
+    };
+    let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port));
+    let (net_stack_report, stack) = wire_net_server(image, transport, dev.intid, None, grant);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack);
+    let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack);
+
+    // Drain the DHCP lease report, as in start_net_stack: both clients block on their first
+    // request until the server enters its serve loop.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some(cli_report)
+    Some((cli_report, smb_report))
 }
 
 /// The networked std client's heap budget and extra stack, both larger than the hand-written

@@ -285,7 +285,7 @@ impl Connection {
                     self.session_id = 0x1D0_0001; // one session per connection; the value is arbitrary
                 }
                 let mut challenge = [0u8; ntlmssp::CHALLENGE_MAX];
-                let clen = ntlmssp::build_challenge(&mut challenge, &self.challenge);
+                let challenge_len = ntlmssp::build_challenge(&mut challenge, &self.challenge);
                 write_response_header(
                     out,
                     CMD_SESSION_SETUP,
@@ -302,10 +302,10 @@ impl Connection {
                 w16(out, b + 2, 0); // SessionFlags: not decided yet
                 let buf_at = b + 8;
                 let blen = if wrapped {
-                    spnego::build_challenge_resp(&mut out[buf_at..], &challenge[..clen])
+                    spnego::build_challenge_resp(&mut out[buf_at..], &challenge[..challenge_len])
                 } else {
-                    out[buf_at..buf_at + clen].copy_from_slice(&challenge[..clen]);
-                    clen
+                    out[buf_at..buf_at + challenge_len].copy_from_slice(&challenge[..challenge_len]);
+                    challenge_len
                 };
                 w16(out, b + 4, buf_at as u16);
                 w16(out, b + 6, blen as u16);
