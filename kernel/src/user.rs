@@ -1088,6 +1088,12 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     crate::sched::spawn(|| {
         for i in 1..=5u32 {
             crate::arch::timer::spin_for(crate::arch::timer::frequency() * 2);
+            // A finished tour needs no witness: boot 13 reached the final banner and the five
+            // dumps that followed showed only a quiescent machine waiting for input, five times.
+            // A stalled tour still gets all five.
+            if crate::sched::boot_stage() >= 10 {
+                break;
+            }
             // svc is the machine-wide ecall count; tx is console::_print's byte count. Together
             // with the dump header's tour stage they are boot 11's discriminators (fifth bench
             // stop): a stage past the demo with tx grown past these dumps' own output proves the
