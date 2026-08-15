@@ -344,6 +344,64 @@ fn bring_up(bdf: Bdf, device_type: u32) -> Option<PciVirtioDevice> {
     })
 }
 
+/// An enumerated, brought-up NVMe controller: its register file (BAR0) placed and decoding, bus
+/// mastering enabled, requester id known so the caller can confine its DMA before enabling the
+/// controller. No INTx line, on purpose: the milestone-53 driver completes by polling the phase
+/// tag (`kernel/src/nvme.rs`), so wiring an interrupt here would record a fact nothing checks.
+#[derive(Debug, Clone, Copy)]
+pub struct PciNvmeDevice {
+    /// The register file's physical base (BAR0; the doorbells live in it too).
+    pub bar0: u64,
+    /// The PCIe requester id, the key the IOMMU confines DMA by (as `PciVirtioDevice::rid`).
+    pub rid: u32,
+}
+
+/// Find the first NVMe controller on the bus and bring its transport up: size and place its BARs,
+/// resolve BAR0, and enable memory decoding and bus mastering. `None` if no function on the bus
+/// carries the NVMe class code.
+///
+/// Same bring-up order as [`bring_up`], for the same reasons; what it does not share is the virtio
+/// capability walk (NVMe's register layout is fixed by its own spec, not described by vendor
+/// capabilities) and the INTx resolution (the driver polls). Bus-Master last, as everywhere: DMA
+/// permission is granted at the final moment, and on a machine with an IOMMU the device still
+/// cannot reach a byte until `iommu::confine` maps its region (denied by default, milestone 16b).
+pub fn find_nvme_device() -> Option<PciNvmeDevice> {
+    if !host_bridge_present() {
+        return None;
+    }
+    let mut found: Option<Bdf> = None;
+    pci::enumerate(
+        PCI_ECAM_BUSES,
+        &mut |b, o| cfg_read32(b, o),
+        &mut |bdf, _, _| {
+            if found.is_none() && cfg_read32(bdf, pci::CLASS_REVISION) >> 8 == pci::CLASS_NVME {
+                found = Some(bdf);
+            }
+        },
+    );
+    let bdf = found?;
+
+    let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
+        cfg_write32(b, o, v);
+    });
+    if !place_bars(bdf, &mut bars) {
+        return None;
+    }
+    let bar0 = bars[0].as_ref().map(|b| b.base)?;
+
+    let cmd = cfg_read32(bdf, pci::COMMAND) as u16;
+    cfg_write32(
+        bdf,
+        pci::COMMAND,
+        (cmd | pci::CMD_MEMORY_SPACE | pci::CMD_BUS_MASTER) as u32,
+    );
+
+    Some(PciNvmeDevice {
+        bar0,
+        rid: bdf.requester_id(),
+    })
+}
+
 /// The QEMU `riscv-iommu-pci` function's PCI identity (Red Hat vendor, RISC-V IOMMU device id).
 /// riscv-only: aarch64's SMMUv3 is a device-tree platform node, not a PCI function, and x86's
 /// IOMMUs are discovered through ACPI, so a PCI-function IOMMU is a RISC-V shape today.

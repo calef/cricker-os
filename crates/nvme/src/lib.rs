@@ -205,7 +205,9 @@ pub fn prp_pair(base: u64, len: u64, page_size: u64) -> Option<(u64, u64)> {
         Some((base, 0))
     } else if end <= 2 * page_size {
         // The second pointer is the next page boundary after base, offset-free by construction.
-        Some((base, (base & !(page_size - 1)) + page_size))
+        // Checked: a base in the last page of the address space has no next boundary, and Kani
+        // found exactly that overflow in this line's first draft (`+` for `checked_add`).
+        Some((base, (base & !(page_size - 1)).checked_add(page_size)?))
     } else {
         None // would need a PRP list
     }

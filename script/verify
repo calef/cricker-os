@@ -227,6 +227,7 @@ intrusive	9	the scheduler's queue structure
 asid	4	the TLB tag allocator
 crickerfs	2	the initrd parser the kernel runs on boot input
 pci	6	config-space decode on hostile-device input
+nvme	2	the queue rings never index out, and the doorbell/PRP arithmetic is total
 dma_validator	175	the DMA-confinement validator, no descriptor escapes the grant
 ntp_proto	17	the 1900-epoch era pivot, and no hostile packet moves the clock
 gpt	64	the partition table's CRC-32, its round trips, and partitions that overlap
