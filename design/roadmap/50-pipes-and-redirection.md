@@ -1,11 +1,14 @@
 # 50. Pipes and redirection: one sink protocol, and `|` turns out to be an endpoint
 
-**Status: PARTIAL.**
+**Status: BUILT.** Closed 2026-08-14 by the integrator on the overnight verification lane's
+evidence: every residual the paragraph below listed as open had closed on 2026-08-03 and the record
+had not caught up. Buffering was measured and the verdict is build nothing (commit 8c27953;
+notes/pipes.md carries the numbers and the honest caveats); the terminal sink adapter is
+`terminal_sink_caretaker`, built, wired as the fifth boot component, name ratified (061066e); and
+`2>` was decided by Chris and built as the declared second stream (design/decisions/67-second-stream.md).
 
-**Gate: NONE.** All four operators run at a real prompt on both ISAs, and two of the three
-residuals need no decision: buffering, which wants a pipeline measured against a Unix pipe first,
-and the terminal's own sink adapter. The third, `2>`, is a design fork rather than a task, and
-notes/pipes.md weighs both shapes.
+(The Gate paragraph that stood here described the three residuals; all three closed 2026-08-03,
+and a BUILT milestone gates nothing, so it is gone rather than stale.)
 
 **The protocol lane built 2026-07-31** (`crates/sink_proto`, `user/src/sink.rs`, the std PAL's
 `sys/stdio`, and `abi::Error::Gone`; concept note: notes/sink-protocol.md). One framing for "write
@@ -60,7 +63,8 @@ That lane also built the gate notes/pipes.md named as the milestone's most valua
 `script/shell-check` boots `--features shell` on both ISAs and types at the prompt, which is the
 only thing in the tree that runs the real `system_initializer`.
 
-**Still open here, and named honestly in notes/pipes.md's BUGS**: buffering (a pipeline is full
+**What the following paragraph listed as open is closed; kept for the reasoning, superseded on
+the facts** (see the Status block above for where each landed): buffering (a pipeline is full
 lockstep and has not been benchmarked against a Unix pipe), the terminal's own sink adapter, and
 **`2>`, which is a design fork rather than a task**. This system has no ambient anything, so a
 program holds one output endpoint and its diagnostics ride it in-band; a second stream is either a
