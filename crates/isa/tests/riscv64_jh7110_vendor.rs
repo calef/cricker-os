@@ -71,16 +71,30 @@ fn the_okay_s7_is_still_not_startable() {
         "rv64imacu spells user mode and omits supervisor: the node's one truthful property"
     );
     assert!(
-        !(s7.usable && s7.supervisor),
+        !s7.startable(),
         "the bring-up predicate must refuse hart 0, or OpenSBI dies on it again"
     );
     for (i, cpu) in list.cpus().iter().enumerate().skip(1) {
         assert_eq!(cpu.hwid, i as u64);
         assert!(
-            cpu.usable && cpu.supervisor,
+            cpu.startable(),
             "hart {i} is a U74 (rv64imafdcbsux spells its s) the kernel may start"
         );
     }
+    // The whole startable set, in one read: 5 harts described, 4 startable, hart 4 among them.
+    // Seating is by hart id (smp::read_cpu_list), so the S7's lie costs it only its own seat and
+    // the fourth U74 sits at slot 4 instead of falling off a positional truncation.
+    let startable: Vec<u64> = list
+        .cpus()
+        .iter()
+        .filter(|c| c.startable())
+        .map(|c| c.hwid)
+        .collect();
+    assert_eq!(
+        startable,
+        [1, 2, 3, 4],
+        "the vendor tree's lies must cost the S7 its start, and nobody else theirs"
+    );
     assert_eq!(list.timebase_hz, Some(4_000_000));
 }
 
