@@ -20,8 +20,11 @@
  *
  * Not measured, modeled: cpu@2..4 are U74s identical to cpu@1 (the silicon's, and mainline's,
  * word); the PLIC wiring is the SoC's own (same interrupts-extended as the mainline dtsi: the S7
- * contributes only a machine context, so hart h's S context is 2h), and the tree is trimmed to
- * what the tests read.
+ * contributes only a machine context, so hart h's S context is 2h); UART0's `interrupts = <32>`
+ * is the SoC's line per the dtsi (the number boot 13 proved the kernel was NOT arming,
+ * notes/visionfive2.md BUGS), spelled with `interrupt-parent` on the serial node itself, the
+ * per-node form old dtc emits, so the two JH7110 fixtures cover both spellings of the same
+ * wiring. The tree is trimmed to what the tests read.
  */
 
 / {
@@ -133,11 +136,23 @@
 			#interrupt-cells = <1>;
 			#address-cells = <0>;
 			riscv,ndev = <136>;
+			phandle = <0x20>;
 			interrupts-extended = <&cpu0_intc 11>,
 					      <&cpu1_intc 11>, <&cpu1_intc 9>,
 					      <&cpu2_intc 11>, <&cpu2_intc 9>,
 					      <&cpu3_intc 11>, <&cpu3_intc 9>,
 					      <&cpu4_intc 11>, <&cpu4_intc 9>;
+		};
+
+		serial@10000000 {
+			compatible = "snps,dw-apb-uart";
+			reg = <0x0 0x10000000 0x0 0x10000>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			clock-frequency = <24000000>;
+			interrupts = <32>;
+			interrupt-parent = <0x20>;
+			status = "okay";
 		};
 	};
 };

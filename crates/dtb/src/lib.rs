@@ -646,6 +646,170 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// Property `name` on the first node whose name starts with `prefix`, **falling back to the
+    /// nearest ancestor** that carries it. `Ok(None)` when no such node, or neither the node nor
+    /// any ancestor has the property.
+    ///
+    /// [`node_prop`](Self::node_prop) answers only from the node itself, which is right for most
+    /// properties and wrong for the handful the spec defines as *inheritable*.
+    /// `interrupt-parent` is the motivating case: QEMU's riscv64 `virt` writes it on the serial
+    /// node itself, QEMU's aarch64 `virt` writes it once on the **root**, and the mainline JH7110
+    /// dtsi writes it on `/soc`, so a read that looks only at the device's own node works on
+    /// exactly one of the three machines this kernel reads trees from. The nearest enclosing value
+    /// wins, per the spec, which is what "the value of each open ancestor, closest first" encodes.
+    ///
+    /// Properties precede child nodes in the structure block, so by the time the target node
+    /// closes, every open ancestor's value has already been seen; deciding at the target's
+    /// `END_NODE` is what makes one walk suffice.
+    pub fn node_prop_inherited(&self, prefix: &[u8], name: &[u8]) -> Result<Option<&'a [u8]>, Error> {
+        const MAX_DEPTH: usize = 16;
+        // Where `name`'s value sits on the node open at each depth, `None` where it has none. A
+        // BEGIN_NODE resets its own depth's slot, so a closed sibling's value can never leak into
+        // the ancestor scan (which only reads the depths still open above the target anyway).
+        let mut values = [None::<(usize, usize)>; MAX_DEPTH];
+
+        let mut depth = 0usize;
+        let mut target_at: Option<usize> = None;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let nm = self.cstr(at)?;
+                    at += align4(nm.len() + 1);
+                    depth += 1;
+                    if depth < MAX_DEPTH {
+                        values[depth] = None;
+                    }
+                    // The same `(2..MAX_DEPTH)` refusal as `node_reg`: a node deeper than the
+                    // value stack was never tracked, and answering for it would mean answering
+                    // from ancestors we stopped recording. Not finding it is honest.
+                    if (2..MAX_DEPTH).contains(&depth)
+                        && nm.starts_with(prefix)
+                        && target_at.is_none()
+                    {
+                        target_at = Some(depth);
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if target_at == Some(depth) {
+                        // The whole target node has been walked: its own value if it had one,
+                        // else the nearest open ancestor's, root included.
+                        for d in (1..=depth).rev() {
+                            if let Some((value_at, len)) = values[d] {
+                                return self
+                                    .bytes
+                                    .get(value_at..value_at + len)
+                                    .map(Some)
+                                    .ok_or(Error::Truncated);
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    if depth < MAX_DEPTH && self.cstr(self.off_strings + name_off)? == name {
+                        values[depth] = Some((value_at, len));
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(None),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
+    /// The raw bytes of property `name` on the node whose `phandle` is `phandle`. `Ok(None)` when
+    /// no node carries that phandle, or the node has no such property.
+    ///
+    /// This is how a property that *refers* to another node gets followed. `interrupt-parent` is
+    /// the motivating case: its value is a phandle naming the interrupt controller, and the only
+    /// way to decode the referring node's `interrupts` is to ask that controller for its
+    /// `#interrupt-cells`. Both spellings of the phandle property are honored (`phandle` and the
+    /// legacy `linux,phandle`), because old dtc wrote the latter and real vendor trees carry both.
+    ///
+    /// Like [`node_prop_compatible`](Self::node_prop_compatible), this cannot decide at the
+    /// property itself (`phandle` may appear after `name` in the same node), so every open node's
+    /// candidate value is remembered and the answer returned when a matching node closes.
+    pub fn phandle_prop(&self, phandle: u32, name: &[u8]) -> Result<Option<&'a [u8]>, Error> {
+        const MAX_DEPTH: usize = 16;
+        // Per open node: where `name`'s value sits, and whether its phandle matched.
+        let mut found = [None::<(usize, usize)>; MAX_DEPTH];
+        let mut matched = [false; MAX_DEPTH];
+
+        let mut depth = 0usize;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let nm = self.cstr(at)?;
+                    at += align4(nm.len() + 1);
+                    depth += 1;
+                    if depth < MAX_DEPTH {
+                        found[depth] = None;
+                        matched[depth] = false;
+                    }
+                }
+
+                FDT_END_NODE => {
+                    // Depth 1 is the root, which no phandle names in practice; a node past
+                    // MAX_DEPTH was never tracked, so it cannot answer (node_reg's refusal).
+                    if (2..MAX_DEPTH).contains(&depth) && matched[depth] {
+                        return match found[depth] {
+                            Some((value_at, len)) => self
+                                .bytes
+                                .get(value_at..value_at + len)
+                                .map(Some)
+                                .ok_or(Error::Truncated),
+                            None => Ok(None),
+                        };
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    let pname = self.cstr(self.off_strings + name_off)?;
+                    if depth < MAX_DEPTH {
+                        if pname == name {
+                            found[depth] = Some((value_at, len));
+                        }
+                        if (pname == b"phandle" || pname == b"linux,phandle")
+                            && len == 4
+                            && be32(self.bytes, value_at)? == phandle
+                        {
+                            matched[depth] = true;
+                        }
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(None),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// Property `name` on **every** node whose name starts with `prefix`, in tree order.
     ///
     /// [`node_prop`](Self::node_prop) answers for the first matching node and stops, which is right
