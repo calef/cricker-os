@@ -61,6 +61,13 @@ fn the_cpu_list_knows_the_s7_is_unusable() {
     assert_eq!(list.described, 5);
     assert_eq!(list.cpus()[0].hwid, 0);
     assert!(!list.cpus()[0].usable, "hart 0 is the disabled S7");
+    // Mainline spells no privilege letters on any hart, so the supervisor rule stays silent here
+    // and the exclusion is status's alone. The vendor-shaped fixture
+    // (riscv64_jh7110_vendor.rs) is the mirror image: status lies and the ISA string excludes.
+    assert!(
+        list.cpus().iter().all(|c| c.supervisor),
+        "rv64imac_zba_zbb says nothing about privilege modes, and silence is not denial"
+    );
     for (i, cpu) in list.cpus().iter().enumerate().skip(1) {
         assert_eq!(cpu.hwid, i as u64);
         assert!(cpu.usable, "hart {i} is a U74 the kernel may start");

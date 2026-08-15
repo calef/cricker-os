@@ -64,8 +64,9 @@ pub struct PerCpu {
     /// - **Reaping** (the original, DECISIONS.md §11): a `Finished` predecessor is freed by its
     ///   successor, never by a remote observer.
     /// - **Deferred wakes** (milestone 14 phase A.3): a `Blocked` predecessor that a waker
-    ///   caught *mid-switch-out* (`Thread::on_cpu` still set, its saved context still stale) is
-    ///   not queued by the waker; the wake is parked in `Thread::wake_pending` and completed by
+    ///   caught *mid-switch-out* (the handshake's `on_cpu` still set, its saved context still
+    ///   stale) is not queued by the waker; the wake is parked in `wake_pending` (both fields on
+    ///   `wake_handshake::Handshake`, the loom-searched extraction) and completed by
     ///   the successor, after the context is real. Without this, a rendezvous or interrupt
     ///   arriving in that window put the thread on a second core while its first was still
     ///   running it: two cores in one thread, on a stale register file.

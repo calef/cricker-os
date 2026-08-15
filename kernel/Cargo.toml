@@ -41,6 +41,10 @@ block_roster = { version = "0.1.0", path = "../crates/block_roster" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
 compositor = { version = "0.1.0", path = "../crates/compositor" }
+# The online-cpu set as mask arithmetic (the 2026-08-14 first-silicon sweep). The kernel's
+# `smp::online_cpus`/`nth_online` add only the live mask; the non-contiguous {1,2,3} shape the QEMU
+# suite cannot boot is host-proven in this crate instead.
+cpu_set = { version = "0.1.0", path = "../crates/cpu_set" }
 # The credential contract (milestone 56, the credential half). The kernel wires the credential
 # service and its provisioner, and its tests read the reply codes the userspace clients report, so
 # no party has its own copy of what a verdict means.
@@ -92,6 +96,10 @@ spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 # `dma_validator` made for Kani. See notes/interleaving.md.
 steal_request = { version = "0.1.0", path = "../crates/steal_request" }
 video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
+# The scheduler's block/wake handshake, so the kernel calls the loom-searched transitions rather
+# than keeping a copy of them: the second retrofit of steal_request's move, asked for by the
+# fourth bench stop's audit. See notes/interleaving.md.
+wake_handshake = { version = "0.1.0", path = "../crates/wake_handshake" }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.

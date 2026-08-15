@@ -29,6 +29,12 @@ IMG="$OUT/cricker-vf2.img"
 
 cargo build -p kernel --release --target "$TARGET"
 
+# The userspace archive, packed for this target: what QEMU gets as -initrd, the card carries as a
+# file. cargo xtask initrd-riscv writes target/initrd-riscv.img; the copy beside the kernel image
+# keeps the card's contents one directory's worth of truth.
+cargo xtask initrd-riscv
+cp target/initrd-riscv.img "$OUT/cricker-initrd.img"
+
 # llvm-objcopy from the pinned toolchain's llvm-tools component, found the same way xtask finds it
 # (rustc --print sysroot). The Homebrew/system objcopy is deliberately not a fallback: a silent
 # tool substitution is how a subtly different image gets flashed.
@@ -71,6 +77,7 @@ echo
 echo "built:"
 echo "  $IMG  ($SIZE bytes, Image header verified)"
 echo "  $OUT/extlinux/extlinux.conf"
+echo "  $OUT/cricker-initrd.img  (the userspace archive; optional third file on the card)"
 echo
 cat <<'EOF'
 To prepare a microSD card (macOS; nothing below has been run for you):
@@ -92,6 +99,16 @@ kernel's boot map (see notes/visionfive2.md, "The microSD payload"):
   StarFive # fdt addr ${fdtcontroladdr}
   StarFive # fdt move ${fdtcontroladdr} 0x86000000
   StarFive # booti ${kernel_addr_r} - 0x86000000
+
+With the userspace archive (the kernel's boot tour then runs user programs, the console server
+included; U-Boot writes /chosen/linux,initrd-* exactly as QEMU's -initrd does). 0x90000000 is
+clear of the kernel (ends ~0x8029_0000) and the moved DTB (0x8600_0000):
+
+  StarFive # load mmc 1:1 ${kernel_addr_r} /cricker-vf2.img
+  StarFive # load mmc 1:1 0x90000000 /cricker-initrd.img
+  StarFive # fdt addr ${fdtcontroladdr}
+  StarFive # fdt move ${fdtcontroladdr} 0x86000000
+  StarFive # booti ${kernel_addr_r} 0x90000000:${filesize} 0x86000000
 
 TFTP instead of the card (cordoba serves; board side only, see the note):
 

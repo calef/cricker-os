@@ -35,9 +35,11 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use wake_handshake::{SwitchOutVerdict, WakeVerdict};
+
 use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
-use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
+use crate::thread::{Context, QuotaToken, State, Thread, Tid, WaitRole, switch_to};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
 /// preemption is real.
@@ -327,7 +329,7 @@ fn endpoint_of(sched: &Scheduler, ep: EpId) -> Option<&'static mut Endpoint> {
 /// error. A helper because several IPC paths set it. Caller holds `SCHED`.
 fn set_ipc_aborted(sched: &mut Scheduler, tid: Tid) {
     if let Some(t) = sched.threads.get_mut(tid) {
-        t.ipc_aborted = true;
+        t.handshake.abort();
     }
 }
 
@@ -345,7 +347,7 @@ pub fn take_ipc_aborted() -> bool {
     sched
         .threads
         .get_mut(tid)
-        .map(|t| core::mem::take(&mut t.ipc_aborted))
+        .map(|t| t.handshake.take_aborted())
         .unwrap_or(false)
 }
 
@@ -359,6 +361,144 @@ pub fn take_ipc_aborted() -> bool {
 /// operation is a couple of pointer writes, from the timer IRQ or anywhere else. §9's
 /// no-allocation-in-IRQ rule holds by construction.
 static SCHED: IrqSafeMutex<Option<Scheduler>> = IrqSafeMutex::new(rank::SCHED, None);
+
+/// **Per-cpu ring of the last few scheduler events** (first-silicon diagnostics, 2026-08-14; the
+/// module name is provisional). A boot-7 bench dump on the VisionFive 2 showed an end state no
+/// legal transition sequence produces (a thread `Blocked` at a non-syscall pc; a receiver
+/// `Running` as another core's current for ten seconds), and an end state alone cannot say which
+/// transition wrote it. This keeps the last [`trace::DEPTH`] events each core performed, and
+/// [`dump_threads`] prints them, so the *path* into the wedge is on the serial log.
+///
+/// Cost and honesty:
+///
+/// - One relaxed `fetch_add` and one relaxed store per event, on paths that already hold `SCHED`
+///   or run in IRQ context with interrupts masked, so each ring has exactly one writer (its own
+///   core) and no entry can tear (one `u64`).
+/// - **Compiled out of `--features bench` builds**, so the benchmark numbers the tripwire watches
+///   are not measuring the instrument. The board tour build carries no features and keeps it.
+/// - A dump reads other cores' rings racily (drain/steal events are recorded outside `SCHED`);
+///   an entry is atomic, so the worst case is an event missing from the tail, never a torn one.
+///
+/// The bench build gets a no-op twin of the same two-function surface (below), so the call sites
+/// are identical in every configuration and nothing here needs a dead-code allow.
+#[cfg(not(feature = "bench"))]
+mod trace {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Events per core. 16 is enough to see the whole final approach to a wedge (a block, the
+    /// wakes around it, the switch that stranded something) without turning the dump into a log.
+    pub const DEPTH: usize = 16;
+
+    /// What happened. The discriminant is packed into the entry's top byte.
+    #[derive(Clone, Copy)]
+    #[repr(u8)]
+    pub enum Event {
+        /// `schedule()` picked `tid` and marked it Running on this core.
+        SwitchTo = 1,
+        /// The thread running here marked itself Blocked (aux = low byte of the endpoint name).
+        BlockSelf = 2,
+        /// This core moved `tid` Blocked -> Ready onto a run queue (rendezvous, reply, or abort).
+        Wake = 3,
+        /// This core saw `tid` still on a cpu and parked the wake (`wake_pending`).
+        WakeDeferred = 4,
+        /// This core completed a parked wake in `finish_switch`.
+        WakeCompleted = 5,
+        /// This core pushed `tid` into cpu `aux`'s inbox (placement or load-aware wake).
+        PlaceRemote = 6,
+        /// This core served a steal: handed `tid` to requester cpu `aux`.
+        StealServe = 7,
+        /// This core drained its inbox; the tid field carries the count moved.
+        InboxDrain = 8,
+        /// This core REFUSED a wake of `tid`: the target was parked in IPC and the waker had
+        /// delivered nothing (no message, no signal, no abort). The boot-8 gate firing; on a
+        /// healthy boot this event never appears, so its presence in a bench dump is the finding.
+        WakeRefused = 9,
+    }
+
+    struct Ring {
+        seq: AtomicU64,
+        slots: [AtomicU64; DEPTH],
+    }
+
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY_RING: Ring = Ring {
+        seq: AtomicU64::new(0),
+        slots: [const { AtomicU64::new(0) }; DEPTH],
+    };
+
+    static RINGS: [Ring; crate::cpu::MAX_CPUS] = [EMPTY_RING; crate::cpu::MAX_CPUS];
+
+    /// Record an event on the calling core's ring. Every call site runs with interrupts masked
+    /// (under `SCHED` or in IRQ context), so the owning core cannot interleave with itself.
+    #[inline]
+    pub fn record(kind: Event, tid: u64, aux: u8) {
+        let ring = &RINGS[crate::cpu::id()];
+        let seq = ring.seq.fetch_add(1, Ordering::Relaxed);
+        // kind in the top byte, aux below it, the tid's low 48 bits under that. A tid is
+        // (generation << 32) | slot with slot < 256; 48 bits keeps 16 bits of generation,
+        // plenty to disambiguate in a dump.
+        let entry = ((kind as u64) << 56) | ((aux as u64) << 48) | (tid & 0x0000_FFFF_FFFF_FFFF);
+        ring.slots[(seq as usize) % DEPTH].store(entry, Ordering::Relaxed);
+    }
+
+    /// Print core `cpu`'s ring, oldest first. Racy against that core's own writes, by design.
+    pub fn dump(cpu: usize) {
+        let ring = &RINGS[cpu];
+        let seq = ring.seq.load(Ordering::Relaxed);
+        if seq == 0 {
+            return;
+        }
+        let start = seq.saturating_sub(DEPTH as u64);
+        crate::print!("    core {cpu} events [{start}..{seq}):");
+        for s in start..seq {
+            let e = ring.slots[(s as usize) % DEPTH].load(Ordering::Relaxed);
+            let (kind, aux, tid) = (e >> 56, (e >> 48) & 0xff, e & 0x0000_FFFF_FFFF_FFFF);
+            let name = match kind {
+                1 => "switch",
+                2 => "block",
+                3 => "wake",
+                4 => "wake?",
+                5 => "wake+",
+                6 => "place",
+                7 => "steal",
+                8 => "drain",
+                9 => "refuse",
+                _ => "?",
+            };
+            crate::print!(" {name}:{tid:#x}");
+            if matches!(kind, 2 | 6 | 7) {
+                crate::print!("/{aux}");
+            }
+        }
+        crate::println!();
+    }
+}
+
+/// The bench build's no-op twin of [`trace`]: same names, same signatures, nothing recorded, so
+/// the benchmark numbers the tripwire watches never measure the instrument and the call sites
+/// need no `cfg` of their own.
+#[cfg(feature = "bench")]
+mod trace {
+    /// Mirrors the real module's [`Event`](super::trace::Event) variants; carried only so the
+    /// call sites name the same paths in both configurations.
+    #[derive(Clone, Copy)]
+    pub enum Event {
+        SwitchTo,
+        BlockSelf,
+        Wake,
+        WakeDeferred,
+        WakeCompleted,
+        PlaceRemote,
+        StealServe,
+        InboxDrain,
+        WakeRefused,
+    }
+
+    #[inline]
+    pub fn record(_kind: Event, _tid: u64, _aux: u8) {}
+
+    pub fn dump(_cpu: usize) {}
+}
 
 /// Adopt the context we are already running in as thread 0.
 ///
@@ -481,6 +621,7 @@ pub fn drain_inbox() {
     cpu::current().note_adopted(moved);
     drop(inbox);
     if moved > 0 {
+        trace::record(trace::Event::InboxDrain, moved, 0);
         cpu::current().need_resched.store(true, Ordering::Relaxed);
     }
 }
@@ -518,6 +659,27 @@ fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> core::ptr::NonNull<Thread> {
 /// drain. The inbox push under SCHED is rank-safe (INBOX < SCHED), and the inbox's own lock supplies
 /// the release/acquire that orders our thread-table insert before the target's drain (§11).
 fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
+    // A REMOTE parked cpu's inbox is drained by nothing, so placing there is a thread nothing
+    // will ever run: the VisionFive 2 first-silicon hang (notes/visionfive2.md, third stop). The
+    // online-set sweep removed every count-as-index chooser, and this is the audit lane's
+    // tripwire for the next one: loud in debug/test builds, where every merge boots it. The
+    // release board build compiles it out and keeps [`dump_threads`]'s parked-inbox line as the
+    // field diagnostic.
+    //
+    // Placing onto ONESELF is exempt, and the exemption is load-bearing, found by this assertion
+    // firing on the suite's own boot: a secondary's bring-up probe (`smp::secondary_main` step 6)
+    // spawns onto its own core one step before that core sets its online bit, and a local
+    // placement goes straight onto the running core's own run queue, which that core drains by
+    // definition. The hazard this guards is exactly the remote case.
+    debug_assert!(
+        target == cpu::id() || {
+            let mask = crate::smp::online_harts_mask();
+            mask & (1 << target) != 0
+        },
+        "placement onto parked cpu {target} (online mask {:#b}): nothing drains a parked core's \
+         inbox, so this thread would never run",
+        crate::smp::online_harts_mask(),
+    );
     if target == cpu::id() {
         // SAFETY: `thread` is a live Ready thread (see tcb_ptr), on no other queue.
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
@@ -529,6 +691,9 @@ fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
         // Mirror the target's inbox depth so it counts as load (DECISIONS §28); under the lock, so
         // the store is serialised with any concurrent drain.
         cpu::of(target).note_inbox_len(inbox.len());
+        // SAFETY: reading the id of a live thread we still hold exclusively (see above).
+        let tid = unsafe { (*thread.as_ptr()).id };
+        trace::record(trace::Event::PlaceRemote, tid, target as u8);
     }
 }
 
@@ -583,8 +748,11 @@ fn pick_spawn_target() -> usize {
     if n <= 1 {
         return cpu::id();
     }
-    let a = cpu::current().rng_next() as usize % n;
-    let b = cpu::current().rng_next() as usize % n;
+    // The k-th ONLINE cpu, not index k: the online set is not contiguous from zero on real boards
+    // (first-silicon bench, 2026-08-14: {1,2,3} online, and modulo-count placed init into parked
+    // slot 0's inbox forever). See smp::online_cpus.
+    let a = crate::smp::nth_online(cpu::current().rng_next() as usize);
+    let b = crate::smp::nth_online(cpu::current().rng_next() as usize);
     if cpu::of(a).runnable() <= cpu::of(b).runnable() {
         a
     } else {
@@ -609,6 +777,9 @@ pub fn serve_steal_request() {
     // One thread off our own queue, if any. `with_runq` keeps the runnable mirror exact.
     let thread = cpu::current().with_runq(|q| q.pop_front());
     if let Some(t) = thread {
+        // SAFETY: reading the id of the thread we just popped and hold exclusively.
+        let tid = unsafe { (*t.as_ptr()).id };
+        trace::record(trace::Event::StealServe, tid, requester as u8);
         // SAFETY: a live Ready thread we just popped, on no other queue; the inbox mutex serialises
         // the handoff and orders our pop before the requester's drain (the `place_on` discipline).
         let mut inbox = cpu::inbox_of(requester).lock();
@@ -633,10 +804,9 @@ fn try_initiate_steal() {
         return;
     }
     let me = cpu::id();
-    let n = crate::smp::online_count();
     let mut victim = None;
     let mut best = 0usize;
-    for c in 0..n {
+    for c in crate::smp::online_cpus() {
         if c != me {
             // Steal only a run-queue backlog, never a victim's inbox in transit (see `runq_len`).
             let r = cpu::of(c).runq_len();
@@ -781,7 +951,7 @@ fn depart(event: u64, pc: u64, addr: u64) -> ! {
         match fault_ep {
             None => {
                 if let Some(t) = sched.threads.get_mut(current) {
-                    t.state = State::Finished;
+                    t.handshake.state = State::Finished;
                 }
             }
             Some(ep) => {
@@ -791,7 +961,7 @@ fn depart(event: u64, pc: u64, addr: u64) -> ! {
                     // parked-corpse delivery will hand the supervisor. Dead: never runs again.
                     t.fault_msg = Some(msg);
                     t.mailbox = msg;
-                    t.state = State::Dead;
+                    t.handshake.state = State::Dead;
                 }
                 deliver_death(sched, current, ep, msg);
             }
@@ -827,11 +997,17 @@ fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
         ipc::Send::Rendezvous(receiver) => {
             // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
             let receiver = unsafe { (*receiver.as_ptr()).id };
-            sched.threads.get_mut(receiver).unwrap().mailbox = msg;
+            let r = sched.threads.get_mut(receiver).unwrap();
+            r.mailbox = msg;
+            r.handshake.serve(); // delivered: this wake passes the boot-8 gate
             wake(sched, receiver);
         }
         ipc::Send::Blocked => {
             // The corpse is parked on the sender queue now, its mailbox already holding `msg`.
+            // Record the parking so a dump shows where the death message waits.
+            if let Some(t) = sched.threads.get_mut(corpse) {
+                t.handshake.wait_on = Some((ep, WaitRole::Sender));
+            }
         }
     }
 }
@@ -882,11 +1058,11 @@ pub fn schedule() {
         // only thread on its core, that check was unreachable and the runaway spun forever.
         if let Some(t) = sched.threads.get_mut(current)
             && t.killed
-            && t.state == State::Running
+            && t.handshake.state == State::Running
         {
-            t.state = State::Finished;
+            t.handshake.state = State::Finished;
         }
-        let state = sched.threads.get(current).map(|t| t.state);
+        let state = sched.threads.get(current).map(|t| t.handshake.state);
 
         // **Only a still-Running thread goes back on the ready queue.** A thread that reached
         // here after marking itself `Blocked` (it is waiting for IPC), `Finished`, or `Dead` (a
@@ -925,22 +1101,40 @@ pub fn schedule() {
             }
         };
 
+        // **The running thread must never come off its own run queue** (boot 8's downstream
+        // catastrophe, guarded here on its own merits). The pop above precedes the requeue below,
+        // so a legal schedule can never hand back `current`; if it ever does, something queued a
+        // thread that was still running, and switching into it would restore `t.context`, a
+        // pointer to a frame this very thread has already resumed and consumed: execution
+        // time-travels to its previous switch-out point on a reused stack and spins there
+        // forever, off every instrument. Debug builds fail loudly; the board build heals by
+        // keeping the thread running, which is the only state that is still coherent.
+        if next == current {
+            if cfg!(debug_assertions) {
+                panic!("schedule() popped its own current thread from the run queue");
+            }
+            sched.threads.get_mut(current).unwrap().handshake.state = State::Running;
+            break 'decide None;
+        }
+
         // Requeue the outgoing thread if it can still run, but never the idle thread, which lives
         // outside the ready queue. A killed thread is already `Finished` (handled at the top), so it
         // is not runnable here and is reaped by `finish_switch` after the switch, no queue surgery.
         if runnable && current != idle_tid {
-            sched.threads.get_mut(current).unwrap().state = State::Ready;
+            // `preempt` marks Ready and deliberately leaves `on_cpu` set: the thread is in a
+            // queue AND still standing on this core until finish_switch runs, which is the one
+            // legal overlap and the reason only this core may pop its own queue (the extracted
+            // protocol's steal-vs-switch-out rule; see crates/wake_handshake).
+            sched.threads.get_mut(current).unwrap().handshake.preempt();
             let ptr = tcb_ptr(sched, current);
             // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
             cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
         }
 
-        {
-            let t = sched.threads.get_mut(next).unwrap();
-            t.state = State::Running;
-            t.on_cpu = true; // cleared by ITS successor's finish_switch, one switch from now
-        }
+        // Running, with on_cpu set until ITS successor's finish_switch, one switch from now.
+        sched.threads.get_mut(next).unwrap().handshake.switch_in();
         set_current_tid(next);
+        trace::record(trace::Event::SwitchTo, next, 0);
 
         // Hand the outgoing thread to the incoming one to finish up AFTER the switch, when it is
         // provably off its stack: reap it if it Finished, clear its on_cpu (and complete a
@@ -1028,29 +1222,31 @@ pub(crate) fn finish_switch() {
     let Some(t) = sched.threads.get_mut(prev) else {
         return;
     };
-    if t.state == State::Finished {
-        // Hoist the address space out BEFORE the in-place drop, to be torn down after the lock
-        // is released: its teardown is untyped::destroy (milestone 14 phase B.4), whose §13
-        // revocation sweep takes SCHED itself to delete stray Frame capabilities. Dropping it
-        // here would deadlock on our own lock. The rest of the Thread (stack, quota) still
-        // drops under SCHED, exactly as before.
-        let space = t.space.take();
-        sched.threads.remove(prev);
-        drop(guard);
-        drop(space);
-        return;
-    }
-    // The predecessor's context is saved now (we are running, so switch_to completed), so it is
-    // finally safe for other cores to run it.
-    t.on_cpu = false;
-    if t.wake_pending {
-        // A wake raced its switch-out (see wake): complete it here, where the context is real.
-        t.wake_pending = false;
-        t.state = State::Ready;
-        let ptr = tcb_ptr(sched, prev);
-        // SAFETY: live, just made Ready, on no queue (a deferred wake was deferred precisely
-        // because the waker did NOT queue it). IRQs are still masked on both callers' paths.
-        cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+    // The predecessor's context is saved now (we are running, so switch_to completed). What that
+    // makes legal is `wake_handshake::Handshake::finish_switch`'s verdict: reap a Finished
+    // predecessor, complete a wake that was deferred mid-switch-out, or simply clear `on_cpu` so
+    // other cores may run it. The transition is the crate's (loom searches it; see
+    // notes/interleaving.md); the reap and the queue push are ours.
+    match t.handshake.finish_switch() {
+        SwitchOutVerdict::Reap => {
+            // Hoist the address space out BEFORE the in-place drop, to be torn down after the lock
+            // is released: its teardown is untyped::destroy (milestone 14 phase B.4), whose §13
+            // revocation sweep takes SCHED itself to delete stray Frame capabilities. Dropping it
+            // here would deadlock on our own lock. The rest of the Thread (stack, quota) still
+            // drops under SCHED, exactly as before.
+            let space = t.space.take();
+            sched.threads.remove(prev);
+            drop(guard);
+            drop(space);
+        }
+        SwitchOutVerdict::WakeCompleted => {
+            trace::record(trace::Event::WakeCompleted, prev, 0);
+            let ptr = tcb_ptr(sched, prev);
+            // SAFETY: live, just made Ready, on no queue (a deferred wake was deferred precisely
+            // because the waker did NOT queue it). IRQs are still masked on both callers' paths.
+            cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+        }
+        SwitchOutVerdict::Cleared => {}
     }
 }
 
@@ -1113,7 +1309,9 @@ pub fn irq_notify(ep: EpId) {
             // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
             // through the table for everything after.
             let waiter = unsafe { (*waiter.as_ptr()).id };
-            sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
+            let t = sched.threads.get_mut(waiter).unwrap();
+            t.mailbox = [1, 0, 0, 0, 0];
+            t.handshake.serve(); // the signal is the delivery (the boot-8 gate)
             wake_load_aware(sched, waiter)
         } else {
             None
@@ -1238,7 +1436,11 @@ fn pick_wake_target() -> usize {
     let here = cpu::id();
     let mut best = here;
     let mut best_load = cpu::current().runnable();
-    for c in 0..crate::smp::online_count() {
+    // The online SET, never `0..count` (first-silicon sweep, 2026-08-14): on the VisionFive 2 the
+    // set is {1,2,3}, and the count-as-index loop would read parked slot 0's zeroed `runnable()`,
+    // which wins every comparison, so every device-IRQ wake would land in a dead core's inbox. It
+    // also never considered online cpu 3. See smp::online_cpus.
+    for c in crate::smp::online_cpus() {
         if c == here {
             continue;
         }
@@ -1259,61 +1461,85 @@ fn pick_wake_target() -> usize {
 /// when it stayed local or the wake was parked. Caller holds the lock.
 fn wake_load_aware(sched: &mut Scheduler, tid: Tid) -> Option<usize> {
     let t = sched.threads.get_mut(tid)?;
-    if t.state != State::Blocked {
-        return None;
-    }
-    // A device-IRQ wake is forward progress too (test builds only; see testing::note_progress).
-    #[cfg(test)]
-    crate::testing::note_progress();
-    // The same wake-before-switch-out race `wake` guards: a thread still on its CPU has a stale
-    // saved context, so we must not let another core switch into it. Park the wake; its own core's
-    // `finish_switch` completes it locally once the context is saved. A device IRQ in that window is
-    // rare, and one non-load-aware wake is not worth teaching `finish_switch` a placement policy.
-    if t.on_cpu {
-        t.wake_pending = true;
-        return None;
-    }
-    t.state = State::Ready;
-    let ptr = core::ptr::NonNull::from(t);
-    let target = pick_wake_target();
-    if target == cpu::id() {
-        // SAFETY: just Blocked -> Ready, on no queue; SCHED masks interrupts, which with_runq needs.
-        cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
-        None
-    } else {
-        // Into the target's inbox (place_on keeps the inbox-len mirror under the inbox lock). The
-        // SGI that drains it goes out after SCHED drops, in irq_notify.
-        place_on(target, ptr);
-        Some(target)
+    // The whole decision (not-blocked, the boot-8 undelivered-wake gate, the switch-out deferral)
+    // is `wake_handshake::Handshake::try_wake`, the extracted protocol loom searches on the host
+    // (notes/interleaving.md). This function keeps what the crate cannot see: the trace ring, the
+    // progress heartbeat, and §28.2's placement policy on the one verdict that queues.
+    match t.handshake.try_wake() {
+        WakeVerdict::NotBlocked => None,
+        WakeVerdict::Refused => {
+            trace::record(trace::Event::WakeRefused, tid, 0);
+            None
+        }
+        WakeVerdict::Deferred => {
+            // A device-IRQ wake is forward progress too (test builds only). A deferral in this
+            // window is rare, and one non-load-aware completion in `finish_switch` is not worth
+            // teaching that path a placement policy.
+            #[cfg(test)]
+            crate::testing::note_progress();
+            trace::record(trace::Event::WakeDeferred, tid, 0);
+            None
+        }
+        WakeVerdict::Queue => {
+            #[cfg(test)]
+            crate::testing::note_progress();
+            let ptr = core::ptr::NonNull::from(t);
+            trace::record(trace::Event::Wake, tid, 0);
+            let target = pick_wake_target();
+            if target == cpu::id() {
+                // SAFETY: just Blocked -> Ready, on no queue; SCHED masks interrupts, which
+                // with_runq needs.
+                cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+                None
+            } else {
+                // Into the target's inbox (place_on keeps the inbox-len mirror under the inbox
+                // lock). The SGI that drains it goes out after SCHED drops, in irq_notify.
+                place_on(target, ptr);
+                Some(target)
+            }
+        }
     }
 }
 
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
+///
+/// The decision lives in `wake_handshake::Handshake::try_wake`, extracted so loom can search its
+/// interleavings on the host (notes/interleaving.md); this function is the kernel-side half, the
+/// queue push and the trace ring. The two rules the verdicts carry, kept here in one breath
+/// because this is where a reader meets them: **the undelivered-wake gate** (boot 8: a wake whose
+/// critical section delivered nothing has not dequeued the thread from its endpoint and has
+/// nothing for its recv to return, so it is refused and recorded as `refuse:tid` on the ring), and
+/// **the wake-before-switch-out deferral** (a thread still on its CPU has a stale saved context,
+/// so the wake parks in `wake_pending` and its own core's `finish_switch` completes it once the
+/// context is provably saved; found by a 2-in-10 flake, notes/intrusive-queues.md).
 fn wake(sched: &mut Scheduler, tid: Tid) {
-    if let Some(t) = sched.threads.get_mut(tid)
-        && t.state == State::Blocked
-    {
-        // A completed rendezvous is forward progress: keep the hang watchdog's heartbeat alive so a
-        // slow-but-live IPC pipeline (std_net) is not read as a deadlock (test builds only).
-        #[cfg(test)]
-        crate::testing::note_progress();
-        // **The wake-before-switch-out race** (found by a 2-in-10 test flake; the Blocked twin
-        // of the §11 reaper race). A thread marks itself Blocked and releases SCHED, but is
-        // still running on its core until schedule() switches away; its saved context is stale
-        // until then. A rendezvous or interrupt can wake it in that window. Queueing it here
-        // would let another core switch INTO the stale context while its core still runs the
-        // present one: two cores in one thread. So: if it is still on a CPU, park the wake;
-        // its own core's finish_switch completes it once the context is provably saved.
-        if t.on_cpu {
-            t.wake_pending = true;
-            return;
+    if let Some(t) = sched.threads.get_mut(tid) {
+        match t.handshake.try_wake() {
+            WakeVerdict::NotBlocked => {}
+            WakeVerdict::Refused => {
+                trace::record(trace::Event::WakeRefused, tid, 0);
+            }
+            WakeVerdict::Deferred => {
+                // A completed rendezvous is forward progress even when its queueing is deferred:
+                // keep the hang watchdog's heartbeat alive so a slow-but-live IPC pipeline
+                // (std_net) is not read as a deadlock (test builds only).
+                #[cfg(test)]
+                crate::testing::note_progress();
+                trace::record(trace::Event::WakeDeferred, tid, 0);
+            }
+            WakeVerdict::Queue => {
+                #[cfg(test)]
+                crate::testing::note_progress();
+                let ptr = core::ptr::NonNull::from(t);
+                trace::record(trace::Event::Wake, tid, 0);
+                // Onto this core's queue: a rendezvous wake stays local on purpose (§28.2), the
+                // message is in registers and the cache is warm. Every caller (ipc_*, irq_notify)
+                // holds SCHED, so interrupts are masked.
+                // SAFETY: just transitioned Blocked -> Ready, so it was on no queue and now joins
+                // one.
+                cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+            }
         }
-        t.state = State::Ready;
-        let ptr = core::ptr::NonNull::from(t);
-        // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
-        // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
-        // SAFETY: just transitioned Blocked -> Ready, so it was on no queue and now joins one.
-        cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
     }
 }
 
@@ -1358,7 +1584,9 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver.as_ptr()).id };
-                sched.threads.get_mut(receiver).unwrap().mailbox = msg;
+                let r = sched.threads.get_mut(receiver).unwrap();
+                r.mailbox = msg;
+                r.handshake.serve(); // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
                 false
             }
@@ -1366,7 +1594,8 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
                 // `send` has already queued `current` as a sender; we record why it is parked.
                 let me = sched.threads.get_mut(current).unwrap();
                 me.mailbox = msg;
-                me.state = State::Blocked;
+                me.handshake.park((ep, WaitRole::Sender)); // only a collecting receiver may wake us
+                trace::record(trace::Event::BlockSelf, current, ep as u8);
                 true
             }
         }
@@ -1418,15 +1647,25 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
                 let leave_blocked = matches!(
                     sched.threads.get(sender).unwrap().outgoing_cap,
                     Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
-                ) || sched.threads.get(sender).unwrap().state == State::Dead;
+                ) || sched.threads.get(sender).unwrap().handshake.state
+                    == State::Dead;
                 if !leave_blocked {
+                    // Collected: the sender's rendezvous is complete, which is what lets its
+                    // wake through the boot-8 gate.
+                    sched.threads.get_mut(sender).unwrap().handshake.serve();
                     wake(sched, sender);
+                } else if sched.threads.get(sender).unwrap().handshake.state == State::Dead {
+                    // The corpse's death message is collected and `recv` popped it off the sender
+                    // queue; it waits on nothing now, it only awaits its reap.
+                    sched.threads.get_mut(sender).unwrap().handshake.wait_on = None;
                 }
                 Some(msg)
             }
             ipc::Recv::Blocked => {
                 // `recv` has already queued `current` as a receiver.
-                sched.threads.get_mut(current).unwrap().state = State::Blocked;
+                let me = sched.threads.get_mut(current).unwrap();
+                me.handshake.park((ep, WaitRole::Receiver)); // only a delivering sender may wake us
+                trace::record(trace::Event::BlockSelf, current, ep as u8);
                 None
             }
         }
@@ -1438,7 +1677,14 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
             schedule(); // blocks; a sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(current_tid()).unwrap().mailbox
+            let t = sched.threads.get(current_tid()).unwrap();
+            // The boot-8 gate makes an undelivered resume unreachable; this is its tripwire,
+            // loud in every QEMU test build, on the path where the strand was observed.
+            debug_assert!(
+                t.handshake.delivered(),
+                "recv resumed with nothing delivered"
+            );
+            t.mailbox
         }
     }
 }
@@ -1479,6 +1725,7 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
                 r.mailbox = [data, slot, 0, 0, 0];
+                r.handshake.serve(); // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
                 false
             }
@@ -1487,7 +1734,8 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 let me = sched.threads.get_mut(current).unwrap();
                 me.mailbox = [data, 0, 0, 0, 0];
                 me.outgoing_cap = Some(cap);
-                me.state = State::Blocked;
+                me.handshake.park((ep, WaitRole::Sender)); // only a collecting receiver may wake us
+                trace::record(trace::Event::BlockSelf, current, ep as u8);
                 true
             }
         }
@@ -1541,6 +1789,8 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
                     None => NO_CAP,
                 };
                 if !is_reply {
+                    // Collected: the sender's rendezvous is complete (the boot-8 gate).
+                    sched.threads.get_mut(sender).unwrap().handshake.serve();
                     wake(sched, sender);
                 }
                 // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
@@ -1548,7 +1798,9 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
                 Some([msg[0], slot, msg[1]])
             }
             ipc::Recv::Blocked => {
-                sched.threads.get_mut(current).unwrap().state = State::Blocked;
+                let me = sched.threads.get_mut(current).unwrap();
+                me.handshake.park((ep, WaitRole::Receiver)); // only a delivering sender may wake us
+                trace::record(trace::Event::BlockSelf, current, ep as u8);
                 None
             }
         }
@@ -1560,7 +1812,12 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
             schedule(); // a capability-carrying sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            let m = sched.threads.get(current_tid()).unwrap().mailbox;
+            let t = sched.threads.get(current_tid()).unwrap();
+            debug_assert!(
+                t.handshake.delivered(),
+                "recv_cap resumed with nothing delivered"
+            );
+            let m = t.mailbox;
             [m[0], m[1], m[2]] // RECV_CAP carries three words; the top two are the fault path's
         }
     }
@@ -1598,6 +1855,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
                 r.mailbox = [msg[0], slot, msg[1], 0, 0];
+                r.handshake.serve(); // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
             }
             ipc::Send::Blocked => {
@@ -1611,14 +1869,21 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
         }
         // Either way we block until the reply arrives. We are NOT queued as a receiver; the Reply
         // capability, which carries our tid, is the only thing that can wake us.
-        sched.threads.get_mut(current).unwrap().state = State::Blocked;
+        let me = sched.threads.get_mut(current).unwrap();
+        me.handshake.park((ep, WaitRole::Reply)); // only the reply (or an abort) may wake us
+        trace::record(trace::Event::BlockSelf, current, ep as u8);
     }
 
     schedule(); // returns once ipc_reply has filled our mailbox and woken us
 
     let guard = SCHED.lock();
     let sched = guard.as_ref().expect("no scheduler");
-    let m = sched.threads.get(current_tid()).unwrap().mailbox;
+    let t = sched.threads.get(current_tid()).unwrap();
+    debug_assert!(
+        t.handshake.delivered(),
+        "call resumed with nothing delivered"
+    );
+    let m = t.mailbox;
     [m[0], m[1], m[2]] // a reply is two words plus the pad; the fault path owns the top two
 }
 
@@ -1630,7 +1895,18 @@ pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
     if let Some(t) = sched.threads.get_mut(caller) {
+        // **Only a caller that awaits a reply is touched** (boot 8's observe-and-strand guard).
+        // A Reply names a tid, not a wait state, and this is the one wake site addressed by tid
+        // rather than through an endpoint's wait queue. Delivered to a thread parked as an
+        // ordinary receiver (a stale reply whose CALL was aborted long ago, its caller re-parked
+        // elsewhere), it would clobber that thread's mailbox and wake it messageless while its
+        // TCB is still linked on the endpoint's wait queue, a double-enqueue on the one intrusive
+        // link. Anything not Reply-parked gets nothing, exactly as a reply to a dead caller.
+        if !matches!(t.handshake.wait_on, Some((_, WaitRole::Reply))) {
+            return;
+        }
         t.mailbox = [msg[0], msg[1], 0, 0, 0];
+        t.handshake.serve(); // delivered: this wake passes the boot-8 gate
         wake(sched, caller);
     }
 }
@@ -1808,7 +2084,10 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         let phys = page_of(t);
         if base <= phys
             && phys < end
-            && matches!(t.state, State::Ready | State::Running | State::Blocked)
+            && matches!(
+                t.handshake.state,
+                State::Ready | State::Running | State::Blocked
+            )
         {
             t.killed = true;
             live = true;
@@ -1844,7 +2123,7 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         let parked = sched
             .threads
             .get(tid)
-            .filter(|t| t.state == State::Dead)
+            .filter(|t| t.handshake.state == State::Dead)
             .and_then(|t| t.fault_ep);
         if let Some(ep) = parked {
             let ptr = tcb_ptr(sched, tid);
@@ -1964,7 +2243,7 @@ pub fn reap_supervised(ep: EpId, tid: Tid) -> Result<(), abi::Error> {
         // it presents exactly as an unsupervised thread and cannot alias a fresh one.
         let t = sched.threads.get(tid);
         let fault_ep = t.and_then(|t| t.fault_ep);
-        let dead = t.is_some_and(|t| t.state == State::Dead);
+        let dead = t.is_some_and(|t| t.handshake.state == State::Dead);
         match capability::reap_decision(fault_ep, ep, dead) {
             capability::Reap::NotSupervised => return Err(abi::Error::NotSupervised),
             capability::Reap::StillAlive => return Err(abi::Error::StillAlive),
@@ -1999,7 +2278,7 @@ pub fn configure_tcb(
         let guard = SCHED.lock();
         let sched = guard.as_ref().ok_or(abi::Error::NoSuchSlot)?;
         let t = sched.threads.get(tid).ok_or(abi::Error::NoSuchSlot)?;
-        if t.state != State::Embryo {
+        if t.handshake.state != State::Embryo {
             return Err(abi::Error::WrongObject); // only an unstarted TCB may be configured
         }
     }
@@ -2014,7 +2293,7 @@ pub fn configure_tcb(
         crate::user::readopt_user_aspace(space);
         return Err(abi::Error::NoSuchSlot);
     };
-    if t.state != State::Embryo {
+    if t.handshake.state != State::Embryo {
         drop(guard);
         crate::user::readopt_user_aspace(space);
         return Err(abi::Error::WrongObject);
@@ -2040,7 +2319,7 @@ pub fn tcb_insert_cap(
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
     let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
-    if t.state != State::Embryo {
+    if t.handshake.state != State::Embryo {
         return Err(abi::Error::WrongObject);
     }
     match target {
@@ -2061,7 +2340,7 @@ pub fn start_tcb(tid: Tid, args: [u64; 3]) -> Result<(), abi::Error> {
     let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
     let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
 
-    if t.state != State::Embryo {
+    if t.handshake.state != State::Embryo {
         return Err(abi::Error::WrongObject); // already started (or not a TCB)
     }
     // WHOLE, or refuse: a bound address space and an entry point. Either missing is a half-built
@@ -2085,7 +2364,7 @@ pub fn start_tcb(tid: Tid, args: [u64; 3]) -> Result<(), abi::Error> {
     if !t.arm_for_start() {
         return Err(abi::Error::OutOfMemory); // no kernel stack to be had
     }
-    t.state = State::Ready;
+    t.handshake.state = State::Ready;
     // Placement is the power of two choices (DECISIONS §28), the same as `spawn`: a freshly started
     // user thread lands on the lighter of two sampled cores rather than always the starter's, so a
     // process that spawns a pipeline does not pile it all onto one core. `place_on` enqueues locally
@@ -2173,7 +2452,9 @@ pub fn corpse_fault_msg(tid: Tid) -> Option<[u64; 5]> {
     let guard = SCHED.lock();
     let sched = guard.as_ref()?;
     let t = sched.threads.get(tid)?;
-    (t.state == State::Dead).then_some(t.fault_msg).flatten()
+    (t.handshake.state == State::Dead)
+        .then_some(t.fault_msg)
+        .flatten()
 }
 
 /// **Is `tid` still in the thread table?** (test support.)
@@ -2251,18 +2532,18 @@ pub fn runnable_non_idle_count(&exclude: &Tid) -> usize {
         return 0;
     };
     let mut idles = [u64::MAX; crate::cpu::MAX_CPUS];
-    for (c, slot) in idles
-        .iter_mut()
-        .enumerate()
-        .take(crate::smp::online_count())
-    {
+    // Harvest each ONLINE core's idle tid by set membership, not `0..count` (first-silicon sweep,
+    // 2026-08-14): with the VisionFive 2's {1,2,3} online, count-as-index misses cpu 3's idle tid,
+    // and its idle thread would then be counted as a leaked spinner. The array slot order does not
+    // matter; only membership in `idles` does.
+    for (slot, c) in idles.iter_mut().zip(crate::smp::online_cpus()) {
         *slot = crate::cpu::of(c).idle.load(Ordering::Relaxed);
     }
     sched
         .threads
         .iter_mut()
         .filter(|t| {
-            matches!(t.state, State::Ready | State::Running)
+            matches!(t.handshake.state, State::Ready | State::Running)
                 && t.id != exclude
                 && !idles.contains(&t.id)
         })
@@ -2302,7 +2583,22 @@ pub fn dump_threads() {
         crate::println!("  dump_threads: no scheduler");
         return;
     };
-    crate::println!("--- thread dump (hang diagnostic) ---");
+    // What this dump can and cannot honestly claim (first-silicon audit, 2026-08-14):
+    //
+    //   - `state`/`on_cpu`/`wake_pending`/`wait`, and the endpoint counts, are a CONSISTENT
+    //     snapshot: every writer holds SCHED, which this dump holds.
+    //   - `pc` is the trap frame at the thread's stack top, which trap entry writes WITHOUT
+    //     SCHED. For an off-cpu thread it is trustworthy (the frame write happened-before the
+    //     state write on that core, and our lock acquire synchronises with its release). For a
+    //     thread on a cpu it is a racing read of live state, printed with a `*`.
+    //   - the per-core lines read other cores' atomics relaxed. `current` is written under
+    //     SCHED, so it is quiescent while we hold the lock, except for a core mid-switch
+    //     (between its SCHED release and its finish_switch): such a core's `current` names the
+    //     incoming thread while the outgoing one still runs for a few more instructions.
+    //   - `ticks` is that core's timer-interrupt count. A core whose ticks FREEZE across dumps
+    //     is not taking traps at all: wedged with interrupts masked, or stuck inside an SBI call
+    //     in M-mode (where delegated S-interrupts cannot preempt), which no other row can show.
+    crate::println!("--- thread dump (hang diagnostic; pc* = on-cpu, racy) ---");
     for t in sched.threads.iter_mut() {
         let pc = t
             .stack
@@ -2318,16 +2614,25 @@ pub fn dump_threads() {
         // could not say which. Threads sharing a root are one process; distinct roots are distinct
         // processes, and 0 is a kernel thread with no user address space.
         let root = t.space.as_ref().map(|s| s.root()).unwrap_or(0);
-        crate::println!(
-            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={} pc={:#010x} aspace={:#010x}",
+        crate::print!(
+            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={} pc={:#010x}{} aspace={:#010x}",
             t.id,
-            t.state,
-            t.on_cpu,
-            t.wake_pending,
+            t.handshake.state,
+            t.handshake.on_cpu,
+            t.handshake.wake_pending,
             t.outgoing_cap.is_some(),
             pc,
+            if t.handshake.on_cpu { "*" } else { "" },
             root,
         );
+        // The wait reason, written by the same SCHED-held statement that wrote `Blocked`. A
+        // `Blocked` thread with `wait=-` here is the smoking gun for a state byte written outside
+        // the block paths (corruption, or a block applied to the wrong TCB): every legal block
+        // records what it waits on. See notes/visionfive2.md, fourth bench stop.
+        match t.handshake.wait_on {
+            Some((ep, role)) => crate::println!(" wait={ep:#x}/{role:?}"),
+            None => crate::println!(" wait=-"),
+        }
     }
     // Endpoint topology: which endpoint each blocked thread is queued on, so a deadlock shows as a
     // sender with no receiver. Diagnostic only.
@@ -2339,17 +2644,41 @@ pub fn dump_threads() {
             crate::println!("  ep={name:#06x} senders={ns} receivers={nr} pending={np}");
         }
     }
-    for c in 0..crate::smp::online_count() {
+    // The online set, not `0..count` (first-silicon sweep, 2026-08-14): on the VisionFive 2 the
+    // count-as-index loop printed parked slot 0 as if it were a live core and hid online core 3.
+    for c in crate::smp::online_cpus() {
         let pc = cpu::of(c);
         let inbox_len = pc.inbox.lock().len();
         crate::println!(
-            "  core {c}: current={:#06x} idle={:#06x} switched_from={:#06x} need_resched={} inbox_len={}",
+            "  core {c}: current={:#06x} idle={:#06x} switched_from={:#06x} need_resched={} inbox_len={} ticks={} steal_req={:?}",
             pc.current.load(Ordering::Relaxed),
             pc.idle.load(Ordering::Relaxed),
             pc.switched_from.load(Ordering::Relaxed),
             pc.need_resched.load(Ordering::Relaxed),
             inbox_len,
+            // A core whose tick count holds still between dumps is taking no timer traps: it is
+            // spinning with interrupts masked, or parked inside an SBI call in M-mode (a remote
+            // fence that never completes looks exactly like this). The one field that tells a
+            // wedged core from a scheduler that merely chose not to run somebody.
+            crate::arch::timer::ticks_on(c),
+            // A steal request that stays claimed dump after dump means the victim never reached
+            // a scheduler entry to serve it: the same wedge, seen from a thief's side.
+            pc.steal_request.peek(),
         );
+        trace::dump(c);
+    }
+    // A parked slot with a non-empty inbox is a thread nothing will ever run: the exact shape of
+    // the VisionFive 2 placement hang (init modulo-counted into slot 0's inbox; that dead inbox in
+    // this dump was the clue). Since the online-set sweep no path should produce it, so if this
+    // prints, something is picking cpus by count again.
+    let online = crate::smp::online_harts_mask();
+    for c in (0..crate::cpu::MAX_CPUS).filter(|c| online & (1 << c) == 0) {
+        let inbox_len = cpu::of(c).inbox.lock().len();
+        if inbox_len != 0 {
+            crate::println!(
+                "  core {c}: PARKED with inbox_len={inbox_len} (placed on a dead core)"
+            );
+        }
     }
     crate::println!("--- end thread dump ---");
 }
@@ -2387,6 +2716,22 @@ pub fn endpoint_waiting_receivers(ep: EpId) -> usize {
     match endpoint_of(sched, ep) {
         Some(e) => e.debug_counts().1,
         None => 0,
+    }
+}
+
+/// **Test support: a wake with nothing delivered** (the boot-8 injector, 2026-08-14).
+///
+/// Issues a bare `wake()` against `tid` under `SCHED`, through the same function every scheduler
+/// wake site funnels into, with no message written, no signal counted, and no abort flagged: the
+/// transition the VisionFive 2's boot-8 event ring recorded against the boot thread (`wake:0x0`
+/// on a boot where no sender to its endpoint existed). This is deliberately not a hand-rolled
+/// state poke: it exercises the real wake path, so whatever `wake()` does about an undelivered
+/// wake is what this injects.
+#[cfg(test)]
+pub fn wake_without_delivery(tid: Tid) {
+    let mut guard = SCHED.lock();
+    if let Some(sched) = guard.as_mut() {
+        wake(sched, tid);
     }
 }
 
@@ -2565,7 +2910,9 @@ mod tests {
     /// Raise it.
     #[cfg(target_arch = "aarch64")]
     fn raise_test_irq(intid: u32) {
-        crate::drivers::gic::send_sgi(intid, 0); // self (core 0) in the test
+        // Self, by asking rather than by assuming core 0: the test thread runs wherever the
+        // scheduler put it, and a fixed target is the count-as-index disease in miniature.
+        crate::drivers::gic::send_sgi(intid, crate::cpu::id());
     }
 
     #[cfg(target_arch = "riscv64")]
@@ -2843,6 +3190,126 @@ mod tests {
         assert!(
             ABORTED.load(Ordering::SeqCst),
             "the woken waiter did not see its IPC aborted",
+        );
+    }
+
+    /// **A wake with nothing delivered must not complete a parked receiver's `RECV`** (boot 8,
+    /// VisionFive 2, 2026-08-14). The bench dump's shape: the boot thread, parked in `ipc_recv`
+    /// on the report endpoint, took a `wake:0x0` on a boot where no sender to that endpoint
+    /// existed, and its recv neither completed with a message nor re-parked. The recv tail reads
+    /// the mailbox unconditionally after `schedule()` returns, so an undelivered wake completes
+    /// the recv with whatever the mailbox happened to hold, and the receiver's TCB is still
+    /// linked on the endpoint's wait queue (the waker that owns the unlink never ran), which is
+    /// the intrusive one-link invariant broken in kernel memory.
+    ///
+    /// The claim: a `Blocked` IPC thread may only become `Ready` by the hand that completed its
+    /// rendezvous (message staged, signal counted, or abort flagged). An undelivered wake is
+    /// refused, the receiver stays parked, and a real sender still reaches it afterwards.
+    #[test_case]
+    fn a_wake_without_delivery_cannot_complete_a_parked_recv() {
+        static GOT: AtomicU64 = AtomicU64::new(u64::MAX);
+        static DONE: AtomicBool = AtomicBool::new(false);
+        GOT.store(u64::MAX, Ordering::SeqCst);
+        DONE.store(false, Ordering::SeqCst);
+
+        let ep = crate::sched::create_endpoint();
+        let tid = crate::sched::spawn(move || {
+            let m = crate::sched::ipc_recv(ep);
+            GOT.store(m[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn receiver");
+
+        // Queued on the endpoint, not "probably scheduled by now" (the milestone-81 lesson).
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_receivers(ep) == 1),
+            "the receiver never parked on the endpoint"
+        );
+
+        // The injection: the real wake path, nothing delivered.
+        crate::sched::wake_without_delivery(tid);
+
+        // The receiver must stay parked. Held for half a second of yields rather than one look,
+        // because the spurious completion needs the receiver to be scheduled first.
+        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency() / 2;
+        while crate::arch::timer::now() < deadline {
+            assert!(
+                !DONE.load(Ordering::SeqCst),
+                "a wake with nothing delivered completed the recv (it returned {:#x})",
+                GOT.load(Ordering::SeqCst),
+            );
+            crate::sched::yield_now();
+        }
+        assert_eq!(
+            crate::sched::endpoint_waiting_receivers(ep),
+            1,
+            "the undelivered wake took the receiver off the endpoint"
+        );
+
+        // And the rendezvous still works: a real sender completes the same recv with its message.
+        crate::sched::ipc_send(ep, [81, 0, 0]);
+        assert!(
+            wait_for(|| DONE.load(Ordering::SeqCst)),
+            "the real message never arrived after the refused wake"
+        );
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            81,
+            "the recv completed with something other than the real message"
+        );
+    }
+
+    /// **A reply only wakes a caller that awaits one** (boot 8's observe-and-strand guard). A
+    /// `Reply` capability names a tid, not a wait state. `ipc_reply` used to deliver to any
+    /// `Blocked` thread with that tid: invoked against a thread parked as an ordinary endpoint
+    /// receiver (a stale reply whose CALL was long since aborted, with the caller re-parked
+    /// elsewhere), it clobbered the mailbox and woke the thread messageless while its TCB was
+    /// still linked on the endpoint's wait queue. Same strand as the test above, reached through
+    /// the one wake site addressed by tid rather than by rendezvous.
+    #[test_case]
+    fn a_reply_to_a_thread_parked_as_a_receiver_is_dropped() {
+        static GOT: AtomicU64 = AtomicU64::new(u64::MAX);
+        static DONE: AtomicBool = AtomicBool::new(false);
+        GOT.store(u64::MAX, Ordering::SeqCst);
+        DONE.store(false, Ordering::SeqCst);
+
+        let ep = crate::sched::create_endpoint();
+        let tid = crate::sched::spawn(move || {
+            let m = crate::sched::ipc_recv(ep);
+            GOT.store(m[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn receiver");
+
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_receivers(ep) == 1),
+            "the receiver never parked on the endpoint"
+        );
+
+        // A reply aimed at a thread that is not awaiting a reply: dropped, like a reply to a
+        // dead caller.
+        crate::sched::ipc_reply(tid, [0xDEAD, 0]);
+
+        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency() / 2;
+        while crate::arch::timer::now() < deadline {
+            assert!(
+                !DONE.load(Ordering::SeqCst),
+                "a stray reply completed a receiver's recv (it returned {:#x})",
+                GOT.load(Ordering::SeqCst),
+            );
+            crate::sched::yield_now();
+        }
+
+        // The mailbox was not clobbered and the rendezvous still works.
+        crate::sched::ipc_send(ep, [81, 0, 0]);
+        assert!(
+            wait_for(|| DONE.load(Ordering::SeqCst)),
+            "the real message never arrived after the dropped reply"
+        );
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            81,
+            "the recv completed with the stray reply's words, not the real message"
         );
     }
 
@@ -3126,7 +3593,10 @@ mod tests {
             "the first usable byte of the stack is not a guard page"
         );
 
-        // Core 1 is online in every configuration this suite runs (smp.rs boots MAX_CPUS).
+        // Slot 1's guard address is a static layout fact, not a runtime one: the classifier does
+        // range math over addresses that exist for every slot, online or parked, so this needs no
+        // core 1 at all. (An earlier comment here justified the index by core 1 being online,
+        // which was the wrong reason and read as an online-set assumption.)
         let g = crate::smp::secondary_stack_guard(1);
         assert_eq!(guard_page_at(g), Some(GuardPage::Secondary(1)));
 

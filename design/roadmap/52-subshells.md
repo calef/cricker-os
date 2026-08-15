@@ -2,9 +2,11 @@
 
 **Status: RECORDED.**
 
-**Gate: DECISION, MILESTONE 50.** Recorded and deliberately not designed: Chris asked to design
-this one together, and the block says not to build from it without that conversation. It is also
-sequenced after 50, which removes most of the requirement and changes what is left.
+**Gate: DECISION.** Recorded and deliberately not designed: Chris asked to design this one
+together, and the block says not to build from it without that conversation. It was also sequenced
+after milestone 50, which is BUILT as of 2026-08-14's status catch-up, so that half of the gate is
+satisfied and what remains is exactly the conversation: 50's landing removed most of the
+requirement and changed what is left, which is now the thing to design from.
 
 **STATUS: RECORDED, NOT DESIGNED.** Chris asked for this to be captured as a milestone *and*
 explicitly asked to design it together. This block lays out the problem, the options and the
