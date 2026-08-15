@@ -443,6 +443,17 @@ pub struct Thread {
     /// (the endpoint is gone) instead of a message it never received. Touched only under `SCHED`.
     pub(crate) ipc_aborted: bool,
 
+    /// **This thread's pending rendezvous was completed by its counterparty** (boot 8,
+    /// VisionFive 2, 2026-08-14): a sender staged a message in the mailbox, a receiver collected
+    /// this sender's message, an interrupt signal was delivered, or a reply arrived. Set under
+    /// `SCHED` in the same critical section that delivered, before the wake; cleared in the same
+    /// statement that parks the thread (`state = Blocked`). `wake` refuses to make a waiting
+    /// thread `Ready` while this and [`ipc_aborted`](Self::ipc_aborted) are both false, because
+    /// such a wake has nothing for the parked IPC to return and has not unlinked the thread from
+    /// its endpoint's wait queue: completing the recv anyway is boot 8's stranded receiver.
+    /// Touched only under `SCHED`. Name provisional.
+    pub(crate) ipc_served: bool,
+
     /// **Where this thread's EL0 execution begins** (milestone 19c.3), set by `Tcb::CONFIGURE`
     /// on an embryo, consumed by `START` to build the entry context. `(0, 0)` for a kernel
     /// thread, which never drops to EL0 and runs its closure instead.
@@ -529,6 +540,7 @@ impl Thread {
             wake_pending: false,
             wait_on: None,
             ipc_aborted: false,
+            ipc_served: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -562,6 +574,7 @@ impl Thread {
             wake_pending: false,
             wait_on: None,
             ipc_aborted: false,
+            ipc_served: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -668,6 +681,7 @@ impl Thread {
                 wake_pending: false,
                 wait_on: None,
                 ipc_aborted: false,
+                ipc_served: false,
                 entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
                 start_args: [0; 3],
                 tcb_kmem: true,
@@ -715,6 +729,7 @@ impl Thread {
             wake_pending: false,
             wait_on: None,
             ipc_aborted: false,
+            ipc_served: false,
             entry: (0, 0),
             start_args: [0; 3],
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
