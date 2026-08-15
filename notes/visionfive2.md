@@ -680,7 +680,8 @@ together (6.5M and 7.4M) than boot 13's three-core spread. The `scheduler :` smo
 `0 of 2` again, its second board boot in a row; that line's wording overclaims on real timing
 and now has enough evidence to be a lane, not a shrug.
 
-Three limitations found while building those, honestly not fixed here:
+Three limitations found while building those, honestly not fixed that night (the first has since
+been closed; its entry carries the record):
 
 - **The tour's UART-driver step arms QEMU's interrupt number on the board.** `main.rs` passes
   `UART_IRQ = 10` (QEMU `virt`'s NS16550 line) to `riscv_uart_driver_demo`, which binds it and
@@ -691,6 +692,22 @@ Three limitations found while building those, honestly not fixed here:
   the device tree like everything else on this page before the driver demo means anything on
   silicon. **Confirmed on silicon 2026-08-15 (boot 13): a key press at the completed tour's
   prompt reached nothing**, exactly as this entry predicts.
+
+  **Fixed 2026-08-15, the same day boot 13 confirmed it.** The number now comes from the
+  machine's own tree: `memory::init` reads the console node's `interrupts`, resolves the
+  inheritable `interrupt-parent` (the serial node's own on QEMU riscv64, the root's on QEMU
+  aarch64, `/soc`'s per the mainline dtsi), asks the controller that phandle names for its
+  `#interrupt-cells`, and decodes the entry per that count rather than assuming it
+  (`isa::interrupt_id`; one cell is a PLIC source verbatim, three are the GIC's
+  `<type number flags>` with the bank base added). Host tests hold the whole claim: the same
+  read answers 10 on QEMU's tree and **32 on both JH7110 fixtures**
+  (`crates/isa/tests/interrupt_ids.rs`), and 33 on aarch64 `virt`, where `UART_RX_INTID = 33`
+  was the same bug one board away and was fixed in the same motion (`user::spawn_init` now asks
+  the tree first). The constants survive as the documented fallback for a tree that does not
+  say, and every boot path prints a `uart irq` line naming which source won, so the next bench
+  transcript answers this question instead of raising it. What QEMU cannot prove, as ever: that
+  a keystroke at the board's prompt now reaches the driver is the next bench boot's fact, and
+  the `uart irq    : source 32 (device tree)` line in its transcript is the first thing to read.
 
 - **The shell path's userspace input driver still speaks QEMU's UART layout.**
   `user/src/input.rs` reads the NS16550 at byte-stride offsets (LSR at 0x05), so on the board the

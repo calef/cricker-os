@@ -22,7 +22,9 @@ Four processes, and the channels between them:
 ```
 
 - **The console server** (milestone 8) owns the UART transmit side and prints what it is sent.
-- **The input driver** (new) owns the UART receive side and its interrupt (INTID 33). It
+- **The input driver** (new) owns the UART receive side and its interrupt (INTID 33 on QEMU
+  `virt`; since 2026-08-15 the number comes from the device tree, with the constant as the
+  documented fallback; see notes/device-tree.md). It
   assembles a line character by character and hands each completed line to the shell.
 - **The shell** (new) reads a line and runs a command: `help`, `echo`, `run`.
 - **A worker** is spawned for each `run`. It computes, reports its answer to the shell, and

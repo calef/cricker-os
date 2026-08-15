@@ -17,7 +17,9 @@
 //! `node_reg` within seconds of its first run; see `crates/dtb/tests/hostile.rs`.
 //!
 //! **Every accessor, not just `from_bytes`.** A blob that parses is not a blob that is safe to walk,
-//! and the kernel calls all seven of these on the same blob during boot.
+//! and the kernel calls all of these on the same blob during boot. (An earlier draft said "all
+//! seven"; the count grows with the parser, and the rule is the walkers below track its public
+//! surface.)
 
 #![no_main]
 
@@ -56,7 +58,22 @@ fuzz_target!(|data: &[u8]| {
         let _ = dtb.node_reg(prefix, &mut out);
         let _ = dtb.node_prop(prefix, b"reg");
         let _ = dtb.node_prop(prefix, b"compatible");
+        // The inherited variant keeps a per-depth value stack the blob's nesting indexes, which is
+        // the same shape as the `node_reg` cell stacks this target already caught a real
+        // out-of-bounds in. `interrupts` beside `interrupt-parent` because that pair is the
+        // kernel's real read (the console UART's line).
+        let _ = dtb.node_prop_inherited(prefix, b"interrupt-parent");
+        let _ = dtb.node_prop(prefix, b"interrupts");
     }
+    // The phandle walk: whatever `interrupt-parent` bytes the blob offers, followed, plus a
+    // constant needle so the walk runs even when the property is absent.
+    if let Ok(Some(parent)) = dtb.node_prop_inherited(b"", b"interrupt-parent")
+        && parent.len() >= 4
+    {
+        let ph = u32::from_be_bytes([parent[0], parent[1], parent[2], parent[3]]);
+        let _ = dtb.phandle_prop(ph, b"#interrupt-cells");
+    }
+    let _ = dtb.phandle_prop(1, b"#interrupt-cells");
     for compat in [
         &b""[..],
         b"arm,pl031",

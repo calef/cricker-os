@@ -199,3 +199,37 @@ fn more_nodes_than_slots_reports_the_real_count() {
         "the tree has many nodes, and it said so with nowhere to put them"
     );
 }
+
+/// **The serial node names its interrupt parent itself** on this tree, so the inherited read
+/// answers from the node and never climbs; the phandle it carries is the PLIC's, whose
+/// `#interrupt-cells = <1>` is what makes the serial's `interrupts = <10>` a one-cell entry.
+/// The aarch64 twin of this test holds the other shape (the parent declared once on the root),
+/// which is the case `node_prop_inherited` exists for.
+#[test]
+fn follows_the_serial_interrupt_parent_to_the_plic() {
+    let dtb = Dtb::from_bytes(QEMU_RISCV_VIRT).unwrap();
+
+    let parent = dtb
+        .node_prop_inherited(b"serial@", b"interrupt-parent")
+        .unwrap()
+        .expect("the serial node names its interrupt parent");
+    let phandle = u32::from_be_bytes(parent[..4].try_into().unwrap());
+
+    let cells = dtb
+        .phandle_prop(phandle, b"#interrupt-cells")
+        .unwrap()
+        .expect("the PLIC declares its interrupt cells");
+    assert_eq!(
+        u32::from_be_bytes(cells[..4].try_into().unwrap()),
+        1,
+        "a PLIC entry is one cell: the source number, verbatim"
+    );
+
+    // A phandle no node carries, and a property the matched node does not have: both are `None`,
+    // not errors, same posture as node_prop_compatible.
+    assert_eq!(
+        dtb.phandle_prop(0xdead_beef, b"#interrupt-cells").unwrap(),
+        None
+    );
+    assert_eq!(dtb.phandle_prop(phandle, b"no-such-prop").unwrap(), None);
+}

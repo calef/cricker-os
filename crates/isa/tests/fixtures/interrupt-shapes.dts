@@ -1,0 +1,53 @@
+/dts-v1/;
+
+/*
+ * Synthetic interrupt wirings no real machine fixture exercises: the decoder's refusal
+ * paths and the GIC PPI bank. Every node here exists to cover one branch of
+ * isa::interrupt_id, and nothing else reads this tree.
+ *
+ * Regenerate:
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/interrupt-shapes.dtb \
+ *         crates/isa/tests/fixtures/interrupt-shapes.dts
+ */
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	interrupt-parent = <&gic>;
+
+	gic: gic@1000 {
+		#interrupt-cells = <3>;
+		phandle = <1>;
+	};
+
+	twocell: twocell@2000 {
+		#interrupt-cells = <2>;
+		phandle = <2>;
+	};
+
+	/* PPI bank: <1 n flags> with n under 16 decodes to 16 + n. */
+	timer@3000 {
+		interrupts = <1 13 4>;
+	};
+
+	/* PPI number out of range: refused, not folded into the bank. */
+	badppi@4000 {
+		interrupts = <1 99 4>;
+	};
+
+	/* A type this decoder does not speak (neither SPI 0 nor PPI 1). */
+	badtype@5000 {
+		interrupts = <5 7 4>;
+	};
+
+	/* A parent with a cell count this decoder does not speak. */
+	oddcells@6000 {
+		interrupt-parent = <&twocell>;
+		interrupts = <3 9>;
+	};
+
+	/* An interrupts property too short for its parent's three cells. */
+	short@7000 {
+		interrupts = <0>;
+	};
+};

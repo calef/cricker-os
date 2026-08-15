@@ -123,6 +123,17 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
+    // The console UART's interrupt line, decoded per the tree's own `#interrupt-cells` rather
+    // than assumed (crates/isa/src/interrupt_id.rs). It was a constant, and the constant was the
+    // last QEMU number on the interrupt path: the tour's driver demo armed PLIC source 10 on the
+    // JH7110, whose UART0 interrupts on line 32, and boot 13 (2026-08-15) proved it on silicon
+    // when a key press at the finished tour's prompt reached nothing (notes/visionfive2.md,
+    // BUGS). A tree that does not say leaves this None, and the callers fall back to the QEMU
+    // `virt` constant and print which source won.
+    if let Ok(Some(irq)) = isa::interrupt_id::of_node(&dtb, crate::console::UART_NODE) {
+        *UART_IRQ.lock() = Some(irq);
+    }
+
     // The PCIe host bridge, matched on the generic-ECAM binding both QEMU `virt` boards state.
     // `reg` is the ECAM config window; `ranges` carries the standard 7-cell PCI entries, of
     // which the 32-bit non-prefetchable memory entry is the window the kernel assigns BARs from
@@ -392,6 +403,15 @@ pub fn rtc_region() -> Option<(u64, u64, u64)> {
     *RTC_REGION.lock()
 }
 
+/// The console UART's interrupt line, as the device tree states it: PLIC source 10 on QEMU's
+/// riscv64 `virt`, 32 on the JH7110, GIC INTID 33 on QEMU's aarch64 `virt`. `None` before `init`
+/// and on a tree that does not say (no `interrupts`, no resolvable parent, or an entry shape the
+/// decoder refuses; see `isa::interrupt_id`). The callers own the fallback (`user::UART_RX_INTID`,
+/// the QEMU constant) and print which source won, so a bench transcript is diagnosable.
+pub fn uart_irq() -> Option<u32> {
+    *UART_IRQ.lock()
+}
+
 /// The RAM regions the device tree told us about.
 ///
 /// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
@@ -471,6 +491,10 @@ static SMMU_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::R
 /// The RTC's register block and binding kind (milestone 51). `None` until `init` has run, and on a
 /// machine whose device tree describes neither RTC we can drive.
 static RTC_REGION: IrqSafeMutex<Option<(u64, u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
+
+/// The console UART's interrupt line, from the device tree. `None` until `init`, and on a tree
+/// that does not say.
+static UART_IRQ: IrqSafeMutex<Option<u32>> = IrqSafeMutex::new(rank::RAM, None);
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

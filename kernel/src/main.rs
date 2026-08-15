@@ -249,8 +249,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             }
             match user::initrd() {
                 Some(initrd) => {
-                    const UART_IRQ: u32 = 10; // the NS16550's PLIC interrupt id on QEMU virt
-                    if let Err(e) = user::riscv_shell_boot(initrd, UART_IRQ) {
+                    // The UART's PLIC source, from the machine's own tree: 10 on QEMU virt, 32 on
+                    // the JH7110. It was a constant, and the constant was QEMU's; see the tour's
+                    // driver step below and notes/visionfive2.md (BUGS). The line names which
+                    // source won, so a bench transcript is diagnosable.
+                    let (uart_irq, uart_irq_source) = user::uart_irq_and_source();
+                    println!("  uart irq: source {uart_irq} ({uart_irq_source})");
+                    if let Err(e) = user::riscv_shell_boot(initrd, uart_irq) {
                         println!("  shell boot failed: {e:?}");
                     } else {
                         println!(
@@ -502,7 +507,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // byte to QEMU's serial *after boot*: `( sleep 4; printf A ) | ...` (the console clears the
         // RX FIFO during init, so a byte sent at t=0 is dropped).
         if let Some((plic_phys, _)) = memory::plic_region() {
-            const UART_IRQ: u32 = 10; // the NS16550's interrupt id on QEMU virt
+            // The UART's PLIC source, from the machine's own tree: 10 on QEMU virt, 32 on the
+            // JH7110. This step used to arm a QEMU constant, and on the board that enabled an
+            // unrelated source, so a real keystroke could never reach the driver; boot 13 proved
+            // it on silicon (notes/visionfive2.md, BUGS). The fallback when the tree does not say
+            // is that same constant (user::UART_RX_INTID), and the line below names which source
+            // won, so a bench transcript is diagnosable.
+            let (uart_irq, uart_irq_source) = user::uart_irq_and_source();
             // SAFETY: the PLIC is device-mapped in the direct map (mmu::map_everything); this is
             // its VA. The context is the boot hart's S context (2*hart + 1), derived rather than
             // hardcoded to 1 because OpenSBI elects the boot hart by lottery; see irq::boot_s_context.
@@ -513,13 +524,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 );
             };
 
+            println!("  uart irq    : source {uart_irq} ({uart_irq_source})");
+
             let started = user::initrd()
                 .filter(|a| {
                     nifefs::Fs::parse(a)
                         .map(|fs| fs.read("driver").is_some())
                         .unwrap_or(false)
                 })
-                .and_then(|a| user::riscv_uart_driver_demo(a, UART_IRQ).ok());
+                .and_then(|a| user::riscv_uart_driver_demo(a, uart_irq).ok());
             match started {
                 Some(report) => {
                     // A receiver for the driver's reports, so the boot tour does not block on input.
