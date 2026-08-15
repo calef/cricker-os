@@ -15,8 +15,9 @@
 //!
 //! - **Wake-before-switch-out** (found by a 2-in-10 flake; notes/intrusive-queues.md). A waker that
 //!   queues a thread still standing on its CPU lets another core switch into a stale context: two
-//!   cores in one thread. Rule: [`try_wake`](Handshake::try_wake) finding [`on_cpu`]
-//!   (Handshake::on_cpu) set parks the wake in [`wake_pending`](Handshake::wake_pending) instead,
+//!   cores in one thread. Rule: [`try_wake`](Handshake::try_wake) finding
+//!   [`on_cpu`](Handshake::on_cpu) set parks the wake in
+//!   [`wake_pending`](Handshake::wake_pending) instead,
 //!   and the thread's own core completes it in [`finish_switch`](Handshake::finish_switch) once the
 //!   context is provably saved.
 //! - **Boot 8's stranded receiver** (VisionFive 2, 2026-08-14; notes/visionfive2.md, fourth bench

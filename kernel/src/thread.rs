@@ -257,8 +257,9 @@ impl Drop for KernelStack {
 /// `sched.rs` reads any differently than it did.
 pub use wake_handshake::RunState as State;
 
-/// **Which side of a rendezvous a blocked thread is waiting as.** The role half of
-/// [`Thread::wait_on`], recorded at the same instant `state` goes `Blocked` and by the same code,
+/// **Which side of a rendezvous a blocked thread is waiting as.** The role half of the
+/// handshake's [`wait_on`](wake_handshake::Handshake::wait_on) payload, recorded at the same
+/// instant `state` goes `Blocked` and by the same code,
 /// so a hang dump can say *what kind* of wait a thread is in rather than only that it waits.
 ///
 /// `Reply` is a `CALL` caller: it is waiting for its one-shot Reply capability to be invoked, and
