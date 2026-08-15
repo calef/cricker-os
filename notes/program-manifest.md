@@ -30,13 +30,27 @@ A manifest declares what a program expects to be handed (`grant_plan::Manifest`)
 
 ```rust
 struct Manifest {
-    arg:     ArgSpec,   // Required | Forbidden   -- does it take an integer argument?
-    mem:     MemSpec,   // Forbidden | Required { min, max }  -- a memory grant, in pages?
-    file:    FileSpec,  // Forbidden | Required { writable }  -- one file (phase 2)
+    arg:           ArgSpec,     // Required | Forbidden   -- an integer argument?
+    mem:           MemSpec,     // Forbidden | Required { min, max }  -- a memory grant, in pages?
+    file:          FileSpec,    // Forbidden | Required { writable }  -- one file
+    dir:           DirSpec,     // a directory capability, and with which rights
+    flags:         &'static [u8],  // the option letters the program accepts
+    output:        OutputSpec,  // where its bytes may go
+    input:         InputSpec,   // and where they may come from; Required carries
+                                // writes_while_reading, which the type will not let you omit
+    reports:       bool,        // does it get a report endpoint?
+    interruptible: bool,        // may ^C reach it?
+    clock:         bool,        // may it read the wall clock?
     reports: bool,      // is it endowed the shared result endpoint?
     interruptible: bool,// does ^C reach it (DECISIONS §24)?
 }
 ```
+
+**The struct in `crates/grant_plan/src/lib.rs` is the authority, not this page.** This list said
+five fields against the code's ten from some point before 2026-08-14, when milestone 117's first
+stranger run found it and reported that following the note produces a struct that does not compile.
+The program table below is the same hazard at smaller scale: it shows a few programs and the enum
+carries more.
 
 ### The file endowment declares a direction, not a name
 
