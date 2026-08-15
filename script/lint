@@ -17,12 +17,22 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# `user_rt` is excluded from the host pass along with kernel and user: it is the EL0 syscall runtime,
-# all aarch64 inline `asm!` (`in("x8")`, ...), so it only compiles for the aarch64 target. On an
-# aarch64 host (an Apple Silicon dev machine) it happens to build, but on CI's x86_64 host those
-# registers are "unknown register" errors. It is linted with the other bare-metal crates below.
+# The host pass excludes every crate that cannot compile for the host: `user_rt` (the EL0 syscall
+# runtime, inline `asm!` naming architecture registers) and everything that depends on it.
+#
+# **The old comment here said "on CI's x86_64 host those registers are unknown register errors", and
+# it was wrong in both directions by 2026-08-14.** CI runs on `ubuntu-24.04-arm`, where the asm
+# compiles; and excluding `user_rt` alone never removed it from the dependency graph, so four crates
+# that took unconditional `user_rt` dependencies dragged it into the host pass anyway. The result was
+# a workspace that did not build on x86_64, invisible to the one gate that would have caught it
+# because that gate runs on aarch64. Found by milestone 117's first stranger run.
+#
+# The "host pass excludes exactly the bare-metal crates" gate below derives this set rather than
+# trusting this line.
 echo "==> clippy: host crates + xtask"
-cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- -D warnings
+cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt \
+    --exclude swap_proto --exclude virtio --exclude supervision_proto --exclude system_initializer \
+    --all-targets -- -D warnings
 
 # The RedoxFS host tool (tools/redoxfs_host) is its own workspace, outside ours on purpose (it wraps
 # the vendored engine, which we do not want in our gates; see Cargo.toml). Lint it on its own so our
@@ -81,7 +91,9 @@ rustc --edition 2024 --crate-type lib --crate-name kani \
 # Same package selection as the host pass above: every `#[cfg(kani)]` module in the tree is in
 # `crates/`, and kernel/user/user_rt hold none. `--all-targets` because a harness crate's `cfg(test)`
 # build compiles the harnesses too, and the two configurations are not the same compilation.
-cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- \
+cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt \
+    --exclude swap_proto --exclude virtio --exclude supervision_proto --exclude system_initializer \
+    --all-targets -- \
     --cfg kani --extern "kani=$shim/libkani.rlib" -L "$shim" -D warnings
 
 echo "==> clippy: kernel + user + user_rt (aarch64)"
@@ -554,6 +566,72 @@ echo "==> citations"
 # deliberate SUBSET of it. Two checks, because they fail in opposite directions: a script nobody
 # documented is invisible, and a README naming a script that no longer exists sends a new reader into
 # a wall. notes/scripts.md was missing five entries when this check was written, none of them noticed.
+# The host pass must exclude EXACTLY the crates that cannot compile for the host, and this derives
+# that set rather than trusting a list.
+#
+# The failure it prevents is the one that happened. `--exclude` removes a package from the test
+# selection, not from the dependency graph, so excluding `user_rt` while four workspace crates
+# depended on it unconditionally left it in the build. The host pass stopped compiling on x86_64 on
+# 2026-08-03 and stayed broken until 2026-08-14, invisible throughout because CI moved to an aarch64
+# runner the same day, where the EL0 assembly compiles by accident.
+#
+# So: ask cargo which workspace members reach `user_rt`, and check that both consumers of that
+# knowledge (this file's clippy lines and xtask's `test`) exclude every one. A crate that takes a new
+# `user_rt` dependency now fails here, naming itself, instead of breaking a stranger's first build.
+echo "==> the host pass excludes exactly the bare-metal crates"
+python3 - <<'PYEOF' || exit 1
+import json, subprocess, sys
+
+meta = json.loads(subprocess.run(
+    ["cargo", "metadata", "--format-version", "1", "--locked"],
+    capture_output=True, text=True, check=True).stdout)
+
+members = set(meta["workspace_members"])
+name_of = {p["id"]: p["name"] for p in meta["packages"]}
+edges = {n["id"]: [d["pkg"] for d in n.get("deps", [])] for n in meta["resolve"]["nodes"]}
+
+def reaches_user_rt(pid, seen=None):
+    if seen is None:
+        seen = set()
+    if pid in seen:
+        return False
+    seen.add(pid)
+    for dep in edges.get(pid, []):
+        if name_of.get(dep) == "user_rt" or reaches_user_rt(dep, seen):
+            return True
+    return False
+
+bare = sorted(name_of[m] for m in members
+              if name_of[m] == "user_rt" or reaches_user_rt(m))
+
+lint = open("script/lint").read()
+xtask = open("xtask/src/main.rs").read()
+missing = []
+for c in bare:
+    if f"--exclude {c}" not in lint:
+        missing.append((c, "script/lint"))
+    if f'"{c}",' not in xtask:
+        missing.append((c, "xtask/src/main.rs"))
+
+if missing:
+    sys.stderr.write("lint: crates that cannot build for the host but are not excluded:\n")
+    for c, where in missing:
+        sys.stderr.write(f"  {c}  (missing from {where})\n")
+    sys.stderr.write("""
+These reach `user_rt`, which is EL0 syscall `asm!` and compiles only for aarch64 or riscv64. A
+workspace member that reaches it cannot be built by a host `cargo test`, and `--exclude` on the
+package alone does NOT help: it removes the package from the test selection, not from the dependency
+graph, so cargo builds it anyway for whoever depends on it.
+
+Either exclude it from the host pass in BOTH places above, or do what fs_server/Cargo.toml does and
+put `user_rt` behind an optional `el0` feature, which is the better fix when the crate has host logic
+worth testing.
+""")
+    sys.exit(1)
+
+print(f"host pass: {len(bare)} bare-metal crates, every one excluded in both places")
+PYEOF
+
 echo "==> script docs"
 missing=""
 for f in "$(dirname "$0")"/*; do
