@@ -13,10 +13,11 @@
 //! shape the QEMU suite can never boot is proven on the host, in milliseconds, below. The kernel's
 //! `smp::online_cpus` and `smp::nth_online` delegate here and add only the live mask.
 //!
-//! Name: unrecorded, provisional (introduced 2026-08-14 by the first-silicon online-set sweep;
-//! calef has not seen it). A noun for the thing it holds, a set of cpus, in the two-word
-//! `snake_case` shape of `grant_plan` and `user_heap`. `cpus` alone was rejected here as a generic
-//! word, and `hart_mask` as RISC-V vocabulary for a crate both ISAs use.
+//! Name: ratified 2026-08-14 (calef, the same day the first-silicon online-set sweep introduced
+//! it). A noun for the thing it holds, a set of cpus, and the POSIX term for exactly this concept
+//! (`cpu_set_t`, `sched_setaffinity`), which puts it in the naming tenet's protected class: a name
+//! the reader already knows from outside costs them nothing. `cpus` alone was rejected as a
+//! generic word, and `hart_mask` as RISC-V vocabulary for a crate both ISAs use.
 //!
 //! # EXAMPLES
 //!
