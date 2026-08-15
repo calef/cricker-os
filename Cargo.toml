@@ -48,6 +48,7 @@ members = [
     "crates/steal_request",
     "crates/user_heap",
     "crates/user_rt",
+    "crates/wake_handshake",
     "crates/coremark",
     "crates/video_terminal",
     "crates/swish",
