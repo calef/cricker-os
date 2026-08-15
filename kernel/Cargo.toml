@@ -96,6 +96,10 @@ spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 # `dma_validator` made for Kani. See notes/interleaving.md.
 steal_request = { version = "0.1.0", path = "../crates/steal_request" }
 video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
+# The scheduler's block/wake handshake, so the kernel calls the loom-searched transitions rather
+# than keeping a copy of them: the second retrofit of steal_request's move, asked for by the
+# fourth bench stop's audit. See notes/interleaving.md.
+wake_handshake = { version = "0.1.0", path = "../crates/wake_handshake" }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.

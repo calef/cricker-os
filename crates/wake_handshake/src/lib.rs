@@ -364,9 +364,12 @@ impl<W> Handshake<W> {
             !self.on_cpu,
             "switching into a thread that is still on a cpu"
         );
+        // Ready is the ordinary case (popped off a run queue). Running is the idle thread, which
+        // lives outside the ready queue and is never marked Ready when a core switches away from
+        // it, so it arrives here still saying Running from its last turn.
         debug_assert!(
-            self.state == RunState::Ready,
-            "switching into a thread that was not Ready"
+            matches!(self.state, RunState::Ready | RunState::Running),
+            "switching into a thread that was neither Ready nor a parked idle"
         );
         self.state = RunState::Running;
         self.on_cpu = true;
@@ -438,7 +441,10 @@ mod tests {
         assert_eq!(hs.try_wake(), WakeVerdict::Refused);
         assert_eq!(hs.state, RunState::Blocked, "a refused wake unparked");
         assert_eq!(hs.wait_on, Some(3), "a refused wake cleared the wait");
-        assert!(!hs.wake_pending, "a refused wake left a pending wake behind");
+        assert!(
+            !hs.wake_pending,
+            "a refused wake left a pending wake behind"
+        );
     }
 
     #[test]
@@ -490,7 +496,10 @@ mod tests {
         let mut hs: Handshake<u8> = Handshake::on_cpu_now();
         hs.preempt();
         assert_eq!(hs.state, RunState::Ready);
-        assert!(hs.on_cpu, "preemption cleared on_cpu before the context was saved");
+        assert!(
+            hs.on_cpu,
+            "preemption cleared on_cpu before the context was saved"
+        );
         assert_eq!(hs.finish_switch(), SwitchOutVerdict::Cleared);
         assert!(!hs.on_cpu);
         hs.switch_in();
@@ -503,7 +512,10 @@ mod tests {
         let mut hs: Handshake<u8> = Handshake::on_cpu_now();
         hs.state = RunState::Finished; // depart's kernel-side write
         assert_eq!(hs.finish_switch(), SwitchOutVerdict::Reap);
-        assert!(hs.on_cpu, "finish_switch dressed a corpse instead of reaping it");
+        assert!(
+            hs.on_cpu,
+            "finish_switch dressed a corpse instead of reaping it"
+        );
     }
 
     #[test]
@@ -691,7 +703,11 @@ mod interleavings {
             waker.join().unwrap();
 
             let core = m.sched.lock().unwrap();
-            assert_eq!(core.queued, 1, "one wake queued the thread {} times", core.queued);
+            assert_eq!(
+                core.queued, 1,
+                "one wake queued the thread {} times",
+                core.queued
+            );
             assert_eq!(core.hs.state, RunState::Running, "the thread never resumed");
         });
 
@@ -976,7 +992,10 @@ mod interleavings {
                             "an undelivered wake was granted"
                         );
                         assert_eq!(core.hs.state, RunState::Blocked);
-                        assert!(core.hs.wait_on.is_some(), "a refused wake unlinked the wait");
+                        assert!(
+                            core.hs.wait_on.is_some(),
+                            "a refused wake unlinked the wait"
+                        );
                         if core.hs.on_cpu {
                             REFUSED_MID_SWITCH.mark();
                         } else {
@@ -1006,8 +1025,16 @@ mod interleavings {
             wakers.join().unwrap();
 
             let core = m.sched.lock().unwrap();
-            assert_eq!(core.queued, 1, "the receiver was queued {} times", core.queued);
-            assert_eq!(core.hs.state, RunState::Running, "the receiver never resumed");
+            assert_eq!(
+                core.queued, 1,
+                "the receiver was queued {} times",
+                core.queued
+            );
+            assert_eq!(
+                core.hs.state,
+                RunState::Running,
+                "the receiver never resumed"
+            );
         });
 
         REFUSED_MID_SWITCH.assert("a spurious wake refused while the receiver was mid-switch-out");

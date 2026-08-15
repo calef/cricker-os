@@ -250,38 +250,12 @@ impl Drop for KernelStack {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    /// **Retyped but not yet started** (milestone 19c.3): a TCB object a process has created
-    /// but not made runnable. It is in no run queue and no wait queue, and the scheduler never
-    /// picks it (only `Ready` threads are queued, and `wake` only touches `Blocked` ones), so
-    /// the queue discipline holds by this state alone. `START` turns it `Ready`; until then it
-    /// has no kernel stack and no saved context. This is the one representable half-built state,
-    /// and the half-built-state audit is the audit of what may and may not happen to it.
-    Embryo,
-    Ready,
-    Running,
-    /// **Waiting for an IPC rendezvous** that has not happened yet.
-    ///
-    /// A blocked thread is in no run queue and will not be scheduled. It sits in an endpoint's
-    /// wait queue instead, and the thread on the other side of that endpoint is the only thing
-    /// that will ever move it back to `Ready`. This is the state that makes "block until a
-    /// message arrives" a real thing a thread can do rather than a spin loop.
-    Blocked,
-    Finished,
-    /// **Dead, but not yet reaped** (milestone 22, DECISIONS §26). A supervised thread that
-    /// faulted or exited: the kernel has delivered its fault/exit message to its supervision
-    /// endpoint, and it will never run again, but its corpse (this TCB, its address space, its
-    /// memory) persists for postmortem until the supervisor reaps it with §16 object revocation.
-    ///
-    /// The difference from [`Finished`](Self::Finished) is who frees it. A `Finished` thread is
-    /// auto-reaped by the next thread's `finish_switch` the moment it is off its stack; a `Dead`
-    /// one is *not*, so its registers and address space survive for the supervisor to inspect and
-    /// its region stays occupied until an explicit `DESTROY`. Revocation treats `Dead` as reapable
-    /// (unlike a live `Ready`/`Running`/`Blocked`), and the scheduler never runs it (only `Running`
-    /// threads are requeued), so it is dead in every sense but "its memory is gone."
-    Dead,
-}
+/// **Where a thread is in its life.** The enum itself lives in `crates/wake_handshake` now,
+/// because the block/wake transitions that read and write it were lifted there for loom to search
+/// (the fourth bench stop's retrofit; see that crate's header and notes/interleaving.md). The
+/// kernel keeps its vocabulary: `State` here is exactly `wake_handshake::RunState`, and nothing in
+/// `sched.rs` reads any differently than it did.
+pub use wake_handshake::RunState as State;
 
 /// **Which side of a rendezvous a blocked thread is waiting as.** The role half of
 /// [`Thread::wait_on`], recorded at the same instant `state` goes `Blocked` and by the same code,
@@ -326,9 +300,21 @@ impl Drop for QuotaToken {
     }
 }
 
+/// What a blocked thread waits on: the endpoint and the side of the rendezvous it waits as. The
+/// payload of [`wake_handshake::Handshake::wait_on`], opaque to that crate, matched by the kernel
+/// (`ipc_reply`'s reply-role check, the hang dump's wait column).
+pub type Wait = (crate::sched::EpId, WaitRole);
+
 pub struct Thread {
     pub id: Tid,
-    pub state: State,
+
+    /// **The block/wake handshake**: `state` plus the `on_cpu`/`wake_pending`/`wait_on`/
+    /// `ipc_served`/`ipc_aborted` protocol that used to be five loose fields here. Lifted into
+    /// `crates/wake_handshake` so loom can search its interleavings on the host, and embedded so
+    /// the kernel **calls** the checked transitions rather than mirroring them (the regions-crate
+    /// precedent). Every access is under `SCHED`, exactly as before; the crate's header carries
+    /// the protocol's rules, its races and its BUGS.
+    pub handshake: wake_handshake::Handshake<Wait>,
 
     /// **The entire saved CPU state of this thread**: one stack pointer.
     ///
@@ -411,49 +397,6 @@ pub struct Thread {
     /// the thread, under that queue's synchronization.
     pub(crate) next: Option<core::ptr::NonNull<Thread>>,
 
-    /// **Still standing on a CPU.** Set (under `SCHED`) when a core schedules this thread in;
-    /// cleared by that core's *successor* thread in `finish_switch`, after the switch away has
-    /// saved this thread's context. In the window between "marked itself Blocked and released
-    /// the lock" and "its core actually switched off its stack", this is what tells a waker the
-    /// thread's saved context is still stale. See [`wake_pending`](Self::wake_pending) and
-    /// `cpu::PerCpu::switched_from`.
-    pub(crate) on_cpu: bool,
-
-    /// **A wake arrived while this thread was still switching out** (`on_cpu` was set). The
-    /// waker parks the wake here instead of queueing a thread whose context is stale; the
-    /// thread's own core completes it in `finish_switch`, when the context is provably saved.
-    /// Both touched only under `SCHED`.
-    pub(crate) wake_pending: bool,
-
-    /// **What this thread is blocked on, and as which side** (first-silicon diagnostics,
-    /// 2026-08-14): the endpoint name and the [`WaitRole`], or `None` when not waiting.
-    ///
-    /// Written in the same `SCHED`-held statement that writes `state = Blocked`, and cleared where
-    /// the wake makes the thread `Ready` (or where a corpse's message is collected). That coupling
-    /// is the point: a boot-7 bench dump showed a thread `Blocked` whose saved user pc was a plain
-    /// store in `memset`, a pair no legal transition produces, and nothing in the dump could say
-    /// whether the `Blocked` byte had come through a real block path (this field set: the endpoint
-    /// queues were touched) or from corruption (this field `None` beside `Blocked`: the state byte
-    /// changed without the block path running). See notes/visionfive2.md, fourth bench stop.
-    pub(crate) wait_on: Option<(crate::sched::EpId, WaitRole)>,
-
-    /// **This thread's blocking IPC was aborted by revocation** (object revocation): the endpoint it
-    /// was parked on was destroyed under it, so it was popped off, woken, and marked here. The syscall
-    /// layer reads-and-clears this after `ipc_recv`/`ipc_send` returns and hands the caller an error
-    /// (the endpoint is gone) instead of a message it never received. Touched only under `SCHED`.
-    pub(crate) ipc_aborted: bool,
-
-    /// **This thread's pending rendezvous was completed by its counterparty** (boot 8,
-    /// VisionFive 2, 2026-08-14): a sender staged a message in the mailbox, a receiver collected
-    /// this sender's message, an interrupt signal was delivered, or a reply arrived. Set under
-    /// `SCHED` in the same critical section that delivered, before the wake; cleared in the same
-    /// statement that parks the thread (`state = Blocked`). `wake` refuses to make a waiting
-    /// thread `Ready` while this and [`ipc_aborted`](Self::ipc_aborted) are both false, because
-    /// such a wake has nothing for the parked IPC to return and has not unlinked the thread from
-    /// its endpoint's wait queue: completing the recv anyway is boot 8's stranded receiver.
-    /// Touched only under `SCHED`. Name provisional.
-    pub(crate) ipc_served: bool,
-
     /// **Where this thread's EL0 execution begins** (milestone 19c.3), set by `Tcb::CONFIGURE`
     /// on an embryo, consumed by `START` to build the entry context. `(0, 0)` for a kernel
     /// thread, which never drops to EL0 and runs its closure instead.
@@ -527,7 +470,7 @@ impl Thread {
     pub fn boot() -> Self {
         Thread {
             id: UNNAMED, // named 0 by the table's first insert (see slots::Table)
-            state: State::Running,
+            handshake: wake_handshake::Handshake::on_cpu_now(), // adopted mid-run: standing on its CPU
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
@@ -536,11 +479,6 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: None,
-            on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
-            wake_pending: false,
-            wait_on: None,
-            ipc_aborted: false,
-            ipc_served: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -560,8 +498,8 @@ impl Thread {
     /// queue is empty. See smp.rs and `sched::adopt_secondary_idle`.
     pub fn adopt_current() -> Self {
         Thread {
-            id: UNNAMED, // named at insert, like every thread
-            state: State::Running,
+            id: UNNAMED,                                        // named at insert, like every thread
+            handshake: wake_handshake::Handshake::on_cpu_now(), // adopted mid-run: standing on its CPU
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
@@ -570,11 +508,6 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: None,
-            on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
-            wake_pending: false,
-            wait_on: None,
-            ipc_aborted: false,
-            ipc_served: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -668,7 +601,7 @@ impl Thread {
         unsafe {
             dst.write(Thread {
                 id,
-                state: State::Ready,
+                handshake: wake_handshake::Handshake::ready(),
                 context,
                 stack: Some(stack),
                 space: None, // a kernel thread until it calls `user::exec`
@@ -677,11 +610,6 @@ impl Thread {
                 quota: None,
                 outgoing_cap: None,
                 next: None,
-                on_cpu: false,
-                wake_pending: false,
-                wait_on: None,
-                ipc_aborted: false,
-                ipc_served: false,
                 entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
                 start_args: [0; 3],
                 tcb_kmem: true,
@@ -716,7 +644,7 @@ impl Thread {
     pub fn embryo() -> Self {
         Thread {
             id: UNNAMED,
-            state: State::Embryo,
+            handshake: wake_handshake::Handshake::embryo(),
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
@@ -725,11 +653,6 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: None,
-            on_cpu: false,
-            wake_pending: false,
-            wait_on: None,
-            ipc_aborted: false,
-            ipc_served: false,
             entry: (0, 0),
             start_args: [0; 3],
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
