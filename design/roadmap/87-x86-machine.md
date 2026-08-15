@@ -3,10 +3,17 @@
 **Status: NOT-STARTED.** Raised 2026-08-03. The selection is made and recorded here; the milestone
 completes when the machine is on the desk and has printed a byte over serial.
 
-**Gate: HARDWARE.** The selection is made and recorded (a used OptiPlex 7050 Micro plus the Dell
-C4PDJ serial module, ~$194 all-in) and the machine is not bought; this milestone completes when it
-is on the desk and has printed a byte over serial. The x86_64 port itself is milestone 19's scope
-and is not gated on the purchase, because it starts under QEMU TCG the way riscv64 did.
+**Gate: HARDWARE.** **Purchased 2026-08-15 (calef), in transit**: the OptiPlex 7050 Micro
+(i5-7500T, 16GB, 256GB NVMe, with its AC adapter, $139), the Dell C4PDJ serial module with its
+cable ($18.88, the with-cable check the earlier draft flagged, answered by the listing's own
+title), and the dev-side RS-232 chain (FTDI USB adapter at 1.5 ft, $15.96, plus a StarTech NM9FF
+null-modem barrel, $7.98, chosen over a cable so the desk carries eighteen inches of serial, not
+three feet). About $182 all-in against the $194 estimate, twelve days after selection; the $129
+machine tier had aged out and nothing else moved. This milestone completes when the machine is on
+the desk and has printed a byte over serial; the x86_64 port itself is milestone 19's scope and is
+not gated on the purchase, because it starts under QEMU TCG the way riscv64 did. One bench note
+for arrival, recorded here because both kits share the desk: this port is real RS-232 and the
+boards' adapters are 3.3 V TTL, and the two chains must never swap; label them.
 
 Milestone 19 names x86_64 as the third ISA, and the second ISA's lesson (milestone 16, the
 VisionFive 2) is that the board should be chosen and ordered before the port needs it, from
