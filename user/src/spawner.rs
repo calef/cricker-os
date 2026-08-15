@@ -33,7 +33,7 @@
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead. This
 // is the one shape where a blanket allow is the honest one: no single binary uses all of it (§38).
-use supervision_proto::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
+use supervision_proto::{ChildEndowment, REP_BUILT, REP_FAILED, REQ_BUILD};
 use user_rt::{cap_delete, recv, send};
 
 /// The capabilities `root_supervisor` endowed us with, in order.
@@ -87,12 +87,12 @@ fn build(elf: &elf::Elf, attempt: u64) -> bool {
         BUDGET,
         region,
         elf,
-        &Endow {
+        &ChildEndowment {
             caps: &[(REPORT, abi::rights::WRITE)],
             maps: &[],
             blobs: &[],
             fault: Some(CHILDFAULT),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ) else {
         return false;

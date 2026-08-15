@@ -151,7 +151,7 @@ use line_editor::proto;
 // The loader, and the tree's only one since milestone 96. Named here rather than qualified at every
 // call, because the point of the crate is that there is one of these.
 use supervision_proto::{
-    Endow, build_child, retype_frame_from as retype_frame, retype_obj_from as retype_obj, tcb_start,
+    ChildEndowment, build_child, retype_frame_from as retype_frame, retype_obj_from as retype_obj, tcb_start,
 };
 use user_rt::{call, cap_delete, invoke, recv, recv_cap, send};
 
@@ -371,14 +371,14 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         ut,
         ut,
         &con_elf,
-        &Endow {
+        &ChildEndowment {
             caps: &[(request, abi::rights::READ), (reply, abi::rights::WRITE)],
             maps: &[
                 (CON_SHARED_VA, con_shared, abi::aspace::MAP_RO),
                 (CON_UART_VA, g.uart_dev, abi::aspace::MAP_RO), // mode ignored for a DeviceFrame
             ],
             stack_pages: CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ));
     must_ok(tcb_start(con, 0, 0, 0));
@@ -390,7 +390,7 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         ut,
         ut,
         &td_elf,
-        &Endow {
+        &ChildEndowment {
             caps: &[
                 (term_ep, abi::rights::READ),
                 (request, abi::rights::WRITE),
@@ -402,7 +402,7 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
                 (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
             ],
             stack_pages: CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ));
     must_ok(tcb_start(line_editor, 0, 0, 0));
@@ -459,14 +459,14 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         ut,
         ut,
         &in_elf,
-        &Endow {
+        &ChildEndowment {
             caps: &[
                 (term_ep, abi::rights::WRITE),
                 (g.uart_irq, abi::rights::READ),
             ],
             maps: &[(IN_UART_VA, g.uart_dev, abi::aspace::MAP_RO)],
             stack_pages: CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ));
     must_ok(tcb_start(input, 0, 0, 0));
@@ -554,11 +554,11 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         ut,
         ut,
         &sh_elf,
-        &Endow {
+        &ChildEndowment {
             caps: if with_fs { &sh_caps } else { &no_fs_caps },
             maps: if with_fs { &sh_maps } else { &no_fs_maps },
             stack_pages: CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ));
     cap_delete(sh_budget); // our copy; the shell holds its own now
@@ -606,13 +606,13 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
             ut,
             ut,
             elf,
-            &Endow {
+            &ChildEndowment {
                 caps: &[
                     (term_sink, abi::rights::READ),
                     (term_ep, abi::rights::WRITE),
                 ],
                 stack_pages: CHILD_STACK_PAGES,
-                ..Endow::new()
+                ..ChildEndowment::new()
             },
         ));
         // Started here even though the shell deliberately is not: the adapter owns no page and
@@ -688,10 +688,10 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
         own_ut,
         own_ut,
         &reaper_elf,
-        &Endow {
+        &ChildEndowment {
             caps: &[(deaths, abi::rights::READ)],
             stack_pages: CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ));
     must_ok(tcb_start(reaper, 0, 0, 0));
@@ -848,10 +848,10 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
                     own_ut,
                     job,
                     e,
-                    &Endow {
+                    &ChildEndowment {
                         maps: &[(CHILD_JOBFRAME_VA, fr, abi::aspace::MAP_RW)],
                         stack_pages: CHILD_STACK_PAGES,
-                        ..Endow::new()
+                        ..ChildEndowment::new()
                     },
                 )
                 .ok(),
@@ -956,13 +956,13 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
                         own_ut,
                         r,
                         e,
-                        &Endow {
+                        &ChildEndowment {
                             caps: &caps[..n],
                             placed,
                             maps,
                             fault: Some(deaths),
                             stack_pages: CHILD_STACK_PAGES,
-                            ..Endow::new()
+                            ..ChildEndowment::new()
                         },
                     )
                     .ok()

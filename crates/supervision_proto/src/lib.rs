@@ -9,7 +9,7 @@
 // DECISIONS §38's rule is against blanket dead-code suppression hiding unreachable code, which this
 // is not: nothing here is hidden, and the lint is a style opinion about an error type.
 #![allow(clippy::result_unit_err)]
-// `Endow::new()` is an empty endowment, and a `Default` impl would give a second spelling for the
+// `ChildEndowment::new()` is an empty endowment, and a `Default` impl would give a second spelling for the
 // same thing in a crate whose whole job is that two binaries agree on one spelling.
 #![allow(clippy::new_without_default)]
 //! **The supervision tree: the shared half** (milestone 22 phase B.2).
@@ -37,7 +37,7 @@
 //! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
 //! rule plus the service the stem names produces this name, which is the whole of what `recorded`
 //! claims: calef ruled on the rule, and never on this crate.
-//! The stem is the tree's word for the restart discipline. The type it exports as `Endow` is an
+//! The stem is the tree's word for the restart discipline. The type it exports as `ChildEndowment` is an
 //! open naming question of its own (DECISIONS §69): a verb where the tenet says noun, naming the
 //! same idea as `grant_plan::Endowment` one construction step apart.
 
@@ -90,12 +90,12 @@ pub const PAGE: u64 = 4096;
 /// lets [`configure_child`] compute the entry `sp` without being told.
 pub const CHILD_STACK_VA: u64 = 0x0050_0000;
 
-/// The stack a child gets when its builder does not say otherwise ([`Endow::new`]). Four pages,
+/// The stack a child gets when its builder does not say otherwise ([`ChildEndowment::new`]). Four pages,
 /// which is enough for the supervision tree's programs; the flaky sub-server would be fine with one.
 ///
 /// **A child at the interactive prompt gets three times this** (`system_initializer::CHILD_STACK_PAGES`),
 /// and the difference is deliberate rather than drift: the prompt's children run the shell's
-/// redirection path, whose frames grew twice under measurement. The number is a field on [`Endow`]
+/// redirection path, whose frames grew twice under measurement. The number is a field on [`ChildEndowment`]
 /// so a caller states it, because a builder that silently inherits somebody else's stack size finds
 /// faults that builder does not have (notes/pipes.md).
 pub const CHILD_STACK_PAGES: u64 = 4;
@@ -108,16 +108,16 @@ static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
 
 /// **Everything a child is born holding.** The same idea as the kernel's `Spawn`: read one of these
 /// and you know the complete authority of the thing about to run.
-pub struct Endow<'a> {
+pub struct ChildEndowment<'a> {
     /// Capabilities to insert, `(our_slot, rights)`, landing in the child's slots 0, 1, 2, ...
     pub caps: &'a [(u64, u64)],
     /// Capabilities to insert at a slot the caller **names**, `(child_slot, our_slot, rights)`,
-    /// after [`caps`](Endow::caps). One caller today: a declared diagnostic stream (DECISIONS §67),
+    /// after [`caps`](ChildEndowment::caps). One caller today: a declared diagnostic stream (DECISIONS §67),
     /// which cannot take the next free slot because how many low slots a child gets depends on what
     /// else the command line granted it, and a program that probes one slot number needs that
     /// number not to move.
     ///
-    /// It cannot collide with [`fault`](Endow::fault): that one lands in the last slot of the
+    /// It cannot collide with [`fault`](ChildEndowment::fault): that one lands in the last slot of the
     /// cspace, and a manifest's diagnostics slot is one the program reads at startup, far below it.
     pub placed: &'a [(u64, u64, u64)],
     /// Pages of ours to map into the child, `(child_va, our_slot, mode)`.
@@ -134,9 +134,9 @@ pub struct Endow<'a> {
     pub stack_pages: u64,
 }
 
-impl<'a> Endow<'a> {
+impl<'a> ChildEndowment<'a> {
     /// An endowment of nothing: no capabilities, no mappings, no supervision, and the default
-    /// stack. Every field is public, so the intended use is `..Endow::new()` at the end of a struct
+    /// stack. Every field is public, so the intended use is `..ChildEndowment::new()` at the end of a struct
     /// literal, which is also what keeps a later field from being a change to every caller.
     pub const fn new() -> Self {
         Self {
@@ -157,7 +157,7 @@ impl<'a> Endow<'a> {
 /// page tables freed under it when the child is reaped). `build_ut` is what the child itself is made
 /// of: its address space, frames, stack, and TCB. Passing a per-child region as `build_ut` is what
 /// makes a single `DESTROY` reap the whole instance.
-pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) -> Result<u64, ()> {
+pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &ChildEndowment) -> Result<u64, ()> {
     let (tcb, aspace) = build_child_space(own_ut, build_ut, elf, endow)?;
     configure_child(tcb, aspace, elf.entry())?;
     Ok(tcb)
@@ -176,7 +176,7 @@ pub fn build_child_space(
     own_ut: u64,
     build_ut: u64,
     elf: &elf::Elf,
-    endow: &Endow,
+    endow: &ChildEndowment,
 ) -> Result<(u64, u64), ()> {
     let aspace = retype_obj_from(build_ut, abi::objtype::ASPACE)?;
 

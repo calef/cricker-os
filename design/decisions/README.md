@@ -125,7 +125,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 66 | DECIDED | [A refusal is a non-zero status, and not the same one an error gets](66-refusal-status.md) |
 | 67 | DECIDED | [A program's second stream is a declaration, not a number](67-second-stream.md) |
 | 68 | PROPOSED | [`BootEndowment::unused` wants a truer name](68-boot-endowment-name.md) |
-| 69 | PROPOSED | [`Endow` is a verb, and names the same idea as `Endowment`](69-endow-versus-endowment.md) |
+| 69 | DECIDED | [`Endow` is a verb, and names the same idea as `Endowment`: it is `ChildEndowment`](69-endow-versus-endowment.md) |
 | 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
 | 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
