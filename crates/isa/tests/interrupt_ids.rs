@@ -76,3 +76,26 @@ fn a_tree_that_does_not_say_answers_none() {
     assert_eq!(interrupt_id::of_node(&dt, b"clint@").unwrap(), None);
     assert_eq!(interrupt_id::of_node(&dt, b"no-such-node@").unwrap(), None);
 }
+
+const INTERRUPT_SHAPES: &[u8] = include_bytes!("fixtures/interrupt-shapes.dtb");
+
+/// **The GIC PPI bank folds like the SPI bank does**, base 16: the synthetic timer's
+/// `<1 13 4>` is INTID 29, the shape every arm timer wires.
+#[test]
+fn a_ppi_entry_folds_into_its_bank() {
+    let dt = tree(INTERRUPT_SHAPES);
+    assert_eq!(interrupt_id::of_node(&dt, b"timer@").unwrap(), Some(29));
+}
+
+/// **Every malformed shape is a refusal, never a guess**: a PPI number past its 16-slot
+/// bank, an interrupt type this decoder does not speak, a parent whose cell count it does
+/// not speak, and an `interrupts` property shorter than that cell count. Each answers
+/// `None` and sends the caller to its documented fallback.
+#[test]
+fn malformed_shapes_are_refused_not_guessed() {
+    let dt = tree(INTERRUPT_SHAPES);
+    assert_eq!(interrupt_id::of_node(&dt, b"badppi@").unwrap(), None);
+    assert_eq!(interrupt_id::of_node(&dt, b"badtype@").unwrap(), None);
+    assert_eq!(interrupt_id::of_node(&dt, b"oddcells@").unwrap(), None);
+    assert_eq!(interrupt_id::of_node(&dt, b"short@").unwrap(), None);
+}

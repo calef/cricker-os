@@ -661,7 +661,11 @@ impl<'a> Dtb<'a> {
     /// Properties precede child nodes in the structure block, so by the time the target node
     /// closes, every open ancestor's value has already been seen; deciding at the target's
     /// `END_NODE` is what makes one walk suffice.
-    pub fn node_prop_inherited(&self, prefix: &[u8], name: &[u8]) -> Result<Option<&'a [u8]>, Error> {
+    pub fn node_prop_inherited(
+        &self,
+        prefix: &[u8],
+        name: &[u8],
+    ) -> Result<Option<&'a [u8]>, Error> {
         const MAX_DEPTH: usize = 16;
         // Where `name`'s value sits on the node open at each depth, `None` where it has none. A
         // BEGIN_NODE resets its own depth's slot, so a closed sibling's value can never leak into
