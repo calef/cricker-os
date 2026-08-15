@@ -2,8 +2,13 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: DECISION.** (The former MILESTONE 65 and 107 halves cleared 2026-08-04; found stale 2026-08-15 with the statuses that hid them.) The scoping decision comes before any code: the
-subset of SMB3 that Time Machine needs, or a general SMB3 server. Milestone 65 holds the key
+**Gate: NONE.** The scoping decision is made: **the subset of SMB3 that Time Machine needs**, not
+a general server (calef, 2026-08-15). Decided on the ranking principle: every part of a general
+server the subset omits serves no customer this project has, and the subset's ceiling is
+measurable against the working router where a general server's is a guess. The choice forecloses
+little: milestone 54's mountable-share core and its protocol crate are the shared substrate, and
+a general server would grow from the same crates. (The former MILESTONE 65 and 107 halves cleared
+2026-08-04; found stale 2026-08-15 with the statuses that hid them.) Milestone 65 holds the key
 `ntlm_response` computes with, and 107 is what lets a Mac connect at all. One dependency this block
 names was recorded here as unowned: `RENAME`. **That is no longer true** (corrected 2026-08-14):
 `fs_proto::fs::RENAME` is op 11, fully specified with its rights (`REMOVE` on the source directory,
