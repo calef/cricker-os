@@ -35,6 +35,7 @@ members = [
     "crates/supervision_proto",
     "crates/system_initializer",
     "crates/swap_proto",
+    "crates/smb_proto",
     "crates/socket_proto",
     "crates/sink_proto",
     "crates/virtio",
