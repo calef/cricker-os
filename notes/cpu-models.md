@@ -146,6 +146,14 @@ through SBI, so it works on both.
 
 - **A green matrix is not a portable kernel.** It is the absence of one specific class of failure.
 
+- **`the_canary_reports_a_byte_that_changed_behind_its_back` is flaky on `thead-c906`**, observed
+  2026-08-15: across four runs of the same tree (two CI, two local on a quiet host) it failed
+  twice and passed twice, and no other model has shown it. The failing assertion is the second
+  half of the canary contract (a flipped watched byte must be counted), so a real miss would be
+  exactly the corruption the canary exists to catch; do not rerun it green and move on without
+  recording the failure here. Undiagnosed; wants a lane. Until then, a red c906 leg on an
+  unrelated change should be read against this entry before anything else.
+
 - **The ASID probe does not vary across models, so the one test written *for the board* is still
   untested.** Every model above printed `satp.ASID: 16 bits implemented`, including `sifive-u54`.
   QEMU does not model a reduced `satp.ASID` width per CPU. `satp.ASID` is WARL and RISC-V permits an
