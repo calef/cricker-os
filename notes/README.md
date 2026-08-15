@@ -249,6 +249,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   the capability list, why the kernel is the firmware here (OpenSBI does no PCI), the transport
   seam that runs one driver over two buses, and INTx through the PLIC. The hardcodes are held by
   witnesses against the machine's own device tree.
+- [NVMe: the first non-virtio disk](nvme.md): milestone 53's storage half: a real device family's
+  block driver (queues, phase tags, doorbells, PRPs) over the §18 PCIe transport, confined by the
+  IOMMU alone because no kernel seam can validate addresses the controller fetches from memory.
+  Kernel-resident for now, and the BUGS section says why.
 - [A shell at EL0](shell.md): milestone 10: an interactive shell, a userspace input driver
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.

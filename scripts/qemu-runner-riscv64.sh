@@ -170,6 +170,22 @@ if [ -n "$CRICKER_RNG" ]; then
     RNG="-device virtio-rng-device -device virtio-rng-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# An NVMe controller when CRICKER_NVME names an image (milestone 53's storage half), the twin of
+# the aarch64 runner's block. No iommu_platform flag because that knob is virtio's opt-in: a real
+# PCI device model's DMA always goes through the PCI address space, so the controller sits behind
+# the riscv-iommu-pci function below with no flag to forget, and the kernel must confine its
+# requester id before it can fetch a command. serial= is mandatory (QEMU refuses the device
+# without one). A set variable naming a missing file fails loud, the CRICKER_DISK lesson; the
+# kernel test asserts the controller is present rather than skipping.
+NVME=""
+if [ -n "$CRICKER_NVME" ]; then
+    if [ ! -f "$CRICKER_NVME" ]; then
+        echo "qemu-runner-riscv64: CRICKER_NVME=$CRICKER_NVME does not exist (xtask's mknvmedisk writes it)" >&2
+        exit 1
+    fi
+    NVME="-drive file=$CRICKER_NVME,if=none,format=raw,id=nvme0 -device nvme,serial=cricker-nvme,drive=nvme0"
+fi
+
 # A QEMU monitor on a unix socket when CRICKER_GPU_MON names one (milestone 29), the twin of the
 # aarch64 runner's block: `screendump` over it writes a PPM of the scanout even with -display none,
 # which is how the scanout gets proven rather than only the framebuffer. The path must stay under the
@@ -217,5 +233,6 @@ exec qemu-system-riscv64 \
     $GPU \
     $KBD \
     $RNG \
+    $NVME \
     $MON \
     "$@"
