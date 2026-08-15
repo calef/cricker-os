@@ -1,6 +1,6 @@
 # 81. A dependency stays upgradable; we suppress churn, never the upgrade
 
-**Status: DECIDED.** Chris decided this on 2026-08-13, on the pull request that corrected the
+**Status: DECIDED.** calef decided this on 2026-08-13, on the pull request that corrected the
 mistake described below: *"We want the upgrades on all of our dependencies. We don't want to
 foreclose upgrades."*
 
@@ -23,7 +23,7 @@ Update noise is a real problem and it has real fixes. The distinction that matte
 | `ignore` | removes them entirely | **forecloses it** |
 
 The first three are ours to reach for freely. The fourth is a decision about the dependency graph
-rather than about the queue, and it is Chris's.
+rather than about the queue, and it is calef's.
 
 ## The incident
 

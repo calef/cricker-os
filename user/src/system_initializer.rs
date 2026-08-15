@@ -20,7 +20,7 @@
 //! all, with no fault and no message. `script/shell-check` runs both, which is what makes it the
 //! gate for this file.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `sysinit`. Refused `sysinit`
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `sysinit`. Refused `sysinit`
 //! (squished), `system_builder` (`user/src/builder.rs` already calls itself "the system builder",
 //! so two programs would claim one phrase), `session_initializer` (squats milestone 49's
 //! vocabulary, since sessions arrive with users and login and this program manages neither) and

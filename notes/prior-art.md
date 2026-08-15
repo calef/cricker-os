@@ -91,7 +91,7 @@ else's kernel:
   rule favored reuse, and the omission of the pass is the actual lesson. Kept.
 
 - **`crickerfs` (2026-07-27): kept, over `tar-no-std`/ustar.** Weighed retroactively on
-  Chris's question, with the swap costed out. The format predates this note (a learning-era
+  calef's question, with the swap costed out. The format predates this note (a learning-era
   artifact), but the keep decision is a fresh application of the rule: the kernel parses the
   initrd itself, so the parser sits **inside the TCB**, which is exactly where the rule says
   build; 263 lines we wrote and test beat someone else's header arithmetic on boot input.

@@ -59,7 +59,7 @@ const TABLE_BYTES: usize = 34 * gpt::MAX_BLOCK_SIZE;
 /// Which partition to read, when the path names a device rather than an image.
 ///
 /// Two forms, because they answer different questions and both get asked. **PROVISIONAL naming**
-/// (CLAUDE.md: names are Chris's call).
+/// (CLAUDE.md: names are calef's call).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PartitionSelector {
     /// The partition number a person reads off a listing: 1-based, the `2` in `/dev/sda2`, in

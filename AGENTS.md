@@ -3,18 +3,20 @@
 *This file is `AGENTS.md`, the cross-tool convention; `CLAUDE.md` is a symlink to it so Claude
 Code keeps finding it (decided 2026-08-14). It addresses any competent agent, which is what it
 always did; the in-tree citations of "CLAUDE.md" keep resolving through the symlink and were
-deliberately not rewritten, per this file's own blind-sed scar.*
+deliberately not rewritten, per this file's own blind-sed scar. The architect is **calef**
+(GitHub username; Chris Alef): older records and commits may say Chris, and both are the same
+person, renamed 2026-08-15 at his request.*
 
 ## What this project is
 
 A capability microkernel for aarch64, in Rust, built from the first instruction. **It is a
 demonstration OS** (DECISIONS.md §14): a verified-Rust capability microkernel that runs real
 workloads, built to stand next to Linux, macOS, and seL4 on the primitives that define an OS and
-win where a minimal kernel should. Chris is an experienced software engineer and engineering
+win where a minimal kernel should. calef (Chris Alef) is an experienced software engineer and engineering
 leader; on this project he is the **architect and reviewer**, not the line-by-line builder.
 
 That should drive your judgment calls. **A complete, correct, well-documented, benchmarked
-milestone is the goal.** Proceed autonomously, produce whole pieces, and let Chris steer at the
+milestone is the goal.** Proceed autonomously, produce whole pieces, and let calef steer at the
 design forks.
 
 This began as a learning project and pivoted to a demonstrator, deliberately and on the record
@@ -24,7 +26,7 @@ together" framing anywhere, it is stale; this file is the current word.
 ## How to work
 
 **Default to autonomous execution.** Implement complete, correct, tested milestones; commit per
-proven piece (green tests first); push after green. You are building the demonstrator. Chris
+proven piece (green tests first); push after green. You are building the demonstrator. calef
 reviews architecture and outcomes, not every line.
 
 ## Three principles, and what makes each one hold
@@ -45,7 +47,7 @@ chosen, a gate can be written to pass, a note can describe a system that no long
 somebody depends on either works on a Tuesday or it does not, and the failure arrives as their own
 data missing rather than as a red check.
 
-**Chris is the first customer, not the audience** (his correction on this section, 2026-08-05:
+**calef is the first customer, not the audience** (his correction on this section, 2026-08-05:
 *"It isn't about me running it. It is about customers. I'm just the first customer."*). That
 distinction is
 load-bearing rather than modest. "The architect runs it" ranks work by one person's convenience and
@@ -131,7 +133,7 @@ tree and not in the stranger.
 
 ## Nobody remembers, so build the mechanism that does not need them to
 
-Chris, 2026-08-04, after an evening in which three separate duties turned out to belong to whoever
+calef, 2026-08-04, after an evening in which three separate duties turned out to belong to whoever
 happened to notice, and none of them noticed. **This is the tenet the roles below exist to serve**,
 so read it first: it explains why there is a steward and a merge drain at all, rather than a list of
 things a careful maintainer would simply do.
@@ -174,13 +176,13 @@ merge-order coupling that only a lane's report mentioned. When you notice it, mo
 
 ## Move fast on what can be undone; be methodical on what cannot
 
-Chris, 2026-08-05. The ladder above says how hard to make a thing hold. This says how much care to
+calef, 2026-08-05. The ladder above says how hard to make a thing hold. This says how much care to
 spend deciding it, and the two are not the same question: a cheap decision still deserves a
 mechanism, and an expensive one is not made safe by adding a gate afterwards.
 
 **Most decisions here are reversible and should be made quickly, by whoever is holding the problem.**
 Code, notes, roadmap wording, which milestone a lane takes, how a script is structured. Getting these
-wrong costs an hour. Deliberating them costs more than that, and deliberating them *with Chris* costs
+wrong costs an hour. Deliberating them costs more than that, and deliberating them *with calef* costs
 his attention, which is the scarcest thing in this project. `scripts/merge-drain.sh` was rewritten
 three times in one evening, each version wrong in a way the next one fixed, and that was cheaper than
 designing it correctly up front would have been.
@@ -192,7 +194,7 @@ that cannot be recalled:
   morning's work; the un-shipping is not.
 - **Names.** Trivial to change mechanically and expensive in every other way, because a name lands in
   61 call sites, in a reader's head, and in the vocabulary people use to disagree. This is why names
-  are Chris's, and why a lane ships a **provisional** one instead of waiting.
+  are calef's, and why a lane ships a **provisional** one instead of waiting.
 - **Dependencies** (§46), especially in the shipping graph. Adding one is a morning; removing one
   after a subsystem is built on it is a project.
 - **The syscall surface** (§10, §16), which is a boundary rather than a habit, and which every
@@ -231,15 +233,15 @@ because nobody's job was noticing. The roles were already real; only their names
 are new.
 
 - **Maintainer.** One per session, the session itself. Briefs developers, gates and merges their
-  work, mints anything global to the tree (`DECISIONS.md` sections, milestone numbers, names Chris
+  work, mints anything global to the tree (`DECISIONS.md` sections, milestone numbers, names calef
   has ratified), and keeps hygiene: prune the worktree, delete the branch, relink `cricker-dev`,
-  leave no QEMU. Holds merge authority when Chris grants it. **Maintainer, not project manager**,
+  leave no QEMU. Holds merge authority when calef grants it. **Maintainer, not project manager**,
   because the name has to predict the authority: this role writes code, resolves conflicts and
   merges, and a coordinate-only reading of it would leave the tree unowned.
 - **Developer.** A subagent executing exactly one milestone. Reports; never merges, never mints,
   never edits `DECISIONS.md`, `design/` or this file. Names anything new provisionally and says so.
   **A developer polls its own background work to completion**; ending a turn to "wait for the
-  notification" while your own gate is running is the failure mode, not patience (Chris,
+  notification" while your own gate is running is the failure mode, not patience (calef,
   2026-08-14, after five lanes in one day stopped mid-gate and each needed a manual resume). The
   report comes after the gate, and nothing about a gate is finished until you have read its exit.
 - **A developer works in a lane**, and the lane is the isolation rather than the person: its own
@@ -267,8 +269,8 @@ are new.
   programs.
 
 **The top-up rule, which is the whole point.** When a developer finishes, the maintainer **launches
-the next work before writing the report**. Not after, and not when Chris next asks. A conversation
-with Chris never blocks the queue; answering a question and keeping lanes full are concurrent, and
+the next work before writing the report**. Not after, and not when calef next asks. A conversation
+with calef never blocks the queue; answering a question and keeping lanes full are concurrent, and
 the failure mode is always the same, which is that the answer feels like progress and the idle
 machine is invisible. Maintain the agreed number of concurrent developers, and if the ready queue is
 empty, say so as its own finding rather than letting the silence stand for "nothing to do".
@@ -277,7 +279,7 @@ empty, say so as its own finding rather than letting the silence stand for "noth
 wants a lane of its own. That is the same discipline as milestone 94's, applied to scheduling rather
 than to findings.
 
-**Open decisions live in a file, not in a conversation.** A decision waiting on Chris that exists
+**Open decisions live in a file, not in a conversation.** A decision waiting on calef that exists
 only in chat scrollback is in exactly the medium milestone 94 was written to abolish, and on
 2026-08-04 five of them accumulated there in one day while that milestone was being built. They go
 in `design/decisions/` with `**Status: PROPOSED.**`, one section each: what is being decided, the
@@ -285,26 +287,26 @@ options, the recommendation with its reason, and what is blocked until it is ans
 briefly in `design/open-decisions.md`; milestone 114 absorbed that file, and the numbering is the
 integrator's at merge like every other section number.)
 
-**And work waiting on Chris carries its own label and its own ask** (Chris, 2026-08-04). The same
+**And work waiting on calef carries its own label and its own ask** (calef, 2026-08-04). The same
 principle one level out: a pull request held for him is a decision, and a queue that exists only in
 a chat message is the medium above. Two things, both at the moment the decision to hold is made and
 not later, because the failure this prevents is the maintainer forgetting it is holding something:
 
 - **The `needs-architect` label**, so the queue is `gh pr list --label needs-architect` rather than
-  a paragraph somebody has to have read. **It names the role, not the person** (Chris, 2026-08-05):
+  a paragraph somebody has to have read. **It names the role, not the person** (calef, 2026-08-05):
   he holds it today and would like a second architect tomorrow, and a mechanism that spells one
   name has that name as its failure mode. Its description carries the reason a thing lands there at
   all: outside standing merge authority, meaning the syscall surface, a new dependency, or a
   `DECISIONS` section owed.
 - **A `## What I need from you` comment** naming the specific ask. Three properties make it worth
   writing, and they are what separate it from a link to a diff. It should be **answerable without
-  reading the diff**, because the point is to spend Chris's attention on the decision rather than on
+  reading the diff**, because the point is to spend calef's attention on the decision rather than on
   reconstructing it. It should **say what happens if he says no**, since a recommendation with no
   stated downside is not a recommendation. And it should **separate what is blocking from what is
   eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
   gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
 
-**Lane count is set against merge-queue depth, not against how much work exists** (Chris delegated
+**Lane count is set against merge-queue depth, not against how much work exists** (calef delegated
 this on 2026-08-04, after the queue reached ten and the oldest pull request starved). A finished lane
 does not produce value; a *merged* lane does, and under the require-branches-up-to-date rule the
 queue lands **one thing at a time**. So lanes past that rate manufacture merge debt rather than
@@ -343,11 +345,11 @@ honest that neither script reports its own death.
 
 **Do not try to route this by requesting a review.** GitHub silently refuses a review request from
 the pull request's own author: `gh pr edit N --add-reviewer calef` **returns success and sets zero
-reviewers**, because every pull request here is authored under Chris's account by the `gh` token.
+reviewers**, because every pull request here is authored under calef's account by the `gh` token.
 That was tried on 2026-08-04 and the silent no-op looked exactly like a working queue, which is
 worse than an error. Assignees and labels do work; reviewers do not.
 
-**Stop and bring it to Chris only when it is genuinely his call:** a design fork not already
+**Stop and bring it to calef only when it is genuinely his call:** a design fork not already
 decided, a test that will not pass after real effort, a hardware or external dependency, or the
 machine contradicting the plan. Otherwise proceed and report what you did.
 
@@ -355,7 +357,7 @@ machine contradicting the plan. Otherwise proceed and report what you did.
 Every design decision goes in `DECISIONS.md`; every concept and finding gets a note in `notes/`,
 indexed in `notes/README.md`. Record the *why* and the honest caveats.
 
-**The standard to aim at is FreeBSD's** (Chris, 2026-07-30): the Handbook and the man pages, which
+**The standard to aim at is FreeBSD's** (calef, 2026-07-30): the Handbook and the man pages, which
 are the best documentation in the field and are the reason a FreeBSD admin can answer a question
 without leaving the system. Four things make them that, and all four are things we can do:
 
@@ -448,7 +450,7 @@ found out by printing it and getting zero, and fixed the note rather than quietl
 The machine overrules the documentation, and it overrules you; when it does, fix the record on
 purpose.
 
-**Explain on request, however basic.** Autonomous by default does not mean opaque: if Chris asks
+**Explain on request, however basic.** Autonomous by default does not mean opaque: if calef asks
 "what is a register?" or "why does `destroy` avoid `SCHED`?", answer properly, from the ground up,
 and write it down.
 
@@ -489,7 +491,7 @@ the requirements are known.
    won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
    vendor the crypto.
 
-7. **Anything two binaries must agree on is a crate, never a `#[path]` module** (Chris, 2026-08-01).
+7. **Anything two binaries must agree on is a crate, never a `#[path]` module** (calef, 2026-08-01).
    If a constant, an opcode, a layout, or an error code is shared by more than one program, it goes
    in `crates/` and is depended on. `#[path = "x.rs"] mod x;` is not an option.
 
@@ -513,9 +515,18 @@ the requirements are known.
    `clock_proto`, `entropy_proto`, `ntp_proto`, `gfx_proto`) and the exceptions had no recorded
    reason; `cseam.rs`'s header describes the `#[path]` mechanism without ever justifying it.
 
-## Chris names the crates, the programs, and the shared modules
+## calef names the crates, the programs, and the shared modules
 
-**The name of a crate, a program, or a shared module is Chris's call, not a lane's and not yours**
+**Contributors are referred to by their GitHub username** in prose, attributions, records, and
+lane reports; legal names appear only in legal and authorship strings (`Cargo.toml` authors,
+licenses, patch `From:` headers). The reason is the mechanism, which is this file's recurring
+test for a rule: a username is unique and matches the identity every pull request and
+`git log --author` already carries, so the records and the tooling agree on who someone is, and a
+grep for a contributor finds them instead of every other person sharing a first name. The worked
+example is the architect himself: calef, renamed from Chris throughout on 2026-08-15 (UTC, per
+the dates convention) at his request.
+
+**The name of a crate, a program, or a shared module is calef's call, not a lane's and not yours**
 (2026-08-01). This is the same rule as `DECISIONS.md` section numbers, one level up: it is global to
 the tree, so it is decided by the person who can see the whole tree.
 
@@ -561,7 +572,7 @@ genuinely right** and should not be touched (`elf`, `pci`, `dtb`, `gpt`, `ipc`, 
 That last group matters: this rule is not a licence to rename everything, and a name a reader already
 knows from outside this project is the best name available.
 
-**Name things with nouns** (Chris, 2026-08-01). A crate, a program or a module is a *thing*, so it
+**Name things with nouns** (calef, 2026-08-01). A crate, a program or a module is a *thing*, so it
 takes the name of a thing: `capability`, `grant_plan`, `user_heap`, `video_terminal`, `line_editor`,
 `fs_subtree_caretaker`. A verb names an action and a namespace is not one, which is audible at the
 call site: `line_edit::expand_output` reads as an instruction where `line_editor::expand_output`
@@ -586,7 +597,7 @@ Crates already do this (`fs_proto`, `cred_proto`, `user_rt`). Programs did not: 
 underscore, so multiword names were squished (`fsclient`, `sysinit`, `credcli`).
 
 An earlier draft of this rule had two tiers, short names for programs a user types and underscores for
-programs only the system spawns. **Chris rejected it, correctly**: the category is not a stable
+programs only the system spawns. **calef rejected it, correctly**: the category is not a stable
 property of a program. `wc` was internal plumbing and became a prompt-typed pipeline stage in one day,
 and a convention keyed to something that changes produces renames. It is also not how Unix got its
 names; the terseness of `ls` is an emergent pressure on words people type constantly, not a rule
@@ -614,7 +625,7 @@ Rust name, and everything else is a path. Three directories violated them when t
 matched neither); **milestone 63 fixed all three on 2026-08-01**, along with about twenty other
 names. The rule is now descriptive of the tree rather than aspirational.
 
-**This is not the two-tier rule Chris rejected**, and the difference is the one he identified. That
+**This is not the two-tier rule calef rejected**, and the difference is the one he identified. That
 split was *within* one domain, keyed on an **unstable** property: `wc` moved from internal plumbing
 to prompt-typed pipeline stage inside a day. These splits are *across* domains on a **stable**
 property. A file either is a Cargo target or is an executable in `script/`; `script/test` will never
@@ -704,7 +715,7 @@ Do not write comments that restate the next line.
 
 ## Style
 
-Chris's global preferences apply, and they matter here because the notes are prose he'll
+calef's global preferences apply, and they matter here because the notes are prose he'll
 reread for months:
 
 - No em-dashes. Use commas, periods, semicolons, or parentheses.

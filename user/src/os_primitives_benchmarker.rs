@@ -13,7 +13,7 @@
 //! map, and spawn. Spawn is the whole reason object revocation was built: the loop reclaims each
 //! child's region (`Untyped::DESTROY`) so it can repeat.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `elbench`, and it is the name that
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `elbench`, and it is the name that
 //! forced `crickerfs`'s `NAME_LEN` from 24 to 32. The raise was taken first and on its own merits,
 //! deliberately, because choosing a worse name to fit a limit and raising a limit because a name
 //! demanded it are both the wrong way round. Refused `elbench` (`el` is aarch64-only vocabulary for

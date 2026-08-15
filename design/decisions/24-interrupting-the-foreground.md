@@ -2,7 +2,7 @@
 
 **Status: AMENDED.** (an implementation amendment below records the two primitives the build forced.)
 
-**Decided 2026-07-28 (Chris), from the proposal in design/interrupt-routing.md.** `^C` routes in
+**Decided 2026-07-28 (calef), from the proposal in design/interrupt-routing.md.** `^C` routes in
 two tiers. The first `^C` is cooperative: the shell sends an interrupt message on an endpoint the
 foreground child was spawned holding, and a program that listens can cancel cleanly. The second
 `^C` (or a shell-side timeout) escalates to the forcible tier: the shell tears the child down with

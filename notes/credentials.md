@@ -12,7 +12,7 @@ kinds of secret and serves an operation for each: a password verifier, described
 key, described in [NTLM](ntlm.md). It happened in place rather than in a new program because the
 milestone's own rule is that the credentialer becomes *an operation in* the secrets service, and a
 second process holding secrets is precisely what the design exists to avoid. The program's **name
-lags its job** as a result, and a rename is Chris's call. Where this file says "the credential
+lags its job** as a result, and a rename is calef's call. Where this file says "the credential
 service", read "the secrets service"; where it describes the phases, the seal and the wipe, it is
 still exactly right.
 

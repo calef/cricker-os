@@ -35,7 +35,7 @@ two must agree, and `script/decisions --check` fails if they do not.
 
 | Status | Means |
 |---|---|
-| `PROPOSED` | Raised, not yet decided. Options and a recommendation are in the file; nothing is built on it, and nothing should cite it as settled. Waiting on Chris. |
+| `PROPOSED` | Raised, not yet decided. Options and a recommendation are in the file; nothing is built on it, and nothing should cite it as settled. Waiting on calef. |
 | `DECIDED` | It holds as written. |
 | `AMENDED` | It holds, but part of it was revised or overtaken by later work. The status line names what changed, and the amendment is in the file or in the decision it names. |
 | `SUPERSEDED BY N` | A later decision replaces it. Kept, never deleted, because the reasoning is the record: §8's deferral was correct and §10 is what it deferred to. |
@@ -45,7 +45,7 @@ of the opening paragraph would otherwise miss, and §26 is the sharpest: its fir
 "not yet built" while three blocks below it record milestone 22 building it. Nothing flagged that,
 because a decision had no status to contradict.
 
-**A decision waiting on Chris is `PROPOSED`, and it lives here rather than in a queue of its own.**
+**A decision waiting on calef is `PROPOSED`, and it lives here rather than in a queue of its own.**
 `design/open-decisions.md` was that queue for one day, and it existed for a good reason: a decision
 that lives only in a conversation's scrollback is in the medium milestone 94 was written to abolish.
 But a proposal is the same object one lifecycle step before `DECIDED`, with the same shape (what is
@@ -129,7 +129,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
 | 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
-| 73 | DECIDED | [Milestone 44's ten admin minutes, which only Chris can spend](73-repository-admin-steps.md) |
+| 73 | DECIDED | [Milestone 44's ten admin minutes, which only calef can spend](73-repository-admin-steps.md) |
 | 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
 | 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |

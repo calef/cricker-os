@@ -429,7 +429,7 @@ fi
 #
 # The failure this drains is not untidiness. Work gets identified in media nobody rereads (a lane's
 # report, a pull-request description, a commit message) and evaporates; milestone 90 exists only
-# because Chris happened to catch milestone 84's guard-page finding in a report on the day it was
+# because calef happened to catch milestone 84's guard-page finding in a report on the day it was
 # written. A bare `TODO:` in a source file is that same medium with a compiler in front of it: it
 # looks like tracking and it is not, because nothing lists it, nothing reviews it, and nothing tells
 # the reader whether anybody still intends it.
@@ -524,7 +524,7 @@ echo "==> decisions"
 # the upgrade reachable. `ignore` is the one that does not: it removes the pull requests by removing
 # the upgrade, and the version stays out of reach until somebody edits this file again, which nothing
 # prompts anyone to do. That is a standing decision about the dependency graph rather than about the
-# queue, and §81 makes it Chris's.
+# queue, and §81 makes it calef's.
 #
 # The incident is §81's: four RustCrypto majors that could not build one at a time were silenced with
 # an `ignore` block, on a pull request whose stated purpose was unblocking CI. Four lines of config is
@@ -800,9 +800,9 @@ if [ -n "$doc_name_bad" ]; then
 fi
 
 # 7. **Every crate, program and script/ entry point carries a provenance block** (milestone 115).
-#    A name in this tree is Chris's call, and until now nothing recorded that a call had been made.
+#    A name in this tree is calef's call, and until now nothing recorded that a call had been made.
 #    The failure was concrete: a lane proposed `system_builder`, the maintainer endorsed it, and
-#    Chris overruled it, and only afterwards did anyone find that milestone 63 had ALREADY refused
+#    calef overruled it, and only afterwards did anyone find that milestone 63 had ALREADY refused
 #    that exact name for a reason still true. The refusal sat in one table cell inside one milestone
 #    block, and a blind rename later swept the old name out of that very row.
 #
@@ -814,7 +814,7 @@ fi
 #
 #    **Presence of a STATE, never the state `ratified`**, and that is deliberate rather than a
 #    weakness to tighten later. The three states are `ratified`, `recorded` (the tree argues the
-#    name, Chris never ruled) and `unrecorded`, and 54 of 126 names are not ratified today. A gate
+#    name, calef never ruled) and `unrecorded`, and 54 of 126 names are not ratified today. A gate
 #    keyed on ratification would hold every unrelated merge behind a review queue nobody can hurry,
 #    which is a wall this milestone was written specifically not to build. `script/names
 #    --unratified` is how the queue gets worked; the lint only insists a name say which it is.
@@ -875,7 +875,7 @@ print(f'markdown: {len(md)} files, every relative link resolves, every note inde
 PY
 
 echo "==> em-dashes"
-# Chris's standing style rule (CLAUDE.md): no em-dashes, use commas, periods, semicolons or
+# calef's standing style rule (CLAUDE.md): no em-dashes, use commas, periods, semicolons or
 # parentheses. It is a house style rather than a correctness property, and it is gated for the same
 # reason the roadmap's status vocabulary is: a rule nobody checks is a rule that decays. 419 of them
 # had accumulated across 75 files by 2026-08-01 despite being written down from the start, because

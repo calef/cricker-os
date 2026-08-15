@@ -59,7 +59,7 @@
 //! analogue of `line_editor::proto`. It is a userspace protocol (DECISIONS §21's shape): the kernel
 //! routes the words and never reads them.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `capsh`. Refused `capsh` (Linux's
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `capsh`. Refused `capsh` (Linux's
 //! libcap ships `capsh(1)`, a capability shell wrapper, so a reader arriving from Linux would
 //! assume ours is that tool); `designation`, `designate` and `designator` together (the user
 //! designates by typing a name, and this crate's work starts after that, so all three put it in a

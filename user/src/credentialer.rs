@@ -10,7 +10,7 @@
 //! **This program's name lags its job**, and knowingly. Milestone 65 says the credentialer becomes
 //! one operation in a secrets service rather than a service beside it, because a second process
 //! holding secrets is exactly what the design exists to avoid. So the generalisation happened here
-//! rather than in a new program. A rename is a naming decision and belongs to Chris (CLAUDE.md);
+//! rather than in a new program. A rename is a naming decision and belongs to calef (CLAUDE.md);
 //! this header is the note that it is owed.
 //!
 //! # Two kinds of secret, two operations, one store
@@ -111,7 +111,7 @@
 //! object through which a record could be removed, which is the same property that makes the seal
 //! worth having. Rotating a secret means restarting the service and reprovisioning, so a
 //! deployment that needs finer granularity runs more than one. See notes/credentials.md.
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `credential`. Refused `credential`
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `credential`. Refused `credential`
 //! (the plain resource noun, on the pattern `clock` and `entropy` follow). The argument for it was
 //! made twice and wrong twice: `credentialer` is a real profession rather than a coinage, and this
 //! service will never give you a credential, so naming it for the resource implies the one thing it
@@ -121,7 +121,7 @@
 //! credential service into a **secrets service**: it now holds an `NTOWFv2` beside the
 //! Argon2id tag and answers `NTLM_PROOF`, so the argument above ("this service will never
 //! give you a credential") still holds while the noun no longer describes the scope. A
-//! rename is owed, and it is Chris's, not a lane's; `cred`, `cred_proto` and
+//! rename is owed, and it is calef's, not a lane's; `cred`, `cred_proto` and
 //! `credentialer_test_client` are in the same boat. Recorded here rather than acted on.
 
 #![no_std]
@@ -154,7 +154,7 @@ const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
 
 /// How many secrets the store holds. **Six: three logins and three shares.**
 ///
-/// Three, because Chris's existing setup serves three family members with separate passwords
+/// Three, because calef's existing setup serves three family members with separate passwords
 /// (design/roadmap/56-secrets-and-entropy.md). Doubled by milestone 65, because each of those
 /// family members also has a Time Machine share with its own account and password, and a secret
 /// here is scoped to a *resource* rather than to a person. Three family members therefore means

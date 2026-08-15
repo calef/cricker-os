@@ -1,11 +1,11 @@
 # 93. Documentation audits as a mechanism: the docs stay true to the tree
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, as milestone 92's sibling: 92 keeps the
+**Status: NOT-STARTED.** Raised 2026-08-03 by calef, as milestone 92's sibling: 92 keeps the
 security story from rotting; this keeps every other documented claim from rotting. A
 demonstrator's docs are part of the deliverable (CLAUDE.md), so a doc describing a system that no
 longer exists is a defect in the deliverable, not a cosmetic lag.
 
-**Gate: DECISION.** The cadence itself is still Chris's. The index name and location are settled
+**Gate: DECISION.** The cadence itself is still calef's. The index name and location are settled
 (`design/audit-reports/`, 2026-08-04), and this milestone shares 92's index and tripwire rather than
 growing a twin: one directory, with a type column distinguishing a security lens from a doc sweep.
 

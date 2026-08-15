@@ -1,6 +1,6 @@
 # Interrupt routing: what Ctrl-C means without signals
 
-**Status: DECIDED 2026-07-28 (Chris), then BUILT: the two-tier design (option C), interrupt
+**Status: DECIDED 2026-07-28 (calef), then BUILT: the two-tier design (option C), interrupt
 capability held by the shell, `Tcb::SUSPEND` still deferred. See DECISIONS §24 and its
 implementation amendment for what shipped (the cooperative tier is a shared-memory flag, not the
 endpoint notification this proposal imagined, because a running compute job cannot poll an endpoint;

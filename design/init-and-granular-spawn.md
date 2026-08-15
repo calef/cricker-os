@@ -14,7 +14,7 @@ has grown, designed today with one caller.
 
 The recommendation was composite-first on sequencing grounds (every deferred-until-a-customer
 mechanism in this project has come out better for waiting: revocation's tree, the CDT, RETYPE's
-object types). Chris initially chose granular to keep the option of running Linux programs;
+object types). calef initially chose granular to keep the option of running Linux programs;
 that reason was pushed back on and withdrawn, because **both shapes preserve that option** (the
 compat personality, when it exists, gets the primitives built against its real requirements
 either way). The decision was then re-made on the corrected premise, and granular won on its

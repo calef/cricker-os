@@ -17,7 +17,7 @@
 //! That is deliberate, and it is what makes the milestone's claim about the component rather than
 //! about the harness.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `conx`. Refused `conx`, whose
+//! Name: ratified 2026-08-01 (calef, milestone 61), replacing `conx`. Refused `conx`, whose
 //! expansion is recorded nowhere in this tree; that absence is one of the two cases the naming
 //! tenet cites as evidence that it needed a rule.
 

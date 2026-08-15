@@ -123,7 +123,7 @@ child is a supervisor that can build processes, unless it proxies the reap throu
 
 ## Resolved: `Endpoint::REAP` (DECISIONS §32)
 
-Chris ratified it the same day the requirement above was measured, and it is built on both ISAs. The
+calef ratified it the same day the requirement above was measured, and it is built on both ISAs. The
 method hangs off **the supervision endpoint**, not off `Untyped`: an `Untyped` method has to name a
 region, and the whole premise is that the supervisor holds none. Authorization needs no new
 bookkeeping, because §26 already stores `Thread::fault_ep` and the kernel already stamps the tid on the

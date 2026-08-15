@@ -26,7 +26,7 @@ notes/grant-expression.md:** writing the per-verb rows down exposed that `fs_fil
 with "you named a handle I never minted". `ENOTDIR` is very likely right for all seven by exactly the
 argument `CREATE` already makes. Behaviour was preserved, because changing it changes the wire.
 
-**Renamed and rescoped 2026-08-01** after Chris asked why there are three of these and whether we
+**Renamed and rescoped 2026-08-01** after calef asked why there are three of these and whether we
 expect more. Investigating that **refuted the collapse this milestone was first drafted around**, and
 the refutation is worth keeping because it is already argued in the tree.
 
@@ -85,7 +85,7 @@ current name distinguishes nothing.
 
 ## Settled 2026-08-01
 
-- **The family noun is `caretaker`.** Settled when Chris chose `wait_for_caretaker` over
+- **The family noun is `caretaker`.** Settled when calef chose `wait_for_caretaker` over
   `await_warden`: a helper cannot be named for a pattern its callees are not. §50's rule is the
   reason (use the name the literature already has; a synonym asserts novelty where there is none),
   and `DECISIONS` §31 has cited Miller's term correctly since milestone 31 while the code said
@@ -110,7 +110,7 @@ current name distinguishes nothing.
 | `swarden` | **`fs_nameset_caretaker`** | exactly these names, in one directory |
 | `cwarden` | **`c_confiner`** | not a caretaker: holds a region, confines foreign code |
 
-**The `fs_` prefix is the resolution of a real objection rather than decoration.** Chris raised that
+**The `fs_` prefix is the resolution of a real objection rather than decoration.** calef raised that
 "subtree" means three things around here: `supervision_proto` *is* the supervision tree, `CLAUDE.md`
 uses "the tree" throughout to mean this repository, and git has its own `subtree`. The first answer
 was to put the disambiguation in the doc comment. Carrying it in the name is strictly better, and
@@ -121,7 +121,7 @@ the reductio. It is also **not a new convention**: `fs_proto`, `fs_server` and `
 use `fs` as this project's filesystem marker, so this applies an existing one where it was missing.
 
 An earlier draft of this block settled on bare `file_` / `subtree_` / `nameset_`, on the objection
-that a domain prefix breaks parallelism. Chris's answer removed the objection rather than ignoring
+that a domain prefix breaks parallelism. calef's answer removed the objection rather than ignoring
 it: apply the prefix to **all three**. That also leaves the four programs on one scheme (domain,
 then what it serves, then what it is) instead of two unrelated ones, and it groups them in `ls`,
 which matters in a `user/src/` holding 48 programs and no subdirectories.
@@ -143,7 +143,7 @@ And `fs_file_caretaker` says filesystem twice, which is the price of the scheme 
 The rename also resolves an inconsistency already in the source: `dwarden.rs`'s header says
 "attenuated to one **subtree**" while its second paragraph says "narrows it to one **directory**".
 
-## The C-seam family converts in the same pass (Chris, 2026-08-01)
+## The C-seam family converts in the same pass (calef, 2026-08-01)
 
 | Current | Settled |
 |---|---|
@@ -209,7 +209,7 @@ work, and the rename touches roughly 180 references.
 
 ## The draft this replaced
 
-The original framing, kept because the refutation above is only legible next to it. Chris asked on 2026-08-01 whether xattr support in the wardens deserved a
+The original framing, kept because the refutation above is only legible next to it. calef asked on 2026-08-01 whether xattr support in the wardens deserved a
 milestone. It does, but the useful milestone is the general one, and the xattr gap is its proof.
 
 ## The immediate gap

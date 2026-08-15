@@ -1,6 +1,6 @@
 # 74. What cadence do the audits run on?
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris. It is the last thing gating milestones 92
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef. It is the last thing gating milestones 92
 and 93, whose index name was settled the same day.)
 
 **What.** Milestone 92 proposes quarterly security audits plus event triggers, and milestone 93

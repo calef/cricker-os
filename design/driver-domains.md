@@ -4,7 +4,7 @@
 software (see notes/dma.md), and it would only be worth building alongside a real SMMU driver and a
 decision to run cricker-os at EL2.
 
-**Owner:** Chris
+**Owner:** calef
 
 ---
 

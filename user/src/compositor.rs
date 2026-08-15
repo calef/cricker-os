@@ -35,7 +35,7 @@
 //! source, and the reason a client that stops answering can stall the compositor. See
 //! notes/compositor.md, "The primitive this rung wants and does not have".
 //!
-//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `compd`.
+//! Name: ratified 2026-07-30 (calef, DECISIONS §39, landed by milestone 46), replacing `compd`.
 //! Refused `compd` (the `-d` claim). Sharing the crate's name is deliberate: the crate is this
 //! program's logic and the program is its authority (DECISIONS §63).
 

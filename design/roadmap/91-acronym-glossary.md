@@ -1,11 +1,11 @@
 # 91. A glossary, and every acronym linked to it
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, from the reader's chair: navigating the
+**Status: NOT-STARTED.** Raised 2026-08-03 by calef, from the reader's chair: navigating the
 acronyms is the hardest part of understanding these docs. That is the naming tenet's own concern
 one level down; CLAUDE.md says names are what make this OS legible to humans and to LLMs, and an
 acronym is a name whose claim is hidden until the reader already knows it.
 
-**Gate: DECISION.** The glossary's own name and location are provisional and Chris's to settle. The
+**Gate: DECISION.** The glossary's own name and location are provisional and calef's to settle. The
 block adds a scheduling constraint of its own: this touches nearly every documentation file, so it
 should start only when no lane holds unmerged notes/ edits.
 
@@ -25,7 +25,7 @@ needs a recorded line between prose and code.
    entry says so), and a link to the note that owns the concept. Entries are anchors, so every
    link lands on the definition, not the top of a long file.
 2. **Every prose use links to its entry.** Every use, not first-use-per-file, and the rationale
-   is Chris's stated pain: readers land mid-file, from a search, a cross-reference, or a code
+   is calef's stated pain: readers land mid-file, from a search, a cross-reference, or a code
    comment's pointer, and a first-use convention only serves the reader who started at the top.
    The line that keeps this sane: **backticked tokens are code identifiers and are exempt**
    (`WRITE` the right, `BUILT` the status, register names); bare all-caps tokens in prose are
@@ -45,4 +45,4 @@ nearly every documentation file, so it lands as mechanical passes (glossary firs
 in reviewable batches) and should start only when no lane holds unmerged notes/ edits, for the
 same conflict reason the roadmap split cited. Milestone 40 (documentation as a system service)
 inherits the glossary as a first-class installable page when it happens; cross-reference it
-there. The glossary's own name and location are provisional and Chris's to settle.
+there. The glossary's own name and location are provisional and calef's to settle.

@@ -1,10 +1,10 @@
 # 119. The merge queue is the bottleneck, and the long pole is one prover
 
-**Status: PARTIAL** 2026-08-14. Minted 2026-08-05 by Chris, after an evening in which the constraint
+**Status: PARTIAL** 2026-08-14. Minted 2026-08-05 by calef, after an evening in which the constraint
 stopped being how fast lanes produce and became how fast one queue can land.
 
 **Gate: NONE.** The measurement and the sharding need nothing. The two structural options at the end
-are Chris's, and the block says which, but neither blocks a start.
+are calef's, and the block says which, but neither blocks a start.
 
 **Built:** the per-crate cost measurement, `script/verify --shard k/n` balanced by measured time,
 and two concurrent shards in `verify.yml` behind an aggregate job that preserves the required
@@ -71,7 +71,7 @@ and should be measured rather than assumed.
 Balance matters and should be measured, not guessed: nineteen crates split four ways by *crate count*
 will be lopsided, because `glob` and `calendar` dominate. Shard by measured time.
 
-## Two structural options, and both are Chris's
+## Two structural options, and both are calef's
 
 **A merge queue.** GitHub's feature tests each pull request against the *projected* trunk and can
 batch, so N pull requests cost one test cycle instead of N. It is the feature designed for exactly
@@ -101,7 +101,7 @@ little quicker" has diluted it.
 
 **Not a change to what is gated.** The required list stays as §73 settled it. This milestone makes
 the same guarantee arrive sooner, and if it ever proposes weakening the guarantee to do so, that is a
-different milestone and Chris's decision.
+different milestone and calef's decision.
 
 **The honest limit**: the serialization is §73's rule, and no amount of sharding removes it. Ten pull
 requests will still land one after another; each one just costs less. Only a merge queue changes the

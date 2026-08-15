@@ -43,7 +43,7 @@ that decides it.
 **Not the signature variant, which stays deferred.** DECISIONS §26 records a signature over init in
 place of a compiled-in digest, and it was deliberately not built: it puts keys, a certificate chain
 and signature-verification code inside the trusted computing base, which is exactly what the digest
-approach avoids. Chris reaffirmed the deferral on 2026-08-03. This milestone extends the *reach* of
+approach avoids. calef reaffirmed the deferral on 2026-08-03. This milestone extends the *reach* of
 the measurement, not its *mechanism*, and the two are independent: a longer chain of digests is
 still a chain of digests. The natural sequence §26 records still holds, signatures in addition to
 measurement rather than instead of it, if they are ever wanted.

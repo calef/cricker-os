@@ -3,7 +3,7 @@
 **Status:** open idea. Not decided. Revisit at §6 (SMP) and milestone 7 (ELF
 loader).
 
-**Owner:** Chris
+**Owner:** calef
 
 ---
 

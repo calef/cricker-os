@@ -259,7 +259,7 @@ there rather than here because it is an exception-path fact, not an init fact.
    "report and stop", the fail-closed floor pushed as high and as small as it goes. Splitting a
    reap-only right out of `WRITE` (a rights bit, or a distinct `Untyped::REAP`) would let a root
    supervisor recover without regaining construction authority. That is a kernel surface change and a
-   rights-model change, so it is Chris's call, not a thing to slip in.
+   rights-model change, so it is calef's call, not a thing to slip in.
 2. **A supervisor cannot turn a tid into a handle.** The kernel's fault message names the dead thread
    by tid (§26.5), but no method turns a tid into something a builder holds, so `sub_server_supervisor` names
    instances by a handle the *spawner* issues instead. That works because this tree runs one

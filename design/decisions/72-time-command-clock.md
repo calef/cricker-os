@@ -1,6 +1,6 @@
 # 72. Whose clock does `time` need? (the design the lane argued against)
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris. Milestone 86 shipped the other answer,
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef. Milestone 86 shipped the other answer,
 so this reopens a built thing rather than blocking an unbuilt one.)
 
 **What.** Milestone 86 shipped `time` reading the shell's clock capability, as its block specified.

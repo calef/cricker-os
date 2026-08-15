@@ -2,10 +2,10 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-07-30 (Chris).** Userspace components take names that describe what they do.
+**Decided 2026-07-30 (calef).** Userspace components take names that describe what they do.
 Specifically: **no `-d` suffix**, and no term of art that requires archaeology to parse.
 
-## The argument, which is Chris's
+## The argument, which is calef's
 
 Milestone 39's naming section had already argued that "daemon" is the wrong word here, on technical
 rather than aesthetic grounds: a Unix daemon is defined by what it detaches from (no controlling
@@ -14,7 +14,7 @@ those is something this OS deliberately does not have. `netd` holds five explici
 name its own callers, is supervised, and can be reaped by something that lacks the authority to build
 it. It is about as far from a daemon as a long-running process gets.
 
-I then argued to keep the `-d` names anyway, weighing churn against benefit. Chris's response is the
+I then argued to keep the `-d` names anyway, weighing churn against benefit. calef's response is the
 better argument and settles it: **if we are not going to use "daemon", we should not name things `d`
 for daemon.** A name is a claim, made before a reader sees a line of code, and this one is false. It
 is the same defect as a stale comment, which this project spends real effort correcting; a name is
@@ -22,7 +22,7 @@ just a comment that every reader is guaranteed to read.
 
 ## The second half: jargon is the same failure
 
-`termd` was to become `linedisc`, the correct Unix term of art. Chris did not recognise the phrase and
+`termd` was to become `linedisc`, the correct Unix term of art. calef did not recognise the phrase and
 asked what a line discipline is, **and he built this system.** That is decisive evidence about the
 name, not about him: `linedisc` imports vocabulary from exactly the system whose model we rejected,
 which is the `-d` failure wearing a different hat. It became `line_editor`, which someone who has never

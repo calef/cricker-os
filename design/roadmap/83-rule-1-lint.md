@@ -10,7 +10,7 @@ second one arrives.
 
 The work is small: `script/lint` gains a check that fails on `asm!`, `global_asm!`, or `core::arch::`
 in `kernel/src/` outside `kernel/src/arch/`, with no allowlist; and the existing violation moves
-behind an arch helper (name provisional, and Chris's to make, per the naming rule).
+behind an arch helper (name provisional, and calef's to make, per the naming rule).
 
 ## Scope note
 

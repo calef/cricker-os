@@ -1,6 +1,6 @@
 # 118. CLAUDE.md has a budget, and the rules that get violated move up the ladder
 
-**Status: NOT-STARTED.** Minted 2026-08-05 by Chris, who noticed the file had gotten huge and asked
+**Status: NOT-STARTED.** Minted 2026-08-05 by calef, who noticed the file had gotten huge and asked
 what that costs.
 
 **Gate: NONE.** The measurement is already taken and the first cut needs one lane.

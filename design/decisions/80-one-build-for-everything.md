@@ -1,6 +1,6 @@
 # 80. One build for the kernel and everything that runs on it
 
-**Status: DECIDED.** Raised by Chris on 2026-08-05 ("at what point is it working against us that all
+**Status: DECIDED.** Raised by calef on 2026-08-05 ("at what point is it working against us that all
 the software gets built and tested with every change?"), measured the same day, and settled as: **keep
 one build, and let the split fall out of running software this project did not write.**
 
@@ -25,7 +25,7 @@ bottleneck is one prover (milestone 119), and no amount of build separation move
 
 ### That 17% is a thin number, and the honest one is larger
 
-Chris pushed on it the same day: what fraction of the crates serve user programs? Measured from the
+calef pushed on it the same day: what fraction of the crates serve user programs? Measured from the
 dependency graph rather than by inspection, **30 of 43 crates are reachable from `user`** and 33 from
 `kernel`. None is reachable from neither.
 
@@ -103,7 +103,7 @@ Stated so the next person can check rather than re-argue:
 
 ### The trend this architecture predicts, and the number that would show it
 
-Chris, 2026-08-05: a microkernel should see the kernel plateau while userland grows, so the ratio
+calef, 2026-08-05: a microkernel should see the kernel plateau while userland grows, so the ratio
 drifts toward less kernel as functionality is added. That is right, and it is close to the
 definition: the kernel holds mechanisms and userspace holds policy, so new capability is new
 userspace.

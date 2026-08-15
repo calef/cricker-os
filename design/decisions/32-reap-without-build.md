@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-07-29 (Chris).** Reaping a dead child stops requiring the authority to construct
+**Decided 2026-07-29 (calef).** Reaping a dead child stops requiring the authority to construct
 one. The supervision relationship, not the memory, becomes the unit of authority.
 
 ## The problem, measured rather than anticipated
@@ -53,7 +53,7 @@ Four consequences, each deliberate:
    project rule that keeps the surface a boundary rather than a habit, it is recorded here with its
    semantics before it is built.
 
-## The refinement I made to Chris's ratification, stated so he can object
+## The refinement I made to calef's ratification, stated so he can object
 
 He approved putting the right on the child's fault endpoint rather than on a rights bit, on the
 argument that the supervision relationship should be the unit of authority. I described it at the

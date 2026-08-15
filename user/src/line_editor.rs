@@ -29,10 +29,10 @@
 //! (read) and input page (write). No UART, no interrupt: the discipline touches no hardware,
 //! which is exactly why it did not exist until the drivers did.
 //!
-//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46) for the word and again
+//! Name: ratified 2026-07-30 (calef, DECISIONS §39, landed by milestone 46) for the word and again
 //! 2026-08-01 (milestone 63) for the spelling, replacing `termd` and then `lineedit`. Refused
 //! `termd` (the `-d` claim) and `linedisc`, the correct Unix term of art, which is the second half
-//! of §39: Chris did not recognise the phrase, and he built this system, which is evidence about
+//! of §39: calef did not recognise the phrase, and he built this system, which is evidence about
 //! the name rather than about him.
 
 #![no_std]

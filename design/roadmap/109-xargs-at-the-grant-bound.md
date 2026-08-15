@@ -50,6 +50,6 @@ interacts: an `xargs` whose input is a second operand meets a shell that has no 
 Check that interaction before designing the command line, because it may decide whether `xargs`
 reads a set or is handed one.
 
-**The name is provisional and Chris's call**, like every program name in this tree. `xargs` is what
+**The name is provisional and calef's call**, like every program name in this tree. `xargs` is what
 milestone 47 and both notes call it, and it is a standard term a reader already knows from outside,
 which is the strongest argument any name gets here.

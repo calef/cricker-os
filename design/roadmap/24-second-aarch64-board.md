@@ -4,7 +4,7 @@
 forks named that the original one-liner left implicit; the substance is unchanged.
 
 **Gate: DECISION.** Fork two, the host-side runner: a Swift runner in this tree or a dependency on
-an existing CLI such as vfkit, and the block says whoever picks this up brings the choice to Chris
+an existing CLI such as vfkit, and the block says whoever picks this up brings the choice to calef
 first. Sequencing is a separate question and not a blocker, since the default EFI path follows
 milestone 88's stage 1 while the Linux-boot-protocol path needs neither.
 
@@ -44,7 +44,7 @@ with the `com.apple.security.virtualization` entitlement. Either the tree grows 
 runner (a new language in the repository, a decision to make deliberately, not in passing) or it
 takes a dependency on an existing CLI such as vfkit (§46: a dependency is a decision, and this
 one is a whole subsystem we would never write, which is the vendoring side of that rule's line).
-Undecided; whoever picks this milestone up brings the choice to Chris first.
+Undecided; whoever picks this milestone up brings the choice to calef first.
 
 ## Scope note
 

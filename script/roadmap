@@ -29,7 +29,7 @@
 #     two files it would merge clean and silently where one file makes it a visible text conflict;
 #   - the **readiness classification**, which is the `Gate:` line every non-BUILT milestone file
 #     carries directly under its status. It answers "what stops a lane from starting this", the
-#     question that used to be answered by asking Chris, and it lives in the milestone's own file so
+#     question that used to be answered by asking calef, and it lives in the milestone's own file so
 #     it cannot drift away from the work the way a separate list would. `NONE` means a lane could
 #     start today; `DECISION`, `HARDWARE` and `MILESTONE N` name what it waits on, and a gate may
 #     name more than one. A `MILESTONE N` gate must resolve to a row and must not be BUILT, so the

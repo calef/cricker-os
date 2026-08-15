@@ -19,12 +19,12 @@ A program is a `[[bin]]` in `user/`, running at EL0, linked against `user_rt`.
 //! Name: unrecorded. Introduced 2026-08-14 for <what it does>.
 ```
 
-**`script/lint` fails without one**, via `script/names --check`. Three states: `ratified` (Chris
+**`script/lint` fails without one**, via `script/names --check`. Three states: `ratified` (calef
 ruled, with the date and what was refused), `recorded` (the tree argues the name somewhere, with a
 citation), `unrecorded` (nothing outside this block says why). **The gate checks presence, never
 `ratified`**, so an unratified name never blocks a build and `unrecorded` is a truthful answer.
 
-**The name is Chris's** (CLAUDE.md, "Chris names the crates, the programs, and the shared modules").
+**The name is calef's** (AGENTS.md, "calef names the crates, the programs, and the shared modules").
 Ship a provisional one, say so in your report, expect it to change.
 
 ### 3. A `[[bin]]` block in `user/Cargo.toml`

@@ -60,7 +60,7 @@
 //! assert_eq!(verify(&[], "init", b"the real init"), Err(VerifyError::Unmeasured));
 //! ```
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `measure`. Refused `measure` (a verb,
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `measure`. Refused `measure` (a verb,
 //! and generic enough to name almost anything). "Measured boot" is the standard term for boot-time
 //! hashing, so the new name also buys the recognition a reader arrives with.
 

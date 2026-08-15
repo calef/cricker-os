@@ -3,7 +3,7 @@
 **Status: DECIDED.**
 
 **Decided 2026-07-30, not yet built.** The rule that governs every filesystem backend behind the
-§27 contract, arrived at by Chris over two corrections of mine. Milestone 47 (navigation and naming)
+§27 contract, arrived at by calef over two corrections of mine. Milestone 47 (navigation and naming)
 owns `mv`; this is the contract rule underneath it.
 
 ## The constraint that started it

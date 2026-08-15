@@ -7,7 +7,7 @@ Milestone 57. `tools/redoxfs_host`, `fs_proto::xattr::store`. See `notes/host-re
 ## The rule
 
 **A recovery tool that returns the bytes and drops the metadata has not recovered the backup.**
-Chris set the standard for this whole area: if he is struggling to get the data off, the backup has
+calef set the standard for this whole area: if he is struggling to get the data off, the backup has
 failed at its job. Time Machine's Apple metadata lives in extended attributes, so on this
 deliverable the attributes are not decoration, they are part of the file.
 

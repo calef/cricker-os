@@ -53,7 +53,7 @@
 //! ring for it), so `OP_WRITE` does ring, and that is safe because the caller blocked in `CALL` is
 //! the *application*, not the compositor.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `vterm`. Refused `vterm` (an
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `vterm`. Refused `vterm` (an
 //! abbreviation), `text_console` (`console` is already a program) and `video_terminal` for the
 //! program (the crate is named for the protocol it implements and this program for its role, next
 //! to `display`, the virtio-gpu driver it is a client of, so the display ladder reads straight from

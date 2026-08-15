@@ -3,7 +3,7 @@
 Milestone 30 is three pieces in order: multi-queue transport confinement, a userspace virtio-net
 driver behind it, and a TCP/IP stack (smoltcp) in a net server speaking a capability-shaped socket
 contract. This note records what is built, the prior art read before drawing the contract, the
-contract proposal (a design fork left for Chris), the smoltcp pin, and the remaining work.
+contract proposal (a design fork left for calef), the smoltcp pin, and the remaining work.
 
 ## Piece 1: multi-queue confinement (built, both ISAs)
 
@@ -195,7 +195,7 @@ map.
 
 **The questions.**
 
-1. **Socket identity: DECIDED 2026-07-28 (Chris): a socket id on the stack endpoint for phase
+1. **Socket identity: DECIDED 2026-07-28 (calef): a socket id on the stack endpoint for phase
    one; minted-endpoint-per-socket is the deliberate later step, tracked in DECISIONS §25.** The
    trade as it was put to him: a minted endpoint per socket is the purest capability shape (a
    socket IS an unforgeable object, delegatable on its own), but it spends a kernel object (a

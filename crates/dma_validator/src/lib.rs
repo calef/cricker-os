@@ -22,7 +22,7 @@
 //! map, a test passes closures over ordinary arrays, and Kani passes closures over a symbolic memory
 //! model. No hardware, no kernel globals.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `dma_validate`. Refused
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `dma_validate`. Refused
 //! `dma_validate` (a verb, while the crate's own first line already called itself "the
 //! DMA-confinement validator": it had named itself a noun and carried a verb).
 

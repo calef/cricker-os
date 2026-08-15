@@ -43,7 +43,7 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    names no register. RISC-V implements the same two constructors with its own set (`s0`..`s11` + `ra`,
    `a0`/`a1` for args) and `thread.rs` does not change.
 
-2. **The `paging` crate encoded the aarch64 descriptor format.** **Closed (the trait option, Chris's
+2. **The `paging` crate encoded the aarch64 descriptor format.** **Closed (the trait option, calef's
    call; DECISIONS §17).** `Flags` was aarch64 descriptor bits (`AF`, `SH`, `AP_*`, `PXN`, `UXN`, `NG`,
    MAIR index) and the walk assumed 4 levels. Now: `Flags` is a format-neutral capability set (same
    constructor/predicate API), a `PageFormat` trait captures the seam (`LEVELS`, the half split, and
@@ -283,7 +283,7 @@ is the thread's or the hart's.** `tp` is the hart's.
    returns. First cut is S-mode traps on the current stack; the `sscratch` stack switch for U-mode
    traps arrives with the user path.
 4. **MMU (Sv39). Done (kernel side).** The paging-format work (leak #2), the **higher-half boot
-   transition** (Chris chose high-half, DECISIONS §17; proven by the banner's live code address
+   transition** (calef chose high-half, DECISIONS §17; proven by the banner's live code address
    `0xffffffc0_8020_xxxx`), the **fine-grained W^X kernel tables** (`mmu::init` via `Mapper<_, _,
    Sv39>`, replacing the coarse RWX boot table, `satp` switched live with the console surviving), and
    the **kernel mapping surface** (`map_page`/`unmap_page`/`translate`/`flush_tlb`, proven by a

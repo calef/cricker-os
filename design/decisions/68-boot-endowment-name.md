@@ -1,6 +1,6 @@
 # 68. `BootEndowment::unused` wants a truer name
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris, who names things.)
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, who names things.)
 
 **What.** The field holds the capabilities aarch64's boot path is handed because it shares that path
 with milestone 19d's test roles: a report endpoint and a test SGI. The interactive system never uses

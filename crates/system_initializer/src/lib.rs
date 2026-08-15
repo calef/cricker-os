@@ -137,7 +137,7 @@
 //! has cost were that, once when the kernel grew two grants and once when a boot component was built
 //! one step too early. The order below is load-bearing and the comments say where.
 //!
-//! Name: ratified 2026-08-04 (Chris, milestone 96), and it is the ratification that raised
+//! Name: ratified 2026-08-04 (calef, milestone 96), and it is the ratification that raised
 //! milestone 115. Refused `system_builder` (milestone 63 had already refused it, for a reason still
 //! true: `builder.rs` calls itself "a minimal init: the system builder", so two programs would
 //! claim one phrase) and `system_bootloader` (it claims a position in the boot sequence it does not

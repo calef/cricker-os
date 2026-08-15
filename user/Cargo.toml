@@ -396,7 +396,7 @@ bench = false
 # authorities it needs is the demonstration: ONE disk, and an entropy endpoint for the unique ids a
 # GPT requires. Without the second it writes nothing at all rather than inventing an id, and the
 # same binary's verify role reads the disk back to show which happened. `mkinitrd` packs it for both
-# ISAs. Provisional name (milestone 57's lane): Chris settles program names.
+# ISAs. Provisional name (milestone 57's lane): calef settles program names.
 [[bin]]
 name = "disk_partitioner"
 path = "src/disk_partitioner.rs"

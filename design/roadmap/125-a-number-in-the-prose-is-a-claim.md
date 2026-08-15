@@ -1,6 +1,6 @@
 # 125. A number in the prose is a claim, and nothing re-derives it
 
-**Status: NOT-STARTED.** Minted 2026-08-14 by Chris, after asking whether the tree needed a milestone
+**Status: NOT-STARTED.** Minted 2026-08-14 by calef, after asking whether the tree needed a milestone
 to audit its documentation for outdated content. It does not, quite: the audit is the wrong shape for
 the class of staleness that actually recurs, and this is the right one.
 

@@ -21,7 +21,7 @@ Two ways a name can be a false claim, and the tree had both:
   five explicit capabilities, could not name its own callers, was supervised, and could be reaped by
   something that lacked the authority to build it. About as far from a daemon as a long-running
   process gets.
-- **It claims a reader who does not exist.** `linedisc` was the correct Unix term of art. Chris did
+- **It claims a reader who does not exist.** `linedisc` was the correct Unix term of art. calef did
   not recognise it, and he built the system. That is evidence about the name, not about him. It
   became `lineedit` and then `line_editor`, which someone who has never opened a tty manual
   understands immediately.
@@ -95,7 +95,7 @@ contributor has to get right.
 So one rule, no branch. A short name for a typed command is a *choice its author makes*, not a
 convention to apply; nobody needs a rule to know `wc` beats `word_count`.
 
-**Chris names the crates, the programs, and the shared modules.** Same shape as `DECISIONS.md`
+**calef names the crates, the programs, and the shared modules.** Same shape as `DECISIONS.md`
 section numbers: global to the tree, so decided by the person who can see the whole tree. A lane
 ships a **provisional** name, says so in its report, and expects it to change. Nobody renames on
 their own initiative either, because a rename is a naming decision with extra steps. The reason is
@@ -198,7 +198,7 @@ the tree, because it *is* the name. A refused one is visible in no file at all, 
 most needs it is the person about to propose it again.
 
 That is not hypothetical. A lane proposed `system_builder` for the crate milestone 96 extracted, the
-maintainer endorsed it, and Chris overruled it to `system_initializer`. Only afterwards did anyone
+maintainer endorsed it, and calef overruled it to `system_initializer`. Only afterwards did anyone
 find that **milestone 63 had already refused `system_builder`**, for a reason still true:
 `user/src/builder.rs` calls itself "a minimal init: the system builder", so two programs would claim
 one phrase. The refusal existed, in one table cell inside one milestone block, invisible at the
@@ -206,7 +206,7 @@ moment it was needed. A blind rename then swept the old name out of that very ro
 the refusal was nearly destroyed by the rename it should have prevented.
 
 **The record is derived, not maintained.** The first draft of the fix was one ratified-names table,
-here in this file. Chris rejected it on 2026-08-04 for scaling the way the original `DECISIONS.md`
+here in this file. calef rejected it on 2026-08-04 for scaling the way the original `DECISIONS.md`
 and `design/roadmap.md` scaled, and size is the smaller half of that argument. The **conflict shape**
 is the real one: every lane that adds a name would edit one file, which is exactly what produced
 three section-number collisions in a day.
@@ -226,18 +226,18 @@ So:
 
 ### The three states
 
-Chris works back through the existing names over time, so the record has to hold **which ones still
+calef works back through the existing names over time, so the record has to hold **which ones still
 want him**, not only what is known. The state is the first word of the block:
 
 | State | Means | What it costs to clear |
 |---|---|---|
 | **unrecorded** | nothing in the tree or its history says why this name was chosen | research, and then a ruling |
-| **recorded** | the tree argues the name somewhere (a milestone block, a decision, a header) and Chris never ruled | a ruling |
-| **ratified** | Chris ruled, with the date and what was refused | done |
+| **recorded** | the tree argues the name somewhere (a milestone block, a decision, a header) and calef never ruled | a ruling |
+| **ratified** | calef ruled, with the date and what was refused | done |
 
 The first cut of this mechanism had two states, and `unrecorded` was doing both of the first two
 jobs. "Nobody in this tree can say why this is called that" and "here is the argument, nobody ever
-signed it" are different amounts of Chris's time, and a worklist that cannot tell them apart is a
+signed it" are different amounts of calef's time, and a worklist that cannot tell them apart is a
 list rather than a plan.
 
 **The criterion, stated so that a reader can disagree with a case rather than with a mystery: a name
@@ -333,7 +333,7 @@ answer:
 ```
 $ script/names system_builder
 REFUSED for crate system_initializer  (crates/system_initializer/src/lib.rs)
-  ratified 2026-08-04 (Chris, milestone 96), and it is the ratification that raised milestone 115.
+  ratified 2026-08-04 (calef, milestone 96), and it is the ratification that raised milestone 115.
   Refused `system_builder` (milestone 63 had already refused it, for a reason still true:
   `builder.rs` calls itself "a minimal init: the system builder", so two programs would claim one
   phrase) and `system_bootloader` ...
@@ -381,7 +381,7 @@ UNRATIFIED (54 of 126), in the order worth working through
 ```
 
 **The tier is the kind, and not "programs a person actually types".** That second split is the
-two-tier rule Chris rejected on 2026-08-01, keyed on a property that is not stable: `wc` went from
+two-tier rule calef rejected on 2026-08-01, keyed on a property that is not stable: `wc` went from
 internal plumbing to a prompt-typed pipeline stage inside a day. Every program in `user/src/` is in
 the initrd and can be typed, so the kind is the honest tier and needs no classification anybody
 could get wrong. This is a sort order rather than a naming convention, so the cost of being wrong
@@ -407,14 +407,14 @@ The whole table, and the gate:
 ```
 $ script/names | tail -3
 total: 126 names, 72 ratified, 10 recorded, 44 unrecorded, 85 refusals
-54 still want Chris: script/names --unratified
+54 still want calef: script/names --unratified
 refused but live: video_terminal
 
 $ script/names --check
 names: NOTE 'video_terminal' is recorded as refused and is also a live name
 names: 126 names carry provenance (43 crates, 54 programs, 29 scripts)
 names: 72 ratified, 10 recorded, 44 unrecorded, 85 refusals recorded beside them
-names: 54 still want Chris (script/names --unratified), which is a worklist and not a failure
+names: 54 still want calef (script/names --unratified), which is a worklist and not a failure
 ```
 
 That `video_terminal` line is the mechanism working rather than a defect. The name was **refused for
@@ -449,7 +449,7 @@ people learn to skip.
 - **Three surfaces, and the tree has more than three kinds of name.** Crates, programs and `script/`
   entry points carry blocks. Directories, types, `scripts/` helpers, `kernel`, `xtask`, `fs_server`
   and `tools/redoxfs_host` do not, and at least one ratified name has no home as a result:
-  **`design/audit-reports/`** (Chris, 2026-08-04), where `audit-trail` was refused because
+  **`design/audit-reports/`** (calef, 2026-08-04), where `audit-trail` was refused because
   `design/decisions/35-scanner-findings.md` already uses that phrase for a chronological record of
   dismissals and it is also what an operating system means by it (`auditd`), and bare `audits` was
   passed over because every file in the directory is a report. Recorded here rather than stretched
@@ -608,7 +608,7 @@ which is the ordinary way a hand-kept count drifts; take it from the script.)
    the section above). Presence only: it cannot check that the reason is still true. It checks that
    the block names one of the three states, that `ratified` carries a date and that `recorded`
    carries a citation, and it **never checks that the state is `ratified`**, so a name waiting on
-   Chris does not fail anybody's build. `script/names --unratified` is how that queue gets worked.
+   calef does not fail anybody's build. `script/names --unratified` is how that queue gets worked.
 
 Everything else here is prose because it needs judgement and no checker can supply it. In particular
 **a checker cannot catch the jargon half of §39**: `linedisc` would have passed all four rules above.

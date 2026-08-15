@@ -1,6 +1,6 @@
 # 117. The stranger test: could someone build this and understand it without asking
 
-**Status: NOT-STARTED.** Minted 2026-08-05 by Chris, to put the third principle to a test rather than
+**Status: NOT-STARTED.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
 leave it as an aspiration.
 
 **Gate: NONE.** The instrument exists and the first run costs one lane.
@@ -15,7 +15,7 @@ Every principle in CLAUDE.md names a mechanism that holds it when nobody is watc
 mechanism was missing. "Write good docs" is rung four of the ladder: a note, relying on somebody
 remembering. This milestone is the gate.
 
-**It also cannot be self-assessed, and that is the whole difficulty.** Chris cannot take this test;
+**It also cannot be self-assessed, and that is the whole difficulty.** calef cannot take this test;
 he wrote the system. Nor can any agent that has worked in this tree, which by 2026-08-05 is most of
 them: an agent that spent a night merging pull requests here knows why `cricker-dev` is a symlink,
 what a lane is, and that `script/lint` fails on a branch prefix. **Knowing the answer disqualifies

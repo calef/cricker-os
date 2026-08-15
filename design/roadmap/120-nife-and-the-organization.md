@@ -1,9 +1,9 @@
 # 120. The rename: the OS becomes `nife`, and the project gets an organization
 
-**Status: NOT-STARTED.** Minted 2026-08-13 by Chris, who chose the name and the shape in the same
+**Status: NOT-STARTED.** Minted 2026-08-13 by calef, who chose the name and the shape in the same
 conversation that established why the merge queue could not be switched on.
 
-**Gate: NONE.** The naming is decided and nothing technical blocks a start. Two steps are Chris's to
+**Gate: NONE.** The naming is decided and nothing technical blocks a start. Two steps are calef's to
 perform rather than to decide, because they need his GitHub account: creating the organization and
 transferring the repository. The in-tree rename can be prepared before either.
 
@@ -77,7 +77,7 @@ Milestone 115's point is that the refusals are the valuable half.
   something worse, which is the opposite of the claim a verification project makes. Also
   architecturally backwards: a patina is the layer on top, and a microkernel is the bottom.
 - **`lemma`**. Architecturally exact (the small proved thing larger results are built on) and
-  rejected by Chris on taste.
+  rejected by calef on taste.
 - **`keystone`**. Unavailable: Berkeley's Keystone is an open-source framework for TEEs **on
   RISC-V**, which is this project's second architecture. Same `capsh` failure: a reader arriving from
   RISC-V security would assume ours is that.
@@ -87,7 +87,7 @@ Milestone 115's point is that the refusals are the valuable half.
   than the material itself. Kept in reserve as component names.
 
 **The distribution's name went through the same test and two candidates lost it.** `sial` and `sima`,
-Suess's own terms for the crust, were the first proposal and were dropped for one reason: Chris had
+Suess's own terms for the crust, were the first proposal and were dropped for one reason: calef had
 to ask how to say them. That is §39's decisive evidence, the same kind that retired `linedisc`, and
 it lands differently here than it does for the kernel. `nife` earns its declared pronunciation
 because the wrong reading (*knife*) is sharp, single-purpose and a held tool, so the mistake flatters
@@ -103,12 +103,12 @@ that `sima` actually is, so the layering survives the words being retired.
 **The concrete unblock is milestone 119.** GitHub's merge queue is available only in repositories
 owned by an **organization**; this one is owned by a user account, which is why the setting is absent
 from the ruleset page rather than merely hard to find. 119 names the merge queue as one of two
-structural levers and leaves it to Chris; this milestone is what makes it reachable at all.
+structural levers and leaves it to calef; this milestone is what makes it reachable at all.
 
 **The organization is deliberately not named after the OS.** An org named `nife` makes `basalt` and
 `swish` read as subsidiaries of the kernel rather than as peers, and it has no room for anything that
 is not the OS. Canonical ships Ubuntu and Red Hat ships Fedora for the same reason. `crickertech` is
-already Chris's domain, costs nothing, and gives the old name a retirement rather than a deletion: it
+already calef's domain, costs nothing, and gives the old name a retirement rather than a deletion: it
 stops being the product and becomes the publisher.
 
 ## The work, measured
@@ -161,7 +161,7 @@ tree-wide rename. Those pull in opposite directions, so the sequence is not arbi
 
 1. **Drain the open queue to zero.** In flight as of 2026-08-13: #123, #130, #131, #135, #138, #141,
    #142, #149.
-2. **Create the organization and transfer the repository.** Chris; nobody else can.
+2. **Create the organization and transfer the repository.** calef; nobody else can.
 3. **Rename in one reviewed pass**, with no lanes open, so the rename conflicts with nothing.
 4. **Relink the toolchain** from the main checkout.
 5. **Enable the merge queue**, which milestone 119 owns. The `merge_group` triggers it needs are

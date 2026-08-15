@@ -24,7 +24,7 @@
 //! It is not the supervisor. It never reads a fault message and it holds no policy; it answers
 //! requests in the order they arrive. See notes/trusted-init.md.
 //!
-//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as always
+//! Name: ratified 2026-07-30 (calef, DECISIONS §39), among the names recorded there as always
 //! right.
 
 #![no_std]

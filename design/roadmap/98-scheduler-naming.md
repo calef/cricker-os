@@ -1,10 +1,10 @@
 # 98. The scheduler that stopped scheduling: name what `SCHED` actually guards
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by Chris as an abbreviation question (`sched` or
+**Status: NOT-STARTED.** Raised 2026-08-04 by calef as an abbreviation question (`sched` or
 `scheduler`?), and rewritten the same hour when the question "what does `sched` schedule?" turned up
 a better answer: **increasingly, nothing.**
 
-**Gate: DECISION.** The naming question is explicitly Chris's: the type and the static hold a
+**Gate: DECISION.** The naming question is explicitly calef's: the type and the static hold a
 thread table and an endpoint registry, and the block rejects `ObjectRegistry` and `Objects` without
 picking a replacement. The module keeps `sched`, which really does schedule.
 
@@ -35,7 +35,7 @@ have touched **915 `sched::` call sites across 70 files**. This one touches **88
 inside `kernel/src/sched.rs`, 12 `Scheduler` mentions, and one `rank::SCHED`**, because the module
 path does not change. Roughly a hundred sites in one file, not nine hundred across seventy.
 
-**The naming question that remains is Chris's**, and it is a real one because the thing is a pair
+**The naming question that remains is calef's**, and it is a real one because the thing is a pair
 rather than one concept: a thread table and an endpoint registry, held together only by both being
 whole-machine and both being under one lock. `ObjectRegistry` claims more generality than it has
 (there are two kinds, not any kind); `Objects` is vague in the way §39 warns about; something

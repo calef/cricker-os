@@ -1,6 +1,6 @@
 # 69. `Endow` is a verb, and names the same idea as `Endowment`
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris, who names things.)
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, who names things.)
 
 **What.** `supervision_proto::Endow` (what a child is handed at construction) and
 `grant_plan::Endowment` (what the shell computed a child should receive) name one idea a

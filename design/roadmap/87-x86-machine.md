@@ -36,7 +36,7 @@ The requirements, each traced to something this tree already does:
 - **Remote power cycling** by smart plug, not by management firmware. A plug is $15 and works on
   anything.
 
-**The selection: a used Dell OptiPlex 7050 Micro plus the Dell C4PDJ serial module** (Chris,
+**The selection: a used Dell OptiPlex 7050 Micro plus the Dell C4PDJ serial module** (calef,
 2026-08-03, settled after a full pass over the new market): i5-7500T with 16GB was $129 with the
 module at $35, ~$194 all-in with the dev-side serial gear and the smart plug. The used-hardware
 risk was weighed deliberately and priced: eBay's money-back guarantee bounds "does it work" to

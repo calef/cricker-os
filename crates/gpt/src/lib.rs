@@ -6,7 +6,7 @@
 //! A partition table is the map that says "the filesystem starts at block 2048 and stops at block
 //! 32767". Milestone 57 needs it in both directions: **reading** one is how a kernel finds a
 //! partition on a disk it has never seen, and there is no way around that; **writing** one is the
-//! `parted mkpart` equivalent, the first of the three steps in Chris's router setup that this OS
+//! `parted mkpart` equivalent, the first of the three steps in calef's router setup that this OS
 //! has no answer to.
 //!
 //! # This crate does no I/O, on purpose
@@ -100,7 +100,7 @@
 //!
 //! See notes/gpt.md for the format walk-through and the surprises the fixtures pinned.
 //!
-//! Name: ratified 2026-08-01 (Chris, the naming tenet in CLAUDE.md). Named in the group of standard
+//! Name: ratified 2026-08-01 (calef, the naming tenet in CLAUDE.md). Named in the group of standard
 //! terms that are already right and must not be touched, because a name a reader knows from outside
 //! this project costs nothing to learn and renaming it would destroy the recognition the tenet
 //! exists to buy.

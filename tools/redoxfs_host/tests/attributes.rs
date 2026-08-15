@@ -1,7 +1,7 @@
 //! **The attribute half of the recovery witness** (milestone 57): metadata written by the FS server
 //! on one side, and back on a real host file on the other.
 //!
-//! The claim this closes is Chris's, and it is the one that decides whether the backup is credible:
+//! The claim this closes is calef's, and it is the one that decides whether the backup is credible:
 //! *if I am struggling to get the data off, the backup has failed at its job.* Before this, the
 //! attributes came out of an image as `.cricker-attrs/0000002a`, a blob whose owner you had to work
 //! out by hand. A Time Machine sparsebundle carries Apple metadata in exactly those attributes, so

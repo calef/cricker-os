@@ -25,7 +25,7 @@ updates:
     # Grouping the majors is the fix rather than ignoring them, and the difference matters. An
     # `ignore` here would suppress the churn by **foreclosing the upgrade**, freezing the crypto
     # stack until somebody hand-edited this file; that is a standing policy decision and it belongs
-    # to Chris, not to a CI cleanup. A group suppresses the same churn and keeps the door open: one
+    # to calef, not to a CI cleanup. A group suppresses the same churn and keeps the door open: one
     # pull request bumping all four together, which builds once `crates/ntlm` is migrated to the new
     # `Digest`/`Mac` APIs, on whatever schedule that migration is worth.
     #

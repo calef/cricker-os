@@ -1,6 +1,6 @@
 # 123. The demonstration: somebody else's software, running narrow, and a gate that keeps it there
 
-**Status: NOT-STARTED.** Minted 2026-08-13 by Chris, on the observation that this is the only claim
+**Status: NOT-STARTED.** Minted 2026-08-13 by calef, on the observation that this is the only claim
 in `design/why-now.md` with nothing scheduled against it. §82 states four falsification conditions
 and this milestone is what closes the first of them.
 

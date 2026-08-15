@@ -1,6 +1,6 @@
 # 83. When the same thing exists in C and in Rust, take the Rust one
 
-**Status: DECIDED.** Chris, 2026-08-13: *"we want to consider an approach of preferring rust
+**Status: DECIDED.** calef, 2026-08-13: *"we want to consider an approach of preferring rust
 replacements of C libraries rather than relying on them. We are rust first in part because rust
 solves for so many potential security vulnerabilities."* A corollary of §82, and an axis §46 does not
 cover.
@@ -69,7 +69,7 @@ part of the system rather than a transitional hack.
 
 ## What it changes
 
-Class C shrinks to the cases with no Rust option. The compressors Chris asked about (`gzip`,
+Class C shrinks to the cases with no Rust option. The compressors calef asked about (`gzip`,
 `bzip2`, `xz`, `zstd`, `zip`, `7z`) stop being a C-seam problem and become ordinary dependency
 choices, most of which milestone 64 already measured as building. What remains genuinely C-only is
 essentially SQLite, plus the open question of whether `ring` should be replaced by RustCrypto rather
