@@ -3181,10 +3181,20 @@ fn test() -> bool {
         // gate that quietly covers less than it claims is the failure mode script/fmt's `--check` bug
         // already cost this project a day over.
         //
-        // The exclusions are the three bare-metal crates, and they are the same three script/lint's host
-        // clippy pass excludes, for the same reason: kernel, user and user_rt only compile for aarch64
-        // or riscv64 (user_rt is EL0 syscall `asm!`). Everything else in the workspace is host code by
-        // construction, so a new crate is covered the moment it joins the workspace.
+        // The exclusions are every crate that cannot compile for the host, which means `user_rt` (EL0
+        // syscall `asm!`) and everything that depends on it.
+        //
+        // **`--exclude` removes a package from the test SELECTION, not from the dependency graph.**
+        // Excluding `user_rt` alone stopped working on 2026-08-03, when `swap_proto`, `virtio` and
+        // `supervision_proto` took unconditional `user_rt` dependencies (`system_initializer`
+        // followed a day later): cargo still had to build it for them, so the host pass stopped
+        // compiling on an x86_64 host and nobody noticed, because CI moved to `ubuntu-24.04-arm` the
+        // same day and on an aarch64 host it builds by accident. A stranger with a clean x86_64
+        // checkout found it on 2026-08-14 (milestone 117's first run).
+        //
+        // `script/lint`'s "host pass excludes exactly the bare-metal crates" gate now DERIVES this
+        // set from `cargo metadata` and fails if this list disagrees with it, so the next crate to
+        // take a `user_rt` dependency breaks the gate rather than the host build.
         if !cargo(&[
             "test",
             "--workspace",
@@ -3194,6 +3204,14 @@ fn test() -> bool {
             "user",
             "--exclude",
             "user_rt",
+            "--exclude",
+            "swap_proto",
+            "--exclude",
+            "virtio",
+            "--exclude",
+            "supervision_proto",
+            "--exclude",
+            "system_initializer",
         ]) {
             return false;
         }
