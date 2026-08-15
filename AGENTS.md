@@ -370,6 +370,9 @@ without leaving the system. Four things make them that, and all four are things 
   the feature, rather than only in a tracker. This is the one worth copying hardest, because it is
   the convention this project already reaches for by instinct: the map "tie", the spawn caveat, the
   scope notes on parity gaps. **Name the limitation where the reader meets the feature.**
+  When a limitation graduates from record to plan, and what forces the graduation, is §71's
+  convention: a `BUGS` entry is a fact, a roadmap row is intent, and the promotion triggers are
+  listed there.
 
 The point is not the format, which is theirs. It is the posture: documentation written for someone
 who has to *use* the thing, and honest enough that they trust it when it says something works.
