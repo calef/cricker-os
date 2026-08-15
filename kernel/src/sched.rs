@@ -526,6 +526,14 @@ pub fn note_boot_stage(stage: u32) {
     BOOT_STAGE.store(stage, Ordering::Relaxed);
 }
 
+/// Read the tour stage back. The hang watcher uses it to fall silent once the tour has
+/// finished (stage 10): boot 13 completed healthily and still printed five dumps of a
+/// quiescent machine, which reads as a hang to anyone who has not memorized the watcher.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv tour is the caller today
+pub fn boot_stage() -> u32 {
+    BOOT_STAGE.load(Ordering::Relaxed)
+}
+
 /// **A corruption tripwire over the scheduler's registries** (first-silicon diagnostics,
 /// 2026-08-15; module name provisional). Armed around the initrd demo on the board tour, it
 /// re-reads the watched ranges on the timer tick and prints every byte that changed since the

@@ -647,6 +647,26 @@ machine state proves the printing steps ran; boot 11 carries the discriminators 
 every dump header, `tx=` in the diag line, `serve:` ring events, the registry canary), and the
 first move is to re-examine the boot 7 through 9 captures for the missing lines.
 
+**Boots 12 and 13 (2026-08-15) closed the story, as the measured-boot pair.** Boot 12, the first
+under the name `nife`, cleared the whole bring-up and was **refused at the trust boundary**:
+`MEASURED BOOT REFUSED: 'program_measurements' is not what this kernel image was built against`,
+and the kernel halted rather than hand the archive to init. The mismatch was real and ours:
+`script/board-image` built the kernel before packing the archive that regenerates the manifest
+the kernel compiles in, so the kernel on the card vouched for the *previous* archive. QEMU never
+hit it because `xtask` orders those steps correctly; the fix swapped the script's order and its
+comment carries this story. Boot 13, with the pair built in order, ran the tour to the final
+banner: init measured and built `worker` from the 6,294,016-byte archive (child sent 81,
+expected 81), preemption ran two never-yield threads 3.3M and 28.3M iterations with 61
+preemptions, and every discriminator boot 11 was instrumented for reported a healthy machine:
+the five diag dumps show `svc=20` frozen, identical event rings, and the two parked receivers of
+the demo's terminal state. Two observations from 13, recorded rather than chased: the early
+`scheduler :` smoke line reported `0 of 2 kernel threads ran` (boot 12 said 1 of 2; the
+preemption numbers prove scheduling, so the smoke line races real timing and its wording
+overclaims), and a key press at the prompt did nothing, which **confirms on silicon** the
+UART-IRQ limitation below (the driver armed line 10; the board interrupts on 32). The refusal
+followed by the pass is the measured-boot demonstration end to end: the same board, the wrong
+pair refused, the right pair run.
+
 Three limitations found while building those, honestly not fixed here:
 
 - **The tour's UART-driver step arms QEMU's interrupt number on the board.** `main.rs` passes
@@ -656,7 +676,8 @@ Three limitations found while building those, honestly not fixed here:
   Quiet in practice tonight (source 10 never fired, or the driver's dump row would show it
   running rather than parked), and not the fifth stop's bug, but the number needs to come from
   the device tree like everything else on this page before the driver demo means anything on
-  silicon.
+  silicon. **Confirmed on silicon 2026-08-15 (boot 13): a key press at the completed tour's
+  prompt reached nothing**, exactly as this entry predicts.
 
 - **The shell path's userspace input driver still speaks QEMU's UART layout.**
   `user/src/input.rs` reads the NS16550 at byte-stride offsets (LSR at 0x05), so on the board the
