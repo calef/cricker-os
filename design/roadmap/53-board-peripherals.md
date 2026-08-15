@@ -2,12 +2,13 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: DECISION.** The hardware half of the old gate cleared 2026-08-14: the board is on the
-desk and 16a boots it through the full tour, so the two drivers finally have silicon to exist on.
-What remains gating is the fork this block always wanted decided before building: which storage
-path comes first, SD/eMMC or NVMe over the §18 PCIe transport, decided on what the backup workload
-measures rather than on driver convenience. That is calef's call, and the first driver lane
-launches the day it lands.
+**Gate: NONE.** Both halves of the old gate are gone. The hardware cleared 2026-08-14: the board
+is on the desk and 16a boots it through the full tour, so the two drivers finally have silicon to
+exist on. The storage fork was decided by calef on 2026-08-15: **NVMe first**, because the backup
+workload (milestone 55) measures sustained sequential write and endurance, which SD media fails,
+and because a real PCIe root-complex driver compounds into milestone 87's x86 machine where an
+MSHC driver serves one slot on one board. SD/eMMC stays in scope as the later path, undecided only
+in its ordering against the network driver.
 
 **In brief.** Milestone 16a boots a VisionFive 2 (firmware contract, NS16550, PLIC, Sv39). It does not
 give the board a network or a disk. Everything above needs both, and **this is where virtio stops
