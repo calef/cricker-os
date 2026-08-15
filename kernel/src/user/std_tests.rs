@@ -237,7 +237,7 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
 pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
     os nife\n\
     vec sum 149985000\n\
-    string len 800\n\
+    string len 500\n\
     map lookup 1369\n\
     fs honestly unsupported\n\
     net honestly unsupported\n\

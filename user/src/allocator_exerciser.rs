@@ -65,7 +65,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     for _ in 0..100 {
         s.push_str("nife ");
     }
-    assert_eq!(s.len(), 1100);
+    assert_eq!(s.len(), 500);
     assert!(s.ends_with("nife "));
 
     // 3. A BTreeMap: many small node allocations, then removal of every other key, which frees

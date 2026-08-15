@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn a_bytes_messages_first_word_is_its_length() {
         let (w0, _, _, _) = pack(b"nife");
-        assert_eq!(w0, 7);
+        assert_eq!(w0, 4);
     }
 
     /// EOF is distinguishable from every byte count, including zero, which is the property that

@@ -2178,7 +2178,7 @@ fn userspace_init_delegates_an_interrupt_to_a_child() {
 fn userspace_init_brings_up_the_console_server() {
     // The message length the init_console role prints and the server acks. Kept in sync with
     // user/src/hello.rs init_console (the b"..." there); a mismatch fails loudly, not silently.
-    const MSG_LEN: u64 = 72;
+    const MSG_LEN: u64 = 66;
     const INIT_CONSOLE_ROLE: u64 = 24;
 
     let report = crate::sched::create_endpoint();
