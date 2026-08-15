@@ -33,7 +33,7 @@ admission. This milestone is that blind spot's first measured cost.
    number. `DECISIONS §24 (interrupting the foreground process)` and `milestone 24
    (Virtualization.framework)` are both self-checking: a lint can compare the parenthetical against
    the real title and fail on a mismatch, which is precisely the check neither existing gate can
-   make. Chris's own convention already says to cite by number and name; this makes the convention
+   make. calef's own convention already says to cite by number and name; this makes the convention
    mechanical.
 
 ## Scope note

@@ -58,7 +58,7 @@ This is the design claim, and milestone 57's entry has been making it since 2026
 
 > Partitioning and `mkfs` are **destructive** and need authority over a *whole block device*. So the
 > tool holds one device capability and can destroy exactly that device and nothing else. Compare
-> `parted /dev/sda` as root, where a typo reaches any disk in the machine, and Chris's own
+> `parted /dev/sda` as root, where a typo reaches any disk in the machine, and calef's own
 > instructions carry a "confirm the target device path before proceeding" warning precisely because
 > the tool cannot enforce it. **Here the warning is structural**: the tool was handed one disk.
 

@@ -2,11 +2,11 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-04. Milestone 22 (trusted init) built the supervision tree
 and, in `notes/trusted-init.md`, recorded two questions it deliberately did not answer, both marked
-"Chris's call, not a thing to slip in". **This block's job is to state them precisely enough to be
+"calef's call, not a thing to slip in". **This block's job is to state them precisely enough to be
 decided, not to pick.** Both are kernel-surface changes; one is also a rights-model change.
 
-**Gate: DECISION.** Both halves are Chris's and are recorded that way in notes/trusted-init.md,
-"Chris's call, not a thing to slip in": whether reclamation and construction are separable rights,
+**Gate: DECISION.** Both halves are calef's and are recorded that way in notes/trusted-init.md,
+"calef's call, not a thing to slip in": whether reclamation and construction are separable rights,
 and whether a tid becomes a handle through `Tcb::NAME`. The block states them precisely and picks
 neither on purpose.
 
@@ -66,4 +66,4 @@ decision on one does not commit the other.
 **No implementation is proposed here on purpose.** CLAUDE.md's rule is that a method not fitting the
 established model is a design fork raised before it is built, and a rights-model change is further
 out than that. The deliverable of *this* block is the statement; the deliverable of the milestone is
-whatever Chris decides plus its `design/decisions/` entry.
+whatever calef decides plus its `design/decisions/` entry.

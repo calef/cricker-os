@@ -14,9 +14,9 @@ this block's third gate has closed and only the decision, 65 and 107 remain.
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
 "a file server".
 
-## The reference implementation is known, and Chris supplied its exact configuration
+## The reference implementation is known, and calef supplied its exact configuration
 
-**Chris's router is a GL.iNet GL-BE9300 (Flint 3) running OpenWrt, serving three family Time Machine
+**calef's router is a GL.iNet GL-BE9300 (Flint 3) running OpenWrt, serving three family Time Machine
 targets through Samba with `vfs_fruit` (2026-07-30).** So the reference is full Samba, not `ksmbd`,
 and the working `[global]` stanza is on the record:
 
@@ -47,7 +47,7 @@ xattrs, and we have neither layer.
 
 **There is an escape, and it should be chosen deliberately rather than discovered late.** Samba's
 `fruit:metadata` also accepts `netatalk`, which keeps the same metadata in **AppleDouble sidecar
-files** (`._name`) needing no filesystem support whatsoever. Chris's router uses `stream` because ext4
+files** (`._name`) needing no filesystem support whatsoever. calef's router uses `stream` because ext4
 has xattrs. So this is a **design choice between adding xattrs down the whole stack (protocol, FS
 server, RedoxFS) and accepting sidecar files**, not the hard blocker it first appears to be.
 
@@ -70,14 +70,14 @@ expectations will test, and that half was always right.
 
 ## Three users, and this is where the thesis gets a concrete demonstration
 
-Chris's setup serves **graeme, corinne and chris**, one partition and one share each, and privacy
+calef's setup serves **graeme, corinne and chris**, one partition and one share each, and privacy
 between family members rests on Samba correctly honouring a "Read-Write User = graeme" line in a
 config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
 
 **Ours would be three adapter instances, each holding one directory capability**, and one adapter
 **cannot name** another's partition. Not an ACL check that could be wrong: no capability, no path, no
 way to express the request. That is the security claim of the whole project, stated in terms of
-something Chris actually relies on, which makes it the best demonstration target on the roadmap.
+something calef actually relies on, which makes it the best demonstration target on the roadmap.
 
 It also means milestone 56's credential service holds **three identities**, not one, from the start.
 (Built that way: the store's capacity is three, and the fourth `PUT` is refused with `FULL` rather
@@ -85,7 +85,7 @@ than silently replacing somebody, which is a thing the tests show.)
 
 ## mDNS is required after all, measured 2026-07-30
 
-I hoped this could be dropped, on the grounds that Chris adds the share manually and the SMB-side
+I hoped this could be dropped, on the grounds that calef adds the share manually and the SMB-side
 `fruit:time machine = yes` might be what makes it acceptable. **Measured, and no**: `dns-sd -B
 _adisk._tcp` on his network returns `GL-BE9300` in `local.`, so the router runs an mDNS responder and
 advertises itself as a Time Machine target. The reference implementation does it, and the only way to
@@ -111,7 +111,7 @@ beats deriving them from the RFC.
 
 ## The remaining scope risk is still worth measuring directly
 
-**Chris's router serves Time Machine over SMB today (2026-07-30).** That is a working reference
+**calef's router serves Time Machine over SMB today (2026-07-30).** That is a working reference
 implementation on his own network, so the requirement list below stops being something to guess at.
 **The first task of this milestone needs no board and no code**: capture the SMB session between the
 Mac and the router and read off the truth. The negotiated dialect, the capability bits, which create

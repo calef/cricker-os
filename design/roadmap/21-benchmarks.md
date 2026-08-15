@@ -7,7 +7,7 @@
 **Why it matters.** perf claims become measurements; regressions surface next to their cause. **Built**; notes/benchmarks.md
 
 **Added 2026-07-23, prompted by milestone 15 shipping a performance win nothing measures.** The
-requirement, stated by Chris: identify performance issues, and identify the *introduction* of
+requirement, stated by calef: identify performance issues, and identify the *introduction* of
 performance problems proximate to the changes that introduce them.
 
 **Deliverable.** In-kernel microbenchmarks over the paths a microkernel lives on (IPC round-trip,

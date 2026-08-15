@@ -1,7 +1,7 @@
 # 76. Split the roadmap: `design/roadmap/README.md` as index, one file per milestone
 
 **Status: BUILT (2026-08-03, the day it was raised; the postscript below says why it jumped the
-queue).** Raised 2026-08-03 by Chris, after a discussion of whether the roadmap should
+queue).** Raised 2026-08-03 by calef, after a discussion of whether the roadmap should
 move to GitHub issues at all. It should not, and the reasons are recorded below because the question
 will come back. What it should do is stop being one 5,375-line file.
 
@@ -46,7 +46,7 @@ can only add text to milestone 74.
 It also removes a conflict that already happened: **PR #19 and PR #20 collided on `design/roadmap.md`**
 solely because each marked its own milestone `BUILT`.
 
-## The shape (Chris, 2026-08-03)
+## The shape (calef, 2026-08-03)
 
 - `design/roadmap/README.md` holds the table and the surrounding prose. GitHub renders a directory's
   README automatically, so browsing to `design/roadmap/` shows the index, and this is the pattern
@@ -66,7 +66,7 @@ defect 2 through**: a milestone's status in the index and in its own file must a
 keep the existing checks, which stay meaningful across files: the status vocabulary, every file having
 an index row, and every `milestone N` referenced in prose resolving.
 
-## And the prose check widens to the whole tree (Chris, 2026-08-03)
+## And the prose check widens to the whole tree (calef, 2026-08-03)
 
 Today `script/roadmap --check` validates `milestone N` references **only inside `design/roadmap.md`**.
 `script/decisions --check` already does the tree-wide version for its own citations, via `git grep`.
@@ -78,7 +78,7 @@ So two citation schemes of identical shape and identical risk get opposite treat
 | `milestone N` into the roadmap | **roadmap.md only** | ~1,988 |
 
 The objection to closing that gap is that a stale citation in a code comment becomes a build failure.
-Chris's answer: **that is the feature.** The documentation is versioned with the code so it cannot
+calef's answer: **that is the feature.** The documentation is versioned with the code so it cannot
 describe a system that no longer exists, and a comment pointing at a milestone that was renumbered or
 never existed is exactly the drift the gate is for. It is the same argument DECISIONS §61 makes about
 lints, and the same one CLAUDE.md makes about citations being invisible when well-formed and wrong.
@@ -92,7 +92,7 @@ Two details for whoever implements it. The existing `n >= 12` floor stays, becau
 predate the table and live in git history and `DECISIONS.md`. And the regex must keep matching
 `milestone 16a` as 16, since sub-lettered blocks exist (`20a`).
 
-## Backfill milestones 1 to 11, and drop the `n >= 12` floor (Chris, 2026-08-03)
+## Backfill milestones 1 to 11, and drop the `n >= 12` floor (calef, 2026-08-03)
 
 The floor exists because the table started at 12 when it moved out of `DECISIONS.md`, not because the
 early history is lost. It is not lost. **The original plan survives verbatim in the first commit**,
@@ -135,7 +135,7 @@ every relative markdown link resolves, so a missed one fails loudly rather than 
 
 ## Postscript: why it jumped the queue, and what the build found (2026-08-03)
 
-Raised in the morning, bumped to the front the same day, Chris's call. The single file did not
+Raised in the morning, bumped to the front the same day, calef's call. The single file did not
 wait for the split: nine milestone entries landed in it in one day (a postscript to 78, and 79
 through 87), it passed 6,200 lines, and it produced repeated merge conflicts between same-day
 pull requests (#46 against #47, then the #52/#53 supersede sequence), which is exactly the

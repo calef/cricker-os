@@ -2,7 +2,7 @@
 
 **Status: AMENDED.** (an implementation amendment below records what the build changed.)
 
-**Decided 2026-07-28 (Chris), after §11's deferred "step 3c" was demonstrated by the machine** (a
+**Decided 2026-07-28 (calef), after §11's deferred "step 3c" was demonstrated by the machine** (a
 starved core 0 beside three idle cores, the FS-server watchdog incident). Three parts, each chosen
 against the alternatives on the record:
 

@@ -4,7 +4,7 @@
 
 **Gate: DECISION, MILESTONE 47.** Phase one is sequenced after 47, because it wants `jobs`
 alongside the other builtins on the same shell surface. Phase two is `Tcb::SUSPEND`/`RESUME`, which
-DECISIONS §24 deferred, so it is a kernel-surface fork for Chris; the block asks for it to be
+DECISIONS §24 deferred, so it is a kernel-surface fork for calef; the block asks for it to be
 designed as one surface with the fault endpoint and for all three of §24's triggers at once.
 
 **In brief.** Shell job control, in two phases split by whether they need a new kernel primitive.

@@ -32,7 +32,7 @@
 //! this instance and touches no other process's memory, and the single `Untyped::DESTROY` that reaps
 //! the corpse reclaims the heap along with everything else.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `cshim`. The `c_` prefix means
+//! Name: ratified 2026-08-01 (calef, milestone 61), replacing `cshim`. The `c_` prefix means
 //! "written in C" (DECISIONS §31), spelled with the separator the tenet requires; the run-together
 //! form was the same defect `cseam` had.
 

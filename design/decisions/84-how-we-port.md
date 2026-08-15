@@ -1,6 +1,6 @@
 # 84. How we port: prefer software that has already dropped ambient authority
 
-**Status: DECIDED.** Chris, 2026-08-13: *"Porting to rust is wrong if we port ambient authority along
+**Status: DECIDED.** calef, 2026-08-13: *"Porting to rust is wrong if we port ambient authority along
 the way... I'd prefer to avoid reconstructing every application. That doesn't build a community."*
 
 §82 names the risk in its qualifications: cheap porting makes bad porting cheap, and an ecosystem of
@@ -70,7 +70,7 @@ retired, and carrying many of them is how a project becomes a fork of the world 
 CloudABI is what that looks like at the end: a technically sound capability runtime that died because
 its ecosystem needed adapting and the adapting had one owner.
 
-Chris's constraint is therefore an engineering constraint rather than a preference.
+calef's constraint is therefore an engineering constraint rather than a preference.
 **Reconstruction does not build a community**, and a demonstrator with no community is a demonstrator
 nobody continues.
 

@@ -1,6 +1,6 @@
 # 79. Holding password-equivalent material, and what a session key release means
 
-**Status: DECIDED.** Chris approved both halves on 2026-08-04, on milestone 65's pull request. This
+**Status: DECIDED.** calef approved both halves on 2026-08-04, on milestone 65's pull request. This
 section exists because the reasoning is the part worth keeping: the decision itself is one word, and
 in two years the question a reader will have is *why*.
 
@@ -68,4 +68,4 @@ A deployment needing finer granularity runs more than one.
 `credentialer` is now misnamed. It was ratified on the argument that "this service will never give
 you a credential", which still holds, but it is the secrets service now and the noun no longer
 describes the scope. `cred`, `cred_proto` and `credentialer_test_client` go with it. Recorded at the
-name; the rename is Chris's.
+name; the rename is calef's.

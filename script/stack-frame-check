@@ -17,7 +17,7 @@
 # the clothes of a bound.** `MAX_ENDPOINTS` is 512 because that is a sensible ceiling on live
 # endpoints; nothing about that number was ever a claim about how much stack a function may use.
 #
-# Name: ratified 2026-08-13 (Chris, on the rename). Shipped as `stack-frames` and renamed within the
+# Name: ratified 2026-08-13 (calef, on the rename). Shipped as `stack-frames` and renamed within the
 # day: a bare plural noun, when every other gate in script/ that fails a build carries a verb
 # (`interleaving-check`, `qemu-check`, `shell-check`, `undefined-behavior-check`, `vendor-verify`).
 # The bare nouns in script/ (`citations`, `decisions`, `names`, `roadmap`) are query tools you run to

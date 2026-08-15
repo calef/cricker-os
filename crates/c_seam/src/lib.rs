@@ -37,7 +37,7 @@
 //! Both patterns are position-derived, the discipline milestone 29 used for the framebuffer: a
 //! partial overwrite is detected, and a `memset` of any single value could not pass.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 61), when the C symbols became `c_seam_*` and the
+//! Name: ratified 2026-08-01 (calef, milestone 61), when the C symbols became `c_seam_*` and the
 //! file left `user/src/` under rule 7. Refused `cseam` (run together, and it sat among 48 programs
 //! while being none of them, which is one of the cases that produced the rule). The `c_` prefix
 //! means "written in C" (DECISIONS §31).

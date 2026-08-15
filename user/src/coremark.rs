@@ -16,7 +16,7 @@
 //! icount fiction (magnitudes are meaningless, the CRC is not). The report is three words:
 //! `[crc, ticks, freq]`, so the receiver can compute iterations per second without a second syscall.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63) as a proper noun, EEMBC's industry benchmark. It
+//! Name: ratified 2026-08-01 (calef, milestone 63) as a proper noun, EEMBC's industry benchmark. It
 //! shares its crate's name for the reason DECISIONS §63 gives: the crate is the logic, the program
 //! is the authority.
 

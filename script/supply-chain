@@ -34,7 +34,7 @@
 # from outside costs them nothing." That covers both halves at once, since "supply chain" is the
 # field's phrase for the thing and this script did not coin it; the hyphen is then the directory's
 # rule rather than a choice. It is an argument for keeping the name, made about this name, which is
-# what `recorded` claims. Chris has not ruled on it. Introduced 2026-07-30 to run cargo-deny over
+# what `recorded` claims. calef has not ruled on it. Introduced 2026-07-30 to run cargo-deny over
 # every workspace.
 
 set -e

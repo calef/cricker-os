@@ -76,7 +76,7 @@
 //! assert_eq!(roster.get(1).unwrap().transport, TRANSPORT_PCI);
 //! ```
 //!
-//! Name: ratified 2026-08-03 (Chris, milestone 57). The lane shipped it provisionally and Chris
+//! Name: ratified 2026-08-03 (calef, milestone 57). The lane shipped it provisionally and calef
 //! approved it by name. It deliberately does not take the `*_proto` suffix its ten neighbours
 //! carry: a protocol has a server, and a server is something that can be asked, confused or
 //! persuaded, where this is a read-only page whose authorization happened when the mapping was

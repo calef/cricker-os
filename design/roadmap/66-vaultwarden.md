@@ -12,7 +12,7 @@ goalposts move to wherever the effort lands.
 ## Why this application
 
 Vaultwarden is a Bitwarden-compatible server written in Rust: self-hosted, widely deployed, and the
-kind of thing Chris actually runs. It is **not a benchmark or a demo**. Getting it working would mean
+kind of thing calef actually runs. It is **not a benchmark or a demo**. Getting it working would mean
 this system runs software written by people who have never heard of it, which is the difference §14
 draws between a demonstrator and a curiosity.
 

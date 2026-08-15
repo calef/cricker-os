@@ -32,7 +32,7 @@
 //! region down through the shell (DECISIONS §24), and those jobs are built from the shell's own
 //! untyped rather than init's, so they never reach this program at all.
 //!
-//! Name: ratified 2026-08-03 (Chris), replacing `job_reaper`. Refused `job_reaper` (named for what
+//! Name: ratified 2026-08-03 (calef), replacing `job_reaper`. Refused `job_reaper` (named for what
 //! it does to jobs, while its siblings are named for what they serve, and "reaper" carries a faint
 //! sense of taking a life) and, on 2026-08-04, `job_killer` (it claims an authority this program is
 //! specifically denied). An undertaker arrives strictly after death and never causes it, which is

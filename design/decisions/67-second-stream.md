@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-08-03 (Chris), from notes/pipes.md's open fork.** `2>` gets built on option (c):
+**Decided 2026-08-03 (calef), from notes/pipes.md's open fork.** `2>` gets built on option (c):
 a program that has diagnostics **declares a second output in its manifest** (`OutputSpec` grows
 the position), the shell plans a second endpoint only for programs that declare one, and `2>`
 binds to the declared output. Aimed at a program that declares none, it is a truthful refusal, the

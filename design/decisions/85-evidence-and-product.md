@@ -1,6 +1,6 @@
 # 85. What we port is evidence and must not be ours; what we ship is product and must be
 
-**Status: DECIDED.** Chris, 2026-08-13, after proposing that we take Ubuntu's most-installed package
+**Status: DECIDED.** calef, 2026-08-13, after proposing that we take Ubuntu's most-installed package
 list, work down it from most to least, and implement our own versions. The proposal is right for one
 of the two things it was aimed at and destroys the other, and the two look identical from a distance,
 which is why this section exists.
@@ -31,7 +31,7 @@ of our own intentions rather than of anything about the world.
 available evidence into none, at considerable cost.
 
 It is also §84 inverted. That section puts reconstruction at tier four, "last resort and rarely", and
-records Chris's own reason: reconstructing every application does not build a community.
+records calef's own reason: reconstructing every application does not build a community.
 
 ## The split
 

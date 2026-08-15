@@ -50,7 +50,7 @@ authority. That is DECISIONS §14's claim made interactive.
 
 ## Two words came out of this grammar, and why (milestone 47)
 
-Phase 1 spelled the same thing `run [--mem N] <prog> [arg] [file:PATH ...]`. Chris asked to be
+Phase 1 spelled the same thing `run [--mem N] <prog> [arg] [file:PATH ...]`. calef asked to be
 convinced the two extra words earned their keep; they did not.
 
 **`run` failed on consistency.** Milestone 47 adds `ls`, `cd`, `pwd`, `mkdir` and `rm` as shell

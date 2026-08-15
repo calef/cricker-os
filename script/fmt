@@ -20,7 +20,7 @@
 # not called after checking; it does not weigh `fmt` against `format`, which takes `cargo fmt`'s
 # spelling, the guard rail one layer out. Introduced 2026-07-22 with the Scripts to Rule Them All
 # adoption, though **not** one of the canonical names (`bootstrap`, `setup`, `update`, `server`,
-# `test`, `cibuild`, `console`). Chris has not ruled on it.
+# `test`, `cibuild`, `console`). calef has not ruled on it.
 
 set -e
 cd "$(dirname "$0")/.."

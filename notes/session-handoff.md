@@ -73,13 +73,13 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
    It also settled the question this note left open: the on-device write path **works**, and the
    recorded "loops in RedoxFS's allocator commit" blocker was stale (§27 amended, host-tool reopen of
    the image now in the gate). What is left there is a contract gap, no `CREATE`/`TRUNCATE` verb, so
-   `std::fs::write` stays Unsupported; that is a decision for Chris, not a bug.
+   `std::fs::write` stays Unsupported; that is a decision for calef, not a bug.
 4. **Milestone 31 phase 2:** per-file grants pointing at FS-server directory caps.
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real
    state: net_stack under open connections, the FS server). Console hot-swap is instance one.
 6. **The display ladder** (design/display-ladder.md): 29 (VT terminal over virtio-gpu) ->
-   33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). Chris's stated
+   33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). calef's stated
    destination is "something like COSMIC driving a GPU." Rung 5 (bare-metal BXE 3D) is struck.
 
 ## Standing defaults (nod-or-veto; currently in force)
@@ -90,7 +90,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
   unblocks 16a first silicon + the milestone-25 sel4bench real-PMU leftover). Spec:
   v1.3B, 8GB, with a UART module. The board has **no IOMMU**, so milestone 35's software
   validator is the *sole* DMA confinement on first silicon, sequence 35 with/before 16a.
-- Optional/parked: 17 (multikernel), 20 x86_64, 24 (Virtualization.framework). Chris declined
+- Optional/parked: 17 (multikernel), 20 x86_64, 24 (Virtualization.framework). calef declined
   x86_64 as background work while tokens were the constraint; the 5x budget bump later relaxed
   that, revisit if desired.
 
@@ -101,7 +101,7 @@ breadth (browser/JS/TLS, compositor, audio), behind on assurance (partial capabi
 enforcement, CI security gate removed, cert-less TLS). Apache-2.0. Its userspace is not
 reusable for us (ABI-locked / POSIX-shaped / upstream-vendored); the one clean lesson is its
 compositor windowing protocol as prior art for milestone 33. A design-fork response to its
-three questions was drafted (scratchpad) if Chris chooses to engage.
+three questions was drafted (scratchpad) if calef chooses to engage.
 
 ## Mechanics for the fresh session
 

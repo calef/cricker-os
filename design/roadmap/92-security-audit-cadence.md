@@ -1,10 +1,10 @@
 # 92. Security audits as a mechanism: cadence, docs, and findings that become milestones
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris. The tree has had one security audit and
+**Status: NOT-STARTED.** Raised 2026-08-03 by calef. The tree has had one security audit and
 milestone 43 asks for a second with a different lens; this milestone is the machine that makes
 them routine, so that auditing stops depending on someone remembering to ask.
 
-**Gate: DECISION.** One thing is Chris's before it starts: **the cadence**. Quarterly is this
+**Gate: DECISION.** One thing is calef's before it starts: **the cadence**. Quarterly is this
 block's proposal, not a decision. The index name and location were settled on 2026-08-04,
 `design/audit-reports/`, which is what the overdue tripwire reads.
 
@@ -16,7 +16,7 @@ that produces a report and no state change is wallpaper with a security label.
 **The mechanism, in four parts:**
 
 1. **A cadence and its tripwire.** Audits run on a recorded schedule (quarterly is the starting
-   proposal; Chris sets it) plus event triggers that queue one early: a new syscall method, a new
+   proposal; calef sets it) plus event triggers that queue one early: a new syscall method, a new
    component holding device or network authority, a new dependency class (§46), or first boot on
    a new machine class (a board, a cloud). The tripwire follows the toolchain-drift pattern, a
    signal rather than an automation: a scheduled workflow compares the last audit's date (recorded
@@ -38,7 +38,7 @@ that produces a report and no state change is wallpaper with a security label.
    overclaiming fixes the docs in the same lane, because the demonstrator's docs are part of the
    deliverable and an overclaim in SECURITY.md is itself a security finding.
 
-**The audit reports live in `design/audit-reports/`** (Chris, 2026-08-04): one file per audit, with
+**The audit reports live in `design/audit-reports/`** (calef, 2026-08-04): one file per audit, with
 `README.md` as the index listing every audit's date, lens, finding count by disposition, and a link
 to its report. The overdue tripwire reads the index, which keeps the mechanism honest the same way
 the roadmap gate reads the milestone files: the record and the signal cannot drift apart.

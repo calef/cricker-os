@@ -1,7 +1,7 @@
 # Reading the backup from a MacBook or a Linux host (milestone 57)
 
 The question that makes a backup credible rather than merely functional: **the board is dead, can I
-get my data?** Chris asked it about the RedoxFS volume the backup server writes, and the honest
+get my data?** calef asked it about the RedoxFS volume the backup server writes, and the honest
 first answer was "we would have to write something". This note is what got written, what upstream
 already had, and the operational rule that has to hold for any of it to matter in a year.
 
@@ -101,7 +101,7 @@ upgrade, and it belongs in `DECISIONS.md` with a plan for the images already wri
 
 ## No filesystem-level encryption, so no key handling
 
-Decided by Chris on 2026-07-30 (roadmap, milestone 57): "If I'm struggling to get the data off, I'm
+Decided by calef on 2026-07-30 (roadmap, milestone 57): "If I'm struggling to get the data off, I'm
 not all that worried about somebody else getting it." RedoxFS does support encryption
 (`vendor/redoxfs/src/key.rs`), and this volume does not use it. Encryption belongs at the Time
 Machine layer instead, where the Mac encrypts before anything is sent, so the server never holds
@@ -283,7 +283,7 @@ have been: it shows the capability *moved* rather than being written twice.
 
 **Not the partition name.** GPT labels are cosmetic and frequently absent: macOS writes none at all
 (notes/gpt.md), so a selector keyed on one would fail on exactly the disk the recovery story is
-about. Both flag names are **provisional** (CLAUDE.md: names are Chris's call).
+about. Both flag names are **provisional** (CLAUDE.md: names are calef's call).
 
 The selector is **refused on `mkfs`, `put` and `import`**. Those verbs open read-write, recovery
 never does, and opening a *device* read-write by accident is a considerably worse mistake than

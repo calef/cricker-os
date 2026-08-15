@@ -13,7 +13,7 @@ and do not expose nested virtualization, so HVF is unavailable there. A self-hos
 dev machine would close that gap and is deliberately not part of this milestone; it couples CI to a
 laptop that sleeps.
 
-**The delivery vehicle is `script/gates`** (Chris, 2026-08-03), not a new script and not a habit a
+**The delivery vehicle is `script/gates`** (calef, 2026-08-03), not a new script and not a habit a
 human has to remember. `script/gates` already exists for exactly this reason: it is the one command
 a person or an agent runs before pushing, and it was created because "three commands is two too many
 to remember at the moment you are about to push". An HVF leg that lived anywhere else would be a

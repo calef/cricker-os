@@ -9,7 +9,7 @@ matrix from being theatre, and an honest BUGS list are in [notes/cpu-models.md](
 The one thing it did **not** de-risk is the ASID width: every model reports 16 implemented bits, so
 the test written for the board still has no machine that can fail it.
 
-Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
+Raised by calef on 2026-08-01, asking whether we should modify QEMU to match
 the chip, detect features, or something else.
 
 **The answer to the first is no.** A forked emulator is a machine that exists nowhere: it proves

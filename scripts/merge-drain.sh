@@ -1,11 +1,11 @@
 #!/bin/sh
 #
-# Drain the merge queue: land every pull request that does not need Chris.
+# Drain the merge queue: land every pull request that does not need calef.
 #
 #     scripts/merge-drain.sh              # run until the queue is empty of unheld work
 #     scripts/merge-drain.sh --once       # one pass, then exit (for a cron or a check)
 #
-# PROVISIONAL NAME. Minted 2026-08-04; not put to Chris. See the `Name:` block below.
+# PROVISIONAL NAME. Minted 2026-08-04; not put to calef. See the `Name:` block below.
 #
 # # Why this exists
 #
@@ -45,7 +45,7 @@
 # Under the up-to-date rule the *updating* is inherently serial anyway: merging any pull request
 # stales every other one, so the queue can only ever move one at a time.
 #
-# Name: unrecorded. Provisional, minted 2026-08-04 and not yet put to Chris. Named for what it does
+# Name: unrecorded. Provisional, minted 2026-08-04 and not yet put to calef. Named for what it does
 # to the queue rather than for the mechanism, in the family of `qemu-bounded.sh`. It lives in
 # `scripts/` rather than `script/` because it is a maintainer's tool and not a front door a
 # contributor types; `script/` is the normalised "Scripts to Rule Them All" set (notes/scripts.md).
@@ -74,7 +74,7 @@ pass() {
 	q=$(queue)
 	n=$(printf '%s' "$q" | jq -r 'length' 2>/dev/null || echo 0)
 	if [ "$n" = "0" ] || [ -z "$n" ]; then
-		echo "merge-drain: queue empty; nothing open that does not need Chris"
+		echo "merge-drain: queue empty; nothing open that does not need calef"
 		return 1
 	fi
 

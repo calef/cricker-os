@@ -9,7 +9,7 @@ The VisionFive 2's JH7110 is a SiFive U74, which is **RV64GC**. It is a much sma
 note is what happened when we ran the same suite against the narrow models, and what that does and
 does not prove.
 
-Milestone 59 built it. The question that started it was Chris's, on 2026-08-01: should we modify
+Milestone 59 built it. The question that started it was calef's, on 2026-08-01: should we modify
 QEMU to match the chip? No. A forked emulator is a machine that exists nowhere, so it proves nothing
 about the real chip and nothing about the standard emulator, and we pin QEMU (`.qemu-version`, and
 CI builds it from source) for benchmark determinism, so a fork multiplies that maintenance. QEMU

@@ -16,7 +16,7 @@
 //! The kernel-side test spawns it both ways and reads the disk afterwards to see which happened.
 //!
 //! Compare `parted /dev/sda` as root: one authority, obtained by typing a path, reaching every disk
-//! in the machine, with `/dev/urandom` always there for the asking. Chris's own router instructions
+//! in the machine, with `/dev/urandom` always there for the asking. calef's own router instructions
 //! carry a "confirm the target device path before proceeding" warning precisely because nothing in
 //! that arrangement can enforce it. **Here the warning is structural**: this program was handed one
 //! disk and there is no path to type.
@@ -82,7 +82,7 @@
 //! sibling "`fs_maker` (provisional name)" in the same breath. So the record does not explain the
 //! word; it records that nobody decided it. That sibling is `fs_server/src/bin/mkfs.rs` now, which
 //! is a second provisional name resolved by somebody mid-task on a surface this record does not
-//! cover (see notes/naming.md's BUGS). `disk_surveyor` Chris approved by name the same day,
+//! cover (see notes/naming.md's BUGS). `disk_surveyor` calef approved by name the same day,
 //! and the pairing of the two (survey, partition) is visible in the tree without being written
 //! down anywhere.
 

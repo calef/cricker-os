@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-07-31 (Chris).** Milestone 47 raised the question as an open fork after `mv`, `rm`
+**Decided 2026-07-31 (calef).** Milestone 47 raised the question as an open fork after `mv`, `rm`
 and `ln` were worked through; this settles the mechanism and the name together, because choosing the
 mechanism is what made the name available.
 

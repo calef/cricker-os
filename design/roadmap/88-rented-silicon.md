@@ -1,12 +1,12 @@
 # 88. cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU
 
 **Status: NOT-STARTED.** Raised 2026-08-03, from the observation that several open milestones are
-hardware-gated and a cloud instance is hardware without a purchase. Oracle-first is Chris's call
+hardware-gated and a cloud instance is hardware without a purchase. Oracle-first is calef's call
 (2026-08-03): the always-free A1 shape (4 Ampere cores, 24 GB) makes the recurring cost zero, so
 the rented-silicon story starts with no bill to watch.
 
 **Gate: HARDWARE.** Stage 2 onward needs an Oracle account, and stage 4 rents Graviton `.metal` by
-the hour; both are Chris's to provide. Stage 1 is not gated and is a lane on its own: boot under
+the hour; both are calef's to provide. Stage 1 is not gated and is a lane on its own: boot under
 UEFI locally with AAVMF firmware and get a byte out, which is also the boot stub milestone 24's EFI
 path shares.
 

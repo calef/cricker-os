@@ -19,7 +19,7 @@
 #   script/catch-up v0.3         everything since a tag, branch, or commit
 #
 # What it reports, in the order a returning reader wants it: milestones that changed status, then
-# milestones newly minted, then decisions landed or revised, then what is waiting on Chris (the queue
+# milestones newly minted, then decisions landed or revised, then what is waiting on calef (the queue
 # that blocks work), then what is newly ready to start, then the notes and design documents, since
 # those carry the why. Raw commit volume is one summary line at the end, because `git log` already
 # exists and this view earns its place by being the curated one.
@@ -35,7 +35,7 @@
 # Read-only and offline: it runs `git show`, `git log`, `git diff` and `script/roadmap`, and writes
 # nothing.
 #
-# Name: ratified 2026-08-04 (Chris). Refused `brief`, which collides with briefing a developer, a
+# Name: ratified 2026-08-04 (calef). Refused `brief`, which collides with briefing a developer, a
 # term of art this tree minted the same afternoon; and `since` and `repo-updates-since`, for which
 # only the refusal is on record and not the reason. A derived view rather than a maintained log, in
 # the family of `script/roadmap`, `script/decisions` and `script/drift`.
@@ -59,7 +59,7 @@ if since_arg in ("-h", "--help"):
           "  <since>   a date (2026-08-01) or any git rev (a tag, branch, or commit).\n"
           "            Defaults to seven days back, which is a trip.\n\n"
           "Prints what changed in that window: milestone status transitions, milestones newly\n"
-          "minted, decisions landed or revised, what is waiting on Chris, what is ready to\n"
+          "minted, decisions landed or revised, what is waiting on calef, what is ready to\n"
           "start, and the notes that carry the why. The header of this script says why it is a\n"
           "computed view rather than a maintained one.\n")
     sys.exit(0)
@@ -344,7 +344,7 @@ if revised and small:
     print(f"  ({small} more touched by fewer than four lines)")
 
 
-# ---- waiting on Chris --------------------------------------------------------------------------
+# ---- waiting on calef --------------------------------------------------------------------------
 # The queue that blocks work. Under milestone 114 this is a decision whose status is PROPOSED; today
 # it is design/open-decisions.md, which holds the same object one step earlier. Read whichever
 # exists, and say which, because "nothing waiting" from the wrong source is the dangerous answer.
@@ -358,7 +358,7 @@ else:
     text = show(head_sha, "design/open-decisions.md")
     if text is None:
         gaps.append("design/open-decisions.md is absent and no decision carries a status, so what "
-                    "is waiting on Chris cannot be read from the tree")
+                    "is waiting on calef cannot be read from the tree")
     else:
         waiting_src = "design/open-decisions.md (the queue that precedes a PROPOSED status)"
         old_text = show(base, "design/open-decisions.md") or ""
@@ -367,8 +367,8 @@ else:
             fresh = "  NEW" if m.group(2) not in old_titles else ""
             waiting.append(f"{m.group(1):>3}  {m.group(2)[:72]}{fresh}")
 if waiting_src:
-    sources.append(f"waiting on Chris: {waiting_src}")
-head("WAITING ON CHRIS", waiting, "the queue is empty")
+    sources.append(f"waiting on calef: {waiting_src}")
+head("WAITING ON CALEF", waiting, "the queue is empty")
 
 
 # ---- newly ready -------------------------------------------------------------------------------

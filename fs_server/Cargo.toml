@@ -51,7 +51,7 @@ bench = false
 # never creates, and this creates one and never serves. Sharing the package is what gets it the
 # vendored engine, the untyped heap and the `Server` core it reopens the new filesystem through.
 # Same `el0` gate and the same test/bench reasoning as above. Provisional name (milestone 57's
-# lane): Chris settles program names.
+# lane): calef settles program names.
 [[bin]]
 name = "mkfs"
 path = "src/bin/mkfs.rs"

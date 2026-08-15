@@ -6,7 +6,7 @@
 # `Name:` block at the end of this comment.
 #
 # Why this exists. A lane proposed `system_builder` for the crate milestone 96 extracted, the
-# maintainer endorsed it, and Chris overruled it to `system_initializer`. Only afterwards did anyone
+# maintainer endorsed it, and calef overruled it to `system_initializer`. Only afterwards did anyone
 # find that milestone 63 had **already refused `system_builder`**, and for a reason nobody had
 # located: `user/src/builder.rs` calls itself "a minimal init: the system builder", so two programs
 # would claim one phrase. The refusal existed, in one table cell inside one milestone block,
@@ -18,7 +18,7 @@
 # propose it again.
 #
 # Why a query and not a table. The first draft of milestone 115 proposed one ratified-names table in
-# notes/naming.md. Chris rejected it on 2026-08-04 for scaling the way the original DECISIONS.md and
+# notes/naming.md. calef rejected it on 2026-08-04 for scaling the way the original DECISIONS.md and
 # design/roadmap.md scaled, and size is the smaller half of that: every lane that adds a name would
 # edit **one file**, which is exactly what produced three section-number collisions in a day. So the
 # provenance lives **at the name**, in the header of the crate, program or script it belongs to,
@@ -45,10 +45,10 @@
 # **Three states, because two of them were one job wearing one word.** The first cut of this script
 # had `ratified` and `unrecorded`, and the second answered two different questions at once. "Nobody
 # in this tree can say why this is called that" needs research *and* a ruling; "here is the argument,
-# nobody ever signed it" needs only the ruling. Those are different amounts of Chris's time, and a
+# nobody ever signed it" needs only the ruling. Those are different amounts of calef's time, and a
 # worklist that cannot tell them apart is a list rather than a plan. So:
 #
-#   ratified    Chris ruled, with the date and what was refused.
+#   ratified    calef ruled, with the date and what was refused.
 #   recorded    the tree argues the name somewhere (a milestone block, a decision, a header) and
 #               nobody ever put it to him.
 #   unrecorded  nothing outside this block says why the name is what it is.
@@ -69,14 +69,14 @@
 # next reader starts where this one stopped.
 #
 #   script/names              the table, by kind
-#   script/names --unratified the worklist: what still wants Chris, in the order to work it
+#   script/names --unratified the worklist: what still wants calef, in the order to work it
 #   script/names --refused    every refused name, and what holds the refusal
 #   script/names --unrecorded the names nobody wrote a reason for
 #   script/names <name>       one name: its provenance, or the entry that refused it
 #   script/names --check      every surface carries a block; non-zero on a problem (script/lint)
 #
 # **The gate is presence, never `ratified`.** Nothing here fails a build because a name is waiting on
-# Chris, and it must stay that way: a lint that demanded the queue be drained would block every
+# calef, and it must stay that way: a lint that demanded the queue be drained would block every
 # unrelated merge behind a review nobody can hurry, which is the wall this milestone exists to avoid
 # building. The worklist is how the queue gets worked; the gate only insists that a name says which
 # of the three it is.
@@ -88,7 +88,7 @@
 # prose, and prose is checked by reading.
 #
 # Name: unrecorded. Provisional, minted by milestone 115's lane on 2026-08-04 and not yet put to
-# Chris, who names things. `provenance` was considered and set aside as naming the mechanism rather
+# calef, who names things. `provenance` was considered and set aside as naming the mechanism rather
 # than the subject; `ratifications` names half the record and drops the refusals, which are the half
 # that pays.
 
@@ -258,7 +258,7 @@ refusals = [(bad, r) for r in records for bad in r["refused"]]
 # works ON the tree rather than in it.
 #
 # The tier is the KIND, deliberately, and not "programs a person actually types". That second split
-# is the two-tier rule Chris rejected on 2026-08-01, keyed on a property that is not stable: `wc`
+# is the two-tier rule calef rejected on 2026-08-01, keyed on a property that is not stable: `wc`
 # went from internal plumbing to a prompt-typed pipeline stage inside a day. Every program in
 # `user/src/` is in the initrd and can be typed, so the kind is the honest tier and needs no
 # classification anybody could get wrong.
@@ -281,12 +281,12 @@ if mode == "--check":
         print("", file=sys.stderr)
         print("Every crate, program and script/ entry point carries a provenance block in its own "
               "header:", file=sys.stderr)
-        print("  Name: ratified 2026-08-04 (Chris, milestone 63). Refused `x` (why).",
+        print("  Name: ratified 2026-08-04 (calef, milestone 63). Refused `x` (why).",
               file=sys.stderr)
         print("  Name: recorded (milestone 46). <what the tree already argues, and where>",
               file=sys.stderr)
         print("  Name: unrecorded. <what the history does and does not say>", file=sys.stderr)
-        print("See notes/naming.md. Presence is the gate, never `ratified`: a name waiting on Chris "
+        print("See notes/naming.md. Presence is the gate, never `ratified`: a name waiting on calef "
               "never fails a build.", file=sys.stderr)
         print("`unrecorded` is a real answer; a ratification you cannot cite is not.",
               file=sys.stderr)
@@ -296,7 +296,7 @@ if mode == "--check":
           f"{len(by_kind.get('script', []))} scripts)")
     print(f"names: {len(ratified)} ratified, {len(recorded)} recorded, {len(unrecorded)} "
           f"unrecorded, {len(refusals)} refusals recorded beside them")
-    print(f"names: {len(recorded) + len(unrecorded)} still want Chris "
+    print(f"names: {len(recorded) + len(unrecorded)} still want calef "
           f"(script/names --unratified), which is a worklist and not a failure")
     for bad in contradictions:
         print(f"names: NOTE {bad!r} is recorded as refused and is also a live name", file=sys.stderr)
@@ -373,7 +373,7 @@ for kind in ["crate", "program", "script"]:
 
 print(f"\ntotal: {len(records)} names, {len(ratified)} ratified, {len(recorded)} recorded, "
       f"{len(unrecorded)} unrecorded, {len(refusals)} refusals")
-print(f"{len(recorded) + len(unrecorded)} still want Chris: script/names --unratified")
+print(f"{len(recorded) + len(unrecorded)} still want calef: script/names --unratified")
 if contradictions:
     print(f"refused but live: {', '.join(contradictions)}")
 for p in sorted(set(problems)):

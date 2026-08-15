@@ -35,7 +35,7 @@ and priced it is notes/redoxfs-audit.md).
      do is finish it, because an unhashed header is an invalid filesystem. So this exposes an
      existing method rather than adding an API.
 
-     Chosen over adding a `new_with_uuid` constructor deliberately (Chris, 2026-08-03: the minimum
+     Chosen over adding a `new_with_uuid` constructor deliberately (calef, 2026-08-03: the minimum
      viable divergence). A visibility change on an existing method is the smallest thing that
      unblocks `mkfs` on the target, and far less likely to conflict on a pin bump than a new
      constructor whose name and signature upstream might choose differently.
@@ -49,7 +49,7 @@ and priced it is notes/redoxfs-audit.md).
      does not export, and three of `FileSystem`'s fields are `pub(crate)` so the struct cannot even
      be built from outside.** A caller holding a finished `Header` has nowhere to put it. That is
      what divergence 4 is for. This one is kept rather than reverted because it was a deliberate
-     call and reverting one is Chris's to make; it is a one-line drop whenever he wants it.
+     call and reverting one is calef's to make; it is a one-line drop whenever he wants it.
   4. `src/header.rs`, `src/filesystem.rs`: **the uuid becomes an argument, and the creation path
      builds for `no_std`.** `Header::new_with_uuid(size, uuid)` and
      `FileSystem::create_reserved_with_uuid(.., uuid)` hold what used to be `Header::new`'s and
@@ -65,7 +65,7 @@ and priced it is notes/redoxfs-audit.md).
 
      Ages like divergence 3 (re-applied forever, can conflict on a pin bump), and is the one most
      worth upstreaming: `patches/redoxfs-no-std-create-uuid.patch` is the submission, and it applies
-     to the published 0.9.1 with zero fuzz. Approved by Chris 2026-08-03.
+     to the published 0.9.1 with zero fuzz. Approved by calef 2026-08-03.
 - Everything else is byte-identical to the published package, including files we do not use
   (`Makefile`, `test.sh`, upstream CI configs) and `Cargo.lock`.
 - **Proved rather than asserted, since 2026-07-30:** `script/vendor-verify` fetches the published

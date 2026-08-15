@@ -16,12 +16,12 @@ motive (atomic, rollback-able installs), which is the useful kind of convergence
 
 **Why it matters.** **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste
 
-**Status: analysis recorded, NO DECISION TAKEN (2026-07-30, Chris's request).** Deliberately a
+**Status: analysis recorded, NO DECISION TAKEN (2026-07-30, calef's request).** Deliberately a
 roadmap milestone rather than a `design/decisions/` entry, because nothing was decided; §-sections are
 for decisions, and recording an undecided question as one would be a lie about its status. This
 block exists so the analysis is not lost and so the eventual decision starts from evidence.
 
-The question Chris raised: cricker-os is a monorepo for a microkernel, but it is a collection of
+The question calef raised: cricker-os is a monorepo for a microkernel, but it is a collection of
 deliberately loosely-coupled things, and the structure may not support that long term. Plus a
 naming question (should the userspace servers be "services" or "daemons"), and the observation that
 a Linux-distribution-shaped layer will eventually sit on top of the OS components.
@@ -100,9 +100,9 @@ version; three of those four exist. Naming that as the packaging layer would mak
 assembly step rather than a new subsystem, and would give the contracts a reason to carry real version
 numbers, which is what lets components evolve independently at all.
 
-## Publishing crates is a different question from splitting the repo (Chris, 2026-07-31)
+## Publishing crates is a different question from splitting the repo (calef, 2026-07-31)
 
-Chris asked whether the crates should get their own repos and builds, since some are useful outside
+calef asked whether the crates should get their own repos and builds, since some are useful outside
 cricker-os. **Two decisions hide in that, and only one is expensive.**
 
 `cargo publish -p calendar` works from a workspace. The thirty crates with no external dependencies

@@ -31,7 +31,7 @@ are permitted while having never been used.
 `script/lint` locally, on whichever branch they happen to be on. A lane on `milestone/` never sees it.
 This is a gate whose blind spot is the population it is aimed at.
 
-**The question, which is a vocabulary one and therefore Chris's.** Which of `roadmap/`,
+**The question, which is a vocabulary one and therefore calef's.** Which of `roadmap/`,
 `decisions/`, `toolchain/` and `ci/` become legitimate, and which of the tree's uses were mistakes
 that should have been something else? The one-offs (`docs/`, `design/`, `dependabot/`) are a separate
 call: `dependabot/` is not ours to choose, and `docs/` and `design/` each have a single use and may
@@ -43,7 +43,7 @@ often than the developer is. Exempt `dependabot/` as machine-generated. Leave `d
 out and let their single uses stand as history. Consider dropping `audit/` and `finalize/`, which
 have never been used, or keep them as declared intent and say which.
 
-**No vocabulary change is made here**, because a name is Chris's call even when the name is a branch
+**No vocabulary change is made here**, because a name is calef's call even when the name is a branch
 prefix. The measurement is recorded so the decision can be argued against numbers.
 
 **Practical impact until answered:** `script/lint` exits 1 at its last check on a `roadmap/` or

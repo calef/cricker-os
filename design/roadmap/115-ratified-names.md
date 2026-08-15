@@ -1,13 +1,13 @@
 # 115. The names that were ratified, and the ones that were refused
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/115-ratified-names`. Raised 2026-08-04 by Chris, asking whether anything tracks the names he
+**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/115-ratified-names`. Raised 2026-08-04 by calef, asking whether anything tracks the names he
 has ratified. Nothing does, and the same day produced the evidence for why it should.
 
 **Gate: NONE.** Nothing blocks a start: the backfill is mechanical, the worklist it produces is the
 deliverable, and the tenet it records already exists.
 
 **The incident.** A lane proposed `system_builder` for the crate milestone 96 extracted; the
-maintainer endorsed it; Chris overruled it to `system_initializer`. Only afterwards did the
+maintainer endorsed it; calef overruled it to `system_initializer`. Only afterwards did the
 maintainer find that **milestone 63 had already refused `system_builder`**, for a reason neither had
 located: `user/src/builder.rs`'s own header calls itself "a minimal init: the system builder", so two
 programs would claim one phrase. The refusal was recorded in one table cell inside one milestone
@@ -24,7 +24,7 @@ role (spent on capability-narrowing programs), and `Watcher`/`Project Manager` f
 proposer would look.
 
 **The deliverable, and its first draft was wrong in an instructive way.** That draft proposed one
-ratified-names table in notes/naming.md. Chris rejected it on 2026-08-04 for scaling like the
+ratified-names table in notes/naming.md. calef rejected it on 2026-08-04 for scaling like the
 original `design/roadmap.md` and `DECISIONS.md`, which is exactly right and is the third instance of
 that pattern in three days. Size is the smaller half; the **conflict shape** is the real one, since
 every lane that adds a name would edit the one file, which is what produced three §-number
@@ -45,7 +45,7 @@ maintain a record, derive one.**
    wants, computed rather than maintained, so it cannot drift from the tree. Same family as
    `script/roadmap`, `script/decisions` and `script/catch-up`.
 4. **The maintainer writes the provenance at ratification**, in the same commit that applies the
-   name, when the alternatives are still in mind. A convention, so it is Chris's to land in
+   name, when the alternatives are still in mind. A convention, so it is calef's to land in
    CLAUDE.md.
 
 Refusals of names that were never adopted anywhere (`caretaker` for the steward role, `Project
@@ -54,22 +54,22 @@ and already says so.
 
 ## The three states, and the worklist they produce
 
-Chris will work back through the existing names over time (2026-08-04), so the record has to hold
+calef will work back through the existing names over time (2026-08-04), so the record has to hold
 *which ones still want him* rather than only what is known. A provenance line therefore carries a
 state, and the three are different claims:
 
 | State | Means |
 |---|---|
 | **unrecorded** | nothing in the tree or its history says why this name was chosen |
-| **recorded** | the history explains it (milestone 63's table, a commit, a header) but Chris never ruled |
-| **ratified** | Chris ruled, with the date and what was refused |
+| **recorded** | the history explains it (milestone 63's table, a commit, a header) but calef never ruled |
+| **ratified** | calef ruled, with the date and what was refused |
 
 **The lint gates on a state being present, never on it being `ratified`.** Otherwise the gate would
 demand a review queue be drained before anything else could merge, which is the wall this milestone
 must not build. The mechanical backfill therefore lands every name as `unrecorded` or `recorded`,
 truthfully, and the tree goes green immediately.
 
-**`script/names --unratified` is the worklist**, and it is the deliverable Chris actually asked for:
+**`script/names --unratified` is the worklist**, and it is the deliverable calef actually asked for:
 what is left, in an order worth working through. Sort it by **exposure**, because that is what makes
 a wrong name expensive: programs a person types at a prompt first, then crates (a newcomer greps
 `crates/` before they open anything else, per the naming tenet), then `script/` entry points, then
@@ -78,7 +78,7 @@ risk than one whose reasoning merely lacks a signature.
 
 **Ratifying is then a conversation with a queue behind it**, a few names at a time, in the shape that
 worked on 2026-08-04: the maintainer brings a name with what the thing does and what the history
-says, Chris rules, the state and the reason land in the same commit. Roughly fifteen names went that
+says, calef rules, the state and the reason land in the same commit. Roughly fifteen names went that
 way in one day, several of them improved by the ruling, so the rate is not the problem; the
 accounting was.
 

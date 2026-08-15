@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-07-30 (Chris), from the `disown` question in milestone 48.** When a supervisor dies,
+**Decided 2026-07-30 (calef), from the `disown` question in milestone 48.** When a supervisor dies,
 its children die with it and the parent restarts the subtree. There is **no privileged process that
 can collect any corpse in the system**, and there will not be one.
 

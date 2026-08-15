@@ -1,6 +1,6 @@
 # The backup-server ladder (53 to 55), and why it is the right deliverable
 
-Chris's goal, 2026-07-30: **the board should replace the drive hanging off his router as the Time
+calef's goal, 2026-07-30: **the board should replace the drive hanging off his router as the Time
 Machine target.** These three milestones are that goal decomposed honestly, and they are worth doing
 for a reason beyond utility.
 
@@ -8,7 +8,7 @@ for a reason beyond utility.
 a test. This one gets used by people who did not write it, which changes what "works" means.
 
 **And the stakes are exactly right, which matters more than they would be if they were higher**
-(Chris, 2026-07-30). This is **not** his durable backup: **Borg handles offsite**, and the board's job
+(calef, 2026-07-30). This is **not** his durable backup: **Borg handles offsite**, and the board's job
 is protecting against short-term mistakes. So losing the whole thing costs the ability to undo a bad
 afternoon, not any data. That is the ideal shape for a demonstrator target: **genuine use, tolerable
 failure.** Putting an experimental capability microkernel in front of someone's only copy would be

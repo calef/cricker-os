@@ -131,7 +131,7 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
 ///
 /// This is the claim `lsblk` plus `parted` cannot make. On Linux the listing is world-readable and
 /// naming a device to a destructive tool is a matter of typing the right path; the warning in
-/// Chris's own router instructions ("confirm the target device path before proceeding") exists
+/// calef's own router instructions ("confirm the target device path before proceeding") exists
 /// because nothing enforces it. Here the enumeration is a read-only mapping and the disk is an
 /// endpoint somebody else was handed.
 #[test_case]

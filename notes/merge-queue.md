@@ -1,7 +1,7 @@
 # The merge queue, and the two things that watch it
 
 Two scripts, both maintainer tools rather than front doors, both born on 2026-08-04 out of the same
-evening's failures. `scripts/merge-drain.sh` lands what does not need Chris.
+evening's failures. `scripts/merge-drain.sh` lands what does not need calef.
 `scripts/trunk-health.sh` says when `main` is red. Names are provisional.
 
 ## Why they exist rather than being someone's job
@@ -15,7 +15,7 @@ one evening and all three were the same shape: **a duty that belonged to whoever
   watched pull request checks and never the trunk. The maintainer's hygiene list is prune the
   worktree, delete the branch, relink `cricker-dev`, leave no QEMU, and does not mention it.
 - **Merging one pull request staled the other eight** under the new up-to-date rule, and nothing
-  picked them back up until Chris asked.
+  picked them back up until calef asked.
 
 The pattern is the one milestone 92 argues about audits: a practice that lives in memory gets skipped
 exactly when it matters, and the maintainer is structurally worst at this particular duty because
@@ -34,7 +34,7 @@ merge-drain: updating #124 against main (Milestone 58: the RISC-V TLB shootdown)
 $ scripts/merge-drain.sh            # loop until the queue is empty or stalled
 merge-drain: #124 waiting on checks (Milestone 58: the RISC-V TLB shootdown)
 merge-drain: updating #128 against main (Milestone 67: swish the language)
-merge-drain: queue empty; nothing open that does not need Chris
+merge-drain: queue empty; nothing open that does not need calef
 ```
 
 It takes the open pull requests **without** the `needs-architect` label, arms auto-merge on **every one
@@ -47,7 +47,7 @@ failed in a way that looked like the opposite bug, which is why the reasoning is
 only in a commit.
 
 1. **Arm the head only.** #134 sat CLEAN with twelve green checks behind a lower-numbered pull
-   request that was still building. Chris found it, not the script.
+   request that was still building. calef found it, not the script.
 2. **Arm everything.** That starved the head instead. Under the up-to-date rule a merge stales every
    other branch, so a small doc-only pull request goes green during a big one's thirty-minute cycle,
    merges, and sends the big one back to the start. **#117 was re-updated twice that way.**

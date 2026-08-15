@@ -84,7 +84,7 @@ still holds.
 
 What §82 changes is the destination. This section reads as treating the existing C and
 ambient-authority ecosystem as permanent, with the kernel's job being to build a box strong enough to
-hold it. §82 records Chris's thesis that the box is instead what makes rewriting that ecosystem worth
+hold it. §82 records calef's thesis that the box is instead what makes rewriting that ecosystem worth
 doing, and that LLMs are why the rewrite is affordable now when it defeated KeyKOS, EROS and Coyotos.
 
 The practical difference is how a port is classified. Under this section, running somebody else's
