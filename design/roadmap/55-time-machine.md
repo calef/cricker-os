@@ -75,11 +75,13 @@ expectations will test, and that half was always right.
 
 ## Three users, and this is where the thesis gets a concrete demonstration
 
-calef's setup serves **graeme, corinne and chris**, one partition and one share each, and privacy
-between family members rests on Samba correctly honouring a "Read-Write User = graeme" line in a
-config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
+calef's setup served **graeme, corinne and chris** when this was written; as of 2026-08-15 it is
+**corinne and chris** (measured: the router's `_adisk._tcp` TXT advertises `dk0=adVN=corinne` and
+`dk1=adVN=chris`), graeme having migrated to Windows, whose backups leave Time Machine entirely.
+One partition and one share each, and privacy between family members rests on Samba correctly
+honouring a "Read-Write User = corinne" line in a config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
 
-**Ours would be three adapter instances, each holding one directory capability**, and one adapter
+**Ours would be one adapter instance per user, each holding one directory capability**, and one adapter
 **cannot name** another's partition. Not an ACL check that could be wrong: no capability, no path, no
 way to express the request. That is the security claim of the whole project, stated in terms of
 something calef actually relies on, which makes it the best demonstration target on the roadmap.
