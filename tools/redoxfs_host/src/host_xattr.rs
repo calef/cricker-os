@@ -58,7 +58,7 @@ fn c_args(path: &Path, name: &[u8]) -> io::Result<(CString, CString)> {
 ///
 /// **The type code cannot come along.** No host filesystem has a per-attribute type word, so
 /// [`fs_proto::xattr`]'s `kind` is dropped here and the caller reports it (notes/host-recovery.md).
-/// The bytes are what a reader needs; the codes remain readable in the extracted `.cricker-attrs`
+/// The bytes are what a reader needs; the codes remain readable in the extracted `.nife-attrs`
 /// blobs, which is why those are still copied out.
 #[cfg(target_os = "macos")]
 pub fn set(path: &Path, name: &[u8], value: &[u8]) -> io::Result<()> {
@@ -117,7 +117,7 @@ pub fn set(_path: &Path, _name: &[u8], _value: &[u8]) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "this build of redoxfs_host has no extended-attribute call for this operating system; \
-         the attributes are still in the extracted .cricker-attrs directory",
+         the attributes are still in the extracted .nife-attrs directory",
     ))
 }
 

@@ -1465,7 +1465,7 @@ pub mod xattr {
     /// namespace, and then "the attributes of a file" would be reachable as ordinary bytes by
     /// anything holding the directory.
     ///
-    /// **BUGS.** You cannot create a file called `.cricker-attrs` anywhere on a cricker-os
+    /// **BUGS.** You cannot create a file called `.nife-attrs` anywhere on a nife
     /// filesystem, at any rights. The refusal is `EINVAL`, the same one `..` gets, because the name
     /// is not expressible rather than not permitted.
     ///
@@ -1473,7 +1473,7 @@ pub mod xattr {
     /// directory as ordinary data, so a backup carries the attributes out with the files. That is a
     /// decision and not a leak (notes/host-recovery.md); the store is unnameable through the
     /// *contract*, and the contract is what confines a client.
-    pub const STORE_DIR: &str = ".cricker-attrs";
+    pub const STORE_DIR: &str = ".nife-attrs";
 
     /// Pack [`fs::SETXATTR`]'s second word: the value's type code in the high 32 bits, its length in
     /// the low 32. The name's length rides in the request word's own length field, as every other
@@ -2421,7 +2421,7 @@ pub mod fixture {
     ///   LBA      2048..10239    an EFI system partition (nothing formats it; it is here so the
     ///                           table has more than one entry and more than one unique GUID)
     ///   LBA     10240..30719    a Linux filesystem partition, likewise
-    ///   LBA     30720..129023   the cricker-os data partition: 48 MiB, 4096-aligned at both ends,
+    ///   LBA     30720..129023   the nife data partition: 48 MiB, 4096-aligned at both ends,
     ///                           and the one `mkfs` formats
     /// ```
     pub mod blank {
@@ -2437,7 +2437,7 @@ pub mod fixture {
         pub const ESP: (u64, u64) = (2048, 10239);
         /// The Linux filesystem partition.
         pub const LINUX: (u64, u64) = (10240, 30719);
-        /// **The cricker-os data partition**, the one that gets a filesystem. Its start and its
+        /// **The nife data partition**, the one that gets a filesystem. Its start and its
         /// length are both whole multiples of RedoxFS's 4096-byte block, which `mkfs` requires
         /// and refuses without: a filesystem whose blocks straddle the partition's first byte would
         /// read fine through the offset disk that made it and be unreadable by anything else.
@@ -2447,7 +2447,7 @@ pub mod fixture {
         pub const PARTITIONS: usize = 3;
 
         /// The name written into every entry's 36 UTF-16 units, in order.
-        pub const NAMES: [&str; PARTITIONS] = ["cricker boot", "cricker root", "cricker data"];
+        pub const NAMES: [&str; PARTITIONS] = ["nife boot", "nife root", "nife data"];
 
         /// The file `mkfs` creates on the filesystem it just made, so the host tool has
         /// something to read back. An empty filesystem that opens proves the header; a file the
@@ -2455,7 +2455,7 @@ pub mod fixture {
         pub const MADE_NAME: &str = "made-on-target";
         /// Its contents, checked byte for byte on the host after the run.
         pub const MADE_BODY: &[u8] =
-            b"CRK57: this filesystem was created by cricker-os on the target\n";
+            b"CRK57: this filesystem was created by nife on the target\n";
     }
 }
 

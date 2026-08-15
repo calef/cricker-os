@@ -49,7 +49,7 @@ concurrency:
 # exactly what a developer runs locally. See notes/scripts.md.
 #
 # Every job runs on ubuntu-24.04-arm (a free aarch64 runner for public repos), not the x86_64
-# ubuntu-latest default, and that is deliberate. cricker-os targets aarch64; the host-logic crates
+# ubuntu-latest default, and that is deliberate. nife targets aarch64; the host-logic crates
 # (paging, elf, frames, slab, the intrusive queue) run on the host in tests and on aarch64 on real
 # hardware. aarch64 is weakly ordered where x86_64 is TSO, so any accidental reliance on strong
 # ordering (a missing Acquire/Release, an assumed store-store order) passes on an x86_64 host and
@@ -77,12 +77,12 @@ jobs:
       - name: Cache QEMU
         uses: actions/cache@v6
         with:
-          path: ~/.cache/cricker-qemu
+          path: ~/.cache/nife-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
       - name: Build QEMU if the cache missed
         run: script/ci-qemu
       - name: Put it on PATH
-        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+        run: echo "$HOME/.cache/nife-qemu/bin" >> "$GITHUB_PATH"
 
       # script/ci-build bootstraps the toolchain and QEMU (the same script/bootstrap a developer
       # runs), then runs the host-logic crates and the kernel under QEMU (TCG), exiting through
@@ -132,14 +132,14 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         uses: actions/cache@v6
         with:
-          path: ~/.cache/cricker-qemu
+          path: ~/.cache/nife-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
       - name: Build QEMU if the cache missed
         if: steps.scope.outputs.needed == 'true'
         run: script/ci-qemu
       - name: Put it on PATH
         if: steps.scope.outputs.needed == 'true'
-        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+        run: echo "$HOME/.cache/nife-qemu/bin" >> "$GITHUB_PATH"
 
       # A JOB OF ITS OWN, not extra work inside `test`, and the reason is wall clock: the matrix is
       # the same riscv64 suite five times over, so folding it into the gate would make every run four
@@ -281,14 +281,14 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         uses: actions/cache@v6
         with:
-          path: ~/.cache/cricker-qemu
+          path: ~/.cache/nife-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
       - name: Build QEMU if the cache missed
         if: steps.scope.outputs.needed == 'true'
         run: script/ci-qemu
       - name: Put it on PATH
         if: steps.scope.outputs.needed == 'true'
-        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+        run: echo "$HOME/.cache/nife-qemu/bin" >> "$GITHUB_PATH"
 
       - run: script/bootstrap
         if: steps.scope.outputs.needed == 'true'
@@ -323,8 +323,8 @@ jobs:
       - name: Cache the vendored tarballs
         uses: actions/cache@v6
         with:
-          path: ~/.cache/cricker-vendor
-          key: cricker-vendor-${{ hashFiles('vendor/*.pin') }}
+          path: ~/.cache/nife-vendor
+          key: nife-vendor-${{ hashFiles('vendor/*.pin') }}
       - uses: Swatinem/rust-cache@v2
       - run: script/supply-chain
 

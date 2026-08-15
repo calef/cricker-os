@@ -50,7 +50,7 @@ cpu_set = { version = "0.1.0", path = "../crates/cpu_set" }
 # no party has its own copy of what a verdict means.
 cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
-crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+nifefs = { version = "0.1.0", path = "../crates/nifefs" }
 dma_validator = { version = "0.1.0", path = "../crates/dma_validator" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }

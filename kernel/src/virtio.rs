@@ -115,8 +115,8 @@ pub fn find_entropy_device() -> Option<VirtioMmioDevice> {
 
 /// Scan the bus for the `n`-th (0-based) virtio block device, `None` if there is no such disk. The
 /// FS server (milestone 32 phase 2) drives the SECOND mmio block disk (`n = 1`), a RedoxFS image,
-/// leaving the first (the crickerfs disk) to the phase-1 driver tests. QEMU numbers the mmio slots
-/// in device order, so the runner attaches the crickerfs disk first and the RedoxFS disk second.
+/// leaving the first (the nifefs disk) to the phase-1 driver tests. QEMU numbers the mmio slots
+/// in device order, so the runner attaches the nifefs disk first and the RedoxFS disk second.
 #[cfg_attr(not(test), allow(dead_code))] // fs_service is the caller, and the phase-2 test drives it
 pub fn find_block_device_n(n: usize) -> Option<VirtioMmioDevice> {
     let mut seen = 0;

@@ -1,4 +1,4 @@
-//! IPC round-trip latency on the host OS, lmbench's `lat_pipe`, and the host side of cricker-os's
+//! IPC round-trip latency on the host OS, lmbench's `lat_pipe`, and the host side of nife's
 //! EL0 `ipc_rtt_el0` bench (notes/benchmarks.md, milestone 25).
 //!
 //! Two **processes** (fork, so the round trip crosses an address-space boundary, exactly as ours

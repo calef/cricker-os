@@ -8,7 +8,7 @@ fn start(bus: Bus) -> entropy_service::Wiring {
     let image = program("entropy").expect("no entropy program in the initrd archive");
     let w = entropy_service::ensure(image, bus).unwrap_or_else(|| {
         panic!(
-            "no virtio-rng device on the {bus:?} bus: is CRICKER_RNG missing from the test leg, \
+            "no virtio-rng device on the {bus:?} bus: is NIFE_RNG missing from the test leg, \
              or the -device virtio-rng line from the runner?"
         )
     });

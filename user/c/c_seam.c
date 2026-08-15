@@ -40,7 +40,7 @@ void free(void *p);
  * on the other side of this seam compile; the two sides agree by convention, because a C ABI cannot express a shared struct without
  * one of the two languages generating it, and generating bindings for one page of
  * bytes would be more machinery than the agreement is worth. The comment is the
- * contract, the same way every cricker-os program's capability slots are.
+ * contract, the same way every nife program's capability slots are.
  *
  *   [0        .. 2048)   input:  a NUL-terminated ASCII string, written by the shell's parent
  *   [2048     .. 2052)   output: the checksum, little-endian

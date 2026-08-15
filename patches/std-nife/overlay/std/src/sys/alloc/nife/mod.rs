@@ -1,4 +1,4 @@
-//! The System allocator for cricker-os: the untyped-backed heap, inside std.
+//! The System allocator for nife: the untyped-backed heap, inside std.
 //!
 //! The algorithm is `crates/user_heap`, generated verbatim into `user_heap.rs` next door by
 //! `cargo xtask std-src` (so the host-tested source is the only source). This file is the same
@@ -13,7 +13,7 @@
 //! under preemption when threads arrive; see notes/std.md for the caveat.
 
 use crate::alloc::Layout;
-use crate::sys::pal::cricker::{abi, rt};
+use crate::sys::pal::nife::{abi, rt};
 
 mod user_heap;
 

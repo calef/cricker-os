@@ -208,7 +208,7 @@ fn top() -> u64 {
 // --- Stack high-water measurement (milestone 84) ---
 //
 // The canary above answers "did an overflow happen"; nothing answered "how close are we". The
-// FS-server stack bug (notes/crickerfs.md) was found the expensive way, and until this landed the
+// FS-server stack bug (notes/nifefs.md) was found the expensive way, and until this landed the
 // claim "the stacks are big enough" was an argument, not a measurement. So: paint every
 // kernel-owned stack with a pattern before use, and at the end of the test suite scan each for the
 // deepest overwritten word. Test builds only, deliberately: painting 16 KiB per thread spawn would

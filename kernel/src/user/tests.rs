@@ -16,7 +16,7 @@ use crate::sched;
 /// **The `hello` binary's ELF bytes**, pulled out of the initrd archive by name (milestone 19f).
 /// This is the binary carrying the milestone 7-19 role catalogue: the printing client, the
 /// untyped demo, the granter and receiver, the call server, the aspace builder, the init roles.
-/// A test that loads a real user program wants the program's bytes, not the whole crickerfs
+/// A test that loads a real user program wants the program's bytes, not the whole nifefs
 /// archive; only the `spawn_init` tests pass the archive, because init parses it itself.
 ///
 /// The archive name differs by ISA and that is the one place it shows. aarch64 packs hello as
@@ -990,7 +990,7 @@ fn a_new_thread_holds_no_capabilities() {
 ///
 /// The kernel enumerates the bus and hands a driver at EL0 the device registers, a DMA page,
 /// and an interrupt. The driver sets up a virtqueue, reads the superblock by DMA, parses the
-/// crickerfs directory, reads the `motd` file, and reports its first bytes. We check them
+/// nifefs directory, reads the `motd` file, and reports its first bytes. We check them
 /// against the known contents, which proves real disk data crossed DMA and the EL0 boundary.
 ///
 /// It also proves the interrupt path (9a) carried the completion: `ROUTED_IRQS` counts device
@@ -1020,7 +1020,7 @@ fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"cricker-",
+        b"nife-",
         "the driver reported the wrong file contents",
     );
     assert!(
@@ -1342,7 +1342,7 @@ fn the_fs_servers_stack_still_has_headroom() {
 fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
     let Some(report) = virtio_service::start_net(init_image()) else {
         // No NIC on this run (a bare boot). The test runners always attach one, so this
-        // branch is not the parity gate. See scripts/qemu-runner-*.sh (CRICKER_NET).
+        // branch is not the parity gate. See scripts/qemu-runner-*.sh (NIFE_NET).
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1613,7 +1613,7 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 
 /// **The guest is connected TO, on a port it was granted** (milestone 107). Every network exchange
 /// this project had proved was outbound: the TCP gate connects to a slirp `guestfwd` peer, the UDP
-/// gate is a request, the DHCP bring-up is a client. cricker-os could reach the network and could
+/// gate is a request, the DHCP bring-up is a client. nife could reach the network and could
 /// not be reached.
 ///
 /// Here a **host process** opens a TCP connection to a port QEMU forwards into the guest
@@ -1653,7 +1653,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "the guest did not serve an inbound connection (client code {verdict:#x}). 0xE050 means a \
          port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
          0xE070 means nobody ever connected, which is the host side: is the runner adding a \
-         hostfwd (CRICKER_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
+         hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
     );
 }
 
@@ -1667,7 +1667,7 @@ fn std_exerciser_image() -> &'static [u8] {
 /// The exact transcript `std_exerciser` prints when it is granted the network. Pinned so a drift in
 /// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
 #[cfg(target_arch = "aarch64")]
-const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
+const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 
 /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `std_exerciser`
 /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
@@ -1857,7 +1857,7 @@ fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"cricker-",
+        b"nife-",
         "the driver reported the wrong file contents over pci",
     );
     assert!(

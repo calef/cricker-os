@@ -1,4 +1,4 @@
-//! **`mkfs`**: `mkfs` on the target (milestone 57's write half, notes/crickerfs.md).
+//! **`mkfs`**: `mkfs` on the target (milestone 57's write half, notes/nifefs.md).
 //!
 //! The program that creates a filesystem, and the whole of its authority is two capabilities:
 //!
@@ -25,7 +25,7 @@
 //!
 //! # What it does
 //!
-//! 1. Reads the partition table off the disk it holds and finds the **cricker-os data partition**
+//! 1. Reads the partition table off the disk it holds and finds the **nife data partition**
 //!    by type GUID (DECISIONS §45). Nothing here trusts a partition *name*: on any disk a Mac
 //!    touched there is not one (notes/gpt.md).
 //! 2. Draws sixteen random bytes, and stops if it cannot.
@@ -121,7 +121,7 @@ const HEAP_MAX: u64 = 8 * 1024 * 1024;
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 
 // The roles, in `a0`. Must match kernel/src/user/disk_service.rs.
-/// Create a filesystem in the cricker-os data partition.
+/// Create a filesystem in the nife data partition.
 const ROLE_MAKE: u64 = 0;
 /// **Read the partition back and say whether there is a filesystem in it.** A process with a disk
 /// and no entropy, so it cannot create one however it is spawned, which is what makes it usable
@@ -136,7 +136,7 @@ pub const R_MADE: u64 = 0x_4D_4B_46_53_44;
 pub const R_NO_ENTROPY: u64 = 0x_4E_4F_52_4E_47;
 /// **No block-service endpoint**, so there is no disk to read a table off or write a filesystem to.
 pub const R_NO_DISK: u64 = 0x_4E_4F_44_53_4B;
-/// The disk answered, but it carries no cricker-os data partition to format.
+/// The disk answered, but it carries no nife data partition to format.
 pub const R_NO_PARTITION: u64 = 0x_4E_4F_50_54_4E;
 /// The partition is there and the engine refused to make a filesystem in it. The second word is a
 /// step number, the third the engine's errno.
@@ -279,7 +279,7 @@ fn check(first_block: u64, blocks: u64) -> ! {
     user_rt::exit()
 }
 
-/// Find the cricker-os data partition on the disk this process holds: `(first block, block count)`
+/// Find the nife data partition on the disk this process holds: `(first block, block count)`
 /// in RedoxFS blocks. `None` when there is no disk at all; `Some((_, 0))` when there is a disk and
 /// no such partition.
 ///
@@ -317,7 +317,7 @@ fn data_partition() -> Option<(u64, u64)> {
     )
     .ok()?;
     for (_, part) in table.partitions() {
-        if part.type_guid != types::CRICKER_DATA {
+        if part.type_guid != types::NIFE_DATA {
             continue;
         }
         let start = part.first_lba * LBA;

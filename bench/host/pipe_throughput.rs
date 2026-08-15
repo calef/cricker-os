@@ -1,4 +1,4 @@
-//! One-way pipe **throughput** on the host OS, and the host side of cricker-os's
+//! One-way pipe **throughput** on the host OS, and the host side of nife's
 //! `sink_throughput` bench (milestone 50, notes/pipes.md).
 //!
 //! `bench/host/ipc_rtt.rs` measures a round trip, which is latency. This measures the other thing a
@@ -8,7 +8,7 @@
 //!
 //! # It measures the same pipe twice, and only one of the two is apples to apples
 //!
-//! cricker-os's pipe is an endpoint and nothing else: sixteen bytes per rendezvous, and the producer
+//! nife's pipe is an endpoint and nothing else: sixteen bytes per rendezvous, and the producer
 //! **cannot run ahead**, because there is no buffer for it to run ahead into. Unix's pipe has a
 //! 64 KiB buffer, so a Unix producer writes until the buffer fills and only then blocks.
 //!
@@ -44,7 +44,7 @@ unsafe extern "C" {
 const TOTAL: usize = 4 * 1024 * 1024;
 
 fn main() {
-    // The small size first, because it is the one the cricker-os number is compared against.
+    // The small size first, because it is the one the nife number is compared against.
     for chunk in [16usize, 64 * 1024] {
         let ns = run_one(chunk);
         let secs = ns as f64 / 1e9;

@@ -221,7 +221,7 @@ pub const ZICBOM: Extensions = bit(12);
 /// Every extension this kernel names, with the reason. Printed in this order at boot.
 ///
 /// The four `required` rows are exactly the target triple: the kernel and userspace are both built
-/// for `rv64imac` (`targets/riscv64-unknown-cricker.json` says `+m,+a,+c`), so the compiler will
+/// for `rv64imac` (`targets/riscv64-unknown-nife.json` says `+m,+a,+c`), so the compiler will
 /// emit multiply, atomic and compressed instructions whether or not the machine has them.
 pub const TABLE: [Row; 13] = [
     Row {

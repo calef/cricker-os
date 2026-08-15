@@ -8,7 +8,7 @@
 #
 # The alternative was to drop the IOMMU device when QEMU cannot provide it. That is rejected on
 # purpose: it would let the confinement tests pass while testing nothing, which is precisely the
-# silent-degradation failure the CRICKER_DISK check exists to prevent. A test that quietly stops
+# silent-degradation failure the NIFE_DISK check exists to prevent. A test that quietly stops
 # testing is worse than a red build.
 #
 # **Why the version is pinned**, in `.qemu-version`, for the same reason the Rust toolchain is: CI and
@@ -32,7 +32,7 @@ cd "$(dirname "$0")/.."
 root="$(pwd)"
 
 want="$(tr -d ' \n' < .qemu-version)"
-prefix="${QEMU_PREFIX:-$HOME/.cache/cricker-qemu}"
+prefix="${QEMU_PREFIX:-$HOME/.cache/nife-qemu}"
 
 if [ "$(uname -s)" != "Linux" ]; then
     echo "ci-qemu: Linux only; on macOS script/bootstrap installs QEMU from Homebrew." >&2

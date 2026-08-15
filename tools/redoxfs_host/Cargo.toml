@@ -1,4 +1,4 @@
-# Its own workspace root, deliberately NOT a member of the cricker-os workspace. It depends on the
+# Its own workspace root, deliberately NOT a member of the nife workspace. It depends on the
 # vendored redoxfs (also its own workspace), and cargo forbids a member of one workspace from
 # depending on an in-tree crate that another workspace owns ("multiple workspace roots"). Keeping
 # this tool and the engine it wraps in their own workspaces is also what stops our `-D warnings`
@@ -19,7 +19,7 @@ publish = false
 
 # Host-side RedoxFS image tooling (milestone 32, roadmap §32 port plan item 4): mkfs and
 # inspection stay on the host, where std, getrandom, and uuid are honest dependencies; the
-# cricker-os FS server only ever OPENS an existing image. `std` but deliberately NOT `fuse`:
+# nife FS server only ever OPENS an existing image. `std` but deliberately NOT `fuse`:
 # creation and inspection need no mounted filesystem, so no macFUSE requirement rides along.
 [dependencies]
 redoxfs = { path = "../../vendor/redoxfs", default-features = false, features = ["std"] }

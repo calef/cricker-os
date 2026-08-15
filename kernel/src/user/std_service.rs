@@ -52,7 +52,7 @@ pub fn start_on(
     // request endpoint is the whole of a std program's randomness authority: `SystemRng` is a
     // `CALL` on it, and nothing about it reaches the device (DECISIONS §44).
     let entropy = entropy_service::ensure(entropy_image, entropy_service::Bus::Mmio)
-        .expect("no virtio-rng device for the std program (is CRICKER_RNG set on this leg?)");
+        .expect("no virtio-rng device for the std program (is NIFE_RNG set on this leg?)");
     if let Some(ready) = entropy.ready {
         let report = crate::sched::ipc_recv(ready);
         assert_eq!(

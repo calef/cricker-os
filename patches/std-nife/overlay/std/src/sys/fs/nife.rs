@@ -1,4 +1,4 @@
-//! `std::fs` for cricker-os (milestone 27 phase two): `File` bound to the FS-service contract
+//! `std::fs` for nife (milestone 27 phase two): `File` bound to the FS-service contract
 //! (DECISIONS §27, notes/fs-server.md, `crates/fs_proto`).
 //!
 //! # The interesting part: there is no global namespace
@@ -8,7 +8,7 @@
 //! node the client's endpoint is bound to. So the honest mapping is:
 //!
 //! > a std program holds a **directory capability** (the FS-service endpoint, slot 4 of the std
-//! > slot convention in `pal/cricker/rt.rs`), and `File::open("foo")` means *"foo, under the
+//! > slot convention in `pal/nife/rt.rs`), and `File::open("foo")` means *"foo, under the
 //! > directory I was granted"*, not *"foo somewhere in a global filesystem"*.
 //!
 //! Three consequences, and they are the design, not a limitation to apologise for:
@@ -46,7 +46,7 @@
 //! `RMDIR`, `RENAME`). Every one of them was refused here for a reason that had stopped being true:
 //! this module said "no verb in the contract backs it" long after the server started dispatching
 //! all six. Milestone 64's measurement found them by asking fifty crates.io crates what they
-//! needed; see notes/crates-io-on-cricker.md.
+//! needed; see notes/crates-io-on-nife.md.
 //!
 //! Still Unsupported, each because no verb in the contract backs it: symlinks and hard links,
 //! `canonicalize`, `copy`, `remove_dir_all`, permissions, file times, locks, and `duplicate` (a
@@ -60,14 +60,14 @@ use crate::fs::TryLockError;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, SeekFrom};
 use crate::path::{Component, Path, PathBuf};
 use crate::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use crate::sys::pal::cricker::fsproto::{self, fs as proto};
-use crate::sys::pal::cricker::rt;
+use crate::sys::pal::nife::fsproto::{self, fs as proto};
+use crate::sys::pal::nife::rt;
 use crate::sys::time::SystemTime;
 use crate::sys::{unsupported, unsupported_err};
 
 // The pieces of the phase-one backend that stay exactly as honest as they were: nothing in the
 // contract links, canonicalizes or copies, so those keep the `unsupported` implementations rather
-// than gaining a cricker-shaped copy of the same refusal. `FileTimes` comes from there too (the
+// than gaining a nife-shaped copy of the same refusal. `FileTimes` comes from there too (the
 // server keeps an mtime but the contract does not carry one).
 //
 // `remove_dir_all` stays here for a reason worth stating, because it now looks like an omission
@@ -211,7 +211,7 @@ fn request(w0: u64, w1: u64) -> io::Result<u64> {
 }
 
 /// The server's errno into an `io::ErrorKind`, by meaning. There is no errno anywhere else in this
-/// PAL: the FS service is the one place cricker-os speaks one, because the component behind it
+/// PAL: the FS service is the one place nife speaks one, because the component behind it
 /// (RedoxFS) does, and §27 maps it at the server boundary and nowhere deeper.
 fn from_errno(errno: i32) -> io::Error {
     match errno {

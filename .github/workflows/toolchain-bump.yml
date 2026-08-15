@@ -105,7 +105,7 @@ jobs:
         run: |
           set -o pipefail
           sed -i "s|^channel = \".*\"|channel = \"${{ steps.plan.outputs.target }}\"|" rust-toolchain.toml
-          rm -rf target/cricker-farm
+          rm -rf target/nife-farm
           # Captured because the failure text IS the deliverable when this step fails: the PR body
           # below quotes it, so the reader gets the compiler's own words rather than a link to a log
           # that expires.
@@ -148,7 +148,7 @@ jobs:
           git checkout -b "$branch"
           git add rust-toolchain.toml
           # The overlay may have needed new re-exports; include them if the build produced any.
-          git add -A patches/std-cricker || true
+          git add -A patches/std-nife || true
 
           if [ "$BUILD" = "success" ]; then
             title="toolchain: bump the pinned nightly to $TARGET"
@@ -169,7 +169,7 @@ jobs:
 
           If CI here is red, upstream has moved away from us. Do not merge; the fix is a commit to this
           branch adding whatever the overlay now needs (usually a name in the \`pub use
-          unsupported_fs::{...}\` list in \`sys/fs/cricker.rs\`).
+          unsupported_fs::{...}\` list in \`sys/fs/nife.rs\`).
 
           This branch is force-pushed daily, so it always proposes the newest nightly rather than
           accumulating one PR per day."
@@ -197,9 +197,9 @@ jobs:
           $errors
           \`\`\`
 
-          The fix is a commit to this branch teaching \`patches/std-cricker\` whatever std now wants.
+          The fix is a commit to this branch teaching \`patches/std-nife\` whatever std now wants.
           Most often that is one name in the \`pub use unsupported_fs::{...}\` list in
-          \`sys/fs/cricker.rs\`, because the overlay patches std's own source and therefore tracks
+          \`sys/fs/nife.rs\`, because the overlay patches std's own source and therefore tracks
           upstream *internals* rather than any stable API. When it builds, this PR stops being a draft
           on the next daily run.
 

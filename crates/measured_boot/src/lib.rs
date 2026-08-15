@@ -21,7 +21,7 @@
 //! **One implementation, both sides.** The build (xtask, on the host) and the kernel (`no_std`, at
 //! boot) hash through *this* crate, so there is exactly one definition of the measurement and no
 //! chance of a host/target disagreement quietly turning into a boot failure. That is the same
-//! discipline `crickerfs` gets: one parser for the archive whether it is on a disk or in RAM. The
+//! discipline `nifefs` gets: one parser for the archive whether it is on a disk or in RAM. The
 //! risk it trades for is a buggy implementation agreeing with itself, which is why the tests below
 //! are the published FIPS 180-4 vectors and not self-consistency checks.
 //!
@@ -229,7 +229,7 @@ pub fn sha256(bytes: &[u8]) -> Digest {
 ///
 /// The kernel's copy is generated into its image by `kernel/build.rs` from the archive the build
 /// just packed, which is what makes the check mean "this kernel runs exactly this init" without any
-/// key management. Names are the crickerfs archive names (`"init"`, `"system_initializer"`).
+/// key management. Names are the nifefs archive names (`"init"`, `"system_initializer"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measurement {
     pub name: &'static str,
@@ -291,7 +291,7 @@ pub fn hex(digest: &Digest) -> [u8; DIGEST_LEN * 2] {
 /// entry and the kernel's trust root names it, so the kernel vouches for the table exactly as it
 /// vouches for init, and init's refusals are as trustworthy as init is. See notes/trusted-init.md.
 ///
-/// Name: **provisional**. Under `crickerfs`'s `NAME_LEN = 32` with room to spare.
+/// Name: **provisional**. Under `nifefs`'s `NAME_LEN = 32` with room to spare.
 pub const PROGRAM_MEASUREMENTS: &str = "program_measurements";
 
 /// **The measurement manifest format**, one entry per line: a name, one space, 64 hex characters.

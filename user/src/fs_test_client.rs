@@ -968,7 +968,7 @@ fn attr_witness(scratch: u64) -> u64 {
     }
 
     // 5. **The headline: an attribute follows its file across a rename.** The two names are unlinked
-    //    first, because `CRICKER_KEEP_REDOXFS` makes a second boot meet the first boot's leftovers
+    //    first, because `NIFE_KEEP_REDOXFS` makes a second boot meet the first boot's leftovers
     //    and an `EEXIST` here would read as a broken layer.
     let _ = dir_unlink(fs::ROOT, attrs::PROBE);
     let _ = dir_unlink(fs::ROOT, attrs::PROBE_MOVED);

@@ -1,4 +1,4 @@
-//! Threads on cricker-os, phase one: `spawn` is honestly `Unsupported`, `sleep` is real.
+//! Threads on nife, phase one: `spawn` is honestly `Unsupported`, `sleep` is real.
 //!
 //! The kernel has everything a `thread::spawn` needs (retype a TCB from the process's own
 //! untyped, CONFIGURE it into this address space, START it); what does not exist yet is the
@@ -50,7 +50,7 @@ pub fn current_os_id() -> Option<u64> {
 }
 
 pub fn yield_now() {
-    crate::sys::pal::cricker::rt::yield_now();
+    crate::sys::pal::nife::rt::yield_now();
 }
 
 pub fn set_name(_name: &CStr) {
@@ -58,7 +58,7 @@ pub fn set_name(_name: &CStr) {
 }
 
 pub fn sleep(dur: Duration) {
-    use crate::sys::pal::cricker::rt;
+    use crate::sys::pal::nife::rt;
     let freq = rt::cntfrq() as u128;
     let ticks = (dur.as_nanos().saturating_mul(freq) / 1_000_000_000).min(u64::MAX as u128) as u64;
     let deadline = rt::now().saturating_add(ticks);

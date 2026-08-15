@@ -1,4 +1,4 @@
-//! **crickerfs**: a filesystem so simple it fits in a comment.
+//! **nifefs**: a filesystem so simple it fits in a comment.
 //!
 //! Read-only, flat (no directories), fixed-size everything. It exists to be *parsed*, not to be
 //! good, in the same spirit as `crates/elf`: the point of milestone 9 is drivers and block I/O,
@@ -41,7 +41,7 @@
 //! Pack two files and read one back:
 //!
 //! ```
-//! # use crickerfs::{Fs, image_size, write_image};
+//! # use nifefs::{Fs, image_size, write_image};
 //! let files: [(&str, &[u8]); 2] = [("motd", b"welcome\n"), ("os_primitives_benchmarker", b"\x7fELF")];
 //! let mut img = vec![0u8; image_size(&files)];
 //! write_image(&files, &mut img).unwrap();
@@ -60,7 +60,7 @@
 //! - **A name containing a NUL is an error too**, and for the same reason: the padding is NUL and
 //!   every reader stops at the first one, so `"a\0b"` would be written and read back as `"a"`.
 //!   [`Error::NameHasNul`]. This one survived the truncation fix because nobody thought to write a
-//!   name with a NUL in it; `fuzz/fuzz_targets/crickerfs_roundtrip` did, in under a minute.
+//!   name with a NUL in it; `fuzz/fuzz_targets/nifefs_roundtrip` did, in under a minute.
 //! - **A duplicate name is NOT an error, and the first one wins.** [`Fs::read`] returns the first
 //!   entry whose name matches, so packing two files under one name silently hides the second. The
 //!   disk tool builds its file list from a directory listing, where names are unique by
@@ -76,7 +76,7 @@
 //!   filesystem is the RedoxFS server in `fs_server/` (DECISIONS §34), which is a different job.
 //!
 //! Name: ratified 2026-08-01 (calef, milestone 63): the one run-together name kept when that rule
-//! was deleted. Refused `cricker_fs` (`procfs` is the shape of a filesystem name outside this
+//! was deleted. Refused `nife_fs` (`procfs` is the shape of a filesystem name outside this
 //! project, and nobody writes `proc_fs`).
 
 #![no_std]
@@ -163,7 +163,7 @@ pub enum Error {
     /// Refused rather than mangled, for the reason the crate's BUGS section gives for the other one:
     /// an archive is a mapping, and a writer that silently changes a key has lost data.
     ///
-    /// Found by `fuzz/fuzz_targets/crickerfs_roundtrip` on 2026-08-02, in under a minute, from the
+    /// Found by `fuzz/fuzz_targets/nifefs_roundtrip` on 2026-08-02, in under a minute, from the
     /// one-file input `[("\0", [])]`. The round-trip property is what saw it; no totality proof
     /// could have, because nothing panicked.
     NameHasNul,
@@ -280,7 +280,7 @@ fn u32le(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
-/// Write a crickerfs image containing `files` (name, contents) into `out`, returning the number
+/// Write a nifefs image containing `files` (name, contents) into `out`, returning the number
 /// of bytes written. `out` must be large enough; the disk tool sizes it from [`image_size`].
 ///
 /// Not `no_std`-hostile, but only the disk-building tool calls it, on the host.
@@ -348,14 +348,14 @@ mod tests {
 
     #[test]
     fn write_then_read_round_trips() {
-        let files: [(&str, &[u8]); 2] = [("motd", b"welcome to cricker-os\n"), ("empty", b"")];
+        let files: [(&str, &[u8]); 2] = [("motd", b"welcome to nife\n"), ("empty", b"")];
         let mut img = vec![0u8; image_size(&files)];
         let n = write_image(&files, &mut img).unwrap();
         assert_eq!(n, img.len());
 
         let fs = Fs::parse(&img).unwrap();
         assert_eq!(fs.len(), 2);
-        assert_eq!(fs.read("motd"), Some(&b"welcome to cricker-os\n"[..]));
+        assert_eq!(fs.read("motd"), Some(&b"welcome to nife\n"[..]));
         assert_eq!(fs.read("empty"), Some(&b""[..]));
         assert_eq!(fs.read("nope"), None);
     }
@@ -501,7 +501,7 @@ mod tests {
 
     /// **A name with a NUL in it is refused, not stored and then unfindable.**
     ///
-    /// The regression for the bug `fuzz/fuzz_targets/crickerfs_roundtrip` found on 2026-08-02, whose
+    /// The regression for the bug `fuzz/fuzz_targets/nifefs_roundtrip` found on 2026-08-02, whose
     /// minimal input was a single file named `"\0"` with no contents. That name was accepted, packed
     /// into an entry that decoded back as the empty string, and then `read("\0")` answered `None`:
     /// data written and not readable, with nothing panicking and no test noticing. Every name below

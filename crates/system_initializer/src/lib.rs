@@ -287,7 +287,7 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     // reserved memory that outlives every process, so the borrow is honest for the whole boot.
     let archive =
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(fs) = crickerfs::Fs::parse(archive) else {
+    let Ok(fs) = nifefs::Fs::parse(archive) else {
         fail()
     };
 
@@ -1081,7 +1081,7 @@ struct Lookup<'a> {
 /// when there is nothing to check against is not a check. In particular a table that failed to
 /// generate refuses **everything**, and the boot stops at the console rather than coming up
 /// unmeasured.
-fn measured<'a>(fs: &crickerfs::Fs<'a>, table: &str, name: &str) -> Lookup<'a> {
+fn measured<'a>(fs: &nifefs::Fs<'a>, table: &str, name: &str) -> Lookup<'a> {
     let Some(bytes) = fs.read(name) else {
         return Lookup {
             elf: None,

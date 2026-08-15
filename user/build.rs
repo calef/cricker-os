@@ -40,7 +40,7 @@ fn compile_c_component(manifest_dir: &Path) {
     for (source, _) in C_SOURCES {
         println!("cargo::rerun-if-changed={source}");
     }
-    println!("cargo::rerun-if-env-changed=CRICKER_CC");
+    println!("cargo::rerun-if-env-changed=NIFE_CC");
 
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let flags = match arch.as_str() {
@@ -144,7 +144,7 @@ fn resolve_clang() -> Option<PathBuf> {
     // mean that, or a typo in the path silently falls back to a different compiler and the build is
     // no longer reproducible in the way the setter thought it was. It is still capability-checked,
     // because a named compiler that cannot emit RISC-V is the same problem by a different route.
-    if let Ok(explicit) = std::env::var("CRICKER_CC")
+    if let Ok(explicit) = std::env::var("NIFE_CC")
         && !explicit.is_empty()
     {
         let cc = PathBuf::from(explicit);
@@ -186,7 +186,7 @@ fn has_both_backends(clang: &Path) -> bool {
 const CLANG_HELP: &str = "\
 user/build.rs: no clang found that can target both aarch64 and riscv64.
 
-cricker-os links a C component into the `c_shim` program (milestone 36, DECISIONS \u{a7}30), so the
+nife links a C component into the `c_shim` program (milestone 36, DECISIONS \u{a7}30), so the
 build needs a bare-metal clang with BOTH the AArch64 and RISC-V backends. Apple's clang, in the
 Xcode command line tools, has no RISC-V backend and is deliberately rejected: two different
 compilers for the two architectures would break the parity gate (DECISIONS \u{a7}19).
@@ -195,4 +195,4 @@ compilers for the two architectures would break the parity gate (DECISIONS \u{a7
   Debian:  sudo apt-get install clang
   other:   any clang whose `clang -print-targets` lists both aarch64 and riscv64
 
-Then re-run the build. To point at a specific compiler, set CRICKER_CC=/path/to/clang.";
+Then re-run the build. To point at a specific compiler, set NIFE_CC=/path/to/clang.";

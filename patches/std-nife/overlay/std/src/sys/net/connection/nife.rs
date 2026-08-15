@@ -1,9 +1,9 @@
-//! `std::net` for cricker-os (milestone 27 phase two): `TcpStream` and outbound `UdpSocket` bound
+//! `std::net` for nife (milestone 27 phase two): `TcpStream` and outbound `UdpSocket` bound
 //! to the net_stack socket contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`).
 //!
 //! This is the client half of the contract std sees. A std program given the network holds a
 //! `Stack` endpoint at slot 2 and an untyped budget at slot 3 (the slot convention in
-//! `pal/cricker/rt.rs`). Opening a socket mints a shared `Frame` from the untyped, maps it, and
+//! `pal/nife/rt.rs`). Opening a socket mints a shared `Frame` from the untyped, maps it, and
 //! delegates it to net_stack (`SEND_CAP`, `OP_ATTACH_FRAME`); every later operation is one `CALL`
 //! carrying a **socket id** and control words, with the payload already sitting in the shared
 //! frame. net_stack drives smoltcp over the confined NIC and replies. Bytes never cross a message.
@@ -40,12 +40,12 @@ use crate::fmt;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use crate::sync::atomic::{AtomicBool, Ordering};
-use crate::sys::pal::cricker::netproto::*;
-use crate::sys::pal::cricker::{abi, rt};
+use crate::sys::pal::nife::netproto::*;
+use crate::sys::pal::nife::{abi, rt};
 use crate::sys::unsupported;
 use crate::time::Duration;
 
-/// The slots the loader owes a networked std program (see `pal/cricker/rt.rs`).
+/// The slots the loader owes a networked std program (see `pal/nife/rt.rs`).
 const STACK: u64 = rt::STACK_SLOT;
 const NET_UNTYPED: u64 = rt::NET_UNTYPED_SLOT;
 
@@ -62,7 +62,7 @@ fn frame_va(id: u64) -> u64 {
 //
 // A small fixed table, one entry per possible socket id, guarded by a spinlock (uncontended on
 // this single-threaded target, correct if threads ever arrive, the same discipline as the heap in
-// `sys/alloc/cricker`). It tracks which ids are in use, which have had their shared frame attached
+// `sys/alloc/nife`). It tracks which ids are in use, which have had their shared frame attached
 // to net_stack (a once-per-id, sticky fact so open/close cycles reuse the frame without re-mapping an
 // already-mapped VA), a per-TCP-socket residual buffer (bytes net_stack delivered into the frame that a
 // short `read` could not take), and each UDP socket's peer/last destination.

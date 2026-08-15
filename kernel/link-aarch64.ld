@@ -1,4 +1,4 @@
-/* cricker-os kernel image layout.
+/* nife kernel image layout.
  *
  * QEMU's `virt` machine puts RAM at 0x4000_0000. Given a flat arm64 Image, QEMU follows
  * the Linux boot protocol: it loads us at RAM_base + text_offset, hands us a device tree

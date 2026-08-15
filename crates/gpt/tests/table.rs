@@ -63,8 +63,8 @@ fn build_on(block_size: usize, blocks: u64, partitions: &[Entry]) -> Result<Disk
 /// validator.
 #[test]
 fn a_table_we_build_is_a_table_we_parse() {
-    let part = Entry::new(types::CRICKER_DATA, PART, 2048, 100_000)
-        .with_name("cricker data")
+    let part = Entry::new(types::NIFE_DATA, PART, 2048, 100_000)
+        .with_name("nife data")
         .unwrap();
     let disk = build(&[part]).unwrap();
 
@@ -116,13 +116,13 @@ fn a_4k_native_disk_works_and_the_geometry_moves() {
 #[test]
 fn partitions_that_share_one_block_overlap() {
     let a = Entry::new(types::LINUX_FILESYSTEM, PART, 2048, 4096);
-    let touching = Entry::new(types::CRICKER_DATA, PART, 4096, 8192);
+    let touching = Entry::new(types::NIFE_DATA, PART, 4096, 8192);
     assert_eq!(
         build(&[a, touching]).err(),
         Some(Error::PartitionsOverlap { a: 0, b: 1 })
     );
 
-    let adjacent = Entry::new(types::CRICKER_DATA, PART, 4097, 8192);
+    let adjacent = Entry::new(types::NIFE_DATA, PART, 4097, 8192);
     assert!(build(&[a, adjacent]).is_ok(), "abutting is not overlapping");
 
     // Order does not matter: the pair is caught whichever way round it is given.
@@ -146,7 +146,7 @@ fn an_unused_entry_is_not_a_partition_however_it_looks() {
     ghost.type_guid = Guid::ZERO;
     assert!(!ghost.is_used());
 
-    let real = Entry::new(types::CRICKER_DATA, PART, 2048, 4096);
+    let real = Entry::new(types::NIFE_DATA, PART, 2048, 4096);
     let disk = build(&[ghost, real]).expect("the ghost does not collide");
     let table = Gpt::parse(disk.header(), &disk.array).unwrap();
     assert_eq!(table.partitions().count(), 1);
@@ -160,27 +160,27 @@ fn an_unused_entry_is_not_a_partition_however_it_looks() {
 #[test]
 fn a_partition_outside_the_usable_range_is_refused() {
     // Below first_usable_lba, which is 34: that is where the table itself lives.
-    let low = Entry::new(types::CRICKER_DATA, PART, 33, 4096);
+    let low = Entry::new(types::NIFE_DATA, PART, 33, 4096);
     assert_eq!(
         build(&[low]).err(),
         Some(Error::PartitionOutsideUsable { index: 0 })
     );
 
     // Past last_usable_lba, the check that catches a table cloned onto a smaller disk.
-    let high = Entry::new(types::CRICKER_DATA, PART, 2048, BLOCKS - 33);
+    let high = Entry::new(types::NIFE_DATA, PART, 2048, BLOCKS - 33);
     assert_eq!(
         build(&[high]).err(),
         Some(Error::PartitionOutsideUsable { index: 0 })
     );
 
-    let backwards = Entry::new(types::CRICKER_DATA, PART, 4096, 2048);
+    let backwards = Entry::new(types::NIFE_DATA, PART, 4096, 2048);
     assert_eq!(
         build(&[backwards]).err(),
         Some(Error::PartitionRange { index: 0 })
     );
 
     // The boundaries themselves are allowed, which is the other half of the claim.
-    let exact = Entry::new(types::CRICKER_DATA, PART, 34, BLOCKS - 34);
+    let exact = Entry::new(types::NIFE_DATA, PART, 34, BLOCKS - 34);
     assert!(build(&[exact]).is_ok());
 }
 
@@ -190,7 +190,7 @@ fn a_partition_outside_the_usable_range_is_refused() {
 /// never judged, and a `<=` there refuses a legal disk with nothing failing.
 #[test]
 fn a_partition_of_exactly_one_block_is_legal() {
-    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 2048);
+    let one = Entry::new(types::NIFE_DATA, PART, 2048, 2048);
     let disk = build(&[one]).expect("first_lba == last_lba is one block, not none");
 
     let table = Gpt::parse(disk.header(), &disk.array).unwrap();
@@ -231,7 +231,7 @@ fn the_entry_array_buffer_sets_the_entry_count() {
     );
 
     let mut four = [0u8; 4 * entry::SIZE];
-    let five = [Entry::new(types::CRICKER_DATA, PART, 10, 20); 5];
+    let five = [Entry::new(types::NIFE_DATA, PART, 10, 20); 5];
     assert_eq!(
         Gpt::create(DISK, BLOCK, 1024, &five, &mut four).err(),
         Some(Error::TooManyPartitions { given: 5, room: 4 })
@@ -265,7 +265,7 @@ fn the_entry_array_buffer_sets_the_entry_count() {
 fn every_single_byte_corruption_of_a_small_table_is_caught() {
     let mut array = [0u8; 4 * entry::SIZE];
     let mut header = [0u8; BLOCK];
-    let part = Entry::new(types::CRICKER_DATA, PART, 8, 900)
+    let part = Entry::new(types::NIFE_DATA, PART, 8, 900)
         .with_name("small")
         .unwrap();
     let table = Gpt::create(DISK, BLOCK, 1024, &[part], &mut array).unwrap();
@@ -313,7 +313,7 @@ fn every_single_byte_corruption_of_a_small_table_is_caught() {
 /// the primary.
 #[test]
 fn the_backup_header_is_not_a_primary() {
-    let disk = build(&[Entry::new(types::CRICKER_DATA, PART, 2048, 4096)]).unwrap();
+    let disk = build(&[Entry::new(types::NIFE_DATA, PART, 2048, 4096)]).unwrap();
     assert_eq!(
         Gpt::parse(disk.backup(), &disk.array).err(),
         Some(Error::NotPrimary { my_lba: BLOCKS - 1 })
@@ -324,7 +324,7 @@ fn the_backup_header_is_not_a_primary() {
 
 #[test]
 fn a_short_entry_array_is_a_caller_error_not_a_corrupt_disk() {
-    let disk = build(&[Entry::new(types::CRICKER_DATA, PART, 2048, 4096)]).unwrap();
+    let disk = build(&[Entry::new(types::NIFE_DATA, PART, 2048, 4096)]).unwrap();
     assert_eq!(
         Gpt::parse(disk.header(), &disk.array[..ENTRY_ARRAY_BYTES - 1]).err(),
         Some(Error::EntryArrayLen {
@@ -442,11 +442,11 @@ fn names_survive_utf16_and_hostile_bytes_do_not_break_reading() {
     let mut buf = [0u8; 4 * entry::NAME_UNITS];
     for text in [
         "",
-        "cricker data",
+        "nife data",
         "übergrößenträger",
         "36 chars of ordinary label text here",
     ] {
-        let e = Entry::new(types::CRICKER_DATA, PART, 10, 20)
+        let e = Entry::new(types::NIFE_DATA, PART, 10, 20)
             .with_name(text)
             .unwrap_or_else(|_| panic!("{text:?} should fit"));
         let n = e.name_utf8(&mut buf).unwrap();
@@ -457,7 +457,7 @@ fn names_survive_utf16_and_hostile_bytes_do_not_break_reading() {
     }
 
     // 36 code units fit and 37 do not; an emoji is a surrogate pair, so two units.
-    let base = Entry::new(types::CRICKER_DATA, PART, 10, 20);
+    let base = Entry::new(types::NIFE_DATA, PART, 10, 20);
     assert!(base.with_name(&"a".repeat(36)).is_ok());
     assert_eq!(
         base.with_name(&"a".repeat(37)).err(),
@@ -476,7 +476,7 @@ fn names_survive_utf16_and_hostile_bytes_do_not_break_reading() {
     assert_eq!(core::str::from_utf8(&buf[..n]).unwrap(), "\u{FFFD}x");
 
     // An output buffer that cannot hold the name is an error rather than a truncation.
-    let named = base.with_name("cricker data").unwrap();
+    let named = base.with_name("nife data").unwrap();
     assert_eq!(
         named.name_utf8(&mut [0u8; 4]).err(),
         Some(Error::NameTooLong)
@@ -502,13 +502,13 @@ fn an_entry_is_exactly_its_bytes() {
     assert_eq!(Entry::decode(&[0u8; 128]), Entry::UNUSED);
     assert_eq!(e.blocks(), Some(e.last_lba - e.first_lba + 1));
 
-    let backwards = Entry::new(types::CRICKER_DATA, PART, 20, 10);
+    let backwards = Entry::new(types::NIFE_DATA, PART, 20, 10);
     assert_eq!(
         backwards.blocks(),
         None,
         "not an empty partition, a broken one"
     );
-    let one = Entry::new(types::CRICKER_DATA, PART, 20, 20);
+    let one = Entry::new(types::NIFE_DATA, PART, 20, 20);
     assert_eq!(one.blocks(), Some(1), "last_lba is inclusive");
 }
 
@@ -653,7 +653,7 @@ fn the_entry_array_shape_guards_are_exact() {
         Some(Error::EntryArrayShape { have: 200 })
     );
     // Exactly one entry is the smallest legal array, and it holds exactly one partition.
-    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 4096);
+    let one = Entry::new(types::NIFE_DATA, PART, 2048, 4096);
     let mut array = [0u8; entry::SIZE];
     let table = Gpt::create(DISK, BLOCK, BLOCKS, &[one], &mut array).unwrap();
     assert_eq!(table.partitions().count(), 1);
@@ -714,7 +714,7 @@ fn a_header_the_size_of_its_block_is_legal() {
 #[test]
 fn a_partition_on_the_first_usable_block_is_inside_the_range() {
     let mut array = [0u8; ENTRY_ARRAY_BYTES];
-    let part = Entry::new(types::CRICKER_DATA, PART, 34, 4096);
+    let part = Entry::new(types::NIFE_DATA, PART, 34, 4096);
     let table = Gpt::create(DISK, BLOCK, BLOCKS, &[part], &mut array).unwrap();
     assert_eq!(table.partitions().next().unwrap().1.first_lba, 34);
 }
@@ -764,7 +764,7 @@ fn the_attribute_bits_are_the_disk_format() {
 /// the whole name path looked healthy.
 #[test]
 fn a_name_beyond_ascii_round_trips() {
-    let named = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+    let named = Entry::new(types::NIFE_DATA, PART, 2048, 4096)
         .with_name("π¥")
         .unwrap();
     let back = Entry::decode(&named.encode());
@@ -777,7 +777,7 @@ fn a_name_beyond_ascii_round_trips() {
 /// under is `NameTooLong`, never a panic.
 #[test]
 fn an_exact_fit_name_buffer_is_enough() {
-    let e = Entry::new(types::CRICKER_DATA, PART, 2048, 4096)
+    let e = Entry::new(types::NIFE_DATA, PART, 2048, 4096)
         .with_name("abc")
         .unwrap();
     let mut exact = [0u8; 3];

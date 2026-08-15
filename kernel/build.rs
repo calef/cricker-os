@@ -13,7 +13,7 @@ fn main() {
     let (link_script, boot_asm) = match arch.as_str() {
         "aarch64" => ("link-aarch64.ld", "src/arch/aarch64/boot.s"),
         "riscv64" => ("link-riscv64.ld", "src/arch/riscv64/boot.s"),
-        other => panic!("cricker-os has no linker script for target arch {other}"),
+        other => panic!("nife has no linker script for target arch {other}"),
     };
 
     println!("cargo::rerun-if-changed={link_script}");

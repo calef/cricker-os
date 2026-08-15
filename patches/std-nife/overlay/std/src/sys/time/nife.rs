@@ -1,4 +1,4 @@
-//! Time on cricker-os: the monotonic counter for `Instant`, and a granted clock for `SystemTime`.
+//! Time on nife: the monotonic counter for `Instant`, and a granted clock for `SystemTime`.
 //!
 //! # `Instant` is the counter, and nothing may perturb it
 //!
@@ -34,8 +34,8 @@
 //! check before asking. See notes/std.md.
 
 use crate::sync::atomic::{AtomicU8, Ordering};
-use crate::sys::pal::cricker::clockproto::{self, ClockPage};
-use crate::sys::pal::cricker::rt;
+use crate::sys::pal::nife::clockproto::{self, ClockPage};
+use crate::sys::pal::nife::rt;
 use crate::time::Duration;
 
 fn ticks_to_duration(ticks: u64) -> Duration {
@@ -137,7 +137,7 @@ impl SystemTime {
     pub fn now() -> SystemTime {
         let Some(page) = page() else {
             panic!(
-                "SystemTime::now() on cricker-os: this process holds no clock capability, so it \
+                "SystemTime::now() on nife: this process holds no clock capability, so it \
                  does not know what time it is. `Instant` works and measures duration; wall-clock \
                  time is a grant (DECISIONS §43, notes/std.md)."
             )
@@ -145,7 +145,7 @@ impl SystemTime {
         let r = page.read();
         if !clockproto::state::known(r.state) {
             panic!(
-                "SystemTime::now() on cricker-os: the machine does not know what time it is (no \
+                "SystemTime::now() on nife: the machine does not know what time it is (no \
                  RTC, or an RTC reading outside the sanity window). Reporting 1970 instead would \
                  be the lie this refusal exists to replace (DECISIONS §42, §43)."
             );

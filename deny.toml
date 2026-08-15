@@ -47,7 +47,7 @@ ignore = []
 [licenses]
 version = 2
 unused-allowed-license = "allow"
-# cricker-os is MIT OR Apache-2.0 (see Cargo.toml, LICENSE-MIT, LICENSE-APACHE). The allow-list is
+# nife is MIT OR Apache-2.0 (see Cargo.toml, LICENSE-MIT, LICENSE-APACHE). The allow-list is
 # what a dependency may offer such that our dual licence still holds downstream. It is an allow-list
 # rather than a deny-list because the failure we care about is a licence nobody looked at, and only
 # an allow-list makes the unexamined case loud.

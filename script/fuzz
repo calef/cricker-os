@@ -33,7 +33,7 @@ cd "$(dirname "$0")/.."
 
 # Every target, in the order they cost us the most if they are wrong: the device tree is parsed before
 # anything else exists, and the ELF loader maps what it parses.
-targets="dtb_walk elf_parse gpt_table crickerfs_roundtrip"
+targets="dtb_walk elf_parse gpt_table nifefs_roundtrip"
 
 usage() {
     cat <<'EOF'
@@ -54,7 +54,7 @@ while [ $# -gt 0 ]; do
             echo "dtb_walk             device tree, parsed at boot from firmware bytes"
             echo "elf_parse            ELF64 headers, and the loader maps what it parses"
             echo "gpt_table            GUID partition table, off a disk somebody else formatted"
-            echo "crickerfs_roundtrip  the archive writer and reader agree (a property, not a panic)"
+            echo "nifefs_roundtrip  the archive writer and reader agree (a property, not a panic)"
             exit 0
             ;;
         -h|--help) usage; exit 0 ;;

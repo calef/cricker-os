@@ -1,5 +1,5 @@
 # The milestone-32 filesystem server. Its OWN workspace root (empty [workspace]), deliberately not a
-# member of the cricker-os workspace, for the same reason redoxfs_host and std_exerciser are: it depends
+# member of the nife workspace, for the same reason redoxfs_host and std_exerciser are: it depends
 # on the vendored RedoxFS engine (vendor/redoxfs), which is its own workspace, and cargo forbids a
 # member of one workspace from depending on an in-tree crate another workspace owns. Keeping it out
 # also keeps our -D warnings clippy gate and cargo fmt off the vendored engine underneath it, while

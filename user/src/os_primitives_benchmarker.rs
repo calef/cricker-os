@@ -2,7 +2,7 @@
 //!
 //! The kernel-side benchmarks in `kernel/src/bench.rs` measure path length *inside* the kernel: the
 //! bench threads are kernel threads calling `sched::` directly, so they never pay the EL0->EL1 trap.
-//! lmbench measures from userspace, trap included, so to compare cricker-os to lmbench we have to
+//! lmbench measures from userspace, trap included, so to compare nife to lmbench we have to
 //! measure from **here**, at EL0, self-timing a loop of real `svc` syscalls. That is this program.
 //!
 //! It is spawned by the bench boot (`kernel/src/bench.rs`), self-times each primitive with
@@ -14,7 +14,7 @@
 //! child's region (`Untyped::DESTROY`) so it can repeat.
 //!
 //! Name: ratified 2026-08-01 (calef, milestone 63), replacing `elbench`, and it is the name that
-//! forced `crickerfs`'s `NAME_LEN` from 24 to 32. The raise was taken first and on its own merits,
+//! forced `nifefs`'s `NAME_LEN` from 24 to 32. The raise was taken first and on its own merits,
 //! deliberately, because choosing a worse name to fit a limit and raising a limit because a name
 //! demanded it are both the wrong way round. Refused `elbench` (`el` is aarch64-only vocabulary for
 //! a program that runs on both ISAs, since RISC-V has U, S and M modes and no exception levels) and

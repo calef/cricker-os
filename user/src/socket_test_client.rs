@@ -89,13 +89,13 @@ const CONN_SID: u64 = 1;
 /// What the host sends in and what the guest answers with. Different strings on purpose: an echo
 /// would pass even if the guest were somehow reflecting the host's own bytes, and the point of this
 /// gate is that the guest *composed* an answer to a connection it did not make.
-const IN_MSG: &[u8] = b"cricker-in!";
-const OUT_MSG: &[u8] = b"cricker-out!";
+const IN_MSG: &[u8] = b"nife-in!";
+const OUT_MSG: &[u8] = b"nife-out!";
 
 /// The fixture the runners put in slirp's TFTP directory, and its exact contents. Both sides are
 /// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner-*.sh).
-const TFTP_NAME: &[u8] = b"cricker";
-const TFTP_BODY: &[u8] = b"cricker-tftp!";
+const TFTP_NAME: &[u8] = b"nife";
+const TFTP_BODY: &[u8] = b"nife-tftp!";
 
 /// How many times the real-DNS check sends its query before giving up. A DNS client retries; UDP has
 /// no retransmit of its own and the measured single-query loss to a real resolver was ~2.5%, so one
@@ -311,7 +311,7 @@ fn udp_tftp() -> ! {
 }
 
 fn tcp_echo() -> ! {
-    const MSG: &[u8] = b"cricker-net!";
+    const MSG: &[u8] = b"nife-net!";
 
     attach_frame(0);
     if call(STACK, req(OP_OPEN_TCP, 0), 0).0 != REP_OK {

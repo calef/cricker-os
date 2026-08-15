@@ -263,7 +263,7 @@ fn append_keeps_what_truncate_throws_away() {
     // **`>>` creates a name that is not there**, so it is not "open, then seek to the end":
     // there is nothing to open. On a fresh fixture that file holds exactly one copy of what
     // `echo one` writes; the assertion is stated as a whole number of copies because
-    // `CRICKER_KEEP_REDOXFS=1` deliberately re-runs the suite against the image the last boot
+    // `NIFE_KEEP_REDOXFS=1` deliberately re-runs the suite against the image the last boot
     // left behind, and this line would then append to its own leftovers. Order-independent
     // either way, and it still fails on a `>>` that wrote a partial or a doubled line.
     assert_eq!(

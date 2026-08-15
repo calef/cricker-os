@@ -56,7 +56,7 @@
 //!     report: R_NO_ENTROPY, 0 partitions          (and the disk is untouched)
 //!
 //!   ROLE_VERIFY, afterwards:
-//!     report: F_MBR|F_PRIMARY|F_BACKUP|F_CRICKER|F_NAMES, 3 partitions, data at LBA 30720
+//!     report: F_MBR|F_PRIMARY|F_BACKUP|F_NIFE|F_NAMES, 3 partitions, data at LBA 30720
 //! ```
 //!
 //! # BUGS
@@ -139,8 +139,8 @@ pub const F_MBR: u64 = 1 << 0;
 pub const F_PRIMARY: u64 = 1 << 1;
 /// The backup table at the far end of the disk agrees with the primary, field by field.
 pub const F_BACKUP: u64 = 1 << 2;
-/// A partition of type `CRICKER_DATA` is on the disk (DECISIONS §45).
-pub const F_CRICKER: u64 = 1 << 3;
+/// A partition of type `NIFE_DATA` is on the disk (DECISIONS §45).
+pub const F_NIFE: u64 = 1 << 3;
 /// Every partition's name decoded as UTF-8 and matched the layout's.
 pub const F_NAMES: u64 = 1 << 4;
 /// Every partition's unique GUID is distinct, non-zero, and stamped version 4.
@@ -186,7 +186,7 @@ fn partition() -> ! {
     let layout = [
         (types::EFI_SYSTEM, blank::ESP, blank::NAMES[0]),
         (types::LINUX_FILESYSTEM, blank::LINUX, blank::NAMES[1]),
-        (types::CRICKER_DATA, blank::DATA, blank::NAMES[2]),
+        (types::NIFE_DATA, blank::DATA, blank::NAMES[2]),
     ];
     let mut parts = [Entry::UNUSED; blank::PARTITIONS];
     for (i, (type_guid, (first, last), name)) in layout.iter().enumerate() {
@@ -314,8 +314,8 @@ fn verify() -> ! {
             partitions += 1; // more entries than the layout has: the count below will say so
             continue;
         }
-        if part.type_guid == types::CRICKER_DATA {
-            flags |= F_CRICKER;
+        if part.type_guid == types::NIFE_DATA {
+            flags |= F_NIFE;
             data_first_lba = part.first_lba;
         }
         let mut label = [0u8; 4 * gpt::entry::NAME_UNITS];

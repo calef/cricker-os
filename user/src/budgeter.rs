@@ -7,7 +7,7 @@
 //!
 //! The number it reports *is* the authority the command line handed it. Grant more, it maps more;
 //! grant nothing, and it holds no untyped at slot 1 at all, so its very first `MAP` returns
-//! `NoSuchSlot` and it reports zero. There is no ambient pool to fall back on: a cricker-os process
+//! `NoSuchSlot` and it reports zero. There is no ambient pool to fall back on: a nife process
 //! spends the budget it was given and not one page more.
 //!
 //! One honest detail, recorded rather than hidden: an `N`-page untyped does not yield `N` mapped

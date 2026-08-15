@@ -459,7 +459,7 @@ pub fn initrd() -> Option<&'static [u8]> {
 }
 
 /// The bytes of the program named `name` inside the initrd archive (milestone 19f). The initrd is a
-/// crickerfs image carrying init plus the programs init loads. The milestone tour and the
+/// nifefs image carrying init plus the programs init loads. The milestone tour and the
 /// kernel-side service demos still run a role of the one `hello` binary, so they ask for `"init"`;
 /// `spawn_init` and `boot_via_init` instead take the whole archive, because init parses the rest
 /// itself. Returns `None` if there is no initrd, it will not parse, or it holds no such program.
@@ -467,7 +467,7 @@ pub fn initrd() -> Option<&'static [u8]> {
 // a user program; dead only in the bench boot, which runs no user programs.
 #[cfg_attr(feature = "bench", allow(dead_code))]
 pub fn program(name: &str) -> Option<&'static [u8]> {
-    crickerfs::Fs::parse(initrd()?).ok()?.read(name)
+    nifefs::Fs::parse(initrd()?).ok()?.read(name)
 }
 
 /// A physical page to map into a new process's address space, at a chosen VA.
@@ -598,7 +598,7 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         crate::arch::irq::enable(UART_RX_INTID);
     }
 
-    // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus the
+    // The initrd is a nifefs archive (milestone 19f), not a bare ELF: it carries init plus the
     // programs init will load. The kernel reads only the one entry it must, "init". This is the same
     // "honest residue" as before (something has to load the first program), now naming that program
     // through a fixed archive index instead of assuming it sits at offset 0. Every other program is
@@ -608,10 +608,10 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // B.1): the check has to be the thing that decides whether a thread is created at all, not
     // something the new thread does to itself. `trust::require` halts on a mismatch, so past this
     // line the bytes are the ones this kernel image was built against.
-    let boot_fs = match crickerfs::Fs::parse(image) {
+    let boot_fs = match nifefs::Fs::parse(image) {
         Ok(fs) => fs,
         Err(e) => {
-            crate::println!("  boot archive is not a crickerfs image: {e:?}");
+            crate::println!("  boot archive is not a nifefs image: {e:?}");
             crate::arch::halt();
         }
     };
@@ -992,7 +992,7 @@ pub fn riscv_worker_demo(worker: &[u8], n: u64) -> Result<u64, LoadError> {
 /// [`spawn_init`], trimmed to the portable core (no GIC, no PL011 device cap, no IRQ delegation: this
 /// proves the composition model, not the aarch64 interactive system).
 ///
-/// The initrd is a crickerfs archive holding `init` (the portable `builder` program) plus `worker`.
+/// The initrd is a nifefs archive holding `init` (the portable `builder` program) plus `worker`.
 /// The kernel loads only `init`, maps the whole archive read-only into its address space, and grants
 /// it exactly two capabilities: a large untyped budget (slot 0) and a report endpoint with
 /// WRITE|GRANT (slot 1). From those, `init` reads `worker` out of the archive by name, builds it as a
@@ -1007,7 +1007,7 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
 
     // Read only the one entry the kernel must: "init" (the builder). The rest is init's to parse.
-    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let fs = nifefs::Fs::parse(archive).expect("initrd is not a nifefs archive");
     let init_bytes = fs.read("init").expect("archive has no 'init' program");
     // Measured boot (milestone 22 phase B.1): the boot program is checked against the digest compiled
     // into this kernel image before its address space exists, and a mismatch halts. Same check, same
@@ -1139,7 +1139,7 @@ pub fn riscv_uart_driver_demo(
     const DRIVER_UART_VA: u64 = 0x0070_0000; // must match user/src/driver.rs UART_VA
     const UART_PHYS: u64 = 0x1000_0000; // the NS16550 on QEMU virt
 
-    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let fs = nifefs::Fs::parse(archive).expect("initrd is not a nifefs archive");
     let driver_bytes = fs.read("driver").expect("archive has no 'driver' program");
     let elf = Elf::parse(driver_bytes).map_err(LoadError::NotLoadable)?;
 
@@ -1222,7 +1222,7 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
 
-    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let fs = nifefs::Fs::parse(archive).expect("initrd is not a nifefs archive");
     let init_bytes = fs
         .read("system_initializer")
         .expect("archive has no 'system_initializer' program");
@@ -1380,7 +1380,7 @@ pub mod virtio_service;
 /// RedoxFS and its own heap; the block server owns the DMA confinement; the client holds only a
 /// directory capability. This is the same shape as `virtio_service` and the console, one level up.
 ///
-/// The service drives the **second** mmio block disk (the RedoxFS image); the first is the crickerfs
+/// The service drives the **second** mmio block disk (the RedoxFS image); the first is the nifefs
 /// disk the phase-1 driver tests use. `None` if there is no such disk attached to this run.
 #[cfg_attr(not(test), allow(dead_code))] // spawned only by the phase-2 test
 pub mod fs_service;
@@ -1763,7 +1763,7 @@ mod compositor_tests;
 mod display_tests;
 
 /// **Rust `std` on the native ABI** (milestone 27): spawn the `std_exerciser` demo, an ordinary Rust
-/// program (no `no_std`, no attributes) built for the `*-unknown-cricker` custom target with std's
+/// program (no `no_std`, no attributes) built for the `*-unknown-nife` custom target with std's
 /// PAL implemented directly over the capability ABI. It gets the same two grants as `allocator_exerciser`,
 /// an untyped budget (slot 0, which the std `GlobalAlloc` draws the heap from) and an endpoint
 /// (slot 1, which `println!` SENDs to). Its stdout is a fixed, deterministic transcript the test
@@ -1782,7 +1782,7 @@ mod std_tests;
 
 /// **Capability delegation: authority moves between processes at runtime.**
 ///
-/// Every other capability in cricker-os is minted by the kernel and handed to a process at spawn.
+/// Every other capability in nife is minted by the kernel and handed to a process at spawn.
 /// That made the kernel a central authority-granting oracle, which is the ambient-authority shape
 /// §10 argued against, just relocated. A capability system's defining move is that a process can
 /// pass authority it holds to another process, narrowing it on the way, and only if it was trusted

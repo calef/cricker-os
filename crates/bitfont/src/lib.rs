@@ -24,8 +24,8 @@
 //! The honest limits are listed in notes/glyphs.md.
 //!
 //! Name: unrecorded. One of the five run-together names milestone 63 reviewed on 2026-08-01
-//! (`capsh`, `lineedit`, `uheap`, `crickerfs`, `bitfont`) when it deleted the rule that had
-//! produced them. Three moved, `crickerfs` stayed with a reason recorded, and this one stayed with
+//! (`capsh`, `lineedit`, `uheap`, `nifefs`, `bitfont`) when it deleted the rule that had
+//! produced them. Three moved, `nifefs` stayed with a reason recorded, and this one stayed with
 //! none.
 
 #![no_std]

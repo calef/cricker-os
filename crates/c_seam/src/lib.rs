@@ -76,7 +76,7 @@ pub const MARK: u8 = 0xC0;
 
 /// The input the checker writes before every attempt, and the answer it expects back. ASCII and
 /// lowercase, so the uppercasing transform has visible work to do.
-pub const INPUT: &[u8] = b"cricker-os foreign component\0";
+pub const INPUT: &[u8] = b"nife foreign component\0";
 
 /// The position-derived witness patterns. Different generators for the two pages so a checker bug
 /// that read the wrong page would not accidentally agree.
@@ -269,15 +269,15 @@ mod tests {
     /// its input in place and the Rust side predicts the answer without running it.
     #[test]
     fn the_checksum_is_case_insensitive() {
-        assert_eq!(expected_checksum(b"cricker"), expected_checksum(b"CRICKER"));
-        assert_eq!(expected_checksum(b"CrIcKeR"), expected_checksum(b"cricker"));
+        assert_eq!(expected_checksum(b"nife"), expected_checksum(b"NIFE"));
+        assert_eq!(expected_checksum(b"CrIcKeR"), expected_checksum(b"nife"));
     }
 
     /// ...and still distinguishes different bytes, or case-folding would have been achieved by
     /// ignoring the input.
     #[test]
     fn the_checksum_separates_different_inputs() {
-        assert_ne!(expected_checksum(b"cricker"), expected_checksum(b"crickes"));
+        assert_ne!(expected_checksum(b"nife"), expected_checksum(b"crickes"));
         assert_ne!(expected_checksum(b""), expected_checksum(b"a"));
     }
 

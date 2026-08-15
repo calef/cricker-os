@@ -233,9 +233,9 @@ PY
 # does), but a comment that spells the call form is one copy-paste from being code.
 echo "==> rule 1 (arch code stays under kernel/src/arch/)"
 if git grep -nE 'asm!\(|core::arch::' -- \
-    'kernel/src' ':!kernel/src/arch' > /tmp/cricker-rule-1.txt 2>/dev/null; then
+    'kernel/src' ':!kernel/src/arch' > /tmp/nife-rule-1.txt 2>/dev/null; then
     echo "lint: architecture-specific code outside kernel/src/arch/ (CLAUDE.md rule 1):" >&2
-    cat /tmp/cricker-rule-1.txt >&2
+    cat /tmp/nife-rule-1.txt >&2
     echo "" >&2
     echo "Move the register touch behind a helper in kernel/src/arch/ and call that; see" >&2
     echo "arch::current_sp for the shape. A port should be a new directory, not a diff." >&2
@@ -419,9 +419,9 @@ echo "module-wide suppression: none"
 # documentation deliverable is invisible to every other check we run. Costs a grep.
 echo "==> conflict markers"
 if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
-    ':!vendor' ':!*.lock' > /tmp/cricker-conflict-markers.txt 2>/dev/null; then
+    ':!vendor' ':!*.lock' > /tmp/nife-conflict-markers.txt 2>/dev/null; then
     echo "lint: merge conflict markers left in tracked files:" >&2
-    cat /tmp/cricker-conflict-markers.txt >&2
+    cat /tmp/nife-conflict-markers.txt >&2
     exit 1
 fi
 
@@ -697,9 +697,9 @@ fi
 #    has to be able to name the thing it rejects, and this script does too.
 if git -C "$(dirname "$0")/.." grep -Iilnw daemon -- \
     ':!vendor' ':!design' ':!notes/naming.md' ':!script/lint' \
-    > /tmp/cricker-daemon.txt 2>/dev/null; then
+    > /tmp/nife-daemon.txt 2>/dev/null; then
     echo "lint: \"daemon\" outside the three places the argument about the word lives:" >&2
-    cat /tmp/cricker-daemon.txt >&2
+    cat /tmp/nife-daemon.txt >&2
     echo "The vocabulary is component / service / contract (DECISIONS §39)." >&2
     exit 1
 fi

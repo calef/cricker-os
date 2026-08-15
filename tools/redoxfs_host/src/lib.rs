@@ -2,9 +2,9 @@
 //!
 //! The library half of the `redoxfs_host` tool: create an image, walk it, read a file back, and
 //! extract a whole subtree to a host directory, all against the **vendored 0.9.1 pin**
-//! (vendor/redoxfs), which is the same engine the cricker-os FS server serves it with. That
+//! (vendor/redoxfs), which is the same engine the nife FS server serves it with. That
 //! identity is the point twice over. It is why an image built here is proven against exactly the
-//! code that will mount it on cricker-os, and it is why the answer to "the board is dead, can I
+//! code that will mount it on nife, and it is why the answer to "the board is dead, can I
 //! get my data?" is a tool rather than a kernel driver: the engine already links here with `std`,
 //! so `ls`/`cat`/`extract` cost a few hundred lines and run identically on macOS and Linux with no
 //! FUSE, no kernel extension, and no root. See notes/host-recovery.md.
@@ -66,7 +66,7 @@ pub enum PartitionSelector {
     /// macOS's `disk0s2`, and in `sgdisk -i 2`. It is the array index plus one, and it survives a
     /// hole in the array, so it means the same thing here as it does in every other partition tool.
     Index(u32),
-    /// The partition's **type GUID**, which is how cricker-os finds its own data partition on the
+    /// The partition's **type GUID**, which is how nife finds its own data partition on the
     /// board (`fs_server/src/bin/mkfs.rs`, DECISIONS §45). A slot number is a fact about one disk's
     /// current layout; a type GUID is a fact about what the partition *is*, so a script should ask
     /// this way and a person with a listing in front of them should not have to.
@@ -215,7 +215,7 @@ pub struct LsEntry {
     pub kind: Kind,
     /// How many extended attributes this entry carries. Rendered as `@`, which is the marker macOS
     /// `ls -l` uses for the same fact, so a listing says that there is metadata here **before** the
-    /// reader has to know that `.cricker-attrs` exists.
+    /// reader has to know that `.nife-attrs` exists.
     pub attrs: usize,
 }
 
@@ -245,7 +245,7 @@ pub struct ExtractStats {
     pub attrs_skipped: u64,
     /// Attributes whose bytes were reattached but whose **type code** could not be, because no host
     /// filesystem has a per-attribute type word. The codes stay readable in the extracted
-    /// `.cricker-attrs` blobs. Only counted for a code that is not [`xattr::RAW`], since dropping a
+    /// `.nife-attrs` blobs. Only counted for a code that is not [`xattr::RAW`], since dropping a
     /// zero loses nothing.
     pub kinds_dropped: u64,
 }
@@ -615,7 +615,7 @@ fn open_rw(image: &Path) -> Result<FileSystem<DiskFile>, String> {
 /// Split an image path into components. Leading, trailing and doubled slashes are ignored, `.` is
 /// ignored, and **`..` is refused**: paths resolve from the image root downward and nothing else.
 /// That is the same rule the FS server enforces on the wire (notes/fs-server.md), kept here so a
-/// path means the same thing whether cricker-os or this tool resolves it.
+/// path means the same thing whether nife or this tool resolves it.
 fn components(path: &str) -> Result<Vec<&str>, String> {
     let mut out = Vec::new();
     for part in path.split('/') {
@@ -671,7 +671,7 @@ fn read_all<D: Disk>(tx: &mut Transaction<D>, node: &TreeData<Node>) -> Result<V
 
 // --- The attribute store, from the recovery side (milestone 57) --------------------------------
 //
-// A cricker-os image carries `.cricker-attrs` in its root: one file per node that has extended
+// A nife image carries `.nife-attrs` in its root: one file per node that has extended
 // attributes, named for that node's `TreePtr` id in hex, holding the records `fs_proto::xattr::store`
 // defines. The FS server writes it; nothing else does. This tool reads it, and the reading is why
 // `fs_proto` is a dependency rather than a comment describing the layout (CLAUDE.md rule 7).
@@ -942,11 +942,11 @@ fn reattach<D: Disk>(
                 if attr.kind != xattr::RAW {
                     // Named per attribute rather than summarised, because the code is the one part
                     // of this record the host cannot carry and a reader who wants it needs to know
-                    // which file to go back to `.cricker-attrs` for.
+                    // which file to go back to `.nife-attrs` for.
                     eprintln!(
                         "redoxfs_host: {}: attribute {shown} kept its {} bytes but not its type \
                          code {:#010x}; host filesystems have no field for it (see \
-                         .cricker-attrs in the extracted tree)",
+                         .nife-attrs in the extracted tree)",
                         dest.display(),
                         attr.value.len(),
                         attr.kind,

@@ -59,7 +59,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
     // SAFETY: the kernel mapped `initrd_len` bytes of reserved RAM read-only at INITRD_VA.
     let archive =
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(fs) = crickerfs::Fs::parse(archive) else {
+    let Ok(fs) = nifefs::Fs::parse(archive) else {
         bail(1)
     };
     let Some(spawner) = fs.read("spawner").and_then(|b| elf::Elf::parse(b).ok()) else {

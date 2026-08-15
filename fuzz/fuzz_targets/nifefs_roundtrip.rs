@@ -1,7 +1,7 @@
-//! Fuzz the crickerfs archive **round trip**: build an image, parse it back, read every file.
+//! Fuzz the nifefs archive **round trip**: build an image, parse it back, read every file.
 //!
 //! **This target asks a different question from the other three**, and the difference is the reason
-//! it exists rather than a `crickerfs_parse` sibling. The other three ask "does hostile input make
+//! it exists rather than a `nifefs_parse` sibling. The other three ask "does hostile input make
 //! this panic". Asking that of `Fs::parse` would be fuzzing a function Kani has already proved
 //! total: `the_validation_implies_reads_slice_is_in_bounds` covers every `start_block`, `len` and
 //! image length with no bound at all, and `a_short_image_is_refused_not_indexed` covers the
@@ -25,7 +25,7 @@
 
 #![no_main]
 
-use crickerfs::{Fs, MAX_FILES, NAME_LEN, image_size, write_image};
+use nifefs::{Fs, MAX_FILES, NAME_LEN, image_size, write_image};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|files: Vec<(String, Vec<u8>)>| {
@@ -41,7 +41,7 @@ fuzz_target!(|files: Vec<(String, Vec<u8>)>| {
     }
     // The writer refuses these, and the refusal is this target's own first finding: a name with a
     // NUL in it is unrepresentable, because the padding is NUL and every reader stops at the first
-    // one. Filtered here rather than asserted on, because `crickerfs`'s own host tests now pin the
+    // one. Filtered here rather than asserted on, because `nifefs`'s own host tests now pin the
     // rejection by example and re-proving it here would spend the budget on a settled question.
     if files.iter().any(|(name, _)| name.as_bytes().contains(&0)) {
         return;

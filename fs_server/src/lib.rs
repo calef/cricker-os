@@ -920,7 +920,7 @@ fn purge_attrs<D: Disk>(tx: &mut Transaction<D>, node_id: u32) -> Result<()> {
 /// the removals that emptied a blob, inside the transaction that emptied it.
 ///
 /// The reason to bother is the recovery side rather than the byte. `redoxfs_host extract` copies the
-/// store out with the tree, so a leftover empty `.cricker-attrs` would land in somebody's recovered
+/// store out with the tree, so a leftover empty `.nife-attrs` would land in somebody's recovered
 /// Documents folder as a directory nothing explains. A store that disappears when the last attribute
 /// does never gets there.
 ///
@@ -1156,7 +1156,7 @@ mod tests {
     ///
     /// This writes the same file TWICE in one run, which is the honest reproduction: it depends on
     /// nothing left over from a previous invocation. It is also the decisive host-vs-device
-    /// comparison: if this loops, the bug is reachable with no cricker runtime at all (upstream or
+    /// comparison: if this loops, the bug is reachable with no nife runtime at all (upstream or
     /// our chunking); if it passes, the divergence is ours, in the device I/O path.
     #[test]
     fn a_second_write_to_the_same_block_does_not_loop() {
@@ -2775,7 +2775,7 @@ mod tests {
     ///
     /// This closes a recorded limitation rather than adding a feature, and the reason it was worth
     /// closing is on the recovery side: `redoxfs_host extract` copies the store out with the tree,
-    /// so a leftover empty `.cricker-attrs` would appear in somebody's recovered files as a
+    /// so a leftover empty `.nife-attrs` would appear in somebody's recovered files as a
     /// directory nothing explains.
     ///
     /// Both ways of emptying it are exercised, because they reach the same place by different paths:

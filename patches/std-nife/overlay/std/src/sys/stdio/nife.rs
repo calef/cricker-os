@@ -1,5 +1,5 @@
 //! stdout/stderr over the **sink contract** (`crates/sink_proto`, milestone 50), on the endpoint
-//! the std slot convention puts in slot 1 (see `pal/cricker/rt.rs`): SEND, register-only, up to 16
+//! the std slot convention puts in slot 1 (see `pal/nife/rt.rs`): SEND, register-only, up to 16
 //! bytes per message.
 //!
 //! Bulk data over a register-only IPC is deliberate, and since milestone 50 it is forced rather
@@ -32,7 +32,7 @@
 //!   when its reader exits, and it is milestone 50's "`SIGPIPE` becomes a return code".
 
 use crate::io;
-use crate::sys::pal::cricker::{rt, sinkproto};
+use crate::sys::pal::nife::{rt, sinkproto};
 
 pub struct Stdin;
 pub struct Stdout;

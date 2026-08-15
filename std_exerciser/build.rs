@@ -1,5 +1,5 @@
 //! Same linker contract as the `user` crate: the shared link.ld (linked at 0x40_0000, explicit
-//! W^X PHDRS), because a std program is still an ordinary cricker-os ELF the loader maps.
+//! W^X PHDRS), because a std program is still an ordinary nife ELF the loader maps.
 //! `-u _start` belts-and-braces the entry: `_start` lives in std's rlib (the PAL), and forcing
 //! it undefined guarantees the archive member is extracted whatever the linker's ENTRY timing.
 

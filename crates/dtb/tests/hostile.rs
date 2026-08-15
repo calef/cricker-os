@@ -672,7 +672,7 @@ fn compatible_inherits_cell_widths_through_a_silent_bus() {
     reg.extend(cell32(0x1));
     reg.extend(cell32(0x2000));
     b.prop(b"reg", &reg);
-    b.prop(b"compatible", b"cricker,testdev\0");
+    b.prop(b"compatible", b"nife,testdev\0");
     b.end_node();
     b.end_node();
     b.end_node();
@@ -680,7 +680,7 @@ fn compatible_inherits_cell_widths_through_a_silent_bus() {
     let dt = Dtb::from_bytes(&blob).unwrap();
 
     let mut out = [Region { start: 0, size: 0 }; 2];
-    assert_eq!(dt.node_reg_compatible(b"cricker,testdev", &mut out), Ok(1));
+    assert_eq!(dt.node_reg_compatible(b"nife,testdev", &mut out), Ok(1));
     assert_eq!((out[0].start, out[0].size), (0x2000, 0x1_0000_2000));
 }
 

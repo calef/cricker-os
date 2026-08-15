@@ -9,7 +9,7 @@ workspace = true
 
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
-crickerfs = { version = "0.1.0", path = "../crickerfs" }
+nifefs = { version = "0.1.0", path = "../nifefs" }
 elf = { version = "0.1.0", path = "../elf" }
 # The grant expression and its wire form: what the shell resolved a typed line into, and the
 # protocol init decodes on the other side of the spawn channel. This crate is that other side.

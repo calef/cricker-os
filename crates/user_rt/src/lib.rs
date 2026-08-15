@@ -1,4 +1,4 @@
-//! **`user_rt`**: the tiny EL0 runtime shared by cricker-os userspace programs (milestone 19f.6).
+//! **`user_rt`**: the tiny EL0 runtime shared by nife userspace programs (milestone 19f.6).
 //!
 //! One syscall wrapper (`invoke`) and the three things every program builds on it: `send`, `recv`,
 //! and `exit`. That is the whole crate. It exists because milestones 19f.2-5 split the userspace

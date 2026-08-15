@@ -1,4 +1,4 @@
-//! Randomness for cricker-os: **a granted capability, and a loud refusal when it is absent**
+//! Randomness for nife: **a granted capability, and a loud refusal when it is absent**
 //! (milestone 56; DECISIONS §44, notes/entropy.md).
 //!
 //! This file used to open with "not cryptographic, and saying so is the point": a splitmix64 stream
@@ -11,7 +11,7 @@
 //! # The fork this file settles: transparent, and split on std's own seam
 //!
 //! `std::random` improves **transparently**: a program that calls [`crate::random::SystemRng`] gets
-//! real entropy the moment it is granted the capability, with no cricker-specific API to learn and
+//! real entropy the moment it is granted the capability, with no nife-specific API to learn and
 //! no code to change. The honesty that "explicit" would have bought is preserved a different way,
 //! by refusing rather than by degrading, and the two callers are split where std already splits
 //! them:
@@ -41,8 +41,8 @@
 //! promise.
 
 use crate::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use crate::sys::pal::cricker::entropyproto as proto;
-use crate::sys::pal::cricker::rt;
+use crate::sys::pal::nife::entropyproto as proto;
+use crate::sys::pal::nife::rt;
 
 /// The entropy service's request endpoint: this process's entire authority over randomness. It
 /// names no device.
@@ -92,14 +92,14 @@ pub fn fill_bytes(bytes: &mut [u8]) {
         let want = (bytes.len() - filled).min(proto::MAX_BYTES as usize);
         let Some((count, word)) = ask(want) else {
             panic!(
-                "std::random on cricker-os: this process holds no entropy capability, so it \
+                "std::random on nife: this process holds no entropy capability, so it \
                  cannot produce random bytes. Returning predictable ones is the lie this refusal \
                  exists to replace (DECISIONS §44, notes/entropy.md)."
             )
         };
         if count == 0 {
             panic!(
-                "std::random on cricker-os: the entropy service is reachable but its device \
+                "std::random on nife: the entropy service is reachable but its device \
                  produced no bytes. This is a hardware fact, not a missing grant (DECISIONS §42, \
                  §44)."
             );

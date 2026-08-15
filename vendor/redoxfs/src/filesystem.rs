@@ -2,12 +2,12 @@ use aes::Aes128;
 use alloc::{
     collections::{BTreeMap, VecDeque},
     vec,
-    vec::Vec, // cricker-os pin divergence: patches/redoxfs-no-std-vec-import.patch
+    vec::Vec, // nife pin divergence: patches/redoxfs-no-std-vec-import.patch
 };
 use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
 use xts_mode::{get_tweak_default, Xts128};
 
-// cricker-os pin divergence: only the encryption branch of `create_reserved` still needs std (it
+// nife pin divergence: only the encryption branch of `create_reserved` still needs std (it
 // mints a salt and two keys from getrandom). Everything else the creation path uses builds for
 // no_std, so those imports move down. See patches/redoxfs-no-std-create-uuid.patch.
 #[cfg(feature = "std")]
@@ -149,7 +149,7 @@ impl<D: Disk> FileSystem<D> {
     /// Create a file system on a disk, with reserved data at the beginning, taking the filesystem's
     /// unique id from the caller.
     ///
-    /// cricker-os pin divergence: this is `create_reserved`'s body with the two values a `no_std`
+    /// nife pin divergence: this is `create_reserved`'s body with the two values a `no_std`
     /// engine cannot invent taken as arguments instead. `ctime`/`ctime_nsec` were already such
     /// arguments, because the engine has no clock; `uuid` joins them, because it has no source of
     /// randomness either. A caller that holds one (an entropy service, a hardware RNG) can then
@@ -201,7 +201,7 @@ impl<D: Disk> FileSystem<D> {
                 .unwrap();
                 Some(header.key_slots[0].cipher(password).unwrap())
             }
-            // cricker-os pin divergence: a no_std build has no getrandom, so it cannot mint the
+            // nife pin divergence: a no_std build has no getrandom, so it cannot mint the
             // salt and the two keys an encrypted filesystem needs. Refusing is the only honest
             // answer: creating an UNENCRYPTED filesystem for a caller who supplied a password
             // would silently withhold the one property they asked for.

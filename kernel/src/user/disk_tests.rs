@@ -32,7 +32,7 @@ const F_SIZE: u64 = 1 << 1;
 const F_MBR: u64 = 1 << 2;
 const F_PRIMARY: u64 = 1 << 3;
 const F_BACKUP: u64 = 1 << 4;
-const F_CRICKER: u64 = 1 << 5;
+const F_NIFE: u64 = 1 << 5;
 const F_NAMES: u64 = 1 << 6;
 const R_PROBING: u64 = 0x50_0B_11_46;
 const P_RW_REFUSED: u64 = 1 << 0;
@@ -40,9 +40,9 @@ const R_HOLDING: u64 = 0x_48_4F_4C_44_47;
 
 /// The layout `sgdisk` 1.0.10 wrote into the fixture the test image is built from
 /// (`crates/gpt/tests/real_disks.rs` has the exact commands). Three partitions on a 64 MiB disk,
-/// the third of them a cricker-os data partition (DECISIONS §45) starting at block 30720.
+/// the third of them a nife data partition (DECISIONS §45) starting at block 30720.
 const PARTITIONS: u64 = 3;
-const CRICKER_FIRST_LBA: u64 = 30720;
+const NIFE_FIRST_LBA: u64 = 30720;
 
 /// **The machine finds a partition table on a disk it did not write, and says what is on it.**
 ///
@@ -81,7 +81,7 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
     );
     assert!(
         mmio >= 4,
-        "at least four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash \
+        "at least four mmio disks are attached when this test runs (nifefs, RedoxFS, the crash \
          image, the GPT image, and since milestone 57's write half the blank one); the roster names \
          {mmio}",
     );
@@ -99,7 +99,7 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
     assert_eq!(here.count_on(TRANSPORT_PCI) as u64, pci);
 
     // Message two: the table, which is the authority that does.
-    let [flags, partitions, cricker_first_lba, ..] = crate::sched::ipc_recv(w.report);
+    let [flags, partitions, nife_first_lba, ..] = crate::sched::ipc_recv(w.report);
     for (bit, what) in [
         (F_ROSTER, "the roster page read as a roster"),
         (
@@ -109,15 +109,15 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
         (F_MBR, "LBA 0 holds a protective MBR covering the disk"),
         (F_PRIMARY, "the primary header and entry array parsed"),
         (F_BACKUP, "the backup table agrees with the primary"),
-        (F_CRICKER, "a cricker-os data partition is on the disk"),
+        (F_NIFE, "a nife data partition is on the disk"),
         (F_NAMES, "every partition name decoded"),
     ] {
         assert!(flags & bit != 0, "{what} (flags {flags:#x})");
     }
     assert_eq!(partitions, PARTITIONS);
     assert_eq!(
-        cricker_first_lba, CRICKER_FIRST_LBA,
-        "the cricker-os partition starts where sgdisk put it",
+        nife_first_lba, NIFE_FIRST_LBA,
+        "the nife partition starts where sgdisk put it",
     );
 }
 
@@ -226,7 +226,7 @@ const P_NO_ENTROPY: u64 = 0x_4E_4F_52_4E_47;
 const PF_MBR: u64 = 1 << 0;
 const PF_PRIMARY: u64 = 1 << 1;
 const PF_BACKUP: u64 = 1 << 2;
-const PF_CRICKER: u64 = 1 << 3;
+const PF_NIFE: u64 = 1 << 3;
 const PF_NAMES: u64 = 1 << 4;
 const PF_UNIQUE: u64 = 1 << 5;
 
@@ -246,7 +246,7 @@ const R_NO_FS: u64 = 0x_4E_4F_46_53_00;
 fn entropy_endpoint() -> crate::sched::EpId {
     let image = program("entropy").expect("no entropy program in the initrd archive");
     let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)
-        .expect("no virtio-rng on the mmio bus: is CRICKER_RNG missing from this test leg?");
+        .expect("no virtio-rng on the mmio bus: is NIFE_RNG missing from this test leg?");
     if let Some(report) = w.wait_for_ready() {
         assert_eq!(
             report[0],
@@ -339,7 +339,7 @@ fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() 
         (PF_MBR, "LBA 0 holds a protective MBR covering the disk"),
         (PF_PRIMARY, "the primary header and entry array parsed"),
         (PF_BACKUP, "the backup table agrees with the primary"),
-        (PF_CRICKER, "a cricker-os data partition is on the disk"),
+        (PF_NIFE, "a nife data partition is on the disk"),
         (PF_NAMES, "every partition name decoded and matched"),
         (
             PF_UNIQUE,

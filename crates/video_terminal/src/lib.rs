@@ -1362,7 +1362,7 @@ mod tests {
         // it. `script.rs` exists so every party agrees, which only works if every party calls it.
         let t = script::full_screen();
         let seen = rows(&t);
-        assert_eq!(seen[0].trim_end(), "cricker-os");
+        assert_eq!(seen[0].trim_end(), "nife");
         assert!(
             seen.iter().filter(|r| !r.trim().is_empty()).count() >= 3,
             "the script fills one row: a stride bug would be invisible",

@@ -110,7 +110,7 @@ pub mod endpoint {
     /// word, over this endpoint; blocks until a receiver takes it. The endpoint capability needs
     /// `WRITE` (you may send here), and the *delegated* capability needs `GRANT` (you were trusted
     /// to pass it on). `rights` may only narrow what the sender holds, never widen it. This is the
-    /// operation that makes cricker-os a capability system a process can actually compose in:
+    /// operation that makes nife a capability system a process can actually compose in:
     /// authority moves between processes at runtime instead of being wired by the kernel at spawn.
     pub const SEND_CAP: u64 = 2;
 

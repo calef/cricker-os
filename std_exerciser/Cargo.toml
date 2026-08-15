@@ -1,8 +1,8 @@
 # The std demo workload (milestone 27): ordinary Rust, no attributes, no `no_std`, built for the
-# `*-unknown-cricker` custom targets with `-Zbuild-std` against the patched rust-src that carries
-# the cricker PAL (patches/std-cricker; `cargo xtask std-src`).
+# `*-unknown-nife` custom targets with `-Zbuild-std` against the patched rust-src that carries
+# the nife PAL (patches/std-nife; `cargo xtask std-src`).
 #
-# Deliberately NOT a member of the main workspace: it builds under the linked `cricker-dev`
+# Deliberately NOT a member of the main workspace: it builds under the linked `nife-dev`
 # toolchain with build-std flags the workspace crates must never inherit, and its target dir is
 # its own. `cargo xtask std-exerciser` is the front door.
 

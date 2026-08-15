@@ -1,4 +1,4 @@
-//! Context-switch latency on the host OS, lmbench's `lat_ctx`, and the host side of cricker-os's EL0
+//! Context-switch latency on the host OS, lmbench's `lat_ctx`, and the host side of nife's EL0
 //! `ctx_switch` bench (notes/benchmarks.md, milestone 25).
 //!
 //! A context switch cannot be timed directly on a stock OS: there is no "yield to that specific

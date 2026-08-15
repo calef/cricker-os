@@ -12,12 +12,12 @@
   "llvm-target": "aarch64-unknown-none",
   "max-atomic-width": 128,
   "metadata": {
-    "description": "cricker-os userspace, aarch64 (softfloat EL0, native capability ABI)",
+    "description": "nife-os userspace, aarch64 (softfloat EL0, native capability ABI)",
     "host_tools": false,
     "std": true,
     "tier": 3
   },
-  "os": "cricker",
+  "os": "nife",
   "panic-strategy": "abort",
   "relocation-model": "static",
   "rustc-abi": "softfloat",
