@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn completions_decode_and_the_phase_gates_ownership() {
-        let mut cq = CqState::new(4);
+        let cq = CqState::new(4);
         // The controller writes phase=1 on its first lap: owned.
         let fresh = Completion::from_dwords([0, 0, 5 | 1 << 16, 42 | 1 << 16]);
         assert_eq!((fresh.sq_head, fresh.sq_id, fresh.cid), (5, 1, 42));
