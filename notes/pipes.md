@@ -851,9 +851,11 @@ bytes, and at 1.15 µs per sixteen that is tens of microseconds for a whole line
 - **The 64 KiB row is nearly memcpy-bound** and the producer runs ahead through the whole transfer,
   which is the buffer effect at its most flattering. It is in the table because it is what a Unix
   program actually gets, not because it is a fair comparison.
-- **`sink_throughput` is not in `bench/baseline-*.txt`.** It is a new row, and a baseline row is a
-  claim about a number somebody has looked at; the integrator adds it from the merged tree, on both
-  ISAs, in the same breath.
+- **`sink_throughput` is in `bench/baseline-*.txt` on both ISAs**, under the same 10% tripwire as
+  every other row, with a comment on the row that its second column is bytes rather than
+  iterations. *(This bullet used to say the row was missing and that adding it was the
+  integrator's; the rows landed in the same commit as this section, and the bullet stood
+  contradicting the two files beside it for eleven days. Corrected 2026-08-14.)*
 
 ## SIGPIPE, and why the pipeline gets its own region
 
