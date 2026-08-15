@@ -22,7 +22,7 @@
 //! dd if=/dev/zero of=gpt64.img bs=1m count=64
 //! sgdisk -n 1:2048:+4M  -t 1:EF00 -c 1:"EFI system"   gpt64.img
 //! sgdisk -n 2:0:+10M    -t 2:8300 -c 2:"linux root"   gpt64.img
-//! sgdisk -n 3:0:0 -t 3:EC5CC08B-D749-4434-AC38-A274C50385BA -c 3:"nife data" gpt64.img
+//! sgdisk -n 3:0:0 -t 3:EC5CC08B-D749-4434-AC38-A274C50385BA -c 3:"cricker data" gpt64.img
 //! sgdisk -U 1A2B3C4D-5E6F-4718-9A0B-C1D2E3F40506 gpt64.img
 //! sgdisk -u 1:11111111-2222-4333-8444-555555555501 \
 //!        -u 2:11111111-2222-4333-8444-555555555502 \
@@ -110,7 +110,10 @@ fn sgdisk_writes_a_table_we_accept_whole() {
     // that has never heard of it. This is the recovery story in one assertion.
     assert_eq!(parts[2].1.type_guid, types::NIFE_DATA);
     assert_eq!(types::name(parts[2].1.type_guid), Some("nife data"));
-    assert_eq!(name_of(&parts[2].1), "nife data");
+    // The label embedded in the fixture is "cricker data": the image was written before the
+    // milestone 120 rename, and it stays that way on purpose. A pre-rename disk is exactly the
+    // recovery case, and the line above proves the GUID, not the label, is what we recognise.
+    assert_eq!(name_of(&parts[2].1), "cricker data");
     assert_eq!(parts[2].1.last_lba, table.last_usable_lba());
 }
 
