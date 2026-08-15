@@ -3054,7 +3054,15 @@ fn bin_elf(name: &str) -> String {
 /// The repo root, from the *compile-time* location of this crate, so it does not depend on
 /// whatever directory cargo happens to hand us.
 fn workspace_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    // Runtime, not env!: the compile-time form bakes the absolute path into the binary, and a
+    // cached xtask built before the checkout moved (the 2026-08-15 cricker-os -> nife rename)
+    // then aims every path it computes, the farm, the initrds, the images, at a directory that
+    // no longer exists. Cargo sets the variable at run time for every cargo-invoked binary, and
+    // that one is always the live path. The render test in crates/manual had the same bug the
+    // same day; if a third place grows this pattern, it is worth a lint.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("cargo sets CARGO_MANIFEST_DIR for xtask");
+    std::path::Path::new(&manifest)
         .parent()
         .expect("xtask has no parent directory")
         .to_path_buf()

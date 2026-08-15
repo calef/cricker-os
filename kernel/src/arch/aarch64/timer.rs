@@ -457,25 +457,36 @@ mod tests {
         timer::spin_for(timer::interval() * 5);
         let after = timer::missed_ticks_on(core);
 
-        // The numbers, not just the fact. `now - next` is how late the re-arm was: a few hundred
-        // counter ticks is a slow handler and is our bug; a whole `interval` or more is the
+        // The numbers decide, not just the fact. `now - next` is how late the re-arm was: less
+        // than an interval is a slow handler and is our bug; a whole `interval` or more is the
         // emulator having been descheduled, which says nothing about this kernel. The test runner
-        // passes no `-icount`, so guest time follows host time and both are possible. Milestone 78
-        // decides what this assertion should measure; until then it at least reports which it saw.
+        // passes no `-icount`, so guest time follows host time and both are possible. This is
+        // milestone 78's taxonomy applied: the deschedule shape stopped failing on 2026-08-15,
+        // after it broke three unrelated pull requests in one day under merge-queue runner load
+        // (notes/load-sensitive-assertions.md carries the story). A slow handler still fails.
         let (now, next, misses) = super::miss_detail::last();
-        assert_eq!(
-            after,
-            before,
-            "the timer handler is taking longer than a whole tick period, with no lock held. \
-             missed {} -> {}; last miss re-armed {} counter ticks late against an interval of {} \
-             ({} misses recorded on this core). Late by much more than one interval means the \
-             emulator was descheduled, not that the handler is slow.",
-            before,
-            after,
-            now.saturating_sub(next),
-            timer::interval(),
-            misses,
-        );
+        if after != before {
+            let late_by = now.saturating_sub(next);
+            assert!(
+                late_by >= timer::interval(),
+                "the timer handler is taking longer than a whole tick period, with no lock held. \
+                 missed {} -> {}; last miss re-armed {} counter ticks late against an interval of \
+                 {} ({} misses recorded on this core). Late by less than one interval means the \
+                 handler itself is slow, which is this kernel's bug.",
+                before,
+                after,
+                late_by,
+                timer::interval(),
+                misses,
+            );
+            crate::println!(
+                "    (missed {} tick(s), re-armed {} ticks late, >= interval {}: the emulator \
+                 was descheduled; not this kernel's bug, not failed)",
+                after - before,
+                late_by,
+                timer::interval(),
+            );
+        }
     }
 
     /// **The cost of masking, made visible.**
