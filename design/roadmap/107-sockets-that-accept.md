@@ -1,12 +1,8 @@
 # 107. The socket contract learns to accept
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/107-sockets-that-accept`. Raised 2026-08-04 from `notes/net.md:250`, which states the gap and names
+**Status: BUILT.** Merged 2026-08-04 (pull request #117; `socket_proto`'s listen verbs are on main). The status said IN-PROGRESS for eleven days after the merge, found 2026-08-15 while ranking ready work: §76's defect class, and the finding that un-hid milestone 54`. Raised 2026-08-04 from `notes/net.md:250`, which states the gap and names
 the test that would close it. Two milestones already on the roadmap need it and neither block says
 so, which is why it is here rather than folded into one of them.
-
-**Gate: NONE.** The gate's shape is known, `hostfwd` being the mirror of the `guestfwd` the
-outbound test already uses, and the scoping question inside it, whether the `std::net`
-`TcpListener` binding lands here or in milestone 27's follow-on, is the lane's to settle early.
 
 **The finding.** The socket contract has no listen verb. `notes/net.md`, under "Not proven by the
 gate": "**inbound connections.** A `LISTEN`/`accept` verb plus a QEMU `hostfwd` (host port to guest)
