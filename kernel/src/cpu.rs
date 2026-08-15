@@ -24,10 +24,23 @@ use crate::thread::{Thread, Tid};
 /// can never collide with a real one.
 pub const NO_TID: Tid = u64::MAX;
 
-/// The most cores we support. QEMU `virt` gives us as many as we ask for with `-smp`; four is
-/// what the tests will run. A fixed maximum lets the blocks be a static array, so they exist
-/// before there is a heap and can be pointed at from a core's very first Rust instruction.
-pub const MAX_CPUS: usize = 4;
+/// The most cores we support: the seats, not the machine. A fixed maximum lets the blocks be a
+/// static array, so they exist before there is a heap and can be pointed at from a core's very
+/// first Rust instruction, and `smp::read_cpu_list` seats each described core at the slot its
+/// hart id names, so this bounds hart *ids*, not just core counts.
+///
+/// Eight, raised from four on 2026-08-14, when the VisionFive 2 turned out to describe five harts
+/// (the unusable S7 monitor plus four U74s) and the fourth U74 fell off a four-seat roster. Eight
+/// rather than five because the bound is on ids a board may use, not on one board's count: the
+/// next small system-on-chip reopens five, and the mask arithmetic (`cpu_set`, the SBI IPI hart bitmaps)
+/// is exhaustively host-tested over exactly eight bits. What each seat costs whether or not a
+/// core fills it: one `PerCpu` block, one timer/trap-stash entry, one event ring and a roster
+/// slot, about 330 bytes of statics per seat (measured at the bump; it vanished inside the
+/// sections' page rounding), and the real cost, one 68 KiB secondary-stack slot (64 KiB stack
+/// over a 4 KiB guard page, milestone 90) in the NOLOAD stack region: 272 KiB of RAM for the
+/// four new seats. QEMU `virt` gives us as many cores as `-smp` asks; the runners default to 4
+/// and `NIFE_SMP` moves the legs up to this ceiling.
+pub const MAX_CPUS: usize = 8;
 
 /// One core's private data.
 pub struct PerCpu {

@@ -21,7 +21,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use isa::cpu_list::{CpuList, EnableMethod};
+use isa::cpu_list::CpuList;
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, print, println};
@@ -178,11 +178,9 @@ static HWID: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CP
 /// per-SoC method).
 static STARTABLE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
-/// How many slots of [`HWID`] are filled: `min(what the tree described, MAX_CPUS)`.
-static ROSTER: AtomicUsize = AtomicUsize::new(0);
-
-/// How many `cpu@` nodes the tree had, which may be more than [`ROSTER`]. Kept so the boot line can
-/// say "this machine has more cores than this kernel was built for" instead of quietly using four.
+/// How many `cpu@` nodes the tree had, which may be more than the slots that got seated. Kept so
+/// the boot line can say "this machine has more cores than this kernel was built for" instead of
+/// quietly using fewer.
 static DESCRIBED: AtomicUsize = AtomicUsize::new(0);
 
 /// **Read the machine's core list out of its device tree** (milestone 100).
@@ -209,28 +207,40 @@ pub fn read_cpu_list(dtb_ptr: usize) {
         .expect("device tree is unreadable");
     let list = CpuList::from_device_tree(&dt).expect("cannot read /cpus");
 
-    let n = list.len.min(MAX_CPUS);
+    // Seat each described core at the slot its own hardware id names. A slot IS a hart id:
+    // everywhere the kernel indexes hardware (the per-CPU blocks, the secondary stacks, the RISC-V
+    // trap stashes, GIC and PLIC targets, IPI hart masks) it uses the logical id, so seating by
+    // hwid makes logical-id-equals-hardware-id hold by construction rather than by a positional
+    // assignment checked afterwards at bring-up. It is also what keeps an excluded core from
+    // costing anyone else a seat: the old `take(MAX_CPUS)` truncated the *described* list before
+    // startability was known, so on the VisionFive 2 the unusable S7 consumed a slot and U74
+    // hart 4 fell off the end, parked with nothing to report (bench, 2026-08-14). Seated by id,
+    // the S7 occupies only slot 0, its own, and hart 4 sits at slot 4.
+    //
+    // The startability predicate is `isa::cpu_list::Cpu::startable`, host-tested against both
+    // JH7110 fixtures (the mainline tree's `status` lie and the vendor tree's ISA-string truth);
+    // see it for why `Unstated` passes and why supervisor mode is required.
     let mut startable = 0;
-    for (i, cpu) in list.cpus().iter().take(n).enumerate() {
-        HWID[i].store(cpu.hwid, Ordering::Relaxed);
-        // `Unstated` counts as startable on purpose. The RISC-V CPU binding has no `enable-method`
-        // at all (SBI HSM is the only mechanism), so demanding the property would refuse every
-        // RISC-V machine including the one this kernel already runs on.
-        //
-        // `supervisor` is required because `status` can lie where a hart's own ISA string does
-        // not: the VisionFive 2's vendor tree marks its M/U-only S7 "okay" with an Sv39 mmu-type,
-        // both false, and honoring them started the S-incapable core and crashed vendor OpenSBI
-        // in M-mode (bench, 2026-08-14). A core without S-mode cannot run this kernel, full stop.
-        let ok = cpu.usable
-            && cpu.supervisor
-            && matches!(
-                cpu.enable_method,
-                EnableMethod::Psci | EnableMethod::Unstated
-            );
-        STARTABLE[i].store(ok, Ordering::Relaxed);
+    let mut unseated = 0; // startable cores whose hart id names no slot
+    for cpu in list.cpus().iter() {
+        let ok = cpu.startable();
         startable += usize::from(ok);
+        let Some(slot) = usize::try_from(cpu.hwid).ok().filter(|&s| s < MAX_CPUS) else {
+            // A core this build cannot seat: its id is past the per-CPU statics (or it is a
+            // clustered aarch64 machine's Aff1-bearing affinity value, same refusal as ever, made
+            // earlier). Only counted against us when we could otherwise have run it.
+            unseated += usize::from(ok);
+            continue;
+        };
+        if HWID[slot].load(Ordering::Relaxed) != u64::MAX {
+            // Two nodes claiming one id is a malformed tree (or `cpu_list`'s missing-`reg`
+            // fallback of zero colliding with the real hart 0). First claim wins; say so.
+            println!("  smp: two cpu@ nodes claim hart id {slot}; keeping the first");
+            continue;
+        }
+        HWID[slot].store(cpu.hwid, Ordering::Relaxed);
+        STARTABLE[slot].store(ok, Ordering::Relaxed);
     }
-    ROSTER.store(n, Ordering::Release);
     DESCRIBED.store(list.described, Ordering::Release);
 
     // The RISC-V timer's counter rate is a `/cpus` property and is read separately, earlier in that
@@ -239,10 +249,10 @@ pub fn read_cpu_list(dtb_ptr: usize) {
     if startable != list.described {
         print!(", {startable} startable");
     }
-    if list.described > MAX_CPUS {
+    if unseated > 0 {
         print!(
-            " (this kernel is built for {MAX_CPUS}: cpu::MAX_CPUS sizes the per-CPU statics, so the \
-             rest stay parked)"
+            " ({unseated} of them with hart ids past cpu::MAX_CPUS = {MAX_CPUS}, which sizes the \
+             per-CPU statics, so they stay parked)"
         );
     }
     println!();
@@ -251,11 +261,12 @@ pub fn read_cpu_list(dtb_ptr: usize) {
     // On the VisionFive 2's vendor tree this is the only place the S7's exclusion is visible at
     // all: status and mmu-type both claim a schedulable core, and trusting them handed the
     // S-incapable hart to sbi hart_start and crashed vendor OpenSBI (bench, 2026-08-14).
-    for (i, cpu) in list.cpus().iter().take(n).enumerate() {
+    for cpu in list.cpus().iter() {
         if !cpu.supervisor {
             println!(
-                "  smp: cpu {i}'s riscv,isa names user mode and not supervisor: it cannot run \
-                 this kernel, whatever status and mmu-type claim; not started"
+                "  smp: cpu {}'s riscv,isa names user mode and not supervisor: it cannot run \
+                 this kernel, whatever status and mmu-type claim; not started",
+                cpu.hwid,
             );
         }
     }
@@ -272,11 +283,11 @@ pub fn read_cpu_list(dtb_ptr: usize) {
     }
 }
 
-/// The hardware id of logical core `id`, or `None` for a slot the tree did not describe.
+/// The hardware id of logical core `id`, or `None` for a slot no described core's hart id names.
 ///
-/// The reverse of the assumption this milestone retired. Nothing outside the bring-up path calls it
-/// yet, and the reason is the limitation in [`bring_up_secondaries`]'s BUGS: the rest of the kernel
-/// indexes hardware by logical id, so it is only correct while the two are equal.
+/// Since seating went by-id (2026-08-14) a filled slot holds its own index by construction, so a
+/// `Some` answer is always `Some(id)`; the value of asking is the `None`, which distinguishes a
+/// seat the machine filled from one it did not.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn hwid(id: usize) -> Option<u64> {
     match HWID.get(id)?.load(Ordering::Acquire) {
@@ -306,24 +317,26 @@ unsafe extern "C" {
 ///
 /// # BUGS
 ///
-/// - **A core whose hardware id is not its logical id is refused, loudly, rather than started**
-///   (milestone 100). Reading `/cpus` tells us the real ids; *using* an id that differs from the
-///   core's index would need three other things to change with it, and none of them are in this
-///   milestone. `cpu::PERCPU`, the secondary stacks and the RISC-V trap stashes are arrays indexed
-///   by logical id; the GICv2 targets an SPI by CPU-interface number and `send_sgi` by that same
-///   number; the PLIC's S-mode context table (`arch::irq`) is indexed by hart id and the SBI IPI mask is a bitmap of hart
-///   ids. Every one of those reads a logical id today and would need the hardware id instead. So
-///   the honest state is: the list is read, the ids are checked, and a machine that numbers its
-///   cores any other way gets a named refusal and a smaller machine instead of a silent no-op.
-///   A clustered aarch64 board (`MPIDR_EL1.Aff1` in use) is exactly that machine.
+/// - **A core whose hardware id names no slot is refused, loudly, rather than remapped**
+///   (milestone 100, reshaped by the by-id seating, 2026-08-14). The kernel indexes hardware by
+///   logical id everywhere: `cpu::PERCPU`, the secondary stacks and the RISC-V trap stashes are
+///   arrays indexed by it; the GICv2 targets an SPI by CPU-interface number and `send_sgi` by that
+///   same number; the PLIC's S-mode context table (`arch::irq`) is indexed by hart id and the SBI
+///   IPI mask is a bitmap of hart ids. Giving a core a logical id other than its hardware id would
+///   need every one of those to translate, so [`read_cpu_list`] seats each core at the slot its
+///   hardware id names and the equation holds by construction. The refusal that used to live here
+///   (a positional slot whose recorded hwid was not its index) is now the seating's: a core whose
+///   id is at or past `MAX_CPUS`, which includes every id on a clustered aarch64 board
+///   (`MPIDR_EL1.Aff1` in use), gets a named line at roster time and stays parked. A machine whose
+///   ids are sparse but small (say harts {0, 2}) now simply works, seats {0, 2}, where the
+///   positional roster refused it; nothing between the ids is started or counted.
 ///
 ///   What that entanglement no longer includes, since the first-silicon sweep (2026-08-14): the
 ///   assumption that the online *logical ids* are contiguous from zero. Every per-cpu loop, both
 ///   IRQ-affinity round-robins and the spawn/wake placement now go through [`online_cpus`] /
 ///   [`nth_online`] (or mask with [`online_harts_mask`], as the RISC-V RFENCE calls do), so a
-///   machine whose online set is {1,2,3}, the VisionFive 2, is handled. Still assumed: hardware id
-///   equals logical id (above, refused when false), and `MAX_CPUS = 4`, which on that board leaves
-///   U74 hart 4 off the roster and parked (notes/visionfive2.md BUGS; open).
+///   machine whose online set is {1,2,3,4}, the VisionFive 2 with all four U74s seated, is
+///   handled (notes/visionfive2.md).
 /// - **The conduit half is proved by parsing and not by calling.** `crates/isa`'s host tests read a
 ///   real QEMU dump that states `smc`, so the decode is exercised; no machine here boots that
 ///   configuration, so the `smc` instruction path has never executed. See `arch::psci_cpu_on`.
@@ -360,11 +373,16 @@ pub fn bring_up_secondaries() {
     }
 
     let mut started = 0;
-    for id in 0..ROSTER.load(Ordering::Acquire) {
-        // Start every core the tree described but the one we booted on. On aarch64 that is always
-        // core 0; on RISC-V OpenSBI's boot hart is not guaranteed to be 0, so skip whichever this
-        // is. Both are the roster slot whose hardware id equals `boot_cpu_id()`, checked below.
+    for id in 0..MAX_CPUS {
+        // Start every seated core but the one we booted on. On aarch64 that is always core 0; on
+        // RISC-V OpenSBI's boot hart is not guaranteed to be 0, so skip whichever this is.
         if id == cpu::id() {
+            continue;
+        }
+        let hwid = HWID[id].load(Ordering::Relaxed);
+        if hwid == u64::MAX {
+            // No described core's hart id names this slot: an empty seat, not a refusal.
+            // `read_cpu_list` already reported anything it could not seat.
             continue;
         }
         if !STARTABLE[id].load(Ordering::Relaxed) {
@@ -372,20 +390,9 @@ pub fn bring_up_secondaries() {
             println!("       mode, or an enable-method we do not speak); leaving it alone.");
             continue;
         }
-        // The hardware id the machine gave this core, and the check the rest of the kernel needs it
-        // to pass. See this function's BUGS: per-CPU state, GIC and PLIC targets and IPI masks are
-        // all indexed by logical id, so an id that is not its index is a machine we can read and
-        // cannot yet run on. Refusing it is the point of the milestone: the alternative is starting
-        // nothing and reporting success.
-        let hwid = HWID[id].load(Ordering::Relaxed);
-        if hwid != id as u64 {
-            println!("  smp: cpu {id} has hardware id {hwid:#x}, which is not its index.");
-            println!(
-                "       This kernel indexes per-CPU state, interrupt targets and IPI masks by"
-            );
-            println!("       logical id, so it cannot use that core yet. Not started.");
-            continue;
-        }
+        // Seating placed this core at the slot its hardware id names (see read_cpu_list), so the
+        // equation the rest of the kernel indexes by holds by construction; this cannot fire.
+        debug_assert_eq!(hwid, id as u64, "a seated core is not at its own hart id");
         let ret = arch::psci_cpu_on(hwid, entry, stack_top(id));
         if ret == 0 {
             started += 1;
@@ -474,7 +481,8 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     crate::sched::run_idle()
 }
 
-// The SMP tests need more than one core online (the runner passes `-smp 4`). They run on both
+// The SMP tests need more than one core online (the runners default to `-smp 4`; NIFE_SMP moves
+// it, up to MAX_CPUS). They run on both
 // architectures now that RISC-V brings up secondary harts via SBI HSM (parity workstream A): the
 // bring-up, cross-core work placement (inbox + reschedule IPI), and load balancing are all portable
 // and exercised identically on the GIC/SGI and PLIC/SBI-IPI paths.
@@ -614,9 +622,9 @@ mod tests {
     ///
     /// It also pins the invariant the rest of the kernel still rests on. Per-CPU blocks, secondary
     /// stacks, RISC-V trap stashes, GIC targets, PLIC contexts and SBI IPI masks are all indexed by
-    /// logical id, so a hardware id that is not its index is a machine this kernel reads correctly
-    /// and cannot yet run on. `bring_up_secondaries` refuses such a core by name; this proves the
-    /// machine under the tests is not one, which is what makes that refusal path unreachable here.
+    /// logical id, and `read_cpu_list` seats each core at the slot its hardware id names, so the
+    /// two are equal by construction. This proves the seating put every described core where its
+    /// id says, on the machine every merge boots.
     #[test_case]
     fn the_roster_is_the_machines_own_core_list() {
         let ptr = crate::DTB.load(Ordering::Relaxed);
@@ -630,21 +638,37 @@ mod tests {
             list.described,
             "the roster and a fresh read of the tree disagree about how many cores exist",
         );
-        assert_eq!(
-            list.described, MAX_CPUS,
-            "the runner passes -smp {MAX_CPUS}, and the tree should say so",
+        // The tree's count is the runner's `-smp`, which is no longer required to equal MAX_CPUS:
+        // the constant is a ceiling (it sizes the per-CPU statics), not the machine. What the suite
+        // does require is at least two cores (or the SMP tests prove nothing) and no more than the
+        // statics can seat (a bigger `-smp` would park real cores, and
+        // `every_core_the_tree_described_is_running` below would fail on the honest count anyway;
+        // this names the cause first).
+        assert!(
+            list.described >= 2,
+            "the SMP suite needs -smp of at least 2; the tree describes {}",
+            list.described,
+        );
+        assert!(
+            list.described <= MAX_CPUS,
+            "the runner passed -smp {} but this kernel seats only {MAX_CPUS}: cores would stay \
+             parked, so run the suite at or below cpu::MAX_CPUS",
+            list.described,
         );
 
-        for (id, cpu) in list.cpus().iter().enumerate() {
-            assert_eq!(
-                super::hwid(id),
-                Some(cpu.hwid),
-                "roster slot {id} does not hold the hardware id the tree gave that core",
+        for cpu in list.cpus().iter() {
+            let slot = usize::try_from(cpu.hwid).expect("a virt hart id fits in usize");
+            assert!(
+                slot < MAX_CPUS,
+                "hart {slot} has no seat: the runner's -smp exceeds cpu::MAX_CPUS",
             );
+            // Seating is by hart id (read_cpu_list), so the slot a core occupies IS its hardware
+            // id; this holds the two walks together the way the old positional roster check did.
             assert_eq!(
-                cpu.hwid, id as u64,
-                "core {id} has a hardware id that is not its index: this kernel indexes hardware \
-                 by logical id, so bring_up_secondaries would have refused it (see its BUGS)",
+                super::hwid(slot),
+                Some(cpu.hwid),
+                "hart {} is not seated at the slot its own id names",
+                cpu.hwid,
             );
             // The supervisor rule (bench, 2026-08-14) must change nothing on QEMU: every virt cpu
             // is an S-mode hart, whichever generation of ISA-string spelling its tree uses, so
@@ -652,8 +676,9 @@ mod tests {
             // `supervisor` on this machine means the parser read a modern string's silence, or a
             // multi-letter extension, as a denial.
             assert!(
-                cpu.usable && cpu.supervisor,
-                "core {id} would be excluded from bring-up on the suite's own machine",
+                cpu.startable(),
+                "hart {} would be excluded from bring-up on the suite's own machine",
+                cpu.hwid,
             );
         }
     }
@@ -715,13 +740,17 @@ mod tests {
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.
     ///
     /// `bring_up_secondaries` already waited for the count before `test_main` ran, so the other
-    /// cores are online by now. The runner passes `-smp 4`, so we expect `MAX_CPUS - 1`.
+    /// cores are online by now. The expectation is the machine's own core count (whatever `-smp`
+    /// the runner passed), not `MAX_CPUS`: the constant is capacity, and a leg run at `-smp 5`
+    /// on an eight-slot kernel has four secondaries, honestly.
     #[test_case]
     fn all_secondaries_came_online() {
         assert_eq!(
             ONLINE.load(Ordering::Acquire),
-            MAX_CPUS - 1,
-            "not all secondary cores came online (is the runner passing -smp {MAX_CPUS}?)",
+            super::described_count() - 1,
+            "not every core the tree describes came online (described {}, online {})",
+            super::described_count(),
+            online_count(),
         );
     }
 
@@ -808,7 +837,7 @@ mod tests {
         let here = cpu::id();
         assert!(
             n >= 2,
-            "a cross-core placement test needs at least two online cores (runner passes -smp {MAX_CPUS})",
+            "a cross-core placement test needs at least two online cores; this machine has {n}",
         );
 
         // Every ONLINE core but this one, placed from here: the remote path, inbox plus SGI. The

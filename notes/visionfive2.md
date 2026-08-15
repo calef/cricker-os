@@ -156,8 +156,10 @@ missing, and was built 2026-08-14: the **ISA record** (`isa::riscv64`) counted d
 the S7's `rv64imac` narrowed the machine's common extensions, and an S7 whose tree spells its MMU
 as `riscv,none` would have read as a machine that cannot run us at all. A disabled hart now
 contributes nothing to the record, host-proven against the hand-written jh7110 fixture
-(crates/isa/tests/riscv64_jh7110.rs). One roster limitation remains, recorded in the BUGS below:
-`cpu::MAX_CPUS` is 4 and this SoC describes five harts.
+(crates/isa/tests/riscv64_jh7110.rs). The roster limitation this paragraph used to end on
+(`cpu::MAX_CPUS` was 4 against this SoC's five described harts) closed on 2026-08-14: the constant
+is 8 and the roster seats cores by hart id, so hart 4 has a seat; the BUGS below carry the details
+and what boot 10 must still prove.
 
 **Second bench stop (2026-08-14): the vendor tree lies about the S7, twice, and the fix above
 never fires on the real board.** Everything in this note cited from [dtsi] describes mainline; the
@@ -195,8 +197,9 @@ mainline fixture's S7 is excluded by `status`, the vendor fixture's by its ISA s
 same conclusion arrives through the two trees' different lies.
 
 **Third bench stop (2026-08-14): the online set is {1,2,3}, and the kernel indexed it as
-{0,1,2}.** With the S7 refused, the machine's online cpus are harts 1..3 (hart 4 is past
-`MAX_CPUS`, see BUGS), the first time this kernel ever ran with a set not contiguous from zero;
+{0,1,2}.** With the S7 refused, the machine's online cpus are harts 1..3 (hart 4 was past
+`MAX_CPUS`, then 4; fixed later that day, see BUGS), the first time this kernel ever ran with a
+set not contiguous from zero;
 on QEMU `virt` the set is always {0..n-1}, so every `0..online_count()` loop and every
 `rng % online_count()` pick had been right by coincidence. On the board, spawn placement's
 modulo-count produced index 0 and placed `init` into parked slot 0's inbox, which nothing drains,
@@ -647,6 +650,26 @@ machine state proves the printing steps ran; boot 11 carries the discriminators 
 every dump header, `tx=` in the diag line, `serve:` ring events, the registry canary), and the
 first move is to re-examine the boot 7 through 9 captures for the missing lines.
 
+**Boots 12 and 13 (2026-08-15) closed the story, as the measured-boot pair.** Boot 12, the first
+under the name `nife`, cleared the whole bring-up and was **refused at the trust boundary**:
+`MEASURED BOOT REFUSED: 'program_measurements' is not what this kernel image was built against`,
+and the kernel halted rather than hand the archive to init. The mismatch was real and ours:
+`script/board-image` built the kernel before packing the archive that regenerates the manifest
+the kernel compiles in, so the kernel on the card vouched for the *previous* archive. QEMU never
+hit it because `xtask` orders those steps correctly; the fix swapped the script's order and its
+comment carries this story. Boot 13, with the pair built in order, ran the tour to the final
+banner: init measured and built `worker` from the 6,294,016-byte archive (child sent 81,
+expected 81), preemption ran two never-yield threads 3.3M and 28.3M iterations with 61
+preemptions, and every discriminator boot 11 was instrumented for reported a healthy machine:
+the five diag dumps show `svc=20` frozen, identical event rings, and the two parked receivers of
+the demo's terminal state. Two observations from 13, recorded rather than chased: the early
+`scheduler :` smoke line reported `0 of 2 kernel threads ran` (boot 12 said 1 of 2; the
+preemption numbers prove scheduling, so the smoke line races real timing and its wording
+overclaims), and a key press at the prompt did nothing, which **confirms on silicon** the
+UART-IRQ limitation below (the driver armed line 10; the board interrupts on 32). The refusal
+followed by the pass is the measured-boot demonstration end to end: the same board, the wrong
+pair refused, the right pair run.
+
 Three limitations found while building those, honestly not fixed here:
 
 - **The tour's UART-driver step arms QEMU's interrupt number on the board.** `main.rs` passes
@@ -656,20 +679,26 @@ Three limitations found while building those, honestly not fixed here:
   Quiet in practice tonight (source 10 never fired, or the driver's dump row would show it
   running rather than parked), and not the fifth stop's bug, but the number needs to come from
   the device tree like everything else on this page before the driver demo means anything on
-  silicon.
+  silicon. **Confirmed on silicon 2026-08-15 (boot 13): a key press at the completed tour's
+  prompt reached nothing**, exactly as this entry predicts.
 
 - **The shell path's userspace input driver still speaks QEMU's UART layout.**
   `user/src/input.rs` reads the NS16550 at byte-stride offsets (LSR at 0x05), so on the board the
   kernel console will print but the interactive shell's input path reads garbage until that driver
   learns the same shape the kernel driver did. Not on the first-boot path (the tour and test
   builds take no input); bites at the shell milestone.
-- **`cpu::MAX_CPUS` is 4 and this SoC describes five harts** (one unusable), so U74 hart 4 falls
-  off the end of the roster and stays parked, silently. The fix is a `MAX_CPUS` bump or a roster
-  that skips unstartable harts, and both are entangled with the logical-id-equals-hardware-id
-  assumption recorded in `smp.rs`'s BUGS. On the vendor tree a bench boot will print "5 core(s)
-  in the device tree, 3 startable" (the four roster slots hold the S7 and three U74s; the S7 is
-  excluded by the supervisor rule) plus the cpu 0 exclusion line, and bring up two secondaries
-  beside the boot hart, which is correct arithmetic and one hart short of the machine.
+- **`cpu::MAX_CPUS` was 4 against this SoC's five described harts, fixed 2026-08-14**: the
+  constant is 8 and the roster seats each core at the slot its own hart id names
+  (`smp::read_cpu_list`), so the unusable S7 occupies only slot 0 and U74 hart 4 sits at slot 4
+  instead of falling off a positional truncation. The logical-id-equals-hardware-id assumption is
+  untouched; seating by id makes it hold by construction, and a hart whose id has no seat gets a
+  named line and stays parked, the same refusal as before, earlier. QEMU-proven at `-smp 5` and
+  `-smp 8` (every described hart online) and host-proven against both JH7110 fixtures (startable
+  set exactly {1,2,3,4}); what QEMU cannot prove, the fourth U74 actually running this kernel's
+  code beside the other three on silicon, is boot 10's fact. Its banner should read
+  "5 core(s) in the device tree, 4 startable" plus the cpu 0 exclusion line, then
+  "4 core(s) online" (three secondaries beside the boot hart): correct arithmetic and, for the
+  first time, the whole machine.
 
 The `text_offset` in the Image header encodes one board's DRAM base; the header comment in
 `boot.s` and the section above carry the caveat.

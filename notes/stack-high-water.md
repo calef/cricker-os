@@ -105,14 +105,16 @@ by being skipped between `.bss` and `__stack_bottom`.
 The region is `MAX_CPUS` slots, page-aligned at both ends, and it sits inside `__image_start`..
 `__image_end`, so `image_size` in the arm64 Image header still covers it (the bootloader will not
 drop a device tree on a stack) and the direct map still skips it (there is no second, mapped alias of
-a guard page). On aarch64 it lands at `__stack_top`, 0x400fc000..0x40140000; on riscv64 at
-0x80266000..0x802aa000. `MAX_CPUS` stays in Rust and is **not** written again in either linker
+a guard page). On aarch64 it lands at `__stack_top`, 0x4010c000..0x40194000; on riscv64 at
+0x80272000..0x802fa000 (eight slots since the 2026-08-14 `MAX_CPUS` bump; the ranges here were
+0x400fc000..0x40140000 and 0x80266000..0x802aa000 at four). `MAX_CPUS` stays in Rust and is **not**
+written again in either linker
 script, which is the drift `cseam` teaches to avoid; a test holds the emitted region against the
 reserved one from the other side.
 
-**`(NOLOAD)` is load-bearing, and one line of the linker script explains a quarter megabyte.** A
+**`(NOLOAD)` is load-bearing, and one line of the linker script explains half a megabyte.** A
 zero-initialized Rust static in an explicitly named section becomes PROGBITS, and the flat binary
-that QEMU loads would then carry 272 KiB of zeroes. Marking the output section `(NOLOAD)` makes it
+that QEMU loads would then carry 544 KiB of zeroes. Marking the output section `(NOLOAD)` makes it
 `SHT_NOBITS` again: the ELF grew by nothing (`objcopy -O binary` still emits 421,888 bytes on
 aarch64). The cost of the whole feature is 16 KiB of address space and **zero physical frames**.
 Nothing zeroes the region either, which a stack does not need and the paint pass overwrites anyway.
@@ -337,4 +339,6 @@ together by the convenient shape, and the connection was invisible until somethi
   map is installed; a later mapping that filled a guard page in (nothing does this today, and the
   mapper refuses to overwrite) would not be noticed until the test build ran.
 - The boot core's slot in the region is mapped and never used: `MAX_CPUS` slots exist, one is
-  wasted so that slot index can stay CPU id. 68 KiB of address space, no frames.
+  wasted so that slot index can stay CPU id, and any seat the machine does not fill (the constant
+  is a ceiling since the 2026-08-14 bump to eight) idles the same way. 68 KiB of address space
+  each, no frames.
