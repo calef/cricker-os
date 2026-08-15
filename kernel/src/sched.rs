@@ -407,6 +407,10 @@ mod trace {
         StealServe = 7,
         /// This core drained its inbox; the tid field carries the count moved.
         InboxDrain = 8,
+        /// This core REFUSED a wake of `tid`: the target was parked in IPC and the waker had
+        /// delivered nothing (no message, no signal, no abort). The boot-8 gate firing; on a
+        /// healthy boot this event never appears, so its presence in a bench dump is the finding.
+        WakeRefused = 9,
     }
 
     struct Ring {
@@ -456,6 +460,7 @@ mod trace {
                 6 => "place",
                 7 => "steal",
                 8 => "drain",
+                9 => "refuse",
                 _ => "?",
             };
             crate::print!(" {name}:{tid:#x}");
@@ -484,6 +489,7 @@ mod trace {
         PlaceRemote,
         StealServe,
         InboxDrain,
+        WakeRefused,
     }
 
     #[inline]
@@ -989,7 +995,9 @@ fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
         ipc::Send::Rendezvous(receiver) => {
             // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
             let receiver = unsafe { (*receiver.as_ptr()).id };
-            sched.threads.get_mut(receiver).unwrap().mailbox = msg;
+            let r = sched.threads.get_mut(receiver).unwrap();
+            r.mailbox = msg;
+            r.ipc_served = true; // delivered: this wake passes the boot-8 gate
             wake(sched, receiver);
         }
         ipc::Send::Blocked => {
@@ -1090,6 +1098,22 @@ pub fn schedule() {
                 idle_tid
             }
         };
+
+        // **The running thread must never come off its own run queue** (boot 8's downstream
+        // catastrophe, guarded here on its own merits). The pop above precedes the requeue below,
+        // so a legal schedule can never hand back `current`; if it ever does, something queued a
+        // thread that was still running, and switching into it would restore `t.context`, a
+        // pointer to a frame this very thread has already resumed and consumed: execution
+        // time-travels to its previous switch-out point on a reused stack and spins there
+        // forever, off every instrument. Debug builds fail loudly; the board build heals by
+        // keeping the thread running, which is the only state that is still coherent.
+        if next == current {
+            if cfg!(debug_assertions) {
+                panic!("schedule() popped its own current thread from the run queue");
+            }
+            sched.threads.get_mut(current).unwrap().state = State::Running;
+            break 'decide None;
+        }
 
         // Requeue the outgoing thread if it can still run, but never the idle thread, which lives
         // outside the ready queue. A killed thread is already `Finished` (handled at the top), so it
@@ -1282,7 +1306,9 @@ pub fn irq_notify(ep: EpId) {
             // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
             // through the table for everything after.
             let waiter = unsafe { (*waiter.as_ptr()).id };
-            sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
+            let t = sched.threads.get_mut(waiter).unwrap();
+            t.mailbox = [1, 0, 0, 0, 0];
+            t.ipc_served = true; // the signal is the delivery (the boot-8 gate)
             wake_load_aware(sched, waiter)
         } else {
             None
@@ -1435,6 +1461,13 @@ fn wake_load_aware(sched: &mut Scheduler, tid: Tid) -> Option<usize> {
     if t.state != State::Blocked {
         return None;
     }
+    // The undelivered-wake gate, exactly as in [`wake`] (boot 8): only the hand that delivered
+    // (here: `irq_notify`, which set the signal mailbox and `ipc_served` after popping the
+    // waiter) may make a waiting thread Ready.
+    if t.wait_on.is_some() && !t.ipc_served && !t.ipc_aborted {
+        trace::record(trace::Event::WakeRefused, tid, 0);
+        return None;
+    }
     // A device-IRQ wake is forward progress too (test builds only; see testing::note_progress).
     #[cfg(test)]
     crate::testing::note_progress();
@@ -1469,6 +1502,22 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
     if let Some(t) = sched.threads.get_mut(tid)
         && t.state == State::Blocked
     {
+        // **A waiting thread is woken only by the hand that completed its rendezvous** (boot 8,
+        // VisionFive 2, 2026-08-14). Every genuine wake happens in the same SCHED critical
+        // section that delivered something for the parked IPC to return: a message staged in the
+        // mailbox, an interrupt signal, a reply, or an abort. Those sites set `ipc_served` (or
+        // `ipc_aborted`) before calling here. A wake carrying neither has not dequeued the
+        // thread from its endpoint's wait queue and has nothing for its recv to return; queueing
+        // it would complete the recv with stale mailbox bytes while the TCB is still linked on
+        // the endpoint, breaking the intrusive one-link invariant in kernel memory. That is the
+        // boot-8 wedge: the boot thread took exactly such a wake (`wake:0x0` with no sender in
+        // existence) and ran off a consumed rendezvous forever. Refuse it, say so in the ring,
+        // and leave the thread parked: the rendezvous that never happened is still pending, and
+        // a real counterparty completes it normally later.
+        if t.wait_on.is_some() && !t.ipc_served && !t.ipc_aborted {
+            trace::record(trace::Event::WakeRefused, tid, 0);
+            return;
+        }
         // A completed rendezvous is forward progress: keep the hang watchdog's heartbeat alive so a
         // slow-but-live IPC pipeline (std_net) is not read as a deadlock (test builds only).
         #[cfg(test)]
@@ -1537,7 +1586,9 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver.as_ptr()).id };
-                sched.threads.get_mut(receiver).unwrap().mailbox = msg;
+                let r = sched.threads.get_mut(receiver).unwrap();
+                r.mailbox = msg;
+                r.ipc_served = true; // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
                 false
             }
@@ -1547,6 +1598,7 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
                 me.mailbox = msg;
                 me.state = State::Blocked;
                 me.wait_on = Some((ep, WaitRole::Sender));
+                me.ipc_served = false; // parked: only a collecting receiver may wake us
                 trace::record(trace::Event::BlockSelf, current, ep as u8);
                 true
             }
@@ -1601,6 +1653,9 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
                     Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
                 ) || sched.threads.get(sender).unwrap().state == State::Dead;
                 if !leave_blocked {
+                    // Collected: the sender's rendezvous is complete, which is what lets its
+                    // wake through the boot-8 gate.
+                    sched.threads.get_mut(sender).unwrap().ipc_served = true;
                     wake(sched, sender);
                 } else if sched.threads.get(sender).unwrap().state == State::Dead {
                     // The corpse's death message is collected and `recv` popped it off the sender
@@ -1614,6 +1669,7 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
                 let me = sched.threads.get_mut(current).unwrap();
                 me.state = State::Blocked;
                 me.wait_on = Some((ep, WaitRole::Receiver));
+                me.ipc_served = false; // parked: only a delivering sender may wake us
                 trace::record(trace::Event::BlockSelf, current, ep as u8);
                 None
             }
@@ -1626,7 +1682,14 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
             schedule(); // blocks; a sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(current_tid()).unwrap().mailbox
+            let t = sched.threads.get(current_tid()).unwrap();
+            // The boot-8 gate makes an undelivered resume unreachable; this is its tripwire,
+            // loud in every QEMU test build, on the path where the strand was observed.
+            debug_assert!(
+                t.ipc_served || t.ipc_aborted,
+                "recv resumed with nothing delivered"
+            );
+            t.mailbox
         }
     }
 }
@@ -1667,6 +1730,7 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
                 r.mailbox = [data, slot, 0, 0, 0];
+                r.ipc_served = true; // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
                 false
             }
@@ -1677,6 +1741,7 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 me.outgoing_cap = Some(cap);
                 me.state = State::Blocked;
                 me.wait_on = Some((ep, WaitRole::Sender));
+                me.ipc_served = false; // parked: only a collecting receiver may wake us
                 trace::record(trace::Event::BlockSelf, current, ep as u8);
                 true
             }
@@ -1731,6 +1796,8 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
                     None => NO_CAP,
                 };
                 if !is_reply {
+                    // Collected: the sender's rendezvous is complete (the boot-8 gate).
+                    sched.threads.get_mut(sender).unwrap().ipc_served = true;
                     wake(sched, sender);
                 }
                 // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
@@ -1741,6 +1808,7 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
                 let me = sched.threads.get_mut(current).unwrap();
                 me.state = State::Blocked;
                 me.wait_on = Some((ep, WaitRole::Receiver));
+                me.ipc_served = false; // parked: only a delivering sender may wake us
                 trace::record(trace::Event::BlockSelf, current, ep as u8);
                 None
             }
@@ -1753,7 +1821,12 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
             schedule(); // a capability-carrying sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            let m = sched.threads.get(current_tid()).unwrap().mailbox;
+            let t = sched.threads.get(current_tid()).unwrap();
+            debug_assert!(
+                t.ipc_served || t.ipc_aborted,
+                "recv_cap resumed with nothing delivered"
+            );
+            let m = t.mailbox;
             [m[0], m[1], m[2]] // RECV_CAP carries three words; the top two are the fault path's
         }
     }
@@ -1791,6 +1864,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
                 r.mailbox = [msg[0], slot, msg[1], 0, 0];
+                r.ipc_served = true; // delivered: this wake passes the boot-8 gate
                 wake(sched, receiver);
             }
             ipc::Send::Blocked => {
@@ -1807,6 +1881,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
         let me = sched.threads.get_mut(current).unwrap();
         me.state = State::Blocked;
         me.wait_on = Some((ep, WaitRole::Reply));
+        me.ipc_served = false; // parked: only the reply (or an abort) may wake us
         trace::record(trace::Event::BlockSelf, current, ep as u8);
     }
 
@@ -1814,7 +1889,12 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
 
     let guard = SCHED.lock();
     let sched = guard.as_ref().expect("no scheduler");
-    let m = sched.threads.get(current_tid()).unwrap().mailbox;
+    let t = sched.threads.get(current_tid()).unwrap();
+    debug_assert!(
+        t.ipc_served || t.ipc_aborted,
+        "call resumed with nothing delivered"
+    );
+    let m = t.mailbox;
     [m[0], m[1], m[2]] // a reply is two words plus the pad; the fault path owns the top two
 }
 
@@ -1826,7 +1906,18 @@ pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
     if let Some(t) = sched.threads.get_mut(caller) {
+        // **Only a caller that awaits a reply is touched** (boot 8's observe-and-strand guard).
+        // A Reply names a tid, not a wait state, and this is the one wake site addressed by tid
+        // rather than through an endpoint's wait queue. Delivered to a thread parked as an
+        // ordinary receiver (a stale reply whose CALL was aborted long ago, its caller re-parked
+        // elsewhere), it would clobber that thread's mailbox and wake it messageless while its
+        // TCB is still linked on the endpoint's wait queue, a double-enqueue on the one intrusive
+        // link. Anything not Reply-parked gets nothing, exactly as a reply to a dead caller.
+        if !matches!(t.wait_on, Some((_, WaitRole::Reply))) {
+            return;
+        }
         t.mailbox = [msg[0], msg[1], 0, 0, 0];
+        t.ipc_served = true; // delivered: this wake passes the boot-8 gate
         wake(sched, caller);
     }
 }
@@ -2634,6 +2725,22 @@ pub fn endpoint_waiting_receivers(ep: EpId) -> usize {
     }
 }
 
+/// **Test support: a wake with nothing delivered** (the boot-8 injector, 2026-08-14).
+///
+/// Issues a bare `wake()` against `tid` under `SCHED`, through the same function every scheduler
+/// wake site funnels into, with no message written, no signal counted, and no abort flagged: the
+/// transition the VisionFive 2's boot-8 event ring recorded against the boot thread (`wake:0x0`
+/// on a boot where no sender to its endpoint existed). This is deliberately not a hand-rolled
+/// state poke: it exercises the real wake path, so whatever `wake()` does about an undelivered
+/// wake is what this injects.
+#[cfg(test)]
+pub fn wake_without_delivery(tid: Tid) {
+    let mut guard = SCHED.lock();
+    if let Some(sched) = guard.as_mut() {
+        wake(sched, tid);
+    }
+}
+
 /// **The number that says preemption is real**, read by the preemption tests and printed by the
 /// milestone tour.
 ///
@@ -3089,6 +3196,126 @@ mod tests {
         assert!(
             ABORTED.load(Ordering::SeqCst),
             "the woken waiter did not see its IPC aborted",
+        );
+    }
+
+    /// **A wake with nothing delivered must not complete a parked receiver's `RECV`** (boot 8,
+    /// VisionFive 2, 2026-08-14). The bench dump's shape: the boot thread, parked in `ipc_recv`
+    /// on the report endpoint, took a `wake:0x0` on a boot where no sender to that endpoint
+    /// existed, and its recv neither completed with a message nor re-parked. The recv tail reads
+    /// the mailbox unconditionally after `schedule()` returns, so an undelivered wake completes
+    /// the recv with whatever the mailbox happened to hold, and the receiver's TCB is still
+    /// linked on the endpoint's wait queue (the waker that owns the unlink never ran), which is
+    /// the intrusive one-link invariant broken in kernel memory.
+    ///
+    /// The claim: a `Blocked` IPC thread may only become `Ready` by the hand that completed its
+    /// rendezvous (message staged, signal counted, or abort flagged). An undelivered wake is
+    /// refused, the receiver stays parked, and a real sender still reaches it afterwards.
+    #[test_case]
+    fn a_wake_without_delivery_cannot_complete_a_parked_recv() {
+        static GOT: AtomicU64 = AtomicU64::new(u64::MAX);
+        static DONE: AtomicBool = AtomicBool::new(false);
+        GOT.store(u64::MAX, Ordering::SeqCst);
+        DONE.store(false, Ordering::SeqCst);
+
+        let ep = crate::sched::create_endpoint();
+        let tid = crate::sched::spawn(move || {
+            let m = crate::sched::ipc_recv(ep);
+            GOT.store(m[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn receiver");
+
+        // Queued on the endpoint, not "probably scheduled by now" (the milestone-81 lesson).
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_receivers(ep) == 1),
+            "the receiver never parked on the endpoint"
+        );
+
+        // The injection: the real wake path, nothing delivered.
+        crate::sched::wake_without_delivery(tid);
+
+        // The receiver must stay parked. Held for half a second of yields rather than one look,
+        // because the spurious completion needs the receiver to be scheduled first.
+        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency() / 2;
+        while crate::arch::timer::now() < deadline {
+            assert!(
+                !DONE.load(Ordering::SeqCst),
+                "a wake with nothing delivered completed the recv (it returned {:#x})",
+                GOT.load(Ordering::SeqCst),
+            );
+            crate::sched::yield_now();
+        }
+        assert_eq!(
+            crate::sched::endpoint_waiting_receivers(ep),
+            1,
+            "the undelivered wake took the receiver off the endpoint"
+        );
+
+        // And the rendezvous still works: a real sender completes the same recv with its message.
+        crate::sched::ipc_send(ep, [81, 0, 0]);
+        assert!(
+            wait_for(|| DONE.load(Ordering::SeqCst)),
+            "the real message never arrived after the refused wake"
+        );
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            81,
+            "the recv completed with something other than the real message"
+        );
+    }
+
+    /// **A reply only wakes a caller that awaits one** (boot 8's observe-and-strand guard). A
+    /// `Reply` capability names a tid, not a wait state. `ipc_reply` used to deliver to any
+    /// `Blocked` thread with that tid: invoked against a thread parked as an ordinary endpoint
+    /// receiver (a stale reply whose CALL was long since aborted, with the caller re-parked
+    /// elsewhere), it clobbered the mailbox and woke the thread messageless while its TCB was
+    /// still linked on the endpoint's wait queue. Same strand as the test above, reached through
+    /// the one wake site addressed by tid rather than by rendezvous.
+    #[test_case]
+    fn a_reply_to_a_thread_parked_as_a_receiver_is_dropped() {
+        static GOT: AtomicU64 = AtomicU64::new(u64::MAX);
+        static DONE: AtomicBool = AtomicBool::new(false);
+        GOT.store(u64::MAX, Ordering::SeqCst);
+        DONE.store(false, Ordering::SeqCst);
+
+        let ep = crate::sched::create_endpoint();
+        let tid = crate::sched::spawn(move || {
+            let m = crate::sched::ipc_recv(ep);
+            GOT.store(m[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn receiver");
+
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_receivers(ep) == 1),
+            "the receiver never parked on the endpoint"
+        );
+
+        // A reply aimed at a thread that is not awaiting a reply: dropped, like a reply to a
+        // dead caller.
+        crate::sched::ipc_reply(tid, [0xDEAD, 0]);
+
+        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency() / 2;
+        while crate::arch::timer::now() < deadline {
+            assert!(
+                !DONE.load(Ordering::SeqCst),
+                "a stray reply completed a receiver's recv (it returned {:#x})",
+                GOT.load(Ordering::SeqCst),
+            );
+            crate::sched::yield_now();
+        }
+
+        // The mailbox was not clobbered and the rendezvous still works.
+        crate::sched::ipc_send(ep, [81, 0, 0]);
+        assert!(
+            wait_for(|| DONE.load(Ordering::SeqCst)),
+            "the real message never arrived after the dropped reply"
+        );
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            81,
+            "the recv completed with the stray reply's words, not the real message"
         );
     }
 
