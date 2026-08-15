@@ -237,9 +237,11 @@ holds: a preempted thread's context is saved before any core can pop it (single-
 interrupts masked from the requeue through `finish_switch`), a deferred wake (`wake_pending`)
 completes on the thread's own core after the context is real, and the one lock-free cross-core
 protocol, the steal slot, is loom-checked in `crates/steal_request`. The block/wake protocol itself
-has **no loom coverage**: it is lock-based, and modelling it means extracting SCHED plus the run
-queues plus the inbox into a host-checkable crate, which is a milestone of its own, not a
-bench-night patch. The riscv64 `tp` plumbing, the prior art for exactly this smell, was re-audited
+had **no loom coverage** when this was written: it is lock-based, and modelling it means extracting
+SCHED plus the run queues plus the inbox into a host-checkable crate, which is a milestone of its
+own, not a bench-night patch. (Since done, 2026-08-14: `crates/wake_handshake` extracts the
+handshake with SCHED as a loom mutex, and each of this protocol's recorded races is a harness plus
+a failing reconstruction; notes/interleaving.md.) The riscv64 `tp` plumbing, the prior art for exactly this smell, was re-audited
 and reads correct: trap entry reloads `tp` from the per-hart stash, an S-mode return keeps the live
 `tp`, `switch_to` never carries one, and the stash is per-hart, written once.
 
@@ -282,6 +284,63 @@ includes the steal/migration hammers: the cpu-bound batch, the migrated-`tp` wav
 ASID shootdown) passed at `-smp 4` unloaded, on the sifive-u54 model, and again with the host
 starved by six busy loops. No reproduction, which is the expected null result, recorded so nobody
 mistakes it for evidence of health.
+
+**Boot 8 (2026-08-14): the instrument worked, the ring caught the transition, and the transition
+is now impossible.** The dump discriminated the candidates exactly as designed. Every core's tick
+count climbed normally across ten seconds of dumps, so no hart was wedged in M-mode: candidate 2
+is out, and the `sbi_remote_fence_i` suspicion with it. The wait column was populated on every
+blocked thread, so no bare corrupted state byte: candidate 1's simplest form is out. What the
+boot hart's event ring showed instead was the path itself: `block:0x0/0` (the boot thread parking
+in `ipc_recv` on the report endpoint), later `wake:0x0`, `steal:0x100000005/2` (the diag watcher
+handed to core 2, which is the core the dumps then printed from), `switch:0x0`, and then nothing,
+for ten seconds, while the boot thread sat `Running` as that core's current with `wait=-` and the
+report endpoint's receiver queue empty. **A receiver woken with nothing delivered.** The recv
+tail (`sched::ipc_recv`) read the mailbox unconditionally after `schedule()` returned, so an
+undelivered wake completed a rendezvous that never happened, off a mailbox holding whatever it
+last held, with the TCB's endpoint linkage in whatever state the spurious waker left it. That is
+the strand: the recv neither completes with a message nor re-parks, because the code had no way
+to notice the difference.
+
+**The wake's issuer is not established, and the census says that plainly.** Every `wake()` caller
+in the tree delivers something first: the four rendezvous sites stage a mailbox, `irq_notify`
+counts a signal, `deliver_death` stages a death message, `ipc_reply` stages a reply, and the
+revocation drain flags an abort. On the wedged boot none of them was reachable: the syscall
+counter was frozen (no user thread was sending), the boot tour parks in this demo *before* the
+UART-driver step, so no IRQ was routed to any endpoint and no reply capability had ever been
+minted, and nothing was being revoked. The ring proved the transition happened without any legal
+path having produced it. So the fix closes the **transition**, not a caller: `wake()` and
+`wake_load_aware` now refuse to make a waiting thread Ready unless the waker delivered
+(`Thread::ipc_served`, set in the same SCHED critical section that stages the message or signal,
+or `ipc_aborted`), and a refused wake is recorded on the ring as `refuse:tid`. `ipc_reply`, the
+one wake site addressed by tid rather than through an endpoint pop, additionally refuses any
+thread not parked awaiting a reply. And `schedule()` refuses to switch into its own current
+thread (the pop-yourself shape a spuriously queued current produces), because doing so restores
+an already-consumed context: execution time-travels to its previous switch-out point on a reused
+stack and spins there forever, off every instrument, which is precisely the silence boot 8's ring
+recorded after `switch:0x0`. Boot 9 therefore either completes the demo, or its dump now carries
+`refuse:` events naming the core that issued the spurious wake and the thread it aimed at, which
+is the culprit's address. Proven red-then-green in QEMU by
+`a_wake_without_delivery_cannot_complete_a_parked_recv` and
+`a_reply_to_a_thread_parked_as_a_receiver_is_dropped` (sched.rs), which inject through the real
+wake path rather than by poking state.
+
+**Two rows of that dump are a finding of their own, recorded rather than absorbed.** The dump
+showed init (tid 0x400000004) `Blocked` as a *Receiver* on ep 0x1 with its saved user pc in the
+builder's memset loop, and a gen-2 kernel thread in slot 6 `Blocked` as a Receiver on ep 0x2. Both
+read as legitimate parked waiters, and neither survives the code. `user/src/builder.rs`, the
+program init runs on this boot, **issues no receive of any kind**: its only verbs are `invoke`
+(retype/map/configure/start), `send`, and `exit`. And at the point this boot parks, exactly one
+endpoint exists: the report endpoint, created at `user.rs`'s `riscv_initrd_demo`, which the
+registry names 0x0; the UART demo that creates the next two runs later in the tour and was never
+reached, and no reachable path (the builder's retypes included) creates an endpoint in between.
+So ep 0x1 and ep 0x2, and the two receivers parked on them, are kernel state **no code that ran
+can have written**. The instrument's own honesty note said `wait=ep/role` means "the block path
+really ran"; boot 8 is the counterexample: it means the field holds those bytes, and corruption
+can also produce that. Candidate 3's class (structure corruption, whether from a stray write, the
+U74's memory model meeting a latent race, or the vendor firmware) is therefore still open, with a
+narrower fingerprint: it fabricates *coherent-looking* waiter state, not garbage. The gate does
+not fix that and does not claim to; it makes the scheduler refuse to act on one consequence of
+it, and the `refuse:` ring events are the tripwire that will show where it fires from.
 
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
@@ -494,12 +553,15 @@ online-set sweep's {1,2,3} shape is host-proven in `crates/cpu_set`; whether the
 carries the board through the demo is the next bench boot's fact, like everything QEMU cannot
 prove, which is what "To measure at the bench" is for. Boot 7, the first with the placement fix
 and the cross-hart `fence.i`, hung a fourth way, in a state the transition audit says no legal
-path produces (the "Fourth bench stop" above): the cause is **not established**, three candidate
-mechanisms are, and the instrumentation that discriminates them (per-thread wait reason, per-core
-tick and steal-slot columns, per-core event rings) rides this branch for boot 8. The U74s are the
-first genuinely weak-memory parallel machine this scheduler has met, and QEMU's TCG is structurally
-unable to reproduce any of the three candidates, so a green suite there clears the instrument, not
-the scheduler.
+path produces (the "Fourth bench stop" above); boot 8's instrumented dump caught the transition
+itself, a receiver woken with nothing delivered, and the undelivered-wake gate now refuses that
+transition and records `refuse:` events on the ring (the fourth stop's closing section above,
+and notes/scheduler.md). **The wake's issuer is not established**, and two dump rows (receivers
+parked on endpoints no reachable code created) say kernel structures held state nothing wrote:
+the corruption class stays open, with the gate's ring events as its tripwire for boot 9. The
+U74s are the first genuinely weak-memory parallel machine this scheduler has met, and QEMU's TCG
+is structurally unable to reproduce the candidate mechanisms, so a green suite there proves the
+gate's behaviour, not the board's.
 
 Two limitations found while building those, honestly not fixed here:
 
