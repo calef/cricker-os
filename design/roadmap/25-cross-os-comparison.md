@@ -3,8 +3,10 @@
 **Status: PARTIAL.**
 
 **Gate: HARDWARE, MILESTONE 74.** Everything but `sel4bench` is done, and `sel4bench` times single
-operations through a PMU cycle counter that neither QEMU-TCG nor HVF provides, so it waits for
-16a's board. Milestone 74 is the driver that reads that counter, and 74's block states the
+operations through a PMU cycle counter that neither QEMU-TCG nor HVF provides. The hardware is no
+longer 16a's board: milestone 127 bought the machine under the only published aarch64 seL4 numbers
+(a sealed TX1 kit, 2026-08-15, arriving ~08-19 to -26), so this gate now counts down in shipping
+days rather than waiting on a decision. Milestone 74 is the driver that reads that counter, and 74's block states the
 dependency this one does not.
 
 **In brief.** EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix.

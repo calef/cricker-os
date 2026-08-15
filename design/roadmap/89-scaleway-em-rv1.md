@@ -5,9 +5,10 @@ turned up the one thing "cloud has no RISC-V" was wrong about: Scaleway rents re
 silicon (Elastic Metal RV1: T-Head TH1520, four C910 cores, 16 GB, 128 GB eMMC) at EUR 0.042 an
 hour or EUR 15.99 a month.
 
-**Gate: HARDWARE, MILESTONE 16.** A rented Elastic Metal RV1, which needs calef's account before
-anything runs, and the block sequences it after the VisionFive 2's first results because a second
-data point is only interpretable once there is a first. The feasibility probe, whether it boots a
+**Gate: HARDWARE.** A rented Elastic Metal RV1, which needs calef's account before anything runs.
+The old MILESTONE 16 half of this gate cleared 2026-08-14: the VisionFive 2's first results exist
+(satp.ASID measured at 0 bits, the vendor tree's lies catalogued, the full tour green), so the
+second data point this milestone exists for is interpretable the day an account rents the box. The feasibility probe, whether it boots a
 custom kernel at all, is one EUR 0.042 hour and the block says that part is reasonable any time.
 
 **What a second implementation is for.** The cpu matrix's BUGS note records the questions QEMU

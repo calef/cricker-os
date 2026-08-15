@@ -2,11 +2,16 @@
 
 **Status: PARTIAL.**
 
-**Gate: HARDWARE.** 16b is built. What remains is 16a, first silicon on a VisionFive 2, which
-arrived 2026-08-14. 16a is in progress: the bench-independent half is done (the RISC-V Image header
-on the kernel, `script/board-image` for the microSD payload, and notes/visionfive2.md with the board
-facts, runbook, and triage ladder); the interactive first-boot loop at the bench remains, and the
-note's BUGS section names the four code changes it is expected to need.
+**Gate: NONE.** 16b is built, the board arrived 2026-08-14, and the bench delivered first silicon
+the same day: eleven boots across two sessions, ending with the full tour completing on three harts
+("cricker-os: the capability core runs on RISC-V"), the four predicted code changes landed plus the
+ones the bench actually demanded, and notes/visionfive2.md carrying the whole narrative. What
+remains of 16a is engineering, not hardware, and each piece is lane-sized: the on-board test-suite
+exit (the `sifive_test` device does not exist on silicon; the note proposes a UART pass/fail
+marker), the DTB-driven UART IRQ for the driver demo (the 10-versus-32 BUGS entry), and the
+real-cycle benches, which ride milestone 74's SBI PMU half. Carrying 16b's IOMMU driver to silicon
+still waits for a board that ships the ratified spec, recorded below, and that alone stays a
+hardware fact nobody can schedule.
 
 **In brief.** **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it
 
