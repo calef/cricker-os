@@ -59,7 +59,8 @@ endpoint's wait queue, and the real counterparty completes the rendezvous normal
 
 The gate turns that transition into a refused no-op plus a ring event, whoever the caller is; the
 recv tails carry a `debug_assert` tripwire ("resumed with nothing delivered") for the state the
-gate makes unreachable.
+gate makes unreachable, and every `ipc_served` setter records a `serve:tid/site` ring event so a
+bench dump names who completed a rendezvous instead of leaving it to inference.
 
 **The failure it was built against was misread, and that correction is the important part of this
 section.** It was built from the VisionFive 2's boot 8 (notes/visionfive2.md, fourth bench stop),
@@ -77,15 +78,15 @@ and anything that cites it as the latter is now wrong.
 
 Recorded here on 2026-08-15, ahead of the lane that found it, because `crates/wake_handshake` and
 this section both asserted the original reading as fact while that lane sat blocked on a merge
-conflict. The fifth stop's full write-up lands with it; no section is cited for it yet because none
-exists in the tree.
+conflict. The fifth stop's full write-up is notes/visionfive2.md's fifth bench stop, landed with
+the same change that added the `serve:` witnesses.
 
-Two companions from the same boot: `ipc_reply`, the one wake site addressed by a tid rather than
-through an endpoint pop, delivers only to a thread whose `wait_on` says it awaits a reply
-(anything else would clobber a parked receiver's mailbox and double-enqueue its one intrusive
-link), and `schedule()` refuses to switch into its own current thread (the shape a spuriously
-queued current produces), because that restores an already-consumed context and time-travels the
-thread onto a reused stack. Guarded by
+Two companions from the same boot, kept for the same hardening reason: `ipc_reply`, the one wake
+site addressed by a tid rather than through an endpoint pop, delivers only to a thread whose
+`wait_on` says it awaits a reply (anything else would clobber a parked receiver's mailbox and
+double-enqueue its one intrusive link), and `schedule()` refuses to switch into its own current
+thread (the shape a spuriously queued current produces), because that restores an
+already-consumed context and time-travels the thread onto a reused stack. Guarded by
 `a_wake_without_delivery_cannot_complete_a_parked_recv` and
 `a_reply_to_a_thread_parked_as_a_receiver_is_dropped`, which inject through the real `wake` path.
 

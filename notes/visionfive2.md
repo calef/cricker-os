@@ -286,7 +286,10 @@ starved by six busy loops. No reproduction, which is the expected null result, r
 mistakes it for evidence of health.
 
 **Boot 8 (2026-08-14): the instrument worked, the ring caught the transition, and the transition
-is now impossible.** The dump discriminated the candidates exactly as designed. Every core's tick
+is now impossible.** *(Overturned 2026-08-15: the fifth stop below re-read these same dumps and
+the "undelivered" wake was the worker's real send; the state read as fabricated is the terminal
+state of a completed tour. The paragraphs are kept as written because the reasoning is the
+record; read them with the fifth stop's correction in hand.)* The dump discriminated the candidates exactly as designed. Every core's tick
 count climbed normally across ten seconds of dumps, so no hart was wedged in M-mode: candidate 2
 is out, and the `sbi_remote_fence_i` suspicion with it. The wait column was populated on every
 blocked thread, so no bare corrupted state byte: candidate 1's simplest form is out. What the
@@ -324,7 +327,10 @@ is the culprit's address. Proven red-then-green in QEMU by
 `a_reply_to_a_thread_parked_as_a_receiver_is_dropped` (sched.rs), which inject through the real
 wake path rather than by poking state.
 
-**Two rows of that dump are a finding of their own, recorded rather than absorbed.** The dump
+**Two rows of that dump are a finding of their own, recorded rather than absorbed.** *(Overturned
+2026-08-15, fifth stop: both rows are real, legitimate, parked-by-design waiters of the tour's
+UART-driver step, which had already run. The census this paragraph rests on was correct about the
+park point and wrong about which moment the dump was showing.)* The dump
 showed init (tid 0x400000004) `Blocked` as a *Receiver* on ep 0x1 with its saved user pc in the
 builder's memset loop, and a gen-2 kernel thread in slot 6 `Blocked` as a Receiver on ep 0x2. Both
 read as legitimate parked waiters, and neither survives the code. `user/src/builder.rs`, the
@@ -341,6 +347,81 @@ U74's memory model meeting a latent race, or the vendor firmware) is therefore s
 narrower fingerprint: it fabricates *coherent-looking* waiter state, not garbage. The gate does
 not fix that and does not claim to; it makes the scheduler refuse to act on one consequence of
 it, and the `refuse:` ring events are the tripwire that will show where it fires from.
+
+**Fifth bench stop (2026-08-15, boots 9 and 10): the fourth stop's conviction falls. The dumps
+were showing a finished tour, and every "fabricated" value is the fingerprint of health.** Boot
+10 (`booti ${kernel_addr_r} - <dtb>`, no initrd) ran the whole tour on silicon, through
+preemption on three harts to the final banner: the base kernel is good, and the failure is
+initrd-path-coupled. Boot 9 (initrd, the undelivered-wake gate live) reproduced the "hang" with
+the gate silent: zero `refuse:` events, the boot thread's wake carried `ipc_served`, no message
+print followed, and the same rows as boots 7 and 8: one user thread `Blocked` as a Receiver on
+ep `0x1` at pc `0x00400188`, a slot-6 gen-2 kernel thread `Blocked` as a Receiver on ep `0x2` at
+a stack-top-looking pc, svc frozen at 20.
+
+The re-audit of the fourth stop's endpoint census confirmed its two positive claims and
+overturned its conclusion. At the park point on this path the report endpoint really is the only
+endpoint (`0x0`: the tour's release build creates no other, `boot_via_init` and the service
+modules being aarch64- or test-gated), and `user/src/builder.rs` really issues no receive (its
+verbs are `invoke`, `send`, `cap_delete`, `exit`, and its retypes are ASPACE, FRAME and TCB,
+never ENDPOINT). What the census never asked is what the machine looks like *after* the recv
+returns, and the answer is: exactly like those dumps. Five independent identifications, each
+checkable from the tree:
+
+1. **The endpoint names.** The next two endpoints ever created on this path are
+   `riscv_uart_driver_demo`'s `irq_ep` then `report` (kernel/src/user.rs), which the registry
+   names `0x1` and `0x2`, in that order, because names are minted lowest-slot-first
+   (crates/slots).
+2. **The roles and the kinds of thread on them.** The driver program's first act is `WAIT` on
+   its Irq capability, which parks it as a *Receiver* on `0x1` (a user thread, aspace nonzero);
+   the tour then spawns a kernel thread whose whole body is `ipc_recv(report)`
+   (kernel/src/main.rs, the byte receiver), a *Receiver* on `0x2` with no aspace. Both wait
+   forever by design: nobody types on a bench boot.
+3. **The pc columns.** Every user program links at 0x40_0000, so the driver's post-`ecall` pc
+   (`0x00400188`) resolves "plausibly against several binaries at once", which is the dump's own
+   recorded warning; the fourth stop resolved it against the builder and got "memset". And a
+   kernel thread's pc column reads a trap frame that was never written (kernel threads take no
+   user traps), so its bytes are stack-top garbage: "a receiver parked at a stack-top pc" is
+   what a *healthy* parked kernel receiver looks like in this dump.
+4. **The generations.** On the board (three online harts, so slots 0..3 are the boot thread and
+   three idles), slot 4's occupants in order are: a scheduler-step probe thread (gen 0), the
+   outlaw wrapper (gen 1), init itself (gen 2), a preemption spinner (gen 3), then **the driver
+   at gen 4**, which is the observed `0x400000004`. Slot 6: the worker child (gen 0), the second
+   spinner (gen 1), then **the byte receiver at gen 2**, the observed `0x200000006`. The
+   "init" row was the driver wearing init's reaped slot.
+5. **The syscall count.** The worker ELF has one loadable page (118 bytes, one `PT_LOAD`), so
+   the whole choreography is exactly 20 ecalls: outlaw 3 (yield, yield, exit), builder 14 (1
+   aspace retype, 4 for its one page, 3 for the stack, 5 for the TCB, 1 exit), worker 2 (send,
+   exit), driver 1 (the WAIT it parks in). A count *frozen at 20* is not a build stalled
+   mid-memset; it is every user program finished or parked.
+
+QEMU settles it: a healthy tour run with the same initrd prints every line ("the child sent 81
+(expected 81)", preemption, driver started, the banner) and its post-completion dumps show the
+identical state, shifted one slot because QEMU's fourth idle thread occupies slot 4: the one
+user thread is `0x400000005` `Blocked` `wait=0x1/Receiver` at pc `0x00400188`, the byte receiver
+sits on `0x2`, eps `0x1`/`0x2` hold one receiver each, svc is 20, and the boot thread stands
+`Running` as its core's current forever with climbing ticks and a silent ring, because that is
+what `arch::halt()`'s wfi loop looks like from this dump. The boot-8 "wake with no sender in
+existence" also re-reads: the sender was the worker, whose `SEND` of 81 staged the mailbox and
+set `ipc_served` in the same SCHED section (sched.rs `ipc_send`), which is why boot 9's gate
+passed it; the delivered word goes into the "init/build" line the recv's caller prints. The new
+`serve:` ring event shows it directly (`serve:0x0/1` on the QEMU run).
+
+**What actually remains broken, and it is not the scheduler.** The machine state says the tour's
+printing steps ran on boots 7 through 9 (the state they left is the proof), and the tick counts
+say the boot hart kept executing, yet the bench record has none of the tour's lines after
+"init : measured, built, started". No in-kernel loss mechanism was found: `write_byte`'s THRE
+poll is unbounded (a wedged transmitter hangs the printer, it never drops), and the console lock
+was demonstrably free because the diag dumps kept printing through it. So either the lines are
+in the raw captures and were misread under the hang assumption (**re-examine the boot 7, 8 and 9
+logs for "init/build", "device IRQ" and the banner**), or bytes were lost downstream of the
+kernel. Boot 11 answers this without needing the lines themselves: every dump header now carries
+the tour stage last reached, the diag line carries `tx=` (bytes handed to the transmitter), the
+ring carries `serve:` events naming who completed each rendezvous, and the corruption canary
+(armed across the demo window) prints every byte that changes in the thread table and endpoint
+registry with address, tick and before/after. A boot 11 dump showing stage 10 and a grown `tx`
+while the wire shows no banner proves emitted-then-lost; a stalled stage number names the real
+wedge point; and the canary either shows legal deltas matching the choreography or the stray
+write the corruption theory needs, which as of tonight has **no observed instance**.
 
 **The PLIC is at QEMU's address with a different context map.** `sifive,plic-1.0.0` at 0xC00_0000,
 136 sources [dtsi]. On QEMU `virt` every hart has an M and an S context and hart h's S context is
@@ -552,18 +633,30 @@ context map are QEMU- and host-proven and board-proven as far as those boots rea
 online-set sweep's {1,2,3} shape is host-proven in `crates/cpu_set`; whether the fixed placement
 carries the board through the demo is the next bench boot's fact, like everything QEMU cannot
 prove, which is what "To measure at the bench" is for. Boot 7, the first with the placement fix
-and the cross-hart `fence.i`, hung a fourth way, in a state the transition audit says no legal
-path produces (the "Fourth bench stop" above); boot 8's instrumented dump caught the transition
-itself, a receiver woken with nothing delivered, and the undelivered-wake gate now refuses that
-transition and records `refuse:` events on the ring (the fourth stop's closing section above,
-and notes/scheduler.md). **The wake's issuer is not established**, and two dump rows (receivers
-parked on endpoints no reachable code created) say kernel structures held state nothing wrote:
-the corruption class stays open, with the gate's ring events as its tripwire for boot 9. The
-U74s are the first genuinely weak-memory parallel machine this scheduler has met, and QEMU's TCG
-is structurally unable to reproduce the candidate mechanisms, so a green suite there proves the
-gate's behaviour, not the board's.
+and the cross-hart `fence.i`, appeared to hang a fourth way, in a state the transition audit
+said no legal path produces (the "Fourth bench stop" above); boot 8's instrumented dump was read
+as catching an undelivered wake, and the undelivered-wake gate was built against it. **The fifth
+stop (2026-08-15) overturned that reading**: the dumps of boots 7 through 9 show the terminal
+state of a *completed* tour (the parked receivers are the UART demo's driver and byte receiver,
+the wake was the worker's real send, svc=20 is the choreography's exact total), so no
+undelivered wake, no fabricated state and no corruption have been observed on this board. The
+gate and the pop-own-current guard stay as hardening with their injection tests; their origin
+story is corrected in notes/scheduler.md. What the fifth stop leaves open is why the tour's
+serial lines after "init : measured, built, started" are absent from the bench record while the
+machine state proves the printing steps ran; boot 11 carries the discriminators (tour stage in
+every dump header, `tx=` in the diag line, `serve:` ring events, the registry canary), and the
+first move is to re-examine the boot 7 through 9 captures for the missing lines.
 
-Two limitations found while building those, honestly not fixed here:
+Three limitations found while building those, honestly not fixed here:
+
+- **The tour's UART-driver step arms QEMU's interrupt number on the board.** `main.rs` passes
+  `UART_IRQ = 10` (QEMU `virt`'s NS16550 line) to `riscv_uart_driver_demo`, which binds it and
+  enables that PLIC source; on the JH7110 UART0 interrupts on line **32** [dtsi], so the board
+  build enables an unrelated source and the driver can never receive a real keystroke there.
+  Quiet in practice tonight (source 10 never fired, or the driver's dump row would show it
+  running rather than parked), and not the fifth stop's bug, but the number needs to come from
+  the device tree like everything else on this page before the driver demo means anything on
+  silicon.
 
 - **The shell path's userspace input driver still speaks QEMU's UART layout.**
   `user/src/input.rs` reads the NS16550 at byte-stride offsets (LSR at 0x05), so on the board the

@@ -1088,16 +1088,33 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     crate::sched::spawn(|| {
         for i in 1..=5u32 {
             crate::arch::timer::spin_for(crate::arch::timer::frequency() * 2);
-            crate::println!("    diag : +{}s, svc={}", i * 2, {
-                use core::sync::atomic::Ordering;
-                crate::arch::exceptions::SVC_COUNT.load(Ordering::Relaxed)
-            });
+            // svc is the machine-wide ecall count; tx is console::_print's byte count. Together
+            // with the dump header's tour stage they are boot 11's discriminators (fifth bench
+            // stop): a stage past the demo with tx grown past these dumps' own output proves the
+            // tour's missing serial lines were emitted and lost downstream, where boots 7
+            // through 9 left "did the tour advance" to inference over a frozen svc count.
+            crate::println!(
+                "    diag : +{}s, svc={}, tx={}",
+                i * 2,
+                {
+                    use core::sync::atomic::Ordering;
+                    crate::arch::exceptions::SVC_COUNT.load(Ordering::Relaxed)
+                },
+                crate::console::tx_bytes()
+            );
             crate::sched::dump_threads();
         }
     });
 
+    // The corruption canary, armed for exactly the window the bench stops happened in: parked
+    // here waiting for the child. Every byte that changes in the thread table or the endpoint
+    // registry prints with its address and before/after, so boot 11 can tell a legal delta (the
+    // worker's TCB appearing, the UART demo's endpoints) from a stray write. Disarmed on return.
+    crate::sched::canary_arm_registries();
     // The word the child SENDs home (init built the pipe; the child sent through it).
-    Ok(crate::sched::ipc_recv(report)[0])
+    let word = crate::sched::ipc_recv(report)[0];
+    crate::sched::canary_disarm();
+    Ok(word)
 }
 
 /// **Start the interrupt-driven UART driver as an unprivileged userspace process** (milestone 20).
