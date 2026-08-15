@@ -57,13 +57,28 @@ those sites sets the handshake's `ipc_served` (or `ipc_aborted`; both on
 `refuse:tid` on the per-core event ring. The parked thread stays parked and still linked on its
 endpoint's wait queue, and the real counterparty completes the rendezvous normally later.
 
-The reason is the VisionFive 2's boot 8 (notes/visionfive2.md, fourth bench stop): the boot
-thread, parked in `ipc_recv`, took a `wake:0x0` on a boot where no sender to its endpoint
-existed, and the recv tail, which reads the mailbox unconditionally after `schedule()` returns,
-completed a rendezvous that never happened and ran off the rails for good. The gate turns that
-transition into a refused no-op plus a ring event, whoever the caller is; the recv tails carry a
-`debug_assert` tripwire ("resumed with nothing delivered") for the state the gate makes
-unreachable.
+The gate turns that transition into a refused no-op plus a ring event, whoever the caller is; the
+recv tails carry a `debug_assert` tripwire ("resumed with nothing delivered") for the state the
+gate makes unreachable.
+
+**The failure it was built against was misread, and that correction is the important part of this
+section.** It was built from the VisionFive 2's boot 8 (notes/visionfive2.md, fourth bench stop),
+read at the time as the boot thread, parked in `ipc_recv`, taking a `wake:0x0` on a boot where no
+sender to its endpoint existed. The boot-8 lane's **fifth** bench stop (2026-08-15) re-read those
+dumps and overturned it: the wake was the worker's real send, and the dump state read as a
+stranded receiver was the terminal state of a completed tour. **So the gate has never fired on a
+field failure, and `refuse:` has never appeared on a board ring.**
+
+It stays anyway, and the reason is not sunk cost. The transition it forbids really would complete a
+rendezvous off a stale mailbox while the TCB stayed linked on its endpoint queue, and the loom
+harness below proves that as a property of the protocol rather than as a story about one boot. What
+changes is the claim: this is hardening against a reachable state, not a repair of a field failure,
+and anything that cites it as the latter is now wrong.
+
+Recorded here on 2026-08-15, ahead of the lane that found it, because `crates/wake_handshake` and
+this section both asserted the original reading as fact while that lane sat blocked on a merge
+conflict. The fifth stop's full write-up lands with it; no section is cited for it yet because none
+exists in the tree.
 
 Two companions from the same boot: `ipc_reply`, the one wake site addressed by a tid rather than
 through an endpoint pop, delivers only to a thread whose `wait_on` says it awaits a reply
@@ -79,9 +94,12 @@ stop's audit asked for). The whole block/wake state machine (`state`, `on_cpu`, 
 `wait_on`, `ipc_served`, `ipc_aborted`, and the gate, deferral and finish-switch transitions over
 them) lives in `crates/wake_handshake`, embedded in `Thread` and **called** by `sched.rs` rather
 than mirrored, so the model-checked code and the shipped code are the same code. Each of the
-protocol's three recorded races (wake-before-switch-out, the steal edge of the same window, and
-boot 8's stranded receiver) is a loom harness that holds with the current semantics and a
-`#[should_panic]` reconstruction that fails with the historical ones. See notes/interleaving.md
+protocol's three hazards (wake-before-switch-out, the steal edge of the same window, and the
+undelivered wake) is a loom harness that holds with the current semantics and a `#[should_panic]`
+reconstruction that fails with the historical ones. Two of the three are races observed on the
+machine; the third is the undelivered wake, which the section above records as reachable but never
+witnessed, so "three recorded races" overstated it and this says hazards instead. See
+notes/interleaving.md
 for the model's honest limits.
 
 **BUGS.** The gate protects threads whose `wait_on` is set, which is every IPC block site today; a

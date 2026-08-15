@@ -20,12 +20,22 @@
 //!   [`wake_pending`](Handshake::wake_pending) instead,
 //!   and the thread's own core completes it in [`finish_switch`](Handshake::finish_switch) once the
 //!   context is provably saved.
-//! - **Boot 8's stranded receiver** (VisionFive 2, 2026-08-14; notes/visionfive2.md, fourth bench
-//!   stop). A wake that delivered nothing completed a parked `RECV` off a stale mailbox, with the
-//!   TCB still linked on its endpoint's wait queue. Rule: the undelivered-wake gate. `try_wake`
-//!   refuses to make a waiting thread `Ready` unless the waker's own critical section delivered
-//!   something ([`ipc_served`](Handshake::ipc_served)) or aborted the wait
-//!   ([`ipc_aborted`](Handshake::ipc_aborted)).
+//! - **The undelivered wake.** A wake that delivers nothing would complete a parked `RECV` off a
+//!   stale mailbox, with the TCB still linked on its endpoint's wait queue. Rule: the
+//!   undelivered-wake gate. `try_wake` refuses to make a waiting thread `Ready` unless the waker's
+//!   own critical section delivered something ([`ipc_served`](Handshake::ipc_served)) or aborted
+//!   the wait ([`ipc_aborted`](Handshake::ipc_aborted)).
+//!
+//!   **This one is hardening rather than a fix for an observed failure, and the correction belongs
+//!   here because this bullet is what a reader trusts.** It was built against the VisionFive 2's
+//!   boot 8 (2026-08-14), read at the time as a boot thread taking a `wake:0x0` on a boot where no
+//!   sender to its endpoint existed. The boot-8 lane's **fifth** bench stop (2026-08-15) re-read
+//!   those dumps and overturned that: the wake was the worker's real send, and the state read as a
+//!   stranded receiver was the terminal state of a completed tour. **The gate has never fired on a
+//!   field failure, and `refuse:` has never appeared on a board ring.** It stays because the
+//!   transition it forbids is genuinely unsafe and the loom harness below proves that, which is a
+//!   property rather than an anecdote. The fifth stop's own write-up is still in flight in that
+//!   lane, so no section is cited for it yet.
 //! - **A steal racing a switch-out.** A preempted thread sits `Ready` in its core's run queue with
 //!   `on_cpu` still set until that core's `finish_switch` runs; a work steal
 //!   (`sched::serve_steal_request`) hands queued threads to other cores. The single-owner run-queue
@@ -157,10 +167,11 @@ pub enum WakeVerdict {
     /// The thread is not `Blocked`; the wake is a no-op. (A second waker lost the race, or the
     /// target is an embryo or a corpse.)
     NotBlocked,
-    /// **The undelivered-wake gate fired** (boot 8): the thread waits on an endpoint and this wake
+    /// **The undelivered-wake gate fired**: the thread waits on an endpoint and this wake
     /// delivered nothing. The thread stays parked and stays linked on its endpoint's wait queue;
     /// the rendezvous that has not happened is still pending. The kernel records `refuse:tid` on
-    /// the event ring.
+    /// the event ring, and as of 2026-08-15 that record has never appeared on a board ring: see
+    /// the undelivered-wake bullet above for why the gate is hardening rather than a repair.
     Refused,
     /// The thread is still standing on its CPU (its saved context is stale), so the wake was
     /// parked in [`Handshake::wake_pending`] instead of queueing a thread another core could
@@ -295,7 +306,9 @@ impl<W> Handshake<W> {
     /// **Record a delivery** in the same `SCHED` critical section that staged it (a mailbox
     /// written, a signal counted, a reply filled, a death message collected). This is what lets
     /// the very next [`try_wake`](Self::try_wake) through the gate; a wake whose critical section
-    /// did not call this is exactly the wake boot 8 recorded.
+    /// did not call this is exactly the wake the gate exists to refuse. No such wake has been
+    /// observed on hardware (see the undelivered-wake bullet at the top of this file); the
+    /// reconstruction that produces one lives in the loom module.
     pub fn serve(&mut self) {
         self.ipc_served = true;
     }
@@ -1068,7 +1081,7 @@ mod interleavings {
                     };
                     if completed {
                         // The deferred spurious wake completed: the receiver resumes with an
-                        // empty mailbox, which is boot 8's strand.
+                        // empty mailbox, which is the strand the gate forbids.
                         resume(&m);
                     }
                 })
