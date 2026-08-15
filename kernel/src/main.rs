@@ -406,6 +406,17 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             }
         }
 
+        // The tour-stage breadcrumb (first-silicon diagnostics, 2026-08-15): every dump_threads
+        // header prints the last stage reached, so a bench log whose serial lines went missing
+        // (boots 7 through 9, notes/visionfive2.md fifth stop) still says how far the boot
+        // thread got, re-stated every dump. The table, so a stage number reads without the code:
+        //
+        //   3 = the outlaw step finished        7 = the UART-driver step finished
+        //   4 = the initrd demo was entered     8 = the virtio probe finished
+        //   5 = the initrd demo returned        9 = the PCIe probe finished
+        //   6 = the preemption step finished   10 = the final banner printed; halting
+        sched::note_boot_stage(3);
+
         // Running a real compiled ELF at U-mode, two ways, depending on the initrd.
         if let Some(initrd) = user::initrd() {
             // A crickerfs archive with an "init" entry means the richer path: the kernel loads only
@@ -416,6 +427,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 .map(|fs| fs.read("init").is_some())
                 .unwrap_or(false);
             if is_archive {
+                sched::note_boot_stage(4);
                 match user::riscv_initrd_demo(initrd) {
                     Ok(sq) => println!(
                         "  init/build  : userspace init loaded 'worker' from a {}-byte archive and built it as a child; the child sent {sq} (expected 81)",
@@ -437,6 +449,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         } else {
             println!("  user ELF    : skipped (no -initrd passed to QEMU)");
         }
+        sched::note_boot_stage(5);
 
         // Preemption: the property that separates a kernel from a runtime. Spawn two threads whose
         // entire body is a tight loop, no yield, no syscall, not even a function call. Under any
@@ -476,6 +489,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 sched::preemptions() - p0,
             );
         }
+        sched::note_boot_stage(6);
 
         // Device interrupts, serviced by an unprivileged userspace driver: the last piece of the
         // interrupt story, in its real form. The kernel loads `driver` from the initrd, maps the
@@ -529,6 +543,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 ),
             }
         }
+        sched::note_boot_stage(7);
 
         // virtio block device discovery (parity C). Probe the virtio-mmio slots the `virt` machine
         // lays out (0x1000_1000..); a block device shows up when a disk is attached (CRICKER_DISK).
@@ -545,6 +560,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 );
             }
         }
+        sched::note_boot_stage(8);
 
         // PCIe enumeration + virtio-pci bring-up (the PCIe transport, P1/P2). The disk QEMU
         // attaches as `virtio-blk-pci` arrives over the transport real hardware uses: found by
@@ -567,8 +583,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 "  pcie        : no virtio-blk on the bus (pass CRICKER_DISK to attach one)"
             ),
         }
+        sched::note_boot_stage(9);
 
         println!("cricker-os: the capability core runs on RISC-V.");
+        sched::note_boot_stage(10);
         arch::halt();
     }
 
