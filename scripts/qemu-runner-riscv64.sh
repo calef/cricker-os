@@ -17,7 +17,8 @@ set -e
 ELF="$1"
 shift
 
-# Four harts, matching aarch64's runner (parity workstream A). OpenSBI boots hart 0; the others sit
+# Four harts by default, matching aarch64's runner (parity workstream A); NIFE_SMP moves it, up
+# to cpu::MAX_CPUS. OpenSBI boots hart 0; the others sit
 # in SBI HSM STOPPED state until the kernel starts them with sbi_hart_start (arch::psci_cpu_on). The
 # NS16550 console is on the `virt` machine at 0x1000_0000; `-serial stdio` wires it to this terminal.
 SMP="${NIFE_SMP:-4}"

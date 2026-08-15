@@ -26,9 +26,10 @@
 //!   honest total and [`CpuList::cpus`] is the prefix that fit, so a caller can see it read part of
 //!   a machine. It cannot see *which* part it missed.
 //! - **`status`, `enable-method` and `supervisor` are recorded, not obeyed.** This module reports
-//!   what the tree said; deciding that a `spin-table` core cannot be started by a kernel that only
-//!   speaks PSCI, or that an M/U-only core cannot run an S-mode kernel, is the caller's call,
-//!   because the caller is the one that knows what it can speak and where it runs.
+//!   what the tree said; *acting* on it is the caller's call, because the caller is the one that
+//!   knows what it can speak and where it runs. [`Cpu::startable`] is that caller's decision as a
+//!   predicate, kept here (one copy, host-testable against the board fixtures) and applied by
+//!   `smp::read_cpu_list`, which is still the only place it has any effect.
 //! - **The `/cpus` node is found by name, not by binding.** There is no `compatible` on it to match;
 //!   the device tree specification names the node itself. Same simplification [`dtb::Dtb::node_reg`]
 //!   records, and here it is not a simplification at all.
@@ -37,7 +38,7 @@ use dtb::{Dtb, Error};
 
 /// The most `cpu@` nodes [`CpuList::from_device_tree`] will record.
 ///
-/// Sixteen, matching [`crate::riscv64::MAX_HARTS`], which is four times the kernel's `MAX_CPUS` and
+/// Sixteen, matching [`crate::riscv64::MAX_HARTS`], which is twice the kernel's `MAX_CPUS` and
 /// costs 24 bytes each. A machine with more is reported as truncated ([`CpuList::described`] keeps
 /// counting) rather than silently half-read.
 pub const MAX_CPU_NODES: usize = 16;
@@ -104,6 +105,29 @@ pub struct Cpu {
     pub supervisor: bool,
     /// What `enable-method` said, if anything.
     pub enable_method: EnableMethod,
+}
+
+impl Cpu {
+    /// **Would this kernel start this core?** Firmware calls it usable, its own ISA string does not
+    /// disclaim supervisor mode, and it is started by a mechanism this kernel speaks (PSCI, or SBI
+    /// HSM behind an unstated method, which is the RISC-V binding's shape).
+    ///
+    /// This is `smp::read_cpu_list`'s decision, lifted here so the board fixtures can hold it: the
+    /// VisionFive 2 tests assert which harts this predicate admits (the four U74s) and which it
+    /// refuses (the S7, through either tree's lie), and a kernel-side copy would put the exact
+    /// expression the bench crash taught us out of the host suite's reach. `Unstated` counts as
+    /// startable on purpose: the RISC-V CPU binding has no `enable-method` at all (SBI HSM is the
+    /// only mechanism), so demanding the property would refuse every RISC-V machine including the
+    /// ones this kernel already runs on. `supervisor` is required because `status` can lie where a
+    /// hart's own `riscv,isa` does not (bench, 2026-08-14; notes/visionfive2.md, the second stop).
+    pub fn startable(&self) -> bool {
+        self.usable
+            && self.supervisor
+            && matches!(
+                self.enable_method,
+                EnableMethod::Psci | EnableMethod::Unstated
+            )
+    }
 }
 
 /// **The machine's cores**, in the order the tree lists them.
