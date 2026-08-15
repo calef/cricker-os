@@ -325,6 +325,20 @@ impl core::fmt::Debug for NameBuf {
 /// [`Error::PointerForward`] rather than a hang. That claim is Kani-checked, not just argued.
 pub fn decode_name(msg: &[u8], off: usize) -> Result<(NameBuf, usize)> {
     let mut out = NameBuf::empty();
+    let (len, resume) = decode_name_into(msg, off, &mut out.bytes)?;
+    // The engine wrote at most the array's 255 bytes, so the length fits its u8.
+    out.len = len as u8;
+    Ok((out, resume))
+}
+
+/// The decoder's engine, over a caller-supplied output slice; [`decode_name`] instantiates it at
+/// the protocol's 255-byte maximum, and the capacity decides nothing except where
+/// [`Error::NameTooLong`] fires. It is a separate function so the Kani harness can run the same
+/// code against a small buffer: proving termination over a 255-byte symbolic output was measured
+/// at twenty-plus solver minutes, and over a small one it is CI-fast, while the loop being proved
+/// is identical (src/proofs.rs carries the measurements).
+fn decode_name_into(msg: &[u8], off: usize, out: &mut [u8]) -> Result<(usize, usize)> {
+    let mut len = 0usize;
     let mut pos = off;
     // Where the caller resumes: set at the first pointer, else after the root label.
     let mut resume: Option<usize> = None;
@@ -347,13 +361,21 @@ pub fn decode_name(msg: &[u8], off: usize) -> Result<(NameBuf, usize)> {
             }
             0x00 => {
                 if b == 0 {
-                    out.push(0)?;
-                    return Ok((out, resume.unwrap_or(pos + 1)));
+                    if len >= out.len() {
+                        return Err(Error::NameTooLong);
+                    }
+                    out[len] = 0;
+                    return Ok((len + 1, resume.unwrap_or(pos + 1)));
                 }
                 let l = b as usize;
                 let label = msg.get(pos + 1..pos + 1 + l).ok_or(Error::Truncated)?;
-                out.push(b)?;
-                out.extend(label)?;
+                let end = len + 1 + l;
+                if end > out.len() {
+                    return Err(Error::NameTooLong);
+                }
+                out[len] = b;
+                out[len + 1..end].copy_from_slice(label);
+                len = end;
                 pos += 1 + l;
             }
             // 0x40 and 0x80 are reserved (RFC 1035 §4.1.4); nothing valid emits them.
