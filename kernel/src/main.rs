@@ -290,7 +290,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // map_page / translate / unmap_page / flush_tlb, which the kernel stack allocator needs.
         {
             use paging::Flags;
-            let test_va = arch::mmu::KERNEL_VA_BASE + 0x1_0000_0000; // above the RAM direct map
+            // Above the direct map of whatever RAM this machine actually has, computed rather than
+            // assumed: a constant here was the third QEMU-shaped address the VisionFive 2 caught in
+            // one bench session (2026-08-14). The direct map ends at KERNEL_VA_BASE + top-of-RAM;
+            // one gigapage of headroom clears any alignment the mapper rounds to.
+            let ram_top = memory::ram_regions()
+                .map(|(start, size)| start + size)
+                .max()
+                .expect("the device tree described no RAM");
+            let test_va = arch::mmu::KERNEL_VA_BASE + ram_top + (1 << 30);
             let frame = memory::alloc()
                 .expect("no frame for the mmu self-test")
                 .addr();

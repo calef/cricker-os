@@ -158,6 +158,20 @@ impl Slot {
             .is_ok()
     }
 
+    /// **Look at a pending request without taking it.** Diagnostic only (the hang dump): a slot
+    /// that stays claimed across dumps means the victim never reached a scheduler entry to serve
+    /// it, which is a wedged victim seen from the thief's side.
+    ///
+    /// A relaxed load, deliberately outside the claim/take pairing: it publishes nothing and the
+    /// reader acts on nothing but the printed byte. Never use it to decide a hand-off; that is
+    /// what [`take`](Self::take)'s read-and-clear exists for.
+    pub fn peek(&self) -> Option<u32> {
+        match self.inner.load(Ordering::Relaxed) {
+            EMPTY => None,
+            encoded => Some(encoded - 1),
+        }
+    }
+
     /// **Take a pending request, and open the slot for the next one.** Returns the requesting
     /// core's id, or `None` if nobody was asking.
     ///
@@ -212,6 +226,17 @@ mod tests {
             "the slot took a second claim over a pending one"
         );
         assert_eq!(slot.take(), Some(2), "the second claim displaced the first");
+    }
+
+    #[test]
+    fn a_peek_reads_without_taking() {
+        let slot = Slot::new();
+        assert_eq!(slot.peek(), None);
+        assert!(slot.claim(2));
+        assert_eq!(slot.peek(), Some(2), "peek missed a pending request");
+        assert_eq!(slot.peek(), Some(2), "peek consumed the request");
+        assert_eq!(slot.take(), Some(2), "peek made the take miss");
+        assert_eq!(slot.peek(), None);
     }
 
     #[test]

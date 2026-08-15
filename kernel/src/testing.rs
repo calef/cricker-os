@@ -127,7 +127,10 @@ pub fn note_progress() {
 /// poll) always has one running. Read-only across the per-CPU blocks; racy by nature, which a
 /// heartbeat sampled once per tick tolerates.
 fn any_core_running_real_work() -> bool {
-    (0..crate::smp::online_count()).any(|c| {
+    // The online set, not `0..count` (first-silicon sweep, 2026-08-14): with the VisionFive 2's
+    // {1,2,3} online, the count-as-index scan read parked slot 0's statics and never looked at
+    // cpu 3, so a suite whose only live work sat on cpu 3 would read as hung.
+    crate::smp::online_cpus().any(|c| {
         let pc = crate::cpu::of(c);
         let cur = pc.current.load(Ordering::Relaxed);
         cur != crate::cpu::NO_TID && cur != pc.idle.load(Ordering::Relaxed)
