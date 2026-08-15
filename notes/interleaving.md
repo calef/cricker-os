@@ -61,7 +61,7 @@ and fetch-op outside test code:
 
 ## What was modelled
 
-Ten harnesses across two crates, run by `script/interleaving-check`.
+Sixteen harnesses across three crates, run by `script/interleaving-check`.
 
 ### `crates/steal_request`, the pilot
 
@@ -94,6 +94,59 @@ documentation says the memory ordering is the point rather than decoration.
 | `the_generation_a_reader_sees_matches_the_pair_it_read` | `Reading::generation` is a value callers depend on (did the clock step under me), not a diagnostic, so it must agree with the pair it arrived with |
 | `two_writers_serialise_rather_than_corrupt_the_page` | the crate says several processes may hold the page read/write and the compare-exchange serialises them; "would corrupt silently" is a claim about interleavings |
 | `a_racing_reader_sees_an_unrecognised_page_or_a_whole_one` | `init` writes the magic last with a release, so a reader racing the first publish gets `UNKNOWN` or a whole page, never a recognised page with garbage in it |
+
+### `crates/wake_handshake`, the block/wake protocol (2026-08-14)
+
+The retrofit the fourth bench stop's audit asked for (notes/visionfive2.md said plainly that the
+block/wake protocol had no loom coverage and that covering it meant an extraction). The protocol
+behind `Thread`'s `on_cpu`/`wake_pending`/`wait_on`/`ipc_served`/`ipc_aborted` fields is now a
+crate, the kernel calls its transitions at every wake, park, switch and finish-switch site, and
+loom searches it on the host.
+
+**This one extends the method, and the extension is worth naming.** The survey above counts atomic
+protocols, and by that count the block/wake path had nothing to explore: every field is written
+under `SCHED`. What the fourth bench stop demonstrated is that a lock-based protocol still has an
+interleaving space, in the *gaps between critical sections*: a thread that parks itself releases
+`SCHED` and keeps running until its core saves its context, and a waker can take the lock inside
+that window. All three of this protocol's recorded races live in that gap. So the model puts
+`SCHED` behind a `loom::sync::Mutex`, the thread's saved context in a `loom::cell::UnsafeCell`
+written outside the lock (where `switch_to` writes the real one), each core's critical sections in
+a loom thread in the kernel's program order, and lets loom order the sections. What it checks is
+therefore interleaving logic plus the context handoff's ordering through the lock, not memory
+orderings; there are none to check, and saying otherwise would be claiming coverage the model does
+not have.
+
+| Harness | Property |
+|---|---|
+| `a_wake_racing_a_switch_out_resumes_on_a_saved_context` | the wake-before-switch-out race (notes/intrusive-queues.md): whichever side of the race queues the thread (a direct wake after the switch-out, or a deferred wake completed by `finish_switch`), exactly one does, and the resume reads the context the victim's core saved |
+| `a_wake_that_ignores_on_cpu_switches_into_an_unsaved_context` | **the reconstruction**, `#[should_panic]`: the pre-fix wake with the deferral removed, and loom must find the interleaving where the resumer takes a thread whose core is still saving its context |
+| `a_stolen_thread_resumes_on_its_saved_context` | the steal edge of the same window: a preempted thread sits `Ready` with `on_cpu` still set, and the single-owner queue discipline (serve only on the owning core, after `finish_switch`) is what orders the thief's resume after the context save |
+| `a_thief_that_pops_a_foreign_queue_steals_an_unsaved_context` | **the reconstruction**, `#[should_panic]`: break the single-owner rule and loom must find the thief taking a mid-switch-out thread |
+| `an_undelivered_wake_racing_a_park_strands_nobody` | boot 8's gate under race: a spurious wake with nothing delivered is `Refused` in every interleaving, before or after the switch-out completes; the receiver stays parked and waiting, the real sender still completes the rendezvous, and the resume sees a delivery |
+| `without_the_gate_a_spurious_wake_completes_an_empty_rendezvous` | **the reconstruction**, `#[should_panic("resumed with nothing delivered")]`: the pre-boot-8 wake (deferral kept, gate absent) strands the receiver in every interleaving, which is exactly what the bench recorded |
+
+Two mechanics worth copying. The model's invariants are **real `assert!`s, not `debug_assert!`s**,
+because this script compiles `--release` and a should-panic reconstruction with its tripwire
+compiled out reports success while checking nothing. And each of the three reconstructions is the
+*historical* semantics rebuilt locally in the harness (the fields are public), so the shipped
+methods never carry a broken variant; reconstructing all three was cheap because each was a
+deletion.
+
+**Bounds, honestly.** Every harness runs to exhaustion: no `LOOM_MAX_PREEMPTIONS`, no branch
+bound. That is affordable (the whole crate's search is ~10 ms) because the models are three or
+four threads with two or three critical sections each, and that size is not modesty: one waker,
+one victim core, one thief is the entire cast of every recorded race in this protocol. What the
+small model cannot represent is stated in the crate's BUGS: the model checks the protocol *under*
+the kernel's locking discipline (every site holds `SCHED`, run queues single-owner,
+`finish_switch` before the next scheduler entry), and that the kernel keeps the discipline is
+established by reading `sched.rs`, not by loom.
+
+**What it found: nothing in the current protocol**, on the first run and after falsifying every
+harness (deleting the deferral fails the first harness; deleting the gate fails the fifth; the
+three reconstructions fail by construction). Like the pilot, the negative result has a reading:
+all three of this protocol's races were found by flakes and bench boots first and fixed before
+this model existed, and the model now holds the fixes in place where the next edit to `wake` or
+`finish_switch` cannot silently undo them.
 
 ## What loom found
 
@@ -186,6 +239,10 @@ running 4 tests
 test interleavings::a_reader_never_sees_half_a_publish ... ok
 ...
 test result: ok. 4 passed; 0 failed
+running 6 tests
+test interleavings::a_wake_racing_a_switch_out_resumes_on_a_saved_context ... ok
+...
+test result: ok. 6 passed; 0 failed
 ```
 
 Run one harness, which is what you do while iterating on a counterexample:
@@ -226,7 +283,7 @@ Add a protocol of your own. Four steps, and the third is the one that is easy to
 
 | | |
 |---|---|
-| Runtime, both crates, warm | **0.9 s** wall (2.0 s CPU) on an M-series laptop |
+| Runtime, all three crates, warm | **under a second** wall on an M-series laptop (0.2 s measured 2026-08-14, with `wake_handshake`'s six harnesses adding ~10 ms of search) |
 | Runtime, cold (compiling loom and its 28 transitive crates) | ~6.5 s |
 | Crates added to `Cargo.lock` | **28** (loom plus `generator`, `scoped-tls`, `tracing`, `tracing-subscriber` and their trees) |
 | Crates compiled by an ordinary `cargo build`, `cargo test`, `cargo clippy` or `script/test` | **zero** |
@@ -264,8 +321,9 @@ evaluates `cfg(loom)` as false for every real target, so:
   is locked out of that victim. That is outside the model in both directions: loom does not know
   about the SGI, and it does not know about the timer tick that makes the thief retry.
 - **The harnesses are small on purpose, and small is a bound.** Two thieves, one victim, two polls;
-  two writers, one reader, one publish each. The protocols are symmetric enough that a third
-  participant explores no new state *in these two cases*, and that is an argument, not a proof. Every
+  two writers, one reader, one publish each; one waker, one victim core, one thief in the
+  block/wake models. The protocols are symmetric enough that a third
+  participant explores no new state *in these cases*, and that is an argument, not a proof. Every
   harness carries reachability flags (the `Reached` type) so a bound that quietly empties the
   interesting branch fails loudly, which is `kani::cover!`'s job done by hand.
 - **`crates/user_rt`'s spin lock and the interrupt-routing lottery are unmodelled.** Both are named

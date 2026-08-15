@@ -90,9 +90,13 @@ hazard as being freed, for the same reason, with the same fix:
   the wake. (`cpu::switched_from` generalizes the old `to_reap`: the successor now finishes
   both duties, reap or wake, depending on the predecessor's state.)
 
-Verified by moving the suite back to repeated clean runs (statistics, not proof: this is SMP
-interleaving, which is exactly the thing our bounded model checking cannot reach; recorded as
-a known limit in notes/verification.md).
+Verified at the time by moving the suite back to repeated clean runs (statistics, not proof).
+Since 2026-08-14 it is also searched: the `on_cpu`/`wake_pending` protocol lives in
+`crates/wake_handshake`, and loom explores every interleaving of the waker against the switch-out,
+including a `#[should_panic]` reconstruction of exactly this race (the wake with the deferral
+removed), which fails the model the way the flake failed the suite. That covers the protocol's
+logic under the kernel's locking discipline; the discipline itself, and the ISA-level orderings,
+remain outside the model (notes/interleaving.md).
 
 ## The aliasing fine print, honestly
 

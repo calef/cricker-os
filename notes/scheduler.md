@@ -73,6 +73,16 @@ thread onto a reused stack. Guarded by
 `a_wake_without_delivery_cannot_complete_a_parked_recv` and
 `a_reply_to_a_thread_parked_as_a_receiver_is_dropped`, which inject through the real `wake` path.
 
+**The protocol is a crate now, and loom searches it** (2026-08-14, the retrofit the fourth bench
+stop's audit asked for). The whole block/wake state machine (`state`, `on_cpu`, `wake_pending`,
+`wait_on`, `ipc_served`, `ipc_aborted`, and the gate, deferral and finish-switch transitions over
+them) lives in `crates/wake_handshake`, embedded in `Thread` and **called** by `sched.rs` rather
+than mirrored, so the model-checked code and the shipped code are the same code. Each of the
+protocol's three recorded races (wake-before-switch-out, the steal edge of the same window, and
+boot 8's stranded receiver) is a loom harness that holds with the current semantics and a
+`#[should_panic]` reconstruction that fails with the historical ones. See notes/interleaving.md
+for the model's honest limits.
+
 **BUGS.** The gate protects threads whose `wait_on` is set, which is every IPC block site today; a
 future block path that forgets to set `wait_on` opts itself out silently. A kernel-thread caller
 of `ipc_recv` still cannot tell an abort from a message unless it checks `take_ipc_aborted`
