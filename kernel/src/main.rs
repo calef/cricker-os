@@ -324,9 +324,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         }
 
         // The scheduler and the context switch: adopt the boot thread, spawn two kernel threads,
-        // and yield. Each spawned thread runs its closure (via switch_to -> thread_trampoline ->
-        // thread_entry -> the closure) and exits, cascading back to us. A nonzero count proves the
-        // RISC-V context switch (context.s: switch_to and the trampolines) works end to end.
+        // and wait for both. Each spawned thread runs its closure (via switch_to ->
+        // thread_trampoline -> thread_entry -> the closure) and exits, cascading back to us. Both
+        // having run proves the RISC-V context switch (context.s: switch_to and the trampolines)
+        // works end to end.
         {
             use core::sync::atomic::{AtomicU32, Ordering};
             static RAN: AtomicU32 = AtomicU32::new(0);
@@ -337,13 +338,27 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             sched::spawn(|| {
                 RAN.fetch_add(1, Ordering::SeqCst);
             });
-            for _ in 0..4 {
+            // Clock-bounded, not yield-bounded, the same shape as the sched test module's
+            // `wait_for` and for its reason: the secondaries are online, so placement (§28) can
+            // put both threads on other harts, and a fixed count of yields on this hart elapses
+            // in microseconds, long before another hart has scheduled them. This used to be four
+            // yields, which was always enough on QEMU and missed on the VisionFive 2 (boot 12
+            // printed "1 of 2", boot 13 "0 of 2", while the preemption step below ran millions
+            // of iterations; see notes/visionfive2.md). Two seconds is far beyond any honest
+            // completion, and the failure line says what did not happen instead of claiming the
+            // switch works regardless.
+            let deadline = arch::timer::now() + 2 * arch::timer::frequency();
+            while RAN.load(Ordering::SeqCst) < 2 && arch::timer::now() < deadline {
                 sched::yield_now();
             }
-            println!(
-                "  scheduler   : {} of 2 kernel threads ran (RISC-V context switch works)",
-                RAN.load(Ordering::SeqCst),
-            );
+            match RAN.load(Ordering::SeqCst) {
+                2 => println!(
+                    "  scheduler   : 2 of 2 kernel threads ran (RISC-V context switch works)"
+                ),
+                n => println!(
+                    "  scheduler   : FAILED: {n} of 2 kernel threads ran within 2s (context switch not proven)"
+                ),
+            }
         }
 
         // User address spaces (the single-satp model): build a process address space, switch satp
@@ -482,12 +497,23 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             for _ in 0..8 {
                 sched::yield_now();
             }
-            println!(
-                "  preemption  : two never-yield threads ran {} and {} iterations, {} preemptions (a thread that refuses to yield is preempted anyway)",
+            // The claim only prints when the numbers back it: both spinners made progress and at
+            // least one preemption happened. The scheduler smoke line above earned the same
+            // honesty the hard way (an unconditional success claim over a raced count).
+            let (a, b, p) = (
                 A.load(Ordering::Relaxed),
                 B.load(Ordering::Relaxed),
                 sched::preemptions() - p0,
             );
+            if a > 0 && b > 0 && p > 0 {
+                println!(
+                    "  preemption  : two never-yield threads ran {a} and {b} iterations, {p} preemptions (a thread that refuses to yield is preempted anyway)",
+                );
+            } else {
+                println!(
+                    "  preemption  : FAILED: {a} and {b} iterations, {p} preemptions (a never-yield thread did not run, or nothing was preempted)",
+                );
+            }
         }
         sched::note_boot_stage(6);
 
@@ -730,19 +756,27 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 timer::spin_for(timer::frequency() / 2); // half a second, doing nothing
                 STOP.store(true, Ordering::Relaxed);
 
+                let (hostile, polite, preempted) = (
+                    HOSTILE.load(Ordering::Relaxed),
+                    POLITE.load(Ordering::Relaxed),
+                    sched::preemptions() - p0,
+                );
                 println!("  half a second later, having spawned two threads that NEVER yield:");
                 println!();
-                println!(
-                    "    thread 1 (hostile) : {:>10} iterations",
-                    HOSTILE.load(Ordering::Relaxed)
-                );
-                println!(
-                    "    thread 2 (polite)  : {:>10} iterations",
-                    POLITE.load(Ordering::Relaxed)
-                );
-                println!("    preemptions        : {:>10}", sched::preemptions() - p0);
+                println!("    thread 1 (hostile) : {hostile:>10} iterations");
+                println!("    thread 2 (polite)  : {polite:>10} iterations");
+                println!("    preemptions        : {preempted:>10}");
                 println!();
-                println!("  neither asked to be interrupted. both were.");
+                // The closing claim only prints when the numbers above back it. The RISC-V tour's
+                // scheduler smoke line earned this the hard way: an unconditional success claim
+                // over a raced count read "0 of 2 ... works" on the VisionFive 2
+                // (notes/visionfive2.md, boots 12 and 13). The window here is wall-clock, not a
+                // yield count, so timing is sound; only the wording was unconditional.
+                if hostile > 0 && polite > 0 && preempted > 0 {
+                    println!("  neither asked to be interrupted. both were.");
+                } else {
+                    println!("  FAILED: a spinner did not run, or nothing was preempted.");
+                }
             }
 
             // 7a. EL0.
