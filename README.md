@@ -1,6 +1,9 @@
 # nife
 
-*Formerly cricker-os; renamed 2026-08-15, milestone 120. Old links redirect.*
+*Formerly cricker-os; renamed 2026-08-15, milestone 120. Old links redirect. The name is
+lowercase everywhere, sentence starts included, and is said like* knife: *Ni + Fe, the Earth's
+nickel-iron core. The full story, refused spellings included, is
+[notes/naming.md](notes/naming.md).*
 
 <img src="art/cobble-first-draft.jpg" alt="Cobble, the nife mascot: a stone golem with red eyes and mossy shoulders, holding a gear" width="300">
 
