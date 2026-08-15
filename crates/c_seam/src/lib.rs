@@ -270,14 +270,14 @@ mod tests {
     #[test]
     fn the_checksum_is_case_insensitive() {
         assert_eq!(expected_checksum(b"nife"), expected_checksum(b"NIFE"));
-        assert_eq!(expected_checksum(b"CrIcKeR"), expected_checksum(b"nife"));
+        assert_eq!(expected_checksum(b"NiFe"), expected_checksum(b"nife"));
     }
 
     /// ...and still distinguishes different bytes, or case-folding would have been achieved by
     /// ignoring the input.
     #[test]
     fn the_checksum_separates_different_inputs() {
-        assert_ne!(expected_checksum(b"nife"), expected_checksum(b"crickes"));
+        assert_ne!(expected_checksum(b"nife"), expected_checksum(b"nifd"));
         assert_ne!(expected_checksum(b""), expected_checksum(b"a"));
     }
 
