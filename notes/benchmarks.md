@@ -856,3 +856,72 @@ Hypervisor.framework, which executes the host's own ISA, so there is no accelera
 take it on; the VisionFive 2 is where this gets measured. Recorded here rather than deferred silently,
 because a milestone whose stated win is a benchmark improvement and whose benchmark got slower is
 exactly the result that has to be written down.
+
+## 2026-08-15: `map_new` moved 15.6% on RISC-V, and the movement was a bug rather than a cost
+
+Every section above this one is about the instrument measuring a *cost*: a correctness fix that had
+to be paid for, or a win it could not see. This is the first time it caught a **defect**, and it did
+so on a benchmark nobody was looking at, in a change whose entire test suite was green.
+
+Four pull requests from the VisionFive 2 lane family failed `script/bench --riscv --check` on the
+same benchmark by the same amount, and a fifth from the same stack did not:
+
+| tree | riscv64 `map_new` | note |
+|---|---|---|
+| `main` | within `2362 ± 236` | its push run executed the riscv leg rather than skipping it |
+| #172, #173, #175, #176 | **2731 to 2732** (+15.6%) | tolerance is `±236`, so this fails by a wide margin |
+| #178 | **2362, exactly** | `kernel/src/smp.rs` byte-identical to #176's |
+
+The stack's change routes every per-cpu loop through `smp::online_cpus()` and masks the RISC-V
+RFENCE calls with `online_harts_mask()`, so a machine whose online set is `{1,2,3}` stops being
+indexed as `0..count` (see notes/visionfive2.md and `crates/cpu_set`). **The bench boots a single
+hart.** On one hart the online mask names one cpu, the shootdown has nobody to send to, and the
+correct instruction count for the masked version is the count for the unmasked one. 2362 is the
+right answer and 2731 is not.
+
+### The first reading was wrong, and it is kept because it is the plausible one
+
++370 ticks over 64 iterations is **5.8 instructions per map**, which is exactly the shape of "consult
+a mask instead of a count on every TLB flush". That reading says the regression is the price of the
+correctness fix, and it leads directly to the action `script/bench` itself recommends on failure:
+rerun with `--save` and commit the new baseline with the change that moved it.
+
+What refuted it is the third row of the table. **#178's `kernel/src/smp.rs` is byte-identical to
+#176's**, and #178 measures 2362. A cost carried by the code cannot be absent from a tree that
+contains the same code. So the extra instructions are not the mask being consulted; they are work the
+mask should have prevented and did not, on the trees that lack the later registration fix. The best
+available reading is remote RFENCEs being issued on a single-hart machine, from a mask that
+over-reports which harts are online.
+
+**Rebaselining would have been the expensive mistake, and it was one command away.** It would have
+written 2731 into `bench/baseline-riscv64.txt`, and every future run of the tripwire would then have
+been silent on precisely the defect it had just caught. That is worse than never having had the
+check: a green tripwire is read as evidence, and this one would have been evidence of nothing.
+
+### What is proven, what is inferred, and what would settle it
+
+**Proven.** The four trees measure 2731 to 2732 and #178 measures 2362, against a baseline `main`
+still satisfies. The `smp.rs` files are identical. All of it is from CI's own runs rather than
+computed or scaled, per the discipline the 2026-08-04 riscv64 re-save established.
+
+**Inferred.** That the delta is remote RFENCEs fired against an over-reporting mask. Nothing here
+counted a fence. The evidence for it is that the number returns to the baseline **exactly** rather
+than approximately, which is what a path that stops executing looks like and not what a cheaper path
+looks like.
+
+**What would settle it**: count RFENCE issues on a single-hart boot, or print `online_harts_mask()`
+at bench time on both trees and compare. Neither is built, and this is recorded as a reading rather
+than a mechanism until one of them is.
+
+### Why this is the strongest argument yet for the job's wall-clock
+
+Nothing else noticed. `build + test (host + QEMU)` passed on #176. So did `cpu matrix (riscv64
+across QEMU CPU models)`, which exists specifically to boot RISC-V across CPU models. The kernel
+worked; it just did more than it needed to, on the one configuration where the extra work is
+provably unnecessary. A correctness bug that leaves behaviour correct is invisible to every test in
+the tree by construction, and an instruction counter is the only instrument here that can see it.
+
+Milestone 21's stated purpose for the tripwire is catching "the *introduction* of performance
+problems proximate to the changes that introduce them". This is the same mechanism catching
+something better, and the case is worth citing the next time the job's five minutes come up for
+debate.
