@@ -13,10 +13,6 @@ toolchain relink is `nife-dev`, and no second build was created. `basalt` is res
 repository under the organization. Step 5, the merge queue, is milestone 119's and remains open.
 Records that describe the past keep the old name, per the bridge note at the top of AGENTS.md.
 
-**Gate: NONE.** The naming is decided and nothing technical blocks a start. Two steps are calef's to
-perform rather than to decide, because they need his GitHub account: creating the organization and
-transferring the repository. The in-tree rename can be prepared before either.
-
 ## What changes
 
 | Thing | Today | Becomes |

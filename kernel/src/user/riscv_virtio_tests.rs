@@ -167,7 +167,7 @@ fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"nife-",
+        b"nife: re",
         "the driver reported the wrong file contents",
     );
     assert!(
@@ -627,7 +627,7 @@ fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
 
     assert_eq!(
         &word.to_le_bytes(),
-        b"nife-",
+        b"nife: re",
         "the driver reported the wrong file contents over pci",
     );
     assert!(
