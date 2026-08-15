@@ -403,8 +403,7 @@ fn find_file(name: &[u8]) -> Option<u32> {
         }
         // The name must end here, so "motd" does not match "motdx": either the next byte is NUL
         // padding, or the name used every byte of the field and there is no padding to check.
-        let ends =
-            name.len() == nifefs::NAME_LEN || dma_read::<u8>(entry + name.len() as u64) == 0;
+        let ends = name.len() == nifefs::NAME_LEN || dma_read::<u8>(entry + name.len() as u64) == 0;
         if matches && ends {
             return Some(dma_read::<u32>(entry + nifefs::NAME_LEN as u64));
         }

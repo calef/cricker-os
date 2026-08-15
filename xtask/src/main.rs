@@ -69,9 +69,7 @@ fn main() -> ExitCode {
         "shell" => {
             // Boot straight to the interactive shell (the milestone tour compiled out).
             maybe_hvf();
-            eprintln!(
-                "--- booting nife to an interactive shell (type `help`, Ctrl-C to quit) ---"
-            );
+            eprintln!("--- booting nife to an interactive shell (type `help`, Ctrl-C to quit) ---");
             // **The filesystem the prompt's `>` and `<` need** (milestone 50). The FS server first,
             // because `user()` packs the initrd and the boot loads it out of there by name, and the
             // RedoxFS image because the runner attaches it only when the file exists. Both are
@@ -2656,8 +2654,7 @@ fn blank_check_after_run() -> bool {
 
     // The filesystem inside it, opened by the pinned engine on the host, at the offset the tool
     // works out from the same table this function just checked.
-    let data_type =
-        String::from_utf8_lossy(&gpt::guid::types::NIFE_DATA.to_ascii()).into_owned();
+    let data_type = String::from_utf8_lossy(&gpt::guid::types::NIFE_DATA.to_ascii()).into_owned();
     let out = capture(
         "cargo",
         &[

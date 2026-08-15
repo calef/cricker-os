@@ -2454,8 +2454,7 @@ pub mod fixture {
         /// guest wrote proves the tree, the allocator and the root node too.
         pub const MADE_NAME: &str = "made-on-target";
         /// Its contents, checked byte for byte on the host after the run.
-        pub const MADE_BODY: &[u8] =
-            b"CRK57: this filesystem was created by nife on the target\n";
+        pub const MADE_BODY: &[u8] = b"CRK57: this filesystem was created by nife on the target\n";
     }
 }
 

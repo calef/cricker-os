@@ -555,9 +555,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 dev.mmio_phys, dev.intid,
             ),
             None => {
-                println!(
-                    "  virtio      : no block device attached (pass NIFE_DISK to attach one)"
-                );
+                println!("  virtio      : no block device attached (pass NIFE_DISK to attach one)");
             }
         }
         sched::note_boot_stage(8);
@@ -579,9 +577,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 d.isr,
                 d.intid,
             ),
-            None => println!(
-                "  pcie        : no virtio-blk on the bus (pass NIFE_DISK to attach one)"
-            ),
+            None => {
+                println!("  pcie        : no virtio-blk on the bus (pass NIFE_DISK to attach one)")
+            }
         }
         sched::note_boot_stage(9);
 
