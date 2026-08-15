@@ -180,6 +180,34 @@ pub unsafe fn force_unlock() {
     unsafe { CONSOLE.force_unlock() }
 }
 
+/// **Bytes handed to the console transmitter since boot** (first-silicon diagnostics, 2026-08-15).
+///
+/// Counted after each `write_str` completes, so a count here means the driver's bounded world has
+/// already accepted the bytes: `write_byte`'s THRE poll is unbounded, so a wedged transmitter
+/// shows as a *hanging* print, never as a count with no wire bytes behind it. The point is the
+/// contrapositive at a bench: VisionFive 2 boots 7 through 9 ended with kernel state proving the
+/// tour's printing steps ran while the serial record showed none of their lines, and nothing
+/// could say whether the bytes were ever emitted. The riscv diag line prints this counter, so
+/// boot 11's dumps carry "how much output has the kernel pushed" beside "what the wire showed".
+static TX_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The [`TX_BYTES`] counter. Diagnostic; racy reads are fine.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv diag line is the reader today
+pub fn tx_bytes() -> u64 {
+    TX_BYTES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// The counting shim between `write_fmt` and the driver: forwards each fragment, then counts it.
+struct CountedWrites<'a>(&'a mut ConsoleUart);
+
+impl core::fmt::Write for CountedWrites<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.write_str(s)?;
+        TX_BYTES.fetch_add(s.len() as u64, core::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[doc(hidden)]
 pub fn _print(args: core::fmt::Arguments) {
     // Output is forward progress: it keeps the test hang-watchdog's heartbeat alive so a slow but
@@ -187,7 +215,7 @@ pub fn _print(args: core::fmt::Arguments) {
     #[cfg(test)]
     crate::testing::note_progress();
     // Writing to a UART cannot fail in any way we can act on, so drop the Result.
-    let _ = CONSOLE.lock().write_fmt(args);
+    let _ = CountedWrites(&mut *CONSOLE.lock()).write_fmt(args);
 }
 
 #[macro_export]

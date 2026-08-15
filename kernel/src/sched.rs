@@ -413,6 +413,12 @@ mod trace {
         /// delivered nothing (no message, no signal, no abort). The boot-8 gate firing; on a
         /// healthy boot this event never appears, so its presence in a bench dump is the finding.
         WakeRefused = 9,
+        /// This core set `ipc_served` on `tid`: a delivery completed the thread's parked IPC.
+        /// `aux` names the delivering site (1 send, 2 recv-collect, 3 send_cap, 4 recv_cap-collect,
+        /// 5 call, 6 reply, 7 irq signal, 8 death message), so a bench dump answers "who served
+        /// this thread" by reading the ring instead of inferring it from a frozen syscall count,
+        /// which is the inference boots 7 through 9 got wrong (notes/visionfive2.md, fifth stop).
+        Served = 10,
     }
 
     struct Ring {
@@ -463,10 +469,11 @@ mod trace {
                 7 => "steal",
                 8 => "drain",
                 9 => "refuse",
+                10 => "serve",
                 _ => "?",
             };
             crate::print!(" {name}:{tid:#x}");
-            if matches!(kind, 2 | 6 | 7) {
+            if matches!(kind, 2 | 6 | 7 | 10) {
                 crate::print!("/{aux}");
             }
         }
@@ -492,12 +499,220 @@ mod trace {
         StealServe,
         InboxDrain,
         WakeRefused,
+        Served,
     }
 
     #[inline]
     pub fn record(_kind: Event, _tid: u64, _aux: u8) {}
 
     pub fn dump(_cpu: usize) {}
+}
+
+/// **The boot tour's last-reached stage**, printed in every [`dump_threads`] header (first-silicon
+/// diagnostics, 2026-08-15; name provisional).
+///
+/// Boots 7 through 9 on the VisionFive 2 were called a hang inside the initrd demo because the
+/// tour's serial lines after "init : measured, built, started" never showed at the bench, while
+/// the thread dumps kept printing. The dumps' own rows later proved the tour had in fact advanced
+/// through the UART-driver step (notes/visionfive2.md, fifth stop), so "which step did the boot
+/// thread reach" must not be inferable only from serial lines that can go missing: a breadcrumb
+/// the periodic dump repeats survives a lossy or misread log. The riscv tour bumps this at each
+/// step; the number-to-step table lives beside the tour in main.rs.
+static BOOT_STAGE: AtomicU32 = AtomicU32::new(0);
+
+/// Record that the boot tour reached `stage`. Monotonic by convention, not enforced.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv tour is the caller today
+pub fn note_boot_stage(stage: u32) {
+    BOOT_STAGE.store(stage, Ordering::Relaxed);
+}
+
+/// **A corruption tripwire over the scheduler's registries** (first-silicon diagnostics,
+/// 2026-08-15; module name provisional). Armed around the initrd demo on the board tour, it
+/// re-reads the watched ranges on the timer tick and prints every byte that changed since the
+/// last look: address, tick, before and after. A legal change (a spawn writing a fresh TcbPtr, a
+/// reap bumping a generation) prints as a recognizable delta at a table offset; a stray write
+/// prints as bytes nothing in the choreography explains. The instrument does not judge, it shows,
+/// because boots 7 through 9 proved the judging is the part that goes wrong.
+///
+/// What it watches: the thread table and the endpoint registry (the `slots` arrays and their
+/// generations), which are quiescent between spawns and creates. The per-cpu blocks are
+/// deliberately NOT watched: `ticks`, `runnable`, `current` and the queues churn on every
+/// scheduler entry by design, so a checksum there measures the scheduler working, not corruption.
+///
+/// Cost and honesty:
+///
+/// - Unarmed (every build's steady state), the tick-path cost is one relaxed load.
+/// - Armed, the owner core re-reads ~13 KiB per tick. Diagnostic-build money, spent only inside
+///   the demo window on the board tour.
+/// - Compiled out of `--features bench` builds exactly as the event rings are, so the tripwire
+///   benchmarks never measure the instrument.
+/// - The watched memory is concurrently mutated under SCHED while the check reads it lock-free;
+///   a torn read of an in-flight legal write can print as a divergence. That is a false alarm
+///   only in the sense that the mutation was legal; the printed delta says so itself.
+#[cfg(not(feature = "bench"))]
+mod canary {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// One watched range and where its shadow copy lives.
+    #[derive(Clone, Copy)]
+    struct Watch {
+        base: usize,
+        len: usize,
+        shadow_off: usize,
+    }
+
+    const MAX_RANGES: usize = 4;
+    /// Both registries today total ~13 KiB (128 `Option<TcbPtr>` at 16 bytes, 512 `Option<u64>`
+    /// at 16 bytes, plus generations); 24 KiB leaves room for growth and the test's scratch.
+    const SHADOW_BYTES: usize = 24 * 1024;
+    /// Print at most this many diverging bytes over an armed window, so a large legal rewrite
+    /// cannot flood the serial log that the dump itself needs.
+    const PRINT_CAP: u64 = 48;
+
+    /// Interior-mutable statics with a hand-written protocol: `WATCHES`/`SHADOW` are written by
+    /// `arm` before `ARMED` is released and afterwards only inside the `IN_CHECK` single-flight
+    /// section, so no two writers ever overlap.
+    struct Racy<T>(core::cell::UnsafeCell<T>);
+    // SAFETY: access is serialized by the ARMED release/acquire pair plus the IN_CHECK
+    // compare-exchange; see the struct comment.
+    unsafe impl<T> Sync for Racy<T> {}
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static IN_CHECK: AtomicBool = AtomicBool::new(false);
+    static DIVERGED: AtomicU64 = AtomicU64::new(0);
+    static PRINTED: AtomicU64 = AtomicU64::new(0);
+    static WATCHES: Racy<([Watch; MAX_RANGES], usize)> = Racy(core::cell::UnsafeCell::new((
+        [Watch {
+            base: 0,
+            len: 0,
+            shadow_off: 0,
+        }; MAX_RANGES],
+        0,
+    )));
+    static SHADOW: Racy<[u8; SHADOW_BYTES]> = Racy(core::cell::UnsafeCell::new([0; SHADOW_BYTES]));
+
+    /// Arm over `ranges`, snapshotting their current bytes. Caller guarantees the ranges stay
+    /// readable while armed (ours are `'static` kernel tables) and that no earlier arm is live.
+    pub fn arm(ranges: &[(usize, usize)]) {
+        ARMED.store(false, Ordering::Release);
+        while IN_CHECK.load(Ordering::Acquire) {
+            core::hint::spin_loop(); // let a straggling check drain before rewriting the plan
+        }
+        DIVERGED.store(0, Ordering::Relaxed);
+        PRINTED.store(0, Ordering::Relaxed);
+        // SAFETY: ARMED is clear and no check is in flight (the loop above), so these statics
+        // have no other accessor until the release store below republishes them.
+        let (watches, count) = unsafe { &mut *WATCHES.0.get() };
+        // SAFETY: as above.
+        let shadow = unsafe { &mut *SHADOW.0.get() };
+        let mut off = 0usize;
+        let mut n = 0usize;
+        for &(base, len) in ranges.iter().take(MAX_RANGES) {
+            assert!(off + len <= SHADOW_BYTES, "canary shadow too small");
+            for i in 0..len {
+                // SAFETY: caller promises base..base+len readable; volatile because another
+                // core may be mid-write under SCHED (a torn snapshot only costs a printed delta).
+                shadow[off + i] = unsafe { core::ptr::read_volatile((base + i) as *const u8) };
+            }
+            watches[n] = Watch {
+                base,
+                len,
+                shadow_off: off,
+            };
+            off += len;
+            n += 1;
+        }
+        *count = n;
+        ARMED.store(true, Ordering::Release);
+    }
+
+    pub fn disarm() {
+        ARMED.store(false, Ordering::Release);
+    }
+
+    /// How many bytes have diverged since arming. The test hook, and a bench-note number.
+    #[cfg_attr(not(test), allow(dead_code))] // release builds read it off the serial print
+    pub fn divergences() -> u64 {
+        DIVERGED.load(Ordering::Relaxed)
+    }
+
+    /// Re-read every watched byte against the shadow; print and absorb what changed. Called from
+    /// the timer tick (IRQ context, interrupts masked) and from the test. Single-flight, so a
+    /// slow check on one core and the next tick on another cannot interleave shadow updates.
+    pub fn check() {
+        if !ARMED.load(Ordering::Acquire) {
+            return;
+        }
+        if IN_CHECK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        // SAFETY: IN_CHECK is ours (the compare-exchange), so no other reader/writer of these
+        // statics is live; ARMED's acquire saw arm's release.
+        let (watches, count) = unsafe { &*WATCHES.0.get() };
+        // SAFETY: as above, and mutation is confined to this single-flight section.
+        let shadow = unsafe { &mut *SHADOW.0.get() };
+        let tick = crate::arch::timer::ticks();
+        for w in watches.iter().take(*count) {
+            for i in 0..w.len {
+                // SAFETY: the armed range is 'static kernel memory (arm's contract); volatile
+                // because SCHED-holding writers mutate it concurrently and honestly.
+                let now = unsafe { core::ptr::read_volatile((w.base + i) as *const u8) };
+                let was = shadow[w.shadow_off + i];
+                if now != was {
+                    DIVERGED.fetch_add(1, Ordering::Relaxed);
+                    if PRINTED.fetch_add(1, Ordering::Relaxed) < PRINT_CAP {
+                        crate::println!(
+                            "    canary: tick={tick} addr={:#x} (range {:#x}+{:#x} off {:#x}) {was:#04x} -> {now:#04x}",
+                            w.base + i,
+                            w.base,
+                            w.len,
+                            i,
+                        );
+                    }
+                    shadow[w.shadow_off + i] = now;
+                }
+            }
+        }
+        IN_CHECK.store(false, Ordering::Release);
+    }
+}
+
+/// The bench build's no-op twin of [`canary`], so the call sites carry no `cfg` of their own.
+#[cfg(feature = "bench")]
+mod canary {
+    pub fn arm(_ranges: &[(usize, usize)]) {}
+    pub fn disarm() {}
+    pub fn check() {}
+}
+
+/// Arm the [`canary`] over the thread table and the endpoint registry, snapshotting under `SCHED`
+/// so the baseline is a consistent cut. The riscv initrd demo arms before parking in its recv and
+/// disarms when the recv returns; see notes/visionfive2.md (fifth stop) for what boot 11 does
+/// with the output.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv tour is the caller today
+pub fn canary_arm_registries() {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return;
+    };
+    let threads = (
+        core::ptr::from_ref(&sched.threads.table) as usize,
+        size_of_val(&sched.threads.table),
+    );
+    let endpoints = (
+        core::ptr::from_ref(&sched.endpoints) as usize,
+        size_of_val(&sched.endpoints),
+    );
+    canary::arm(&[threads, endpoints]);
+}
+
+/// Disarm the [`canary`]. The demo window's other bracket.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv tour is the caller today
+pub fn canary_disarm() {
+    canary::disarm();
 }
 
 /// Adopt the context we are already running in as thread 0.
@@ -1000,6 +1215,7 @@ fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
             let r = sched.threads.get_mut(receiver).unwrap();
             r.mailbox = msg;
             r.handshake.serve(); // delivered: this wake passes the boot-8 gate
+            trace::record(trace::Event::Served, receiver, 8);
             wake(sched, receiver);
         }
         ipc::Send::Blocked => {
@@ -1015,6 +1231,11 @@ fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
 /// Called from the timer IRQ. **Records** that a switch is wanted; does not switch.
 pub fn on_tick() {
     cpu::current().need_resched.store(true, Ordering::Relaxed);
+    // The corruption tripwire, when armed (the board tour's initrd-demo window). One relaxed
+    // load when it is not, which is every other tick everywhere. IRQ context is safe for its
+    // println: the console's IrqSafeMutex masks interrupts while held, so the interrupted
+    // context on this core cannot be mid-print (the irq_notify argument, one lock over).
+    canary::check();
 }
 
 pub fn take_need_resched() -> bool {
@@ -1312,6 +1533,7 @@ pub fn irq_notify(ep: EpId) {
             let t = sched.threads.get_mut(waiter).unwrap();
             t.mailbox = [1, 0, 0, 0, 0];
             t.handshake.serve(); // the signal is the delivery (the boot-8 gate)
+            trace::record(trace::Event::Served, waiter, 7);
             wake_load_aware(sched, waiter)
         } else {
             None
@@ -1587,6 +1809,7 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
                 let r = sched.threads.get_mut(receiver).unwrap();
                 r.mailbox = msg;
                 r.handshake.serve(); // delivered: this wake passes the boot-8 gate
+                trace::record(trace::Event::Served, receiver, 1);
                 wake(sched, receiver);
                 false
             }
@@ -1653,6 +1876,7 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
                     // Collected: the sender's rendezvous is complete, which is what lets its
                     // wake through the boot-8 gate.
                     sched.threads.get_mut(sender).unwrap().handshake.serve();
+                    trace::record(trace::Event::Served, sender, 2);
                     wake(sched, sender);
                 } else if sched.threads.get(sender).unwrap().handshake.state == State::Dead {
                     // The corpse's death message is collected and `recv` popped it off the sender
@@ -1726,6 +1950,7 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
                 r.mailbox = [data, slot, 0, 0, 0];
                 r.handshake.serve(); // delivered: this wake passes the boot-8 gate
+                trace::record(trace::Event::Served, receiver, 3);
                 wake(sched, receiver);
                 false
             }
@@ -1791,6 +2016,7 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
                 if !is_reply {
                     // Collected: the sender's rendezvous is complete (the boot-8 gate).
                     sched.threads.get_mut(sender).unwrap().handshake.serve();
+                    trace::record(trace::Event::Served, sender, 4);
                     wake(sched, sender);
                 }
                 // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
@@ -1856,6 +2082,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
                 r.mailbox = [msg[0], slot, msg[1], 0, 0];
                 r.handshake.serve(); // delivered: this wake passes the boot-8 gate
+                trace::record(trace::Event::Served, receiver, 5);
                 wake(sched, receiver);
             }
             ipc::Send::Blocked => {
@@ -1907,6 +2134,7 @@ pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
         }
         t.mailbox = [msg[0], msg[1], 0, 0, 0];
         t.handshake.serve(); // delivered: this wake passes the boot-8 gate
+        trace::record(trace::Event::Served, caller, 6);
         wake(sched, caller);
     }
 }
@@ -2598,7 +2826,13 @@ pub fn dump_threads() {
     //   - `ticks` is that core's timer-interrupt count. A core whose ticks FREEZE across dumps
     //     is not taking traps at all: wedged with interrupts masked, or stuck inside an SBI call
     //     in M-mode (where delegated S-interrupts cannot preempt), which no other row can show.
-    crate::println!("--- thread dump (hang diagnostic; pc* = on-cpu, racy) ---");
+    // The stage breadcrumb repeats here on purpose: a serial line printed once can go missing
+    // from a bench log (boots 7 through 9 were convicted on exactly that absence), but a dump
+    // that fires every couple of seconds re-states how far the tour got each time.
+    crate::println!(
+        "--- thread dump (hang diagnostic; pc* = on-cpu, racy; tour stage {}) ---",
+        BOOT_STAGE.load(Ordering::Relaxed),
+    );
     for t in sched.threads.iter_mut() {
         let pc = t
             .stack
@@ -3205,6 +3439,33 @@ mod tests {
     /// The claim: a `Blocked` IPC thread may only become `Ready` by the hand that completed its
     /// rendezvous (message staged, signal counted, or abort flagged). An undelivered wake is
     /// refused, the receiver stays parked, and a real sender still reaches it afterwards.
+    /// The canary tripwire's contract, both halves: an unchanged watched range reports nothing,
+    /// and a byte flipped behind its back is counted (and printed) on the next check. The scratch
+    /// is this test's own static, so the live registries are never poked; arming over the real
+    /// tables is `canary_arm_registries`, which is plain plumbing over the same `arm`.
+    #[test_case]
+    fn the_canary_reports_a_byte_that_changed_behind_its_back() {
+        use core::sync::atomic::AtomicU8;
+        static SCRATCH: [AtomicU8; 32] = [const { AtomicU8::new(0xA5) }; 32];
+        let base = SCRATCH.as_ptr() as usize;
+        super::canary::arm(&[(base, 32)]);
+        super::canary::check();
+        assert_eq!(
+            super::canary::divergences(),
+            0,
+            "an unchanged range must not diverge"
+        );
+        SCRATCH[7].store(0x5A, Ordering::Relaxed);
+        // The timer's own check may absorb the flip before this explicit one; the counter is the
+        // assertion either way.
+        super::canary::check();
+        assert!(
+            super::canary::divergences() >= 1,
+            "a flipped watched byte must be reported"
+        );
+        super::canary::disarm();
+    }
+
     #[test_case]
     fn a_wake_without_delivery_cannot_complete_a_parked_recv() {
         static GOT: AtomicU64 = AtomicU64::new(u64::MAX);
