@@ -47,7 +47,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-REPO="calef/nife"
+REPO="crickertech/nife"
 once=""
 [ "$1" = "--once" ] && once=1
 
