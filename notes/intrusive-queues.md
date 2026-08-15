@@ -82,10 +82,10 @@ A `Finished` thread cannot be freed while its core is still switching off its st
 reaps it from its **successor**, after the switch (`finish_switch`). Being woken is the same
 hazard as being freed, for the same reason, with the same fix:
 
-- `Thread::on_cpu`: set when a core schedules a thread in, cleared by that core's successor
-  after the switch away.
-- `wake()` finding `on_cpu` set does not queue the thread; it parks the wake in
-  `Thread::wake_pending`.
+- `on_cpu` (on the thread's embedded `wake_handshake::Handshake`): set when a core schedules a
+  thread in, cleared by that core's successor after the switch away.
+- `wake()` finding `on_cpu` set does not queue the thread; it parks the wake in the handshake's
+  `wake_pending`.
 - `finish_switch`, running on the thread's own core with the context provably saved, completes
   the wake. (`cpu::switched_from` generalizes the old `to_reap`: the successor now finishes
   both duties, reap or wake, depending on the predecessor's state.)

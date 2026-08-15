@@ -51,7 +51,8 @@ A wake is not a favor, it is the second half of a delivery, and since 2026-08-14
 enforces that. Every genuine wake of a thread parked in IPC happens in the same `SCHED` critical
 section that gave the parked operation something to return: a rendezvous stages the mailbox, an
 interrupt counts a signal, a reply fills the reply words, revocation flags the abort. Each of
-those sites sets `Thread::ipc_served` (or `ipc_aborted`) before calling `wake`, and `wake` /
+those sites sets the handshake's `ipc_served` (or `ipc_aborted`; both on
+`wake_handshake::Handshake`, embedded in `Thread`) before calling `wake`, and `wake` /
 `wake_load_aware` **refuse** to make a waiting thread Ready when neither flag is set, recording
 `refuse:tid` on the per-core event ring. The parked thread stays parked and still linked on its
 endpoint's wait queue, and the real counterparty completes the rendezvous normally later.
