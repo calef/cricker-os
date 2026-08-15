@@ -25,9 +25,10 @@
 //! - **A core past [`MAX_CPU_NODES`] is counted and not recorded.** [`CpuList::described`] is the
 //!   honest total and [`CpuList::cpus`] is the prefix that fit, so a caller can see it read part of
 //!   a machine. It cannot see *which* part it missed.
-//! - **`status` and `enable-method` are recorded, not obeyed.** This module reports what the tree
-//!   said; deciding that a `spin-table` core cannot be started by a kernel that only speaks PSCI is
-//!   the caller's call, because the caller is the one that knows what it can speak.
+//! - **`status`, `enable-method` and `supervisor` are recorded, not obeyed.** This module reports
+//!   what the tree said; deciding that a `spin-table` core cannot be started by a kernel that only
+//!   speaks PSCI, or that an M/U-only core cannot run an S-mode kernel, is the caller's call,
+//!   because the caller is the one that knows what it can speak and where it runs.
 //! - **The `/cpus` node is found by name, not by binding.** There is no `compatible` on it to match;
 //!   the device tree specification names the node itself. Same simplification [`dtb::Dtb::node_reg`]
 //!   records, and here it is not a simplification at all.
@@ -90,6 +91,17 @@ pub struct Cpu {
     /// `status` is absent or says `"okay"`. A `"disabled"` core is one firmware is telling us not to
     /// use, and starting it is at best wasted and at worst a core running code we did not plan for.
     pub usable: bool,
+    /// Can this core enter supervisor mode, as far as its own `riscv,isa` says? `false` only on
+    /// positive evidence: the string spells privilege modes and omits `s` (see
+    /// [`crate::riscv64::supervisor_mode_claim`]). A node with no such string, or one silent about
+    /// privilege modes, is `true`; every aarch64 tree and every modern RISC-V spelling lands there,
+    /// because silence is not evidence of absence.
+    ///
+    /// This field exists because `status` can lie where the ISA string does not: the VisionFive 2's
+    /// vendor tree marks its M/U-only S7 monitor core `"okay"` with `mmu-type = "riscv,sv39"`, both
+    /// false (bench, 2026-08-14), and starting it crashed the firmware. An S-mode kernel cannot run
+    /// on a core without S-mode, whatever the rest of the node claims.
+    pub supervisor: bool,
     /// What `enable-method` said, if anything.
     pub enable_method: EnableMethod,
 }
@@ -154,9 +166,11 @@ impl CpuList {
         let mut regs = [None; MAX_CPU_NODES];
         let mut status = [None; MAX_CPU_NODES];
         let mut methods = [None; MAX_CPU_NODES];
+        let mut isa_strings = [None; MAX_CPU_NODES];
         list.described = dt.node_props(b"cpu@", b"reg", &mut regs)?;
         dt.node_props(b"cpu@", b"status", &mut status)?;
         dt.node_props(b"cpu@", b"enable-method", &mut methods)?;
+        dt.node_props(b"cpu@", b"riscv,isa", &mut isa_strings)?;
 
         list.len = list.described.min(MAX_CPU_NODES);
         for i in 0..list.len {
@@ -168,6 +182,8 @@ impl CpuList {
                     .and_then(|bytes| hwid_from_reg(bytes, list.address_cells))
                     .unwrap_or(0),
                 usable: status[i].is_none_or(is_okay),
+                supervisor: isa_strings[i]
+                    .is_none_or(|s| crate::riscv64::supervisor_mode_claim(s) != Some(false)),
                 enable_method: methods[i]
                     .map_or(EnableMethod::Unstated, EnableMethod::from_property),
             };

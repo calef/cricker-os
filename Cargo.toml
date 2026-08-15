@@ -11,6 +11,7 @@ members = [
     "crates/calendar",
     "crates/capability",
     "crates/compositor",
+    "crates/cpu_set",
     "crates/grant_plan",
     "crates/cred",
     "crates/cred_proto",
