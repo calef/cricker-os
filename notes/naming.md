@@ -467,6 +467,39 @@ people learn to skip.
   appears nowhere in this record.
 - **The `Name:` marker is a string in a comment**, so a header that never had one is caught by the
   gate while a header that loses one to an edit is caught only if the edit removes the whole line.
+- **A correctly formatted `ratified` is never checked against calef, and on 2026-08-14 two lanes
+  contradicted each other about the same name on the same day.** `crates/cpu_set` was introduced
+  twice in one stack of pull requests. #176 carried `Name: ratified (calef, 2026-08-14, the same day
+  the first-silicon online-set sweep introduced it)`. #178, one branch later in the same stack,
+  carried `Name: unrecorded, provisional (introduced 2026-08-14 by the first-silicon online-set
+  sweep; calef has not seen it)`. The second is the true one, and the two sat in the queue together
+  asserting opposite things about whether a ruling had happened. (Both headers said `Chris` when
+  they were written; they are quoted here in the referent this tree adopted on 2026-08-15, which is
+  also how the surviving one now reads in `crates/cpu_set`.)
+
+  **The gate caught the false one, and caught it for the wrong reason.** `script/names --check`
+  rejected #176 because the date sits inside the parenthetical where `ratified (\d{4}-\d{2}-\d{2})`
+  cannot reach it. Written as `Name: ratified 2026-08-14 (calef, …)`, the identical false claim would
+  have passed every check in CI and landed on `main`. What stopped it was punctuation.
+
+  **This follows from the design and is not a defect in it.** The gate checks that a block names one
+  of the three states and never that the state is `ratified`, because a gate keyed on ratification
+  holds every unrelated merge behind a queue only one person can drain, which is the wall milestone
+  115 was written not to build. The cost of that choice is what this entry records: **claiming
+  calef's ruling is as cheap as claiming anything else, and nothing downstream disagrees.** The
+  `recorded` entry above says the citation is never followed; this is the same hole one state up,
+  where the claim is not a citation anybody could follow but an assertion about a person.
+
+  A lane that does not know this will write `ratified` meaning "this name seems settled". Write
+  `unrecorded, provisional` instead and say so in the report. It costs nothing, `script/names
+  --unratified` is a worklist rather than a wall, and an unratified name has never failed a build.
+
+  **What would help without building the wall**, if this recurs: surface newly added `ratified`
+  blocks in a diff for the integrator rather than blocking on them. `ratified` is the one state a
+  lane structurally cannot be entitled to assert, so a new one appearing in a pull request is worth a
+  human glance even though it must not be worth a red check. That is rung two of AGENTS.md's ladder
+  applied to the one state that currently sits on rung zero. Not built, and not obviously worth
+  building for a hazard observed once.
 
 ## Directories (milestone 63)
 
