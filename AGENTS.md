@@ -761,6 +761,11 @@ Two consequences:
   qemu" and the next command found one holding `target/nifefs.img`, which then failed unrelated
   test runs with `Failed to get "write" lock` and looked like a bug in the code under test.
 
+  **And the check runs in both directions** (2026-08-15): before killing a "leaked" QEMU, walk
+  `ps -o pid,ppid` UP from it too. A QEMU whose parent chain ends in a live harness is somebody's
+  gate in flight, not a leak; the maintainer killed a lane's mid-suite emulator this way and the
+  lane's run failed for a reason no one could see from inside it.
+
   Two habits fix it. **Ask who holds the file, not whether a process matches a name**:
   `lsof target/nifefs.img` names the holder even when your pattern does not. And **kill the tree
   at its root**: walk `ps -o pid,ppid,command` up to the harness and kill that, or the loop simply
