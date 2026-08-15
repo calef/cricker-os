@@ -47,7 +47,7 @@ its caller should not have, serving a narrow interface.
 
 ## Secrets are scoped to resources, not identities
 
-Chris's setup is the evidence: **each share has its own username and password.** That is a
+calef's setup is the evidence: **each share has its own username and password.** That is a
 credential per resource, which is a capability per resource, and it means this service **does not
 depend on milestone 49's identity model**. Secrets are keyed by what they authenticate *to*, not by
 who holds them.
@@ -67,7 +67,7 @@ per-resource scoping cuts that at the root.
   §46's exposure argument applies to them exactly as it did to Argon2id.
 - **Persistence, which is the real one.** The store is **memory only, provisioned at boot**
   (`notes/credentials.md`). A secrets service that survives a reboot needs the filesystem (§27), and
-  that immediately raises secrets at rest, which Chris deprioritised for backup *data* but which is a
+  that immediately raises secrets at rest, which calef deprioritised for backup *data* but which is a
   different question for *keys*.
 - **Revocation (§32, §41, built).**
 

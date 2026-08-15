@@ -1,8 +1,8 @@
 # 73. Name the aarch64 files aarch64, before x86_64 makes it worse
 
 **Status: BUILT (2026-08-03), both ISAs**, for the five pairs. `crates/paging/src/aarch64.rs` is
-**deferred to Chris**, because the replacement is a name and names are his call; the proposal is in
-the section below. Raised 2026-08-03 by Chris, from the observation that files named when this was an
+**deferred to calef**, because the replacement is a name and names are his call; the proposal is in
+the section below. Raised 2026-08-03 by calef, from the observation that files named when this was an
 aarch64-only kernel never got renamed when RISC-V arrived and brought explicitly named twins.
 
 **What landed**, and everything below this paragraph is the argument that produced it, kept as
@@ -61,7 +61,7 @@ target, so this is a dated problem, not a hypothetical one.
 
 It was raised here as an asymmetry: `aarch64.rs` beside `sv39.rs`, one an ISA and one a page-table
 format. It is real, but it is not a rename, and milestone 77 carries it now. The short reason is that
-Chris expects a **second aarch64 configuration**, which turns "rename the file" into "make room for a
+calef expects a **second aarch64 configuration**, which turns "rename the file" into "make room for a
 sibling on both sides", and that is a restructure with 174 call sites behind it.
 
 Milestone 73 touched nothing under `crates/paging`, and one finding is worth carrying to 77: ARM has
@@ -81,7 +81,7 @@ inside `tests.rs`. So this is a RISC-V-only test module rather than half of a pa
 is whether the name should say "riscv-only test" or whether the aarch64 cases should be broken out to
 match. Decide before renaming, because the answer changes the name.
 
-## The scheme: suffix both sides (Chris, 2026-08-03)
+## The scheme: suffix both sides (calef, 2026-08-03)
 
 Every file in a pair carries its ISA as a hyphenated suffix. `kernel/link-aarch64.ld` beside
 `kernel/link-riscv64.ld`, and so on for all five. Two alternatives were compared and lost, and both

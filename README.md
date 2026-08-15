@@ -174,7 +174,7 @@ paragraph is the pointer.
 What is in there and nowhere else: that all architecture-specific code lives under
 `kernel/src/arch/`; that a driver never reaches into a kernel global; that anything two binaries must
 agree on is a crate rather than a `#[path]` module, and why (a shared module in a `no_std` binary is
-unreachable by host tests and by Kani); that names are Chris's call; and the ladder that ranks
+unreachable by host tests and by Kani); that names are calef's call; and the ladder that ranks
 "make the wrong state unrepresentable" above "a gate that fails loudly" above "a note nobody reads".
 
 ## The decisions

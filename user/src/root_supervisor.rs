@@ -28,7 +28,7 @@
 //! The restart policy is `sub_server_supervisor`'s, in userspace, and the kernel never relaunches anything
 //! (DECISIONS §26). See notes/trusted-init.md and notes/supervision.md.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `rootsup`. Refused `rootsup` and
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `rootsup`. Refused `rootsup` and
 //! `root_sup` (`sup` was the abbreviation, so putting a separator in it would have relocated the
 //! problem rather than fixed it).
 

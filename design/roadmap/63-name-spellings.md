@@ -49,13 +49,13 @@ out: a package directory is a Rust name, and everything else is a path.
 | `compose` | **`compositor`** | the noun, and accurate about scope: the whole compositor problem (scene, clipping, damage arithmetic, contract), not just one of them. `compositor_proto` was rejected earlier because this is a logic crate, not a wire contract; `scene` undersells the arithmetic. **Sharing a name with the program is the point, not a collision**: the crate is that program's logic lifted out to be host-testable, and `coremark` and `lineedit` already do exactly this. |
 | `lineedit` (crate **and** program) | **`line_editor`** | the crate's own header calls it "a sans-IO **editor**", and there is no `Editor` type to stutter against (it exports `proto`, `expand_output` and the `OP_*` constants). `line_discipline` was rejected as overclaiming: that term covers the whole tty layer including echo, canonical mode, signals and flow control, and this crate is narrower. `line_edit` was rejected for being a verb phrase where its sibling `video_terminal` is a noun. |
 | `uheap` | **`user_heap`** | the `u` was *userspace*, and `user_rt` already establishes `user_` as the prefix for it. |
-| `vt` | **`video_terminal`** | the true expansion: DEC's VT100 and VT220 were **Video** Terminals. `virtual_terminal` was proposed and rejected as wrong twice, since that is not what VT stood for and "virtual terminal" already names Linux's virtual consoles. `screen_grid` was rejected because the crate carries 63 escape-sequence references: the grid is the output and interpreting the protocol is the work. Chris's reason for expanding rather than keeping `vt`: a reader can relate it back to the thing they already know, with less ambiguity than two letters that could read as *vector table* in a kernel. |
+| `vt` | **`video_terminal`** | the true expansion: DEC's VT100 and VT220 were **Video** Terminals. `virtual_terminal` was proposed and rejected as wrong twice, since that is not what VT stood for and "virtual terminal" already names Linux's virtual consoles. `screen_grid` was rejected because the crate carries 63 escape-sequence references: the grid is the output and interpreting the protocol is the work. calef's reason for expanding rather than keeping `vt`: a reader can relate it back to the thing they already know, with less ambiguity than two letters that could read as *vector table* in a kernel. |
 | `caps` | **`capability`** | the crate is the capability *model*, not a container: it exports `Cap`, `Rights`, `Object`, `Reap` and `CSpace`. `cap_space` was considered and rejected because it names one of five exports and stutters as `cap_space::CSpace`. `CSpace` itself stays: it is seL4's own spelling. |
 
 These are folded in here rather than given their own milestone because a crate rename is a
 directory rename, which is what this milestone already is.
 
-## `swish`: the shell has a name now (Chris, 2026-08-01)
+## `swish`: the shell has a name now (calef, 2026-08-01)
 
 `shell` is a category, not a name. `bash`, `zsh`, `fish` and `rc` are names; this project's most
 demonstrable artifact was filed under the noun for what kind of thing it is.
@@ -119,7 +119,7 @@ starts after 61 lands.**
   custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
 
-## `exerciser`, not `demo` (Chris, 2026-08-01)
+## `exerciser`, not `demo` (calef, 2026-08-01)
 
 **"Exercise" is this tree's own verb**, 130 uses across it, and these programs use it about
 themselves: "exercises the capability-shaped contract", "exercises the platform", "every line
@@ -143,7 +143,7 @@ exercises a **service contract from the outside**, with a server on the other en
 no contract being probed from a client side. `std_test_program` was considered and rejected for
 importing the clients' vocabulary into the wrong family.
 
-## Why the three clients carry `test` (Chris, 2026-08-01)
+## Why the three clients carry `test` (calef, 2026-08-01)
 
 `fs_client`, `credentialer_client` and `socket_client` are **the names the real things will want**,
 and the real things are coming: milestone 55 needs an actual credentialer client for SMB

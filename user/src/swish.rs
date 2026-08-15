@@ -56,7 +56,7 @@
 //! slot arrives in `x2` because it sits after the filesystem pair and a boot with no disk has one
 //! fewer capability under it. See [`CLOCK_SLOT`].
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `shell`. Refused `shell` (a category
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `shell`. Refused `shell` (a category
 //! rather than a name: `bash`, `zsh`, `fish` and `rc` are identities), `capsh` (Linux's libcap
 //! ships `capsh(1)`, a capability shell wrapper, so a reader from Linux would assume ours is that
 //! tool) and `sheesh` (it carries a 2020-21 timestamp where `bash` and `fish` are era-neutral, and

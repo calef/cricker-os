@@ -2,7 +2,7 @@
 
 **Status: DECIDED.**
 
-**Decided 2026-07-27** (Chris), promoting what practice had already become. The RISC-V work
+**Decided 2026-07-27** (calef), promoting what practice had already become. The RISC-V work
 began as a portability proof and ended at full parity (notes/riscv-parity-scope.md: SMP, the
 suite, the shell, the benchmarks, the disk, the DMA confinement, and now the §18 transport and
 the coming §16b IOMMU work, all on both ISAs). The tenet makes that the standing rule rather

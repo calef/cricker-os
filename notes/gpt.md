@@ -8,7 +8,7 @@ fifteen years. Nothing in this note is about a language model.)
 
 ## Why the OS needs it before it needs anything else about disks
 
-`parted /dev/sda mkpart`, then `mkfs.ext4`, then mount. That is Chris's router setup, and cricker-os
+`parted /dev/sda mkpart`, then `mkfs.ext4`, then mount. That is calef's router setup, and cricker-os
 had **no equivalent of the first step at all**. It is not optional, and not only because we might
 want to partition something: **you cannot find a partition on a disk you did not create without
 reading its table.** A block device hands you 131,072 blocks of undifferentiated bytes. Which of

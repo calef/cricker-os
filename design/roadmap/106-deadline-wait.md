@@ -2,7 +2,7 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-04 from `notes/net.md:307`, where milestone 30's network
 lane recorded the cost of not having one. It is a kernel-surface addition, so it is **a design fork
-for Chris before it is a task**, and it is the same fork DECISIONS §51 already records.
+for calef before it is a task**, and it is the same fork DECISIONS §51 already records.
 
 **Gate: DECISION.** A timed wait is a kernel-surface addition and DECISIONS §51 already records the
 fork with three candidate shapes. The block adds the fourth consumer and asks for the decision to

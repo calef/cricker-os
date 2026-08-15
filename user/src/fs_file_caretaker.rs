@@ -40,7 +40,7 @@
 //! ([`fs_proto::grant`]), so a per-file grant costs no extra frame and the caretaker needs nothing
 //! mapped before it runs.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 61), replacing `fwarden`. Refused `fwarden` and the
+//! Name: ratified 2026-08-01 (calef, milestone 61), replacing `fwarden`. Refused `fwarden` and the
 //! `warden` family (a synonym invented for Mark Miller's caretaker, which DECISIONS §31 had cited
 //! correctly since milestone 31 while the code said warden). The `fs_` prefix rather than `file_`
 //! because `file` is already one of the qualifiers and `file_file_caretaker` is the reductio. A

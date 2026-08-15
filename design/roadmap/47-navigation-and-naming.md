@@ -23,7 +23,7 @@ told nothing about which it holds, and neither can name the other's files (notes
 environment, and `PATH`. The `std` PAL still answers `Unsupported` for `rename`, `unlink` and
 `rmdir`, which is now a binding gap rather than a missing verb for the first two.
 
-**Why it matters.** Chris's framing, and it is the governing constraint: *"I hate Windows/DOS
+**Why it matters.** calef's framing, and it is the governing constraint: *"I hate Windows/DOS
 specifically because they went differently than virtually every other OS I've used."* Gratuitous
 divergence taxes every user forever. So the bar is not "is this more capability-pure", it is **"does
 the model actually force this."** Three divergences clear that bar; the rest of Unix's surface should
@@ -126,7 +126,7 @@ program takes an explicit attenuated grant, so `caps rm -r logs/` prints the sub
 anything happens, and a bug in the recursion can only reach what it was handed. Same shape as
 globbing below: attenuate, then hand over.
 
-**`-f` stays, with Unix's semantics** (Chris, 2026-07-31). An earlier draft of this section argued it
+**`-f` stays, with Unix's semantics** (calef, 2026-07-31). An earlier draft of this section argued it
 should not exist, on the reasoning that with no prompting its only remaining meaning is suppressing
 errors, which §42 forbids. **That was wrong about what `-f` does.** It means *ignore nonexistent files
 and do not prompt*: a permission failure on a file that exists still reports. Its real value is
@@ -200,7 +200,7 @@ should clamp here too rather than erroring, but that is a decision.
 
 ### ~~Open fork~~ **SETTLED 2026-07-31: `bind`, not stored paths** (DECISIONS §50)
 
-**Chris chose namespace composition.** The analysis below is kept because the naming search is the
+**calef chose namespace composition.** The analysis below is kept because the naming search is the
 evidence for the decision rather than a digression: twenty-eight-plus candidates, terminating without
 a winner, which is what a construct that does not fit any familiar relationship looks like. `bind`
 needed no search: Plan 9 and `mount --bind` already named it. See §50 for the decision, what it
@@ -586,7 +586,7 @@ position, both inits, and nothing in the suite boots the interactive shell to pr
 
 Tests: `crates/grant_plan` host suite, 34 cases. Notes: grant-expression.md, program-manifest.md, date.md.
 
-Chris asked to be convinced they were worth the typing. They are not, and the case against each is
+calef asked to be convinced they were worth the typing. They are not, and the case against each is
 stronger than the case that put them there.
 
 **`run` fails on consistency, the DOS objection turned inward.** This milestone adds `ls`, `cd`,
@@ -624,7 +624,7 @@ edit, not a redesign.
 
 ## Open fork: should the shell be function calls rather than whitespace? (raised 2026-07-30)
 
-Chris proposed `wc(cat(this-file.txt))` or `cat(this-file.txt).wc()`, on the grounds that shells lean
+calef proposed `wc(cat(this-file.txt))` or `cat(this-file.txt).wc()`, on the grounds that shells lean
 too hard on whitespace to tell a name from its arguments. **Not decided.** Recorded because the idea
 contains one thing worth keeping whatever the syntax ends up being.
 

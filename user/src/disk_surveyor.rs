@@ -16,7 +16,7 @@
 //!
 //! On Linux those are the same authority in practice: `/sys/block` is world-readable, `/dev/sda` is
 //! a path, and a tool that can see a disk can usually be pointed at it. `parted /dev/sda` as root
-//! reaches every disk in the machine, which is why Chris's own router instructions carry a "confirm
+//! reaches every disk in the machine, which is why calef's own router instructions carry a "confirm
 //! the target device path before proceeding" warning: the tool cannot enforce what the warning
 //! asks. **Here the warning is structural.** This program was handed one disk. There is no path to
 //! type, no second device to typo into, and nothing in the roster that can be turned into a handle.
@@ -69,7 +69,7 @@
 //!   rather than a task; see design/roadmap/57-partitioning-and-xattrs.md.
 //! - **No hot plug.** The roster is written once at wiring time and never again.
 //!
-//! Name: ratified 2026-08-03 (Chris, milestone 57). The lane shipped it provisionally and Chris
+//! Name: ratified 2026-08-03 (calef, milestone 57). The lane shipped it provisionally and calef
 //! approved it by name. A surveyor maps land they do not own, which is this program's endowment
 //! exactly: a read-only mapping of the roster page that says what devices exist, plus a
 //! block-service endpoint for one of them.

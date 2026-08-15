@@ -1,6 +1,6 @@
 # 71. Does a recorded limitation ever become a `RECORDED` row?
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris, and it wants thought rather than a snap
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, and it wants thought rather than a snap
 answer.)
 
 **What.** The roadmap has a `RECORDED` status for "analysis captured, decision deliberately not

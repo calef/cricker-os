@@ -1,7 +1,7 @@
 # 126. The `procps` package: who else is running, and who is allowed to ask
 
-**Status: NOT-STARTED.** Minted 2026-08-14 by Chris, from a design conversation about what ambient
-authority utilities become on this system. **Scoped to the whole package by Chris the same day**, for
+**Status: NOT-STARTED.** Minted 2026-08-14 by calef, from a design conversation about what ambient
+authority utilities become on this system. **Scoped to the whole package by calef the same day**, for
 consistency with milestone 123's approach to popular packages: the corpus is chosen by an external
 ordering and taken in the units that ordering uses, which is packages rather than programs we like.
 
@@ -93,7 +93,7 @@ thing this system exists to avoid. The plausible shapes:
   Cleaner, and it breaks the package's coverage claim, which is worth saying out loud rather than
   quietly dropping one binary from a list of seventeen.
 
-**This is Chris's**, and it should be decided before the statistics stratum rather than after, because
+**This is calef's**, and it should be decided before the statistics stratum rather than after, because
 it decides whether "we implemented `procps`" is a true sentence.
 
 ## The other fork: where the process view comes from

@@ -45,7 +45,7 @@ not a build system, one translation unit is not a link order, this component's f
 another's, and confined is not correct. Sequencing holds: libghostty-vt is tier one (freestanding),
 which is the cheapest step up from here.
 
-**Added 2026-07-29, from Chris's question: can we run user services in other languages, like a C
+**Added 2026-07-29, from calef's question: can we run user services in other languages, like a C
 FAT32 that a monolith would have put in the kernel?** The answer is yes, and the roadmap already
 commits to one (libghostty-vt, Zig, at 29). This item exists so the *seam* is proven by something
 tiny before a large foreign component depends on it.

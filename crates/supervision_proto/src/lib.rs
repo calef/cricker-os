@@ -36,7 +36,7 @@
 //! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
 //! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
 //! rule plus the service the stem names produces this name, which is the whole of what `recorded`
-//! claims: Chris ruled on the rule, and never on this crate.
+//! claims: calef ruled on the rule, and never on this crate.
 //! The stem is the tree's word for the restart discipline. The type it exports as `Endow` is an
 //! open naming question of its own (DECISIONS §69): a verb where the tenet says noun, naming the
 //! same idea as `grant_plan::Endowment` one construction step apart.

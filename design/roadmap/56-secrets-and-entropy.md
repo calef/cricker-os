@@ -4,7 +4,7 @@
 
 **In brief.** Milestone 55 needs the Mac to authenticate, so it needs an identity, a secret, and
 unguessable challenges. We had none of the three, and one of the gaps was a hard blocker rather than
-a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution).** Chris's existing setup
+a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution).** calef's existing setup
 serves **three** family members with separate passwords, so the credential service holds multiple
 identities from the start rather than growing into that later.
 

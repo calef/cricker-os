@@ -1,6 +1,6 @@
-# 73. Milestone 44's ten admin minutes, which only Chris can spend
+# 73. Milestone 44's ten admin minutes, which only calef can spend
 
-**Status: DECIDED.** Chris applied it on 2026-08-04, the evening it was raised. This section records
+**Status: DECIDED.** calef applied it on 2026-08-04, the evening it was raised. This section records
 what was applied and what turned out not to be applicable, because the *reasons* are what a reader
 needs later and a closed section that only says "done" throws them away.
 

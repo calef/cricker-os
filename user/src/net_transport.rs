@@ -10,7 +10,7 @@
 //! (`MTU`); a demonstrator with a single-page DMA region cannot post full 1514-byte buffers, and
 //! that is a recorded caveat, not a bug (see notes/net.md).
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `vnet`. Refused `vnet` (an
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `vnet`. Refused `vnet` (an
 //! abbreviation) and `virtio_net` (`crates/virtio` also drives net, so the device-class name would
 //! collide). Named for its role: the adapter that presents smoltcp's `phy::Device` so frames can
 //! cross the virtqueue, which is a different job from the driver underneath. This file is a

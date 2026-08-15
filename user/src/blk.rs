@@ -12,7 +12,7 @@
 //! in the same binary for the same reason they ride in hello: they differ from the honest driver
 //! by one descriptor, and sharing the setup code is what makes the attack a fair test.
 //!
-//! Name: ratified 2026-07-30 (Chris, DECISIONS §39), among the names recorded there as "always
+//! Name: ratified 2026-07-30 (calef, DECISIONS §39), among the names recorded there as "always
 //! right, and always the majority". An abbreviation is allowed where it is the ordinary name of the
 //! thing, which `blk` is.
 

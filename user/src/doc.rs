@@ -5,7 +5,7 @@
 //! the sink contract and eight kilobytes of `.bss`.
 //!
 //! Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-04 and not yet put to
-//! Chris. It is the roadmap's own word for this program. `man` is the live alternative and carries
+//! calef. It is the roadmap's own word for this program. `man` is the live alternative and carries
 //! the stronger argument that a reader already knows it from outside this project; the counter is
 //! that `man` names a *format* elsewhere and this reads plain markdown. Deliberately not the same
 //! name as `crates/manual`, though the two are the usual crate-and-program pair: see that crate's

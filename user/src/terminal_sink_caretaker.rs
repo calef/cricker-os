@@ -48,7 +48,7 @@
 //!   turn, so end-of-stream is a fact about one client and this loop simply continues. There is
 //!   nothing here that could notice a client that died mid-message, and nothing that needs to.
 //!
-//! Name: ratified 2026-08-03 (Chris), replacing `terminal_sink`. It holds the terminal endpoint,
+//! Name: ratified 2026-08-03 (calef), replacing `terminal_sink`. It holds the terminal endpoint,
 //! which also carries `OP_READLINE`, and hands out a sink that cannot read, which is the caretaker
 //! shape exactly; naming it one also proves that shape generalizes beyond `fs_`, where every other
 //! member lives, so a reader stops taking caretaker for a filesystem concept. The full form keeps

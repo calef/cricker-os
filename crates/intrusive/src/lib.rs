@@ -63,7 +63,7 @@
 //! term is already right" guard rail, made in the file rather than in the tenet, which is why a
 //! reader who meets `intrusive` here is not left guessing. What is missing is only the signature:
 //! the word is not on the tenet's protected list (`elf`, `pci`, `dtb`, `gpt`, `ipc`, `paging`,
-//! `glob`, `asid`, `socket_proto`) and Chris has never ruled on it. Introduced 2026-07-23 when the
+//! `glob`, `asid`, `socket_proto`) and calef has never ruled on it. Introduced 2026-07-23 when the
 //! run queues and inboxes went intrusive.
 
 #![cfg_attr(not(test), no_std)]

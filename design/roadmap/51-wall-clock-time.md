@@ -83,7 +83,7 @@ to 2038, and it holds no authority over anything but the network socket it was g
 **Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`).
 
 **Reachable from a test, not from the prompt, and that is why this milestone is `PARTIAL` and not
-`BUILT`** (found by Chris, 2026-07-31, by typing `date` at `script/server` and getting "unknown
+`BUILT`** (found by calef, 2026-07-31, by typing `date` at `script/server` and getting "unknown
 command"). The binary is in the initrd and tested on both ISAs, but `grant_plan::Prog` knows only `worker`,
 `budgeter`, `heeder` and `spinner`, so the shell cannot spawn it. The lane deferred that as
 "milestone 31's manifest machinery", which is a defensible scope call that nonetheless leaves the

@@ -2,7 +2,7 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: MILESTONE 107.** The protocol question is settled (SMB, because Chris's router already
+**Gate: MILESTONE 107.** The protocol question is settled (SMB, because calef's router already
 serves Time Machine over it) and what is left is an adapter holding one directory capability and
 one network endpoint. The gap this block does not name is the one milestone 107 does: the socket
 contract has no listen verb, so nothing here can be connected to.
@@ -14,12 +14,12 @@ Time Machine specifically is solved.
 
 | Option | macOS support | Size | Note |
 |---|---|---|---|
-| **9P** | **None** | Small | Plan 9's protocol, closest to our model, and Chris cannot mount it. A demonstrator win with no user |
+| **9P** | **None** | Small | Plan 9's protocol, closest to our model, and calef cannot mount it. A demonstrator win with no user |
 | **NFSv3** | Built in (`mount_nfs`) | Medium | RPC/XDR, mount protocol, portmapper. Usable immediately for general storage. **Not** a supported Time Machine target |
 | **SMB3** | Built in | **Large** | **The one that is actually required**: the only path to Time Machine (milestone 55) |
 | WebDAV | Built in | Small | HTTP-based, and not a Time Machine target |
 
-**Chris's router already exposes SMB for Time Machine (2026-07-30), which settles this.** SMB is
+**calef's router already exposes SMB for Time Machine (2026-07-30), which settles this.** SMB is
 required regardless, so NFSv3 would be work thrown away, and 9P would be a demonstrator exercise with
 no user. **Do not build a second protocol just to have an easier first one.**
 

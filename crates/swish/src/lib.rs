@@ -75,7 +75,7 @@
 //!   from the code that can act on it and bought no new coverage.
 //! - `spawn`, `pipeline` and everything below them, which is capability movement and nothing else.
 //!
-//! Name: ratified 2026-08-01 (Chris, milestone 63), replacing `shell`. Refused `shell` (a category
+//! Name: ratified 2026-08-01 (calef, milestone 63), replacing `shell`. Refused `shell` (a category
 //! rather than a name: `bash`, `zsh`, `fish` and `rc` are identities), `capsh` (Linux's libcap
 //! ships `capsh(1)`) and `sheesh` (it carries a 2020-21 timestamp where `bash` and `fish` are
 //! era-neutral, and it is an interjection of exasperation, while this shell's most characteristic

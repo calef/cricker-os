@@ -165,7 +165,7 @@ tell us what the abstraction is, if there is one.
 
 ## Naming
 
-The crate is `isa`, settled by Chris on 2026-08-03. It is an abbreviation, and it is in the group
+The crate is `isa`, settled by calef on 2026-08-03. It is an abbreviation, and it is in the group
 `DECISIONS.md` §39 protects rather than the group it rejects: a standard term of art a reader
 already knows from outside this project, like `elf`, `dtb` and `pci`. Renaming it would cost a
 reader the recognition the tenet exists to buy.

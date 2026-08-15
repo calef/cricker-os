@@ -2,7 +2,7 @@
 
 **Status: BUILT.**
 
-**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. Plus
+**In brief.** calef's router setup is `parted` then `mkfs.ext4` then three mounted partitions. Plus
 the xattr gap milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with
 no board**, so it is schedulable before 2026-08-21 rather than waiting on hardware.
 
@@ -15,7 +15,7 @@ randomness. See the corrected table below, which used to say "the tools, none of
 
 ## Extended attributes: decided in direction, open in mechanism
 
-**Chris decided 2026-07-30: extended attributes, not AppleDouble sidecars**, on the grounds that we
+**calef decided 2026-07-30: extended attributes, not AppleDouble sidecars**, on the grounds that we
 will want them anyway. Agreed, and it does not reopen §34: that entry surveyed ext2, FAT32/exFAT,
 littlefs, btrfs, ZFS and F2FS before choosing RedoxFS, and **xattrs were never the deciding axis**, so
 the requirement adds a gap to fill rather than a comparison to redo. ext4 works on the router but
@@ -139,7 +139,7 @@ reason: "a GUID that is not random is not unique, this crate has no randomness, 
 from a counter would be worse than refusing." Partitioning and formatting on the target are both
 gated on plumbing the entropy service to the program that does them, and neither is gated on `std`.
 
-This is a **decision for Chris**, because the fix is a divergence from the pin (`patches/README.md` records the
+This is a **decision for calef**, because the fix is a divergence from the pin (`patches/README.md` records the
 patch and how to submit it, which is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
 also worth weighing against the pragmatic alternative: `redoxfs_host` on a Mac can partition and
 format the drive today, which is what actually gets a disk ready for the board on 2026-08-21, and the
@@ -167,7 +167,7 @@ now lives in the table above, corrected from the tree.
 
 Partitioning and `mkfs` are **destructive** and need authority over a *whole block device*. So the
 tool holds one device capability and can destroy exactly that device and nothing else. Compare
-`parted /dev/sda` as root, where a typo reaches any disk in the machine, and Chris's own instructions
+`parted /dev/sda` as root, where a typo reaches any disk in the machine, and calef's own instructions
 carry a "confirm the target device path before proceeding" warning precisely because the tool cannot
 enforce it. **Here the warning is structural**: the tool was handed one disk.
 
@@ -192,7 +192,7 @@ address and dies.
 ## Reading the drive from a MacBook or a Linux host: BUILT 2026-07-30
 
 **The question that makes a backup credible rather than merely functional: the board is dead, can I
-get my data?** Chris asked it, and the answer turns out to be that we disabled the feature.
+get my data?** calef asked it, and the answer turns out to be that we disabled the feature.
 
 **Correction to this section's original heading, which said "which upstream already solved".** It
 half did. Upstream solved *mounting* (FUSE), and that is the path we deliberately do not take.
@@ -249,12 +249,12 @@ upstream tooling.
 
 ## Decided: no filesystem-level encryption on the backup volume
 
-**Chris, 2026-07-30**: "If I'm struggling to get the data off, I'm not all that worried about somebody
+**calef, 2026-07-30**: "If I'm struggling to get the data off, I'm not all that worried about somebody
 else getting it." RedoxFS supports encryption (`src/key.rs`, and the read path calls `decrypt`), and
 we are deliberately not using it here.
 
 **It is the right call, and for a stronger reason than the one given.** Encryption belongs at the Time
-Machine layer, and Chris's own setup instructions already offer it ("Optionally enable Encrypted
+Machine layer, and calef's own setup instructions already offer it ("Optionally enable Encrypted
 Backups"). The Mac encrypts before anything is sent, so **the server never holds plaintext**, recovery
 uses the client's key rather than the server's, and filesystem encryption underneath would be
 redundant while putting a key on the machine most likely to be compromised. It also strengthens
@@ -279,7 +279,7 @@ same size:
   else. `Gpt::create` is built and proved. No pin divergence. This is a lane.
 - **`mkfs` on the target** needs that plus `Header::new_with_uuid` inside `vendor/redoxfs`, which is
   a new entry in `vendor/redoxfs.divergence.patch` and a new file in `patches/` for upstream
-  submission. §46's rule makes that Chris's call, and the honest alternative is still on the table:
+  submission. §46's rule makes that calef's call, and the honest alternative is still on the table:
   `redoxfs_host` on a Mac formats the drive today, which is what actually gets a disk ready for the
   board, and the target-side version is then a capability demonstration rather than a prerequisite.
 

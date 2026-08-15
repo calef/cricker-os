@@ -11,7 +11,7 @@ be.
 
 ## Why the tree cannot grade itself
 
-Chris cannot take this test; he wrote the system. Nor can any agent that has worked in this tree, and
+calef cannot take this test; he wrote the system. Nor can any agent that has worked in this tree, and
 by 2026-08-14 that is most of them. An agent that spent a night merging pull requests here knows why
 `cricker-dev` is a symlink, what a lane is, and that `script/lint` fails on a branch prefix.
 **Knowing the answer disqualifies you from being the instrument.**
@@ -66,7 +66,7 @@ question the tree does not answer.
 | M5 | Why is there a `crates/` and a `user/src/`, and what decides which? | shared-by-two-binaries goes in `crates/`; host-testable and Kani-reachable is the reason |
 | M6 | What is a `BUGS` section for? | a promise about known limits, not an apology, and next to the feature |
 | M7 | How would you add a program, and what must you declare about it? | the grant manifest, and that a provisional name is expected |
-| M8 | Who decides a name, and what are the three provenance states? | Chris; `ratified`, `recorded`, `unrecorded` |
+| M8 | Who decides a name, and what are the three provenance states? | calef; `ratified`, `recorded`, `unrecorded` |
 
 **Scoring is per question: answered, partly answered, wrong, or absent.** "Wrong" is worse than
 "absent" and is recorded separately, because a misleading document costs more than a silent one.

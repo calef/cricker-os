@@ -2,7 +2,7 @@
 //! harnesses without Kani installed (milestone 113). Half of the shim; the other half is `kani.rs`
 //! beside it, which re-exports these and supplies `any`, `assume` and `cover!`.
 //!
-//! **Names are provisional** (CLAUDE.md: Chris names crates, programs and modules). The `kani` crate
+//! **Names are provisional** (CLAUDE.md: calef names crates, programs and modules). The `kani` crate
 //! next door has no choice about its name, since `#[kani::proof]` is what the harnesses write; this
 //! one is internal to the shim and could be called anything.
 //!

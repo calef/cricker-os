@@ -56,7 +56,7 @@ worked around.** The hardware register definitions exempted as out of scope did 
 one deletion and no allows. And `VERIFY_WRITES` and `second_mount` carry **no suppression at all**;
 their existing prose already states the measurement, so there was nothing to give a reason to.
 
-**Chris's question, 2026-07-30: is there dead code that should be removed?** Answered by measurement
+**calef's question, 2026-07-30: is there dead code that should be removed?** Answered by measurement
 rather than impression, and the answer is more interesting than a list of unused functions.
 
 **The negative result first, because it is worth recording.** There are **no dead binaries**. All 28

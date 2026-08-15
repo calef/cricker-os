@@ -1,12 +1,12 @@
 # 99. `git` on cricker-os: the tool this project is built with, hosting its own history
 
-**Status: NOT-STARTED.** Raised 2026-08-04 by Chris. A second "somebody else's real application"
+**Status: NOT-STARTED.** Raised 2026-08-04 by calef. A second "somebody else's real application"
 target beside milestone 66's Vaultwarden, chosen for a different reason: not the hardest workload,
 but the one whose success statement is unanswerable. **A capability microkernel that can hold its
 own source history is a machine that does real work**, and the demo needs no explanation to any
 audience that has ever used a computer.
 
-**Gate: MILESTONE 64.** The first fork is decided (gitoxide, Chris, 2026-08-04), and the block
+**Gate: MILESTONE 64.** The first fork is decided (gitoxide, calef, 2026-08-04), and the block
 sequences the work after 64 measures what a real crate needs, because 64's probe crates are the
 cheap version of this milestone's first week.
 
@@ -29,7 +29,7 @@ things that do.
   deliberately does not have (git spawns itself constantly: hooks, pagers, editors, `git` calling
   `git`), and `mmap` for packfiles.
 
-**Decided 2026-08-04 (Chris): gitoxide first.** Its gaps are this project's own roadmap rather
+**Decided 2026-08-04 (calef): gitoxide first.** Its gaps are this project's own roadmap rather
 than a compatibility project, so every `Unsupported` it hits is PAL surface milestone 64 wants
 anyway and lands with a known owner. C git becomes a later, harder claim rather than a
 prerequisite, and the day it is attempted the `fork`/`exec` question is a design fork of its own

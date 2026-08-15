@@ -105,7 +105,7 @@ unforgeable identity for free (letting a bad damage rectangle be *refused to its
 clipped), a screenshot could be a served consistent snapshot rather than a live read-only mapping that
 can tear, and input delivery would stop being a blocking `CALL` into a client. Both candidate forms are
 real work with real consequences (a shared address space raises lifetime and revocation questions; a
-wait-any widens §4), so **this is Chris's call, not a thing to build quietly.** notes/compositor.md
+wait-any widens §4), so **this is calef's call, not a thing to build quietly.** notes/compositor.md
 carries the full argument.
 
 **Honest limits, recorded because a demonstrator's caveats are part of the deliverable.** The scene is a

@@ -1,4 +1,4 @@
-# The display ladder (recorded 2026-07-28, Chris's direction)
+# The display ladder (recorded 2026-07-28, calef's direction)
 
 The stated destination: eventually, something like COSMIC driving a GPU for display. That
 decomposes into rungs, each independently a demo, and the decomposition is what makes the ambition

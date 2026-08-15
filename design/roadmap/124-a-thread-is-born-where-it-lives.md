@@ -1,6 +1,6 @@
 # 124. A thread is born where it lives: the spawn path's copies
 
-**Status: BUILT** 2026-08-14. Minted the same day by Chris, out of the riscv64 stack overflow
+**Status: BUILT** 2026-08-14. Minted the same day by calef, out of the riscv64 stack overflow
 milestone 108 was held on. The hold turned out to be the wrong suspect twice over, and this is what
 was underneath.
 

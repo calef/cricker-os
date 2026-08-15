@@ -1,6 +1,6 @@
 # 121. `ripgrep` on cricker-os: enumeration as a capability, and what the walk costs
 
-**Status: NOT-STARTED.** Minted 2026-08-13 by Chris. A third "somebody else's real application"
+**Status: NOT-STARTED.** Minted 2026-08-13 by calef. A third "somebody else's real application"
 target beside milestone 66's Vaultwarden and milestone 99's git, chosen for a reason neither of those
 has: it is the workload that pushes on **enumeration**, which is the one authority this system treats
 as dangerous.

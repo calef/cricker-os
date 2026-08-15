@@ -5,7 +5,7 @@
 #     scripts/trunk-health.sh             # watch until stopped
 #     scripts/trunk-health.sh --once      # print the current state and exit
 #
-# PROVISIONAL NAME. Minted 2026-08-04; not put to Chris. See the `Name:` block below.
+# PROVISIONAL NAME. Minted 2026-08-04; not put to calef. See the `Name:` block below.
 #
 # # Why this exists
 #
@@ -40,7 +40,7 @@
 # `main` red. That rule forces a re-run against the new `main`, turning that failure into one re-run
 # instead of a broken trunk. This script is the detection half; the rule is the prevention half.
 #
-# Name: unrecorded. Provisional, minted 2026-08-04 and not yet put to Chris. `trunk` rather than
+# Name: unrecorded. Provisional, minted 2026-08-04 and not yet put to calef. `trunk` rather than
 # `main` because the branch could be renamed and the concept could not, and because "trunk health"
 # is the term the field already uses. See notes/merge-queue.md.
 

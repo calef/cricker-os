@@ -25,7 +25,7 @@ on real cycles via the SBI PMU extension. Caveat, stated now: sel4bench's platfo
 thinner on RISC-V than ARM, so the milestone-25 seL4 comparison may still eventually want an ARM
 board; that purchase moves to "when 25's leftover justifies it".
 
-**16b: IOMMU-backed DMA isolation, in emulation, on BOTH boards** (parity, Chris's direction
+**16b: IOMMU-backed DMA isolation, in emulation, on BOTH boards** (parity, calef's direction
 2026-07-27). Each `virt` board emulates its architecture's native IOMMU: SMMUv3 on aarch64
 (`-machine virt,iommu=smmuv3`, mature) and the ratified RISC-V IOMMU (v1.0.1) on riscv (newer;
 its bugs may be QEMU's, and the record should say which is which). Both sit in front of PCIe,

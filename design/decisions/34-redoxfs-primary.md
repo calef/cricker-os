@@ -2,7 +2,7 @@
 
 **Status: AMENDED.** (four amendment blocks below, including the one that closes condition 1.)
 
-**Decided 2026-07-29 (Chris), with the conditions attached deliberately so the label and its caveats
+**Decided 2026-07-29 (calef), with the conditions attached deliberately so the label and its caveats
 land together.** RedoxFS is the primary on-disk filesystem. It is not yet the *root* filesystem, and
 §34.3 below is why that is a separate piece of work rather than a relabelling.
 
@@ -82,7 +82,7 @@ filesystem are different jobs, and the initrd wants exactly what crickerfs is. I
 ## Amendment (2026-07-30): the xattr requirement, measured rather than argued
 
 Milestone 55 surfaced a requirement §34 never considered: Time Machine over SMB wants **extended
-attributes** (Samba's `streams_xattr`), and RedoxFS has none. Chris's read was that this suggested the
+attributes** (Samba's `streams_xattr`), and RedoxFS has none. calef's read was that this suggested the
 choice was wrong rather than something to patch around, and **the strongest half of that is correct**:
 extending RedoxFS's on-disk format would destroy two of the four reasons for choosing it, since it
 would no longer be the filesystem Redox actually runs and every pin bump would pay for the divergence.
@@ -157,11 +157,11 @@ wrong:
 **What was rejected: extending the on-disk format.** Correct, and atomic by construction, and it costs
 two of §34's four reasons: RedoxFS would stop being the filesystem Redox actually runs, and every pin
 bump would pay for the divergence. Reversibility makes that cost avoidable rather than merely
-deferred. Chris's objection to "patching it in" was right, and the answer is not to patch it in.
+deferred. calef's objection to "patching it in" was right, and the answer is not to patch it in.
 
 ## Amendment (2026-07-30): ZFS and XFS, and why RedoxFS is better-shaped than its size suggests
 
-Chris asked whether OpenZFS is best in class. **For a backup server, yes**: end-to-end checksums with
+calef asked whether OpenZFS is best in class. **For a backup server, yes**: end-to-end checksums with
 *repair*, snapshots, `send`/`recv`, scrub, no RAID write hole. And it is unavailable to us, for a
 reason worth distinguishing from "too big": at roughly 400k lines of C it would *be* the project, but
 more decisively **it is not a component you confine, it is a subsystem you host.** OpenZFS needs a
@@ -187,7 +187,7 @@ What it genuinely lacks: **snapshots**, self-healing, scrub, compression, RAID-Z
 
 **And on a single disk, ZFS's headline advantage largely evaporates**, which is the observation that
 should settle the anxiety. Self-healing requires redundancy; with one drive ZFS also only *detects*
-corruption. Chris's topology is a single USB drive, so the real gap is snapshots, scrub and
+corruption. calef's topology is a single USB drive, so the real gap is snapshots, scrub and
 compression rather than integrity. Scrub is buildable on what exists today: read every block, let the
 checksums verify themselves, report failures. That is a small program, not a filesystem feature.
 

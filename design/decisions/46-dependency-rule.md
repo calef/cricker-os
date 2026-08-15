@@ -2,7 +2,7 @@
 
 **Status: AMENDED.** (an amendment below distinguishes taking from vendoring.)
 
-**Decided 2026-07-30 (Chris), after the calendar crate made the absence of a rule visible.** The
+**Decided 2026-07-30 (calef), after the calendar crate made the absence of a rule visible.** The
 practice was already unanimous and written down nowhere, which is the state that produces an
 inconsistent decision the first time someone does not share the instinct.
 

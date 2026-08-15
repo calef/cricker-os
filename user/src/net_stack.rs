@@ -23,7 +23,7 @@
 //!   Zero, the default, means no port anywhere: a stack serves inbound connections only when
 //!   whoever spawned it said which ports it may serve them on.
 //!
-//! Name: ratified 2026-07-30 (Chris, DECISIONS §39, landed by milestone 46), replacing `netd`, and
+//! Name: ratified 2026-07-30 (calef, DECISIONS §39, landed by milestone 46), replacing `netd`, and
 //! respelled from `netstack` on 2026-08-01 (milestone 63) because `net` is already this tree's word
 //! and the two halves are separate concepts. Refused `netd`, the name DECISIONS §39 was written
 //! about: it holds five explicit capabilities, cannot name its own callers, is supervised, and can

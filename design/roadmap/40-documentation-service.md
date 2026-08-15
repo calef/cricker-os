@@ -10,7 +10,7 @@ it inside the block.
 
 **Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
 
-**Chris's direction, 2026-07-30.** Markdown as the authored format, rendered for display rather than
+**calef's direction, 2026-07-30.** Markdown as the authored format, rendered for display rather than
 shown raw, searchable on the local machine, and installed *by the package that owns it*, so a
 component brings its documentation with it.
 

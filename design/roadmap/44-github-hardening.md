@@ -1,6 +1,6 @@
 # 44. GitHub repository hardening: policy, private reporting, code scanning, pull requests
 
-**Status: BUILT** 2026-08-04. The committable half landed 2026-07-30; Chris applied the settings half
+**Status: BUILT** 2026-08-04. The committable half landed 2026-07-30; calef applied the settings half
 the evening of 2026-08-04, and what was applied is recorded in §73 rather than only in a chat.
 Private vulnerability reporting is on, and the `main` ruleset is active with seven required checks,
 zero bypass actors, no linear-history rule, and branches required to be up to date before merging.
@@ -26,7 +26,7 @@ extracted with errors**, against the *host* target with default features, for a 
 build for the host at all. "Zero alerts" means less than it looks, and that belongs next to the claim
 rather than in a footnote.
 
-**Waiting on Chris**, both in notes/repo-hardening.md with exact steps: enable private vulnerability
+**Waiting on calef**, both in notes/repo-hardening.md with exact steps: enable private vulnerability
 reporting (the committed `SECURITY.md` currently points at a button that does not exist), and apply
 the `main` ruleset with seven required checks, an empty bypass list, and *not* linear history. Apply
 the ruleset only after this branch merges, because one required check does not exist yet and a

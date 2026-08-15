@@ -2,7 +2,7 @@
 
 **Status: AMENDED.** (the opening line still says 'not yet built'; milestone 22 phases A and B are recorded below.)
 
-**Decided 2026-07-28 (Chris), the five sub-decisions settled one at a time; not yet built.** The
+**Decided 2026-07-28 (calef), the five sub-decisions settled one at a time; not yet built.** The
 kernel is the only witness to a thread's fault, so it is the one that must pass the news along.
 When a thread faults or exits, the kernel delivers a message to the supervision endpoint its
 spawner designated. This is the one kernel mechanism milestone 22's supervision tree needs;

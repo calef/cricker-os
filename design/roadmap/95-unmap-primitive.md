@@ -4,7 +4,7 @@
 largest residual left standing after the interactive boot gave away its authority.
 
 **Gate: DECISION.** An unmap method is a syscall-surface addition, which the block calls a design
-fork for Chris before it is a task: whether unmap belongs on the address space or on the frame,
+fork for calef before it is a task: whether unmap belongs on the address space or on the frame,
 what it does to a mapping another holder also has, and whether restructuring the loader to map one
 page at a time avoids the new method entirely.
 
@@ -22,7 +22,7 @@ leaves the work here.
 
 **What this milestone is.** A way for a holder to give up a mapping it made: an unmap method on
 the address-space object, symmetric with the map that created the window. That is a syscall
-surface addition, so it is **a design fork for Chris before it is a task** (CLAUDE.md: a new
+surface addition, so it is **a design fork for calef before it is a task** (CLAUDE.md: a new
 method is fine within the model, but its semantics are recorded in `design/decisions/`, and a brand-new
 syscall number is a fork). The questions the fork has to answer: whether unmap is a method on the
 address space or on the frame capability; what it does to a mapping some other holder also has

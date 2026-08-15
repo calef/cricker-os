@@ -1,6 +1,6 @@
 # 70. Is milestone 82 BUILT when its finding was "nothing to fix"?
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on Chris, and the answer sets a precedent.)
+**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, and the answer sets a precedent.)
 
 **What.** Milestone 82 asked for `unsafe_op_in_unsafe_fn` to be adopted after fixing every
 violation. The lane found **zero** violations: every package we own is edition 2024, where the lint

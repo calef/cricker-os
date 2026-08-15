@@ -6,7 +6,7 @@ capability](dir-capability.md), which you should read first: the six-rung rights
 handing back authority rather than bytes, and `fs_subtree_caretaker` as the subtree caretaker. That
 note calls this part "the easy part once this exists", which was true of four of the five verbs.
 
-The governing constraint is Chris's, and it is not a technical one: *"I hate Windows/DOS specifically
+The governing constraint is calef's, and it is not a technical one: *"I hate Windows/DOS specifically
 because they went differently than virtually every other OS I've used."* Gratuitous divergence taxes
 every user forever. So the bar is not "is this more capability-pure", it is **"does the model
 actually force this"**, and three divergences clear it. The rest of Unix's surface survives.

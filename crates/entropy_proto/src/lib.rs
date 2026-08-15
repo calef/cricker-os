@@ -36,7 +36,7 @@
 //! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
 //! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That
 //! rule plus the service the stem names produces this name, which is the whole of what `recorded`
-//! claims: Chris ruled on the rule, and never on this crate.
+//! claims: calef ruled on the rule, and never on this crate.
 //! The stem is the service's own word (`entropy`, DECISIONS §44), which is itself unrecorded.
 
 #![cfg_attr(not(test), no_std)]

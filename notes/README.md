@@ -23,7 +23,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
 - [The merge queue, and the two things that watch it](merge-queue.md): `scripts/merge-drain.sh`
-  lands every pull request that does not need Chris; `scripts/trunk-health.sh` says when `main` goes
+  lands every pull request that does not need calef; `scripts/trunk-health.sh` says when `main` goes
   red and when it recovers. Both exist because three duties on 2026-08-04 belonged to whoever
   happened to notice, and the steward that was supposed to cover them reported without acting. Why
   the drain is deliberately serial (`cpu matrix` is load-sensitive, so parallel updates manufacture

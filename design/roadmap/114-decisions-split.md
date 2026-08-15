@@ -1,6 +1,6 @@
 # 114. Split `DECISIONS.md`, and give a decision a status
 
-**Status: BUILT (2026-08-04, the day after it was raised; the postscript records what the numbers turned out to be).** Raised 2026-08-04 by Chris, asking whether decisions should be managed the
+**Status: BUILT (2026-08-04, the day after it was raised; the postscript records what the numbers turned out to be).** Raised 2026-08-04 by calef, asking whether decisions should be managed the
 way milestones now are: a directory, an index, one document each, and a status.
 
 
@@ -25,10 +25,10 @@ or BUILT; a decision says nothing about whether it still holds. Milestone 94's s
 carrying a paragraph superseded by §28, invisible to every gate because `script/decisions --check`
 verifies that a cited `§N` resolves to *some* section, never that the section still means what it
 said. A lifecycle (`PROPOSED`, `DECIDED`, `SUPERSEDED BY N`, `AMENDED`) makes supersession a checked
-fact. The vocabulary is provisional and Chris's.
+fact. The vocabulary is provisional and calef's.
 
 **It absorbs `design/open-decisions.md`.** That file was created hours before this milestone, and it
-holds decisions in an early lifecycle state: waiting on Chris, with options and a recommendation. A
+holds decisions in an early lifecycle state: waiting on calef, with options and a recommendation. A
 `PROPOSED` decision is the same object one step earlier, so keeping two systems for one concept is
 the duplication milestone 96 spent a day removing from the inits. One directory, one index, one
 lifecycle, and an answered decision changes status in place rather than moving between files.
@@ -64,7 +64,7 @@ tree, and two were wrong. Corrected from the merged tree, per CLAUDE.md:
 
 The split is `design/decisions/`, one `NN-slug.md` per decision and a `README.md` index, which is
 the parallel this entry predicted. Location, filenames and the four status tokens are all
-**provisional**; Chris settles names.
+**provisional**; calef settles names.
 
 **The move was proved the way milestone 76 proved its own.** A reassembly script inverts every
 mechanical adjustment (heading promotion, the `---` separators, relative links deepened one

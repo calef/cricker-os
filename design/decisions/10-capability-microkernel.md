@@ -46,7 +46,7 @@ generalizes to this one.
 ## And what the Unix path actually costs us
 
 We lose `fork`, copy-on-write, a VFS, and pipes as things we build with our own hands. Those
-are each instructive, and they are the mechanisms in the system Chris uses every day. That is
+are each instructive, and they are the mechanisms in the system calef uses every day. That is
 a real loss, taken knowingly.
 
 Against it: **on the Unix path you transcribe; on the capability path you derive.** xv6 exists,
