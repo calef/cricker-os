@@ -670,6 +670,16 @@ UART-IRQ limitation below (the driver armed line 10; the board interrupts on 32)
 followed by the pass is the measured-boot demonstration end to end: the same board, the wrong
 pair refused, the right pair run.
 
+**Boot 14 (2026-08-15) put all four U74s online**, the first boot with the eight-seat, by-hart-id
+kernel (the revived fifth-hart work): `5 core(s) in the device tree, 4 startable`, the S7
+exclusion line with its reason, then `4 core(s) online` and the tour straight through to the
+banner with nothing after it, the stage-gated watcher staying quiet exactly as a finished tour
+should have it. Measured boot passed silently. The preemption line is where the fourth core
+shows: 82 preemptions, and the two never-yield threads' iteration counts landing far closer
+together (6.5M and 7.4M) than boot 13's three-core spread. The `scheduler :` smoke line said
+`0 of 2` again, its second board boot in a row; that line's wording overclaims on real timing
+and now has enough evidence to be a lane, not a shrug.
+
 Three limitations found while building those, honestly not fixed that night (the first has since
 been closed; its entry carries the record):
 
