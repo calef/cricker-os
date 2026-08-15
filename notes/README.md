@@ -774,6 +774,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Where cricker-os could actually run](target-hardware.md): the ISA is almost never the
   constraint. What decides bootability, why a Pi 4 is the next port, and why the port
   *after* it should probably be a UEFI/ACPI machine rather than another Device Tree board.
+- [The aarch64 board for the seL4 comparison](aarch64-board-survey.md): milestone 25's leftover
+  needs a real PMU, and the board has to be one sel4bench *really* runs on, read from seL4's own CI
+  configs rather than the support matrix. The three evidence tiers, the candidate table with checked
+  prices, why a used Jetson TX1 wins (it is the silicon under the only published aarch64 seL4
+  numbers), and the honest port-cost and to-verify lists.
 - [Porting to RISC-V](riscv-port.md): the second-architecture port (milestone 20), the real
   test of rule #1. The exact `arch/` boundary RISC-V must satisfy, the two HAL leaks it exposes
   (`Context` is aarch64-shaped in portable code; the `paging` crate encodes the aarch64 descriptor
