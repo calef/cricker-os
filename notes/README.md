@@ -76,6 +76,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level.
+- [Adding a user program](adding-a-program.md): the six steps, task-oriented, written because
+  milestone 117's first stranger run found that no file described them. The two initrd lists in
+  two different shapes, the wire id that is expensive to change, and the manifest that declares a
+  direction rather than a name.
 - [The stranger test](stranger-test.md): milestone 117's instrument, written before its first
   run so the result cannot be graded generously afterwards. The protocol (a fresh context, no
   brief, no help mid-run, every question a defect), the eight-question rubric for the mental
