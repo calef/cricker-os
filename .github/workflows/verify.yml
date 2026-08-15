@@ -104,6 +104,14 @@ jobs:
       # `calendar` are 83% of the job and a split by crate count would be lopsided.
       - name: script/verify --shard ${{ matrix.shard }}/2
         run: script/verify --shard ${{ matrix.shard }}/2
+        # VERIFY_JOBS=2, not the script's default 4, and this is a measurement, not caution: the
+        # first four runs of the parallel suite on this runner were each killed ~15 minutes in,
+        # inside glob's largest harnesses, as a bare "operation was canceled" with orphaned cbmc
+        # processes. That is GitHub's memory kill: four concurrent CBMC formulas at glob's size
+        # exceed this runner's 16 GB; two fit. The script comment's "four fits every machine" was
+        # written before CI measured otherwise; the dev Mac keeps 4. (Recovered 2026-08-14 from an
+        # unmerged branch tip during a partial-work sweep; the setting had survived, its reason had
+        # not, which is exactly the branch-as-filing-cabinet failure AGENTS.md warns about.)
         env:
           VERIFY_JOBS: 2
 
