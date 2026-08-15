@@ -27,13 +27,16 @@ ELF="target/$TARGET/release/kernel"
 OUT="target/board"
 IMG="$OUT/nife-vf2.img"
 
-cargo build -p kernel --release --target "$TARGET"
-
-# The userspace archive, packed for this target: what QEMU gets as -initrd, the card carries as a
-# file. cargo xtask initrd-riscv writes target/initrd-riscv.img; the copy beside the kernel image
-# keeps the card's contents one directory's worth of truth.
+# The userspace archive FIRST, then the kernel, and the order is load-bearing: packing the
+# archive regenerates target/init-measure-riscv.txt, the manifest the kernel compiles in as its
+# measured-boot trust root. Kernel-first built a kernel vouching for the PREVIOUS archive, and on
+# 2026-08-15 the VisionFive 2 refused the pair at the bench (MEASURED BOOT REFUSED, boot 12): the
+# gate working, aimed at our own build script. QEMU never hit it because xtask orders these
+# correctly; this script did not.
 cargo xtask initrd-riscv
 cp target/initrd-riscv.img "$OUT/nife-initrd.img"
+
+cargo build -p kernel --release --target "$TARGET"
 
 # llvm-objcopy from the pinned toolchain's llvm-tools component, found the same way xtask finds it
 # (rustc --print sysroot). The Homebrew/system objcopy is deliberately not a fallback: a silent
