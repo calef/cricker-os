@@ -1,4 +1,4 @@
-# cricker-os: Architecture Decisions
+# nife: Architecture Decisions
 
 Decisions made 2026-07-12, before any code was written. Each entry records what we
 chose, what we rejected, and why. Revisit these deliberately, not accidentally.
@@ -101,7 +101,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 42 | DECIDED | [A filesystem declares what it offers and must be truthful; it is not required to be capable](42-truthful-filesystem.md) |
 | 43 | DECIDED | [Reading the clock is a page, setting it is a page you may write, proposing is an endpoint](43-clock-authority.md) |
 | 44 | DECIDED | [Entropy is a capability, `std::random` improves transparently, and the refusal is loud](44-entropy-capability.md) |
-| 45 | DECIDED | [A cricker-os partition is `EC5CC08B-D749-4434-AC38-A274C50385BA`, and that never changes](45-partition-guid.md) |
+| 45 | DECIDED | [A nife partition is `EC5CC08B-D749-4434-AC38-A274C50385BA`, and that never changes](45-partition-guid.md) |
 | 46 | AMENDED | [Thin primitives or whole subsystems; we write everything in between](46-dependency-rule.md) |
 | 47 | DECIDED | [A directory capability carries six rights, and a child can never exceed its parent](47-directory-rights.md) |
 | 48 | DECIDED | [Navigation is the shell rebinding what it holds, and every shell has its own root](48-shell-navigation.md) |

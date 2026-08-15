@@ -1,6 +1,6 @@
-# crickerfs: the boot archive, and the day its name limit had to move
+# nifefs: the boot archive, and the day its name limit had to move
 
-`crates/crickerfs` is the read-only, flat, fixed-everything archive the kernel is handed as an
+`crates/nifefs` is the read-only, flat, fixed-everything archive the kernel is handed as an
 initrd and the EL0 blk driver reads off a disk. One crate defines the format and every reader uses
 it, which is why a format change is tractable at all.
 
@@ -64,7 +64,7 @@ entries are decoded from the borrowed image one at a time. So the roadmap's stat
 was written**, and the raise was much cheaper than the plan expected. The only per-entry stack left is
 one decoded `Entry`, which went from 32 bytes to 40.
 
-`crates/crickerfs`'s test `fs_does_not_grow_with_max_files` pins that: it asserts `size_of::<Fs>()`
+`crates/nifefs`'s test `fs_does_not_grow_with_max_files` pins that: it asserts `size_of::<Fs>()`
 is a borrowed slice plus a count, so reintroducing the array fails a host test in milliseconds
 instead of faulting a guard page during boot.
 
@@ -93,13 +93,13 @@ from before the change fail loudly, and it forced every reader to be visited rat
 A format change has to reach all of them, and one of them was the reason this needed care.
 
 1. **The kernel** (`kernel/src/user.rs`, `kernel/src/main.rs`), which parses the initrd to find
-   `init`. Uses `crickerfs::Fs`.
+   `init`. Uses `nifefs::Fs`.
 2. **`xtask`** (`mkinitrd`, `mkinitrd_riscv`, `mkdisk`), which writes every image and then parses it
-   back to hash the boot programs. Uses `crickerfs::write_image` and `Fs`.
+   back to hash the boot programs. Uses `nifefs::write_image` and `Fs`.
 3. **The EL0 blk driver** (`crates/virtio`), which walked the directory out of a 512-byte DMA buffer
    with the offsets **restated by hand**: stride 32, start block at +24, a `count.min(15)` bound with
    the 15 written as a literal. It was the only place in the tree that had to be found rather than
-   recompiled, so it now depends on `crickerfs` and takes `HEADER_LEN`, `ENTRY_LEN`, `NAME_LEN` and
+   recompiled, so it now depends on `nifefs` and takes `HEADER_LEN`, `ENTRY_LEN`, `NAME_LEN` and
    `ENTRIES_IN_FIRST_BLOCK` from it. That is CLAUDE.md's rule 7 applied to a constant instead of a
    module: what two binaries must agree on is a crate.
 
@@ -122,7 +122,7 @@ with a NUL *inside* it is unrepresentable in exactly the way a name over `NAME_L
 accepted, written, and decoded back as `"a"`, and `read("a\0b")` answered `None`. Data written and
 not readable, with nothing panicking and no test noticing. It survived the truncation fix because
 the fix was written against the case somebody had hit, and nobody types a NUL. It is now
-`Error::NameHasNul`, and `fuzz/fuzz_targets/crickerfs_roundtrip` asserts the general property the two
+`Error::NameHasNul`, and `fuzz/fuzz_targets/nifefs_roundtrip` asserts the general property the two
 errors are instances of: what goes in comes out.
 
 Worth stating in full, because it is the argument for having a round-trip harness at all: `Fs::parse`

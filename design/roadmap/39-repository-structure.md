@@ -21,7 +21,7 @@ roadmap milestone rather than a `design/decisions/` entry, because nothing was d
 for decisions, and recording an undecided question as one would be a lie about its status. This
 block exists so the analysis is not lost and so the eventual decision starts from evidence.
 
-The question calef raised: cricker-os is a monorepo for a microkernel, but it is a collection of
+The question calef raised: nife is a monorepo for a microkernel, but it is a collection of
 deliberately loosely-coupled things, and the structure may not support that long term. Plus a
 naming question (should the userspace servers be "services" or "daemons"), and the observation that
 a Linux-distribution-shaped layer will eventually sit on top of the OS components.
@@ -43,7 +43,7 @@ a Linux-distribution-shaped layer will eventually sit on top of the OS component
   `asid`, `intrusive`, `dtb`, `elf`, `dma_validator`, `measured_boot`, `user_heap`, Kani-proved and nobody
   else's business), wire contracts (`fs_proto`, `gfx_proto`, `line_editor`, `compositor`, `abi`, the
   **only** things an external component needs), and userspace runtime (`user_rt`, `grant_plan`,
-  `crickerfs`, `pci`).
+  `nifefs`, `pci`).
 - **Every crate is `version = "0.1.0"`.** Correct for internal crates, fatal for a published
   contract, and contracts are exactly what milestone 23's live replacement makes into a compatibility
   surface.
@@ -103,7 +103,7 @@ numbers, which is what lets components evolve independently at all.
 ## Publishing crates is a different question from splitting the repo (calef, 2026-07-31)
 
 calef asked whether the crates should get their own repos and builds, since some are useful outside
-cricker-os. **Two decisions hide in that, and only one is expensive.**
+nife. **Two decisions hide in that, and only one is expensive.**
 
 `cargo publish -p calendar` works from a workspace. The thirty crates with no external dependencies
 have no path dependencies to strip either, so **crates can be handed to the world without touching
@@ -120,7 +120,7 @@ exact failure rule 5 exists to catch, plus cross-repo changes become multi-PR da
 | `calendar` | **Real**, competing with `time` and `chrono`; the differentiator is the proofs plus strict `no_std` |
 | `dtb`, `pci` | Plausible, though `fdt` already occupies much of that space |
 | `ntp_proto` | Overlaps heavily with ntpd-rs's mature `ntp-proto` |
-| Everything else | Bound to our kernel model (`capability`, `slots`, `frames`, `regions`, `ipc`, `paging`, `asid`) or specific to us (`crickerfs`, `grant_plan`, `dma_validator`) |
+| Everything else | Bound to our kernel model (`capability`, `slots`, `frames`, `regions`, `ipc`, `paging`, `asid`) or specific to us (`nifefs`, `grant_plan`, `dma_validator`) |
 
 **The argument for publishing is a thesis argument, not a utility one**, and that is the version worth
 acting on. A `no_std`, I/O-free GPT parser carrying eight machine-checked proofs is a **publishable

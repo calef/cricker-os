@@ -89,7 +89,7 @@ reasons are worth keeping because they are about this tree rather than about tas
 
 **Naming by target triple was disqualified by a fact.** The obvious version, "match `targets/*.json`",
 does not work: those are the **std overlay's** triples, for userspace. The kernel builds for
-`aarch64-unknown-none-softfloat` and `riscv64imac-unknown-none-elf`, so `link-aarch64-unknown-cricker.ld`
+`aarch64-unknown-none-softfloat` and `riscv64imac-unknown-none-elf`, so `link-aarch64-unknown-nife.ld`
 would name a triple the kernel never compiles for, and naming it honestly gives
 `link-riscv64imac-unknown-none-elf.ld`.
 

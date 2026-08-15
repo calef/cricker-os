@@ -47,12 +47,12 @@ proceed." Mismatch: stop now, it's the wrong kind of thing. It's called "magic" 
 means nothing on its own; it's just an agreed sentinel.
 
 ELF's is `7F 45 4C 46` (`␡ELF`), the first four bytes above. Ours are not the only ones in the
-tree: `crates/crickerfs` tags its superblock with `CRKR0002`. Both crates return `Error::BadMagic`
+tree: `crates/nifefs` tags its superblock with `CRKR0002`. Both crates return `Error::BadMagic`
 when the check fails, and it is usually the *first* thing they check, because it is the cheapest
 guard there is: one comparison that turns "wrong format" from an unbounded disaster into an
 immediate, named refusal.
 
-We hit it for real at milestone 19f. The initrd became a crickerfs archive (first bytes `CRKR0001`
+We hit it for real at milestone 19f. The initrd became a nifefs archive (first bytes `CRKR0001`
 then, since the 2026-08-01 name widening, `CRKR0002`), but the milestone tour and several tests
 still handed that blob to the *ELF* loader. The parser read
 `43 52 4B 52` (`CRKR`) where it wanted `7F 45 4C 46`, and refused: `LoadError::NotLoadable(BadMagic)`,
@@ -122,7 +122,7 @@ one `.app` could run natively on both old and new machines. ELF has no equivalen
 
 > The interesting version of the fat-binary argument is not about ISAs at all, it's about
 > **microarchitecture variants within one ISA** (AVX-512, LSE atomics, SVE). That case is
-> live for cricker-os and is written up in
+> live for nife and is written up in
 > [design/fat-binaries.md](../design/fat-binaries.md).
 
 **PE** (Portable Executable, Windows NT 1993) extends **COFF**, AT&T's *previous* Unix

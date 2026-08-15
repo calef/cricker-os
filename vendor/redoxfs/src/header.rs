@@ -46,7 +46,7 @@ impl Header {
         Header::new_with_uuid(size, *uuid.as_bytes())
     }
 
-    // nife pin divergence: the caller supplies the uuid, exactly as `FileSystem::create`
+    // cricker-os pin divergence: the caller supplies the uuid, exactly as `FileSystem::create`
     // already takes `ctime` because a no_std engine has no clock. `Header::new` is std-gated only
     // because `Uuid::new_v4` is getrandom; a no_std caller with its own entropy source can build a
     // header here instead. See patches/redoxfs-no-std-create-uuid.patch.
@@ -143,7 +143,7 @@ impl Header {
         None
     }
 
-    // nife pin divergence: `pub` so a no_std caller can finish a Header it built itself.
+    // cricker-os pin divergence: `pub` so a no_std caller can finish a Header it built itself.
     pub fn update_hash(&mut self, cipher_opt: Option<&Xts128<Aes128>>) {
         self.hash = self.create_hash().into();
         // Make sure to do this second, it relies on the hash being up to date

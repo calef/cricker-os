@@ -17,7 +17,7 @@ remembering. This milestone is the gate.
 
 **It also cannot be self-assessed, and that is the whole difficulty.** calef cannot take this test;
 he wrote the system. Nor can any agent that has worked in this tree, which by 2026-08-05 is most of
-them: an agent that spent a night merging pull requests here knows why `cricker-dev` is a symlink,
+them: an agent that spent a night merging pull requests here knows why `nife-dev` is a symlink,
 what a lane is, and that `script/lint` fails on a branch prefix. **Knowing the answer disqualifies
 you from being the instrument.**
 

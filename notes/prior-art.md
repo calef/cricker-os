@@ -1,7 +1,7 @@
 # Prior art and reuse
 
 Where to look before building, what is worth taking, and the rule that decides it. Written
-after the question "cricker-os looks a lot like Redox; can we reuse their components?" The
+after the question "nife looks a lot like Redox; can we reuse their components?" The
 answer generalizes past Redox, so this note is the standing survey checklist for every
 milestone design, not a one-off comparison.
 
@@ -37,7 +37,7 @@ is not a candidate, however good its code.
 
 The similarity is shallower than it looks. Redox is Unix-shaped: a scheme namespace
 ("everything is a URL"), POSIX via relibc, a syscall ABI modeled on Linux's, a kernel with
-a heap. cricker-os is seL4-shaped: capabilities, endpoint-only naming, explicit spawn
+a heap. nife is seL4-shaped: capabilities, endpoint-only naming, explicit spawn
 endowment, a kernel that cannot allocate (milestone 14). Their kernel is not a donor, even
 of fragments. Their userspace is where the portable assets live:
 
@@ -75,7 +75,7 @@ else's kernel:
   embedded Rust (Redox has shipped on it). Named in milestone 30 as the plan's easiest reuse
   call: the thesis is the kernel confining the network stack, never the stack itself.
 - **libghostty-vt** (Ghostty's extracted VT core). Zero-dependency, no libc, no allocations,
-  C ABI: nearly a purpose-built description of "runnable as a cricker-os userspace component",
+  C ABI: nearly a purpose-built description of "runnable as a nife userspace component",
   and in Zig, which makes it the strongest candidate anywhere for milestone 23's full claim (a
   confined vendor component in a foreign language). Named in milestone 29; API still in flux,
   so any adoption pins a version. The single-toolchain fallback is `vte`.
@@ -90,14 +90,14 @@ else's kernel:
   honest split: the host-testable closure shape and the witness tests favored building, the
   rule favored reuse, and the omission of the pass is the actual lesson. Kept.
 
-- **`crickerfs` (2026-07-27): kept, over `tar-no-std`/ustar.** Weighed retroactively on
+- **`nifefs` (2026-07-27): kept, over `tar-no-std`/ustar.** Weighed retroactively on
   calef's question, with the swap costed out. The format predates this note (a learning-era
   artifact), but the keep decision is a fresh application of the rule: the kernel parses the
   initrd itself, so the parser sits **inside the TCB**, which is exactly where the rule says
   build; 263 lines we wrote and test beat someone else's header arithmetic on boot input.
   The swap's real benefits (standard tooling, `tar tvf` inspection, ~260 lines retired) are
   ergonomic, its cost is churn across the kernel boot path, four userspace binaries, and
-  every proof-of-real-bytes assertion (six sites assert the `cricker-` magic; tar has no
+  every proof-of-real-bytes assertion (six sites assert the `nife-` magic; tar has no
   magic at offset 0). Revisit at **milestone 22** (trusted init): the initrd format must
   change there anyway to carry measurements or signatures, and adopting ustar as the
   container is nearly free inside a redesign that is happening regardless. Inspectability,

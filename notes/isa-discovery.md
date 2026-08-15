@@ -22,7 +22,7 @@ RISC-V, on QEMU `virt` with `-smp 4`:
 aarch64, on QEMU `virt` with `-cpu cortex-a72`:
 
 ```
-cricker-os
+nife
   exception level : EL1
   cpu             : Arm part 0xd08 r0p3
                   : 44-bit PA, 48-bit VA available, 16-bit ASIDs, granules 4K 64K

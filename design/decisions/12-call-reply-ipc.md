@@ -46,7 +46,7 @@ reply is refused).
 ## Deferred, deliberately
 
 - **The call chain and priority donation.** seL4's Reply cap also threads a kernel call chain so the
-  server runs on the caller's priority. cricker-os is round-robin with no priorities, so donation is
+  server runs on the caller's priority. nife is round-robin with no priorities, so donation is
   moot; building the chain now would be machinery with no consumer (§4). It is the natural extension
   when priorities arrive.
 - **Timeouts.** A server that never replies (or whose cspace is full, so the reply cap is dropped)

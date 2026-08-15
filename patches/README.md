@@ -17,4 +17,4 @@ containing the fix.
   what milestone 32 pins, rather than against master: it applies there with zero fuzz, and rebasing
   it onto master is the submitter's first step. Same submission route as above. Milestone 57's write
   half needed it because on a bare-metal target the randomness comes from a service the caller
-  holds, never from the filesystem library; see notes/crickerfs.md.
+  holds, never from the filesystem library; see notes/nifefs.md.

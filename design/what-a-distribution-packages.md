@@ -1,6 +1,6 @@
 # What a distribution would package
 
-Speculation, deliberately, about a system years further along than this one: if cricker-os became a
+Speculation, deliberately, about a system years further along than this one: if nife became a
 general-purpose OS with distributions built on it, what are the units they would ship?
 
 **What this note does not cover, because other records own it.** Milestone 39 owns the repository
@@ -143,7 +143,7 @@ been shipped.
 > cannot rebuild it, the wire contracts need versions and the manifest needs to be an artifact. Until
 > then neither has a consumer, and the shape of both should be decided by that consumer's requirements.
 
-The specific trap to avoid in the meantime is visible: `crickerfs` is already a primitive package
+The specific trap to avoid in the meantime is visible: `nifefs` is already a primitive package
 format, and it would be easy to grow it into a real one before knowing what it must carry.
 
 ## See also

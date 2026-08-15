@@ -1,12 +1,12 @@
 # The sink protocol: one way to write bytes somewhere
 
 *Milestone 50, the protocol lane. `crates/sink_proto`, `user/src/sink.rs`, the std PAL's
-`sys/stdio/cricker.rs`, and `abi::Error::Gone`.*
+`sys/stdio/nife.rs`, and `abi::Error::Gone`.*
 
 ## The problem, which was not the one anybody expected
 
 The shell has no `|`, `>` or `<`, so the obvious reading is that a pipe is missing. It is not.
-`patches/std-cricker/.../pal/cricker/rt.rs` fixes `STDOUT_SLOT = 1` and `sys/stdio/cricker.rs`
+`patches/std-nife/.../pal/nife/rt.rs` fixes `STDOUT_SLOT = 1` and `sys/stdio/nife.rs`
 implements `println!` as a SEND on that slot, which means **a program's output destination is
 already a capability its spawner chose**. Redirection is putting a different capability in that
 slot. No kernel change, no pipe object, no `dup2`.

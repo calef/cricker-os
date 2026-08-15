@@ -1,7 +1,7 @@
 # The command line as a grant expression
 
 Milestone 31, phase 1. This is the note on the one idea the capability shell exists to make
-visible: on a cricker-os command line, **naming a resource is how you grant it**. Mark Miller's
+visible: on a nife command line, **naming a resource is how you grant it**. Mark Miller's
 principle, "designation is authorization," applied at the one interface a human touches. The pure
 logic lives in the `grant_plan` crate (host-tested); the wiring is `swish.rs` and, on init's side of
 the channel, `crates/system_initializer`'s spawn service. There are still two inits (`hello.rs` init_boot
@@ -19,7 +19,7 @@ every file you own; that it only touches `public.txt` is grep's good manners, no
 system imposed. This is ambient authority ([capabilities.md](capabilities.md)), and it is what
 makes the confused deputy constructible.
 
-The inversion: a cricker-os command grants **exactly what it names, and nothing else**. A program
+The inversion: a nife command grants **exactly what it names, and nothing else**. A program
 that names no resource gets none. There is no ambient pool to draw from, so the question "may I?"
 is never asked; there is simply nothing in the program's hands it was not given. `worker 9` grants a
 report channel and an argument. `budgeter --mem 16` grants a report channel and a 16-page memory

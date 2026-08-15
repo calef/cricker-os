@@ -26,7 +26,7 @@ rather than the tool checking its own work.
 - **Counts print even at zero**, because "0 attributes reattached" is the line that tells a reader
   their destination cannot hold them. A silent success and a silent incapacity look identical.
 
-## Formatting from cricker-os is blocked on entropy, and that is the whole reason
+## Formatting from nife is blocked on entropy, and that is the whole reason
 
 Worth recording because it is not the reason anyone expected. `FileSystem::create` is `std`-gated
 and un-gating it is mechanical **for every call but one**: `Header::new` stamps a v4 UUID, which is

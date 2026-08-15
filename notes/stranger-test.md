@@ -13,7 +13,7 @@ be.
 
 calef cannot take this test; he wrote the system. Nor can any agent that has worked in this tree, and
 by 2026-08-14 that is most of them. An agent that spent a night merging pull requests here knows why
-`cricker-dev` is a symlink, what a lane is, and that `script/lint` fails on a branch prefix.
+`nife-dev` is a symlink, what a lane is, and that `script/lint` fails on a branch prefix.
 **Knowing the answer disqualifies you from being the instrument.**
 
 So the run needs a fresh context that has never seen the repository, handed the repository and a

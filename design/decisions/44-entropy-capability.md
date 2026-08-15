@@ -75,7 +75,7 @@ refusing rather than by degrading. The two callers split where std already split
 | `fill_bytes` (`std::random::SystemRng`) | std documents it as "suitable for cryptographic purposes such as key generation" | the device's bytes | **panic**, naming the reason |
 | `hashmap_random_keys` (`RandomState`) | DoS resistance for a hash table, nothing more | the device's bytes | the old counter-seeded splitmix64 |
 
-Explicit was tempting and is the wrong trade here. A cricker-only "ask for a real RNG" API means
+Explicit was tempting and is the wrong trade here. A nife-only "ask for a real RNG" API means
 every program that wants entropy is a program that will not build anywhere else, which is a real
 cost against a demonstration OS whose claim is that ordinary Rust runs on it. And it would not have
 bought the honesty: the thing that makes a caller safe is that the weak path **cannot be reached
@@ -90,7 +90,7 @@ backend degrades that same function (to allocation addresses) rather than failin
 stream survives there, clearly labelled, and no key is ever minted from it.
 
 The mechanical cost is one more anchor in the std-src patcher: exporting `hashmap_random_keys`
-means std's blanket `#[cfg(not(any(...)))]` definition of it must exclude cricker, or the two
+means std's blanket `#[cfg(not(any(...)))]` definition of it must exclude nife, or the two
 collide.
 
 ## Both transports, because a random source that works on one bus is not a random source

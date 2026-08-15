@@ -8,13 +8,13 @@ fifteen years. Nothing in this note is about a language model.)
 
 ## Why the OS needs it before it needs anything else about disks
 
-`parted /dev/sda mkpart`, then `mkfs.ext4`, then mount. That is calef's router setup, and cricker-os
+`parted /dev/sda mkpart`, then `mkfs.ext4`, then mount. That is calef's router setup, and nife
 had **no equivalent of the first step at all**. It is not optional, and not only because we might
 want to partition something: **you cannot find a partition on a disk you did not create without
 reading its table.** A block device hands you 131,072 blocks of undifferentiated bytes. Which of
 them is the filesystem is written in the table and nowhere else.
 
-So this is the mandatory half of the milestone even in the world where cricker-os never partitions
+So this is the mandatory half of the milestone even in the world where nife never partitions
 anything itself.
 
 ## What is actually on the disk
@@ -130,9 +130,9 @@ described twice, by two tools that will not agree for long. `mbr::validate` retu
 `MbrProblem::ExtraRecord` so the message can say what it found rather than "invalid MBR". Relaxing
 this is a decision somebody can make later with the error already named.
 
-## The cricker-os partition type GUID
+## The nife partition type GUID
 
-`EC5CC08B-D749-4434-AC38-A274C50385BA`, `gpt::guid::types::CRICKER_DATA`, a cricker-os data partition
+`EC5CC08B-D749-4434-AC38-A274C50385BA`, `gpt::guid::types::NIFE_DATA`, a nife data partition
 holding a RedoxFS volume. A random version-4 GUID generated on 2026-07-30 and **fixed forever**: a
 type GUID's whole job is to not collide with anybody else's and there is no registry to ask. See
 DECISIONS §45 for why it is never to change; the short version is that the recovery story ("the
@@ -238,7 +238,7 @@ Stated plainly, because a demonstrator's docs are part of the deliverable:
   fresh header with `uuid::Uuid::new_v4()`, so `FileSystem::create` is `std`-gated for the same
   reason this crate refuses to invent a GUID: an identifier that has to be unique needs randomness,
   and neither a `no_std` engine nor a pure-computation crate has any. Partitioning a real drive from
-  cricker-os and formatting one are therefore blocked on the same thing, the entropy service reaching
+  nife and formatting one are therefore blocked on the same thing, the entropy service reaching
   the program that does them, and on nothing else.
 
   **Both were unblocked on 2026-08-03, and the crate still generates nothing.** What it gained is

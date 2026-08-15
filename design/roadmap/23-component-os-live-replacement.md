@@ -77,7 +77,7 @@ IPC is the hot path, that is not paid everywhere:
 - **Pass-through when both ends are up.** The broker buffers only during the down window; in steady
   state, with a live consumer waiting, it forwards directly, keeping the common case near direct IPC.
 - **A latency ladder, not one point.** Fastest: a shared-memory ring buffer + async notification
-  (the io_uring / virtio shape cricker-os *already runs* for device I/O; the notification primitive
+  (the io_uring / virtio shape nife *already runs* for device I/O; the notification primitive
   is a generalisation of the endpoint's async-signal count) -- no middleman process, decouples in
   rate. Middle: a queue-server process -- decouples lifecycle, one extra hop. Slowest: a durable
   queue server that writes to storage -- survives its own crash. The rung is a per-channel choice.
@@ -111,7 +111,7 @@ possible -- pushed as tiny and stable as it can be, but you cannot swap the swap
 
 **Why this is the selling point, and safe.** Because the kernel confines every component to exactly
 the capabilities it was granted, **untrusted, competing vendor components run safely**: a Linux
-vendor kernel module is ring-0 and can do anything; a cricker-os vendor component is a confined
+vendor kernel module is ring-0 and can do anything; a nife vendor component is a confined
 process that can touch only what the operator handed it. A malicious console driver scribbles on the
 UART it was given and nothing else -- it cannot read another component's memory, forge authority, or
 reach the kernel. That is what makes "different vendors ship competing components, operators swap

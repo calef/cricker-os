@@ -1,8 +1,10 @@
-# 45. A cricker-os partition is `EC5CC08B-D749-4434-AC38-A274C50385BA`, and that never changes
+# 45. A nife partition is `EC5CC08B-D749-4434-AC38-A274C50385BA`, and that never changes
 
 **Status: DECIDED.**
 
-Milestone 57 needed a GPT partition **type** GUID for a cricker-os data partition (a RedoxFS volume,
+*Exercised by milestone 120 (2026-08-15): the OS renamed from cricker-os to nife, and this GUID did not move, exactly as this decision's title promised. Images written before the rename remain nife partitions by the only identity that counts.*
+
+Milestone 57 needed a GPT partition **type** GUID for a nife data partition (a RedoxFS volume,
 §34). There is no registry to apply to and no upstream value to adopt: RedoxFS ships none, and Redox
 itself does not define one. So one was generated, version 4, on 2026-07-30:
 
@@ -27,7 +29,7 @@ Two consequences worth writing down:
 - **Changing it is a format break**, on the same footing as changing the on-disk filesystem layout,
   and would need a migration rather than a version bump.
 - **A `--typecode` on a future `mkpart` must accept an arbitrary GUID**, not a table of ours. A
-  partitioning tool that could only write cricker-os partitions would be useless for the actual job
+  partitioning tool that could only write nife partitions would be useless for the actual job
   (setting up a drive that also carries an EFI system partition and a Linux filesystem).
 
 `crates/gpt` names ten other type GUIDs beside it, and every one of them was read back out of

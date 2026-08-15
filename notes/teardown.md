@@ -2,7 +2,7 @@
 
 There are two ways to give back the page-table frames an address space accumulated, and
 which one is right depends entirely on **whether the whole space is going away or just part
-of it.** cricker-os needs only the first, and that is worth understanding rather than
+of it.** nife needs only the first, and that is worth understanding rather than
 assuming.
 
 ## The two strategies
@@ -16,7 +16,7 @@ call: a tree-emptiness check at each level, and a per-leaf TLB invalidation.
 out, leaves and intermediate tables alike. To tear it down, free the whole list and throw away
 the root. No walk. No `unmap`. One TLB/ASID flush covers everything at the end.
 
-## Why cricker-os uses record-all-frames
+## Why nife uses record-all-frames
 
 Because **an address space dies all at once.** A process exits, and its entire `TTBR0` world
 is gone. When you are freeing *everything*, incremental reclamation buys you nothing: you are

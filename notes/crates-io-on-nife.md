@@ -1,4 +1,4 @@
-# Somebody else's crate: what crates.io does against the cricker `std`
+# Somebody else's crate: what crates.io does against the nife `std`
 
 *(Milestone 64, measurement phase, 2026-08-04. Milestone 27 built a `std` platform layer on the
 native ABI (notes/std.md) and claimed it widened real workloads to "most of crates.io that stays off
@@ -20,11 +20,11 @@ fallback arm for platforms it does not know. Nothing in a green build says so. S
 
 ## How to reproduce this
 
-The whole measurement is `cargo build` against the linked `cricker-dev` toolchain, one throwaway
+The whole measurement is `cargo build` against the linked `nife-dev` toolchain, one throwaway
 crate per probe:
 
 ```sh
-cargo xtask std-src                      # build/refresh the patched-std farm, link cricker-dev
+cargo xtask std-src                      # build/refresh the patched-std farm, link nife-dev
 mkdir -p /tmp/probe/src && cd /tmp/probe
 cat > Cargo.toml <<'EOF'
 [package]
@@ -39,11 +39,11 @@ panic = "abort"
 EOF
 echo 'fn main() { println!("{}", regex::Regex::new("^a+$").unwrap().is_match("aaa")); }' > src/main.rs
 
-RUSTUP_TOOLCHAIN=cricker-dev cargo build --release \
+RUSTUP_TOOLCHAIN=nife-dev cargo build --release \
     -Zjson-target-spec \
     -Zbuild-std=core,alloc,std,panic_abort \
     -Zbuild-std-features=compiler-builtins-mem \
-    --target /path/to/cricker-os/targets/aarch64-unknown-cricker.json
+    --target /path/to/nife/targets/aarch64-unknown-nife.json
 ```
 
 **Build a `[[bin]]`, not a `[lib]`, and this is not a detail.** A library target is never linked, so
@@ -56,7 +56,7 @@ once (about 10 seconds) instead of once per crate.
 
 ## What happened, by crate
 
-Fifty crates, resolved versions as of 2026-08-04, built for `aarch64-unknown-cricker`.
+Fifty crates, resolved versions as of 2026-08-04, built for `aarch64-unknown-nife`.
 
 ### Built with no change (35)
 
@@ -112,7 +112,7 @@ different question**, answered below and not by this measurement.
 
 Every failure is one of four classes. The class matters much more than the crate.
 
-#### Class A: `getrandom` has no `cricker` backend (8 of 15)
+#### Class A: `getrandom` has no `nife` backend (8 of 15)
 
 `rand`, `uuid`, `zip`, `gix-object`, `gix-actor`, `gix-config`, `gix`, `ring` all die on the same
 `compile_error!`:
@@ -122,7 +122,7 @@ error: target is not supported. You may need to define a custom backend see:
        https://docs.rs/getrandom/0.3.4/#custom-backend
 ```
 
-`getrandom` selects a backend on `target_os`, and there is no `cricker` arm. This is not a `std` gap
+`getrandom` selects a backend on `target_os`, and there is no `nife` arm. This is not a `std` gap
 at all: `std::random::SystemRng` works (milestone 56, slot 6). It is one crate in the ecosystem that
 predates us.
 
@@ -185,7 +185,7 @@ error[E0425]: cannot find function `geteuid` in crate `libc`
 ```
 
 This is the class that says something about us rather than about them. There is no
-`std::os::cricker`, `libc` has no `cricker` module, and a crate whose platform ladder ends in "else
+`std::os::nife`, `libc` has no `nife` module, and a crate whose platform ladder ends in "else
 it is unix" cannot compile here. The three crates that hit it are asking for a **uid** and a
 **file mtime set**, neither of which this system has in the form they want.
 
@@ -237,7 +237,7 @@ Err(io::Error::new(io::ErrorKind::Other, "operation not supported on this platfo
 So `tempfile` builds, links, and returns an error from `NamedTempFile::new()`. That matters far
 beyond `tempfile`, because **gitoxide's atomicity story runs through it**: `gix-lock`'s commit calls
 `self.inner.persist(&resource_path)`, which is `gix-tempfile`, which is `tempfile::persist`, which
-on cricker is `not_supported()`. A `gix` that built cleanly would fail to write a single ref.
+on nife is `not_supported()`. A `gix` that built cleanly would fail to write a single ref.
 
 The lesson for milestone 99 and 66 is a sequencing one. **Do not read a passing build as a working
 crate**, and do not order the work by what fails to compile: `tempfile` never appears on a build
@@ -248,7 +248,7 @@ failure list and is on the critical path for git.
 This is the deliverable milestones 99 and 66 consume. It is **not** the order the milestone 27 table
 suggests, because that table counts functions and this counts demand.
 
-The method: for each probe, take `cargo tree -e normal --target aarch64-unknown-cricker.json` (normal
+The method: for each probe, take `cargo tree -e normal --target aarch64-unknown-nife.json` (normal
 edges only, so `cc`, `autocfg`, `vcpkg` and every proc-macro crate are excluded, since those run on
 the **host** and can call anything they like), then grep every package's `src/` for call sites of the
 std APIs the PAL refuses. The "probes" column is how many of the 50 dependency closures contain at
@@ -296,7 +296,7 @@ Ranks 5, 11, 12, 13 and 25 (`create_dir`, `read_dir`, `remove_file`, `remove_dir
 each backed by a verb the FS server **already implemented**: `fs_server/src/bin/fs_server.rs` has
 dispatched `MKDIR`, `OPENDIR`, `READDIR`, `UNLINK`, `RMDIR` and `RENAME` since milestones 47 and 48.
 Nothing was missing from the contract and nothing was missing from the server; the client side in
-`patches/std-cricker/overlay/std/src/sys/fs/cricker.rs` simply still refused, and its own comments
+`patches/std-nife/overlay/std/src/sys/fs/nife.rs` simply still refused, and its own comments
 still said the verbs did not exist.
 
 **All five are bound now**, and the `std_exerciser` demo walks them under a real directory

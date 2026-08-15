@@ -47,6 +47,6 @@ a prerequisite. Until then, folding is the better answer and this block exists s
 lost in a BUGS list while the fold is being decided.
 
 **Not a health test, a rate limit, or a hardware TRNG.** `notes/entropy.md` records all three as open
-and they are the service's business, not the shell's. In particular "cricker-os has a cryptographic
+and they are the service's business, not the shell's. In particular "nife has a cryptographic
 random source" is still a claim about QEMU until the JH7110's TRNG is verified on the VisionFive 2,
 and endowing a shell with a grant does not change what is behind it.

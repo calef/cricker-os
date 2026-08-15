@@ -37,7 +37,7 @@ refuses `..`, symlinks and absolute paths that would escape. Its filesystem API 
 are no absolute paths to handle.
 
 That is this system's model, arrived at independently and for other reasons. `Dir` is a directory
-capability. `one_name` in `patches/std-cricker` is what `Dir` enforces. A program already written
+capability. `one_name` in `patches/std-nife` is what `Dir` enforces. A program already written
 against `cap-std`, or already targeting WASI preopens, **has had the de-ambienting work done by
 somebody else**, funded by somebody else, for reasons that have nothing to do with us.
 

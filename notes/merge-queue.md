@@ -13,7 +13,7 @@ one evening and all three were the same shape: **a duty that belonged to whoever
   judgement call, not a policy: they were opened and forgotten.
 - **`main` went red and nobody owned it.** A developer cannot see `main` by design. The steward
   watched pull request checks and never the trunk. The maintainer's hygiene list is prune the
-  worktree, delete the branch, relink `cricker-dev`, leave no QEMU, and does not mention it.
+  worktree, delete the branch, relink `nife-dev`, leave no QEMU, and does not mention it.
 - **Merging one pull request staled the other eight** under the new up-to-date rule, and nothing
   picked them back up until calef asked.
 

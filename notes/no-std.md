@@ -35,7 +35,7 @@ itself.
 **`#[panic_handler]`**: `std` provides one, so you've never had to think about it.
 Without `std` you must write it, and it forces a real question: what *should* happen when
 a kernel panics? There's no process to kill, no stderr, no shell to return to. It's your
-call. In cricker-os: print to the serial port, then halt the CPU forever.
+call. In nife: print to the serial port, then halt the CPU forever.
 
 **No `println!`**, so we write our own. The good part: the hard bit of `println!` (the
 whole `{:?}` / `{:x}` / width-and-padding formatting engine) lives in **`core::fmt`**,

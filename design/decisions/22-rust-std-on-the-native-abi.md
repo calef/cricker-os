@@ -15,7 +15,7 @@ endpoint at slot 1, reads `Instant`/`SystemTime` from the virtual counter, and g
 as it already stands, the same surface `allocator_exerciser` proved. `panic!` prints and faults (panic=abort;
 unwinding is never linked), which is this ABI's honest `abort()`.
 
-**Why now:** the first wall an application hits on cricker-os is "no std", and milestone 23's
+**Why now:** the first wall an application hits on nife is "no std", and milestone 23's
 vendor-component ambition needs components writable by people who are not kernel people. std on the
 native ABI widens "runs real workloads" to most of crates.io that stays off files and sockets,
 without smuggling in the POSIX assumptions (no fork, no open-by-path, no ambient anything) the ABI
@@ -35,10 +35,10 @@ chose:
 - *Hardlink-clone the toolchain* (`cp -al` bin+lib, real copy of just `src`, patch that): **chosen.**
   The clone's `librustc_driver` lives inside the clone, so rustc resolves the clone as its sysroot;
   blocks are shared so the disk cost is near zero; and the real toolchain is never touched.
-  `cargo xtask std-src` builds and links it as `cricker-dev`.
+  `cargo xtask std-src` builds and links it as `nife-dev`.
 
 **Target specs, not real targets** (roadmap's "a spec first, a real target later if ever"): custom
-JSON with `os = "cricker"`, `panic-strategy = "abort"`, softfloat, and `singlethread = true`. That
+JSON with `os = "nife"`, `panic-strategy = "abort"`, softfloat, and `singlethread = true`. That
 last one is honest for phase one, one thread of execution per process, so std uses its `no_threads`
 sync and single-`static` TLS; it flips off when `thread::spawn` becomes real. The ABI numbers and
 the heap algorithm are generated verbatim into the patched std from `crates/abi` and `crates/user_heap`,
@@ -53,7 +53,7 @@ checked byte for byte on both ISAs (the §19 parity gate).
 
 **Amendment (phase two, 2026-07-28): `std::net` binds to the socket contract.** `std::net::TcpStream`
 and outbound `std::net::UdpSocket` now work, backed by net_stack over the §25 socket contract; the
-`net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/cricker.rs`) is
+`net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/nife.rs`) is
 a **pure client** of the frozen contract, no new syscall and no new capability method: it holds a
 `Stack` endpoint (slot 2) and a frame untyped (slot 3), mints a shared frame per socket, and drives
 net_stack with `socket_proto` `CALL`s. The wire constants are generated verbatim from `crates/socket_proto/src/lib.rs`
@@ -73,7 +73,7 @@ change (notes/std.md).
 **Amendment (phase two, 2026-07-29): `std::fs` binds to the FS-service contract, and a path means
 "under the directory I hold".** `std::fs::File` now works, backed by the §27 FS service; the
 `fs honestly unsupported` line of phase one is retired for a program that was granted a directory.
-The PAL (`sys/fs/cricker.rs`) is again a pure client of a frozen contract, no new syscall and no new
+The PAL (`sys/fs/nife.rs`) is again a pure client of a frozen contract, no new syscall and no new
 capability method, with `crates/fs_proto` generated verbatim into the patched std.
 
 **The design question, and the answer.** `File::open` takes a path and this system has no global

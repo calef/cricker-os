@@ -168,7 +168,7 @@ names the space through the same registry revocation uses.
     its own budget: the console server, the input driver (on the UART receive interrupt init
     delegated), and the shell, wired together with endpoints and shared pages init created, plus
     init staying alive as a stub spawn service. A bounded `script/initboot` boot reaches the
-    live shell prompt (`cricker-os shell ... $`), every service an init-built child; the kernel
+    live shell prompt (`nife shell ... $`), every service an init-built child; the kernel
     wires none of it. Interactive typing is validated by hand (the harness cannot inject
     keystrokes); the default, shell, bench, and test boots are unchanged, 105 tests still pass.
 
@@ -184,7 +184,7 @@ names the space through the same registry revocation uses.
   distinct binary per program, each exactly its own job (and thus its own least authority). This
   needs a **program-delivery mechanism**, not just a rebuild: the kernel hands init a single initrd
   blob today, so delivering several named programs wants either a bundled archive (Linux-style
-  initramfs the kernel hands init, which init indexes by name) or loading from the `crickerfs`
+  initramfs the kernel hands init, which init indexes by name) or loading from the `nifefs`
   filesystem on the virtio disk (programs as files, `exec`'d by path, like Unix `/bin`). The
   filesystem route carries the classic bootstrap: reading the disk needs the virtio driver running,
   which is itself a program to load, so a small initramfs brings up init plus the disk drivers,

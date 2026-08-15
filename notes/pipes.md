@@ -509,7 +509,7 @@ calef's call", and he called it: option (c), the manifest declaration.*
 
 #### There is no second stream today, and that is a fact rather than an omission
 
-A cricker-os program holds **one** output endpoint, in slot 0, placed there by its spawner. Its
+A nife program holds **one** output endpoint, in slot 0, placed there by its spawner. Its
 diagnostics travel on it, in-band with everything else:
 
 ```text
@@ -794,12 +794,12 @@ processes, one endpoint, the left one packing sixteen bytes into a sink message 
 right one `RECV`ing and self-timing. `bench/host/pipe_throughput.rs` is the same shape over a real
 `pipe(2)`, twice, because only one of the two arms is apples to apples.
 
-Apple Silicon, one machine, one sitting. cricker-os under HVF (`cargo xtask bench --real`), so the
+Apple Silicon, one machine, one sitting. nife under HVF (`cargo xtask bench --real`), so the
 nanoseconds are real; the host arms are medians of three.
 
 | | per 16 bytes | throughput |
 |---|---|---|
-| cricker-os `a \| b` (one endpoint, no buffer) | **1146 ns** | **13.3 MiB/s** |
+| nife `a \| b` (one endpoint, no buffer) | **1146 ns** | **13.3 MiB/s** |
 | macOS pipe, 16-byte writes | 348 ns | 44 MiB/s |
 | macOS pipe, 64 KiB writes | (5.4 µs per 64 KiB) | 11,600 MiB/s |
 
@@ -944,7 +944,7 @@ commands:
 script/console                                   # aarch64
 
 cargo xtask initrd-riscv                         # riscv64
-CRICKER_INITRD=target/initrd-riscv.img CRICKER_DISK=target/crickerfs.img \
+NIFE_INITRD=target/initrd-riscv.img NIFE_DISK=target/nifefs.img \
   cargo run -p kernel --features shell --target riscv64imac-unknown-none-elf
 ```
 

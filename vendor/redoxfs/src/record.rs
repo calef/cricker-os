@@ -1,4 +1,4 @@
-use alloc::vec::Vec; // nife pin divergence: patches/redoxfs-no-std-vec-import.patch
+use alloc::vec::Vec; // cricker-os pin divergence: patches/redoxfs-no-std-vec-import.patch
 use alloc::vec;
 use core::ops;
 

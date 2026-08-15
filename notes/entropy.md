@@ -114,7 +114,7 @@ Transparent, and split where std already splits it:
 | `RandomState` / `hashmap_random_keys` | DoS resistance for a hash table | the device's bytes | the old counter-seeded splitmix64 |
 
 A program that calls `SystemRng` gets real entropy the moment it is granted the capability, with no
-cricker-specific API to learn. `fill_bytes` has no error channel, so the only loud refusal available
+nife-specific API to learn. `fill_bytes` has no error channel, so the only loud refusal available
 is a panic, which is [§43](../design/decisions/43-clock-authority.md)'s `SystemTime::now()` decision applied a second time: a
 program that never asks is unaffected, and a program that asks gets told rather than quietly
 stamping a key with something guessable.
@@ -126,7 +126,7 @@ survives there, clearly labelled, and **nothing in the file lets it reach `fill_
 separation is the milestone's point: the caller that promises cryptographic strength refuses when it
 cannot keep the promise, and the caller that promises nothing degrades and says so.
 
-The grant is **slot 6** of the std slot convention (`sys/pal/cricker/rt.rs`), and it is an endpoint
+The grant is **slot 6** of the std slot convention (`sys/pal/nife/rt.rs`), and it is an endpoint
 with no mapping alongside it, unlike the clock, whose read authority *is* a page.
 
 ## Both transports, and a finding about interrupts
@@ -181,7 +181,7 @@ it.
   quality of the bytes is the quality of the board's generator, full stop, because nothing here
   conditions them.
 - **No hardware TRNG yet.** The StarFive JH7110's TRNG is the candidate for the VisionFive 2 and
-  **needs verifying** before it is relied on. Until it is, "cricker-os has a cryptographic random
+  **needs verifying** before it is relied on. Until it is, "nife has a cryptographic random
   source" is a claim about QEMU.
 - **No health test.** A device that started returning a constant would be passed straight through.
   The kernel tests would catch it, a running system would not. NIST SP 800-90B's repetition-count and

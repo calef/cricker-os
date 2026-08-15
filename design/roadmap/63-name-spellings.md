@@ -116,7 +116,7 @@ starts after 61 lands.**
   to an underscore for `use`, and nothing is broken today. The case for the change is internal
   consistency (37 crates against 3) rather than correctness, and it should be weighed as such.
 - **`target/` and `targets/` sit next to each other** and mean unrelated things: build output, and the
-  custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
+  custom target JSON specs (`aarch64-unknown-nife.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
 
 ## `exerciser`, not `demo` (calef, 2026-08-01)
@@ -174,10 +174,10 @@ fits with seven bytes to spare, so the rename below is unblocked. **One thing in
 was wrong and is worth reading before trusting them:** the kernel-stack cost had already been
 retired, because `Fs` stopped holding a fixed entry array when the FS-server stack bug was fixed, so
 the raise was much cheaper than the trade described here. The measured numbers and the reasoning are
-in [notes/crickerfs.md](../../notes/crickerfs.md). The paragraphs are kept as written because the
+in [notes/nifefs.md](../../notes/nifefs.md). The paragraphs are kept as written because the
 decision to do this first, rather than under pressure from a name, is the part that generalises.
 
-`crickerfs` caps archive names at 24 bytes, and **three naming decisions have crowded it while a
+`nifefs` caps archive names at 24 bytes, and **three naming decisions have crowded it while a
 fourth exceeds it**: `fs_subtree_caretaker` at 20, `sub_server_supervisor` at 21, and
 `os_primitives_benchmarker` at **25, which does not fit at all**.
 

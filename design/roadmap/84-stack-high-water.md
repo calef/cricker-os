@@ -3,7 +3,7 @@
 **Status: BUILT.** Raised 2026-08-03, same survey as 79.
 
 A kernel stack overflow does not fault helpfully; it scribbles. This tree has had one (the FS-server
-stack bug, notes/crickerfs.md), it was found the expensive way, and nothing since measures depth on
+stack bug, notes/nifefs.md), it was found the expensive way, and nothing since measures depth on
 any kernel stack. The claim "the stacks are big enough" is currently an argument, and the project's
 standard is to measure instead.
 

@@ -3,7 +3,7 @@
 **Status: DECIDED.**
 
 Milestone 42 put `cargo-fuzz` over the four parsers that read bytes we did not write: `dtb_walk`,
-`elf_parse`, `gpt_table`, `crickerfs_roundtrip`. Those four are the tree's actual trust boundary;
+`elf_parse`, `gpt_table`, `nifefs_roundtrip`. Those four are the tree's actual trust boundary;
 everything else parses bytes this system wrote itself.
 
 **It is not a weaker Kani, it is a different instrument, and the split is about bounds.** Kani proves
@@ -15,7 +15,7 @@ host-testable crates, and that is why the fuzzers could reach it at all.
 
 **The justification is empirical, not aesthetic: it found three real defects in its first sitting.**
 Two panics in `dtb` on a hostile device tree, which is boot-path code parsing bytes the *firmware*
-wrote; and `crickerfs` writing a name containing a NUL that could then never be read back, from the
+wrote; and `nifefs` writing a name containing a NUL that could then never be read back, from the
 one-file input `[("\0", [])]`, in under a minute. Each is fixed with a regression test beside the
 fix, so the finding survives whether or not anyone reruns the fuzzer. **A found bug is a permanent
 test, not a permanent fuzzing job.**

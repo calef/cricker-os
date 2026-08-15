@@ -50,7 +50,7 @@ instruction in the program was arch-gated; the loader itself was already portabl
 a general register, not a system register, so a U-mode trap must restore the kernel `tp` from a known
 source rather than trust it (notes/riscv-port.md); and the shallow TCB entry path let a trap frame
 placed at the top of the kernel stack overlap `enter_frame`'s own frame, fixed by placing the frame
-below the live `sp`. **Userspace init builds the system too:** from a crickerfs
+below the live `sp`. **Userspace init builds the system too:** from a nifefs
 archive holding `init` (a portable minimal builder) and `worker`, the kernel loads only `init`, maps
 the archive into it, grants it a budget and a report endpoint, and `init` loads `worker` by name and
 builds it as a child through the capability verbs, wiring it to the report. The kernel never touches

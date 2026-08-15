@@ -17,7 +17,7 @@
 / {
 	#address-cells = <2>;
 	#size-cells = <2>;
-	compatible = "cricker,isa-test";
+	compatible = "nife,isa-test";
 
 	cpus {
 		#address-cells = <1>;

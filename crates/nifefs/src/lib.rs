@@ -75,9 +75,10 @@
 //! - **No directories, no writes, no permissions.** This is a boot archive. The read-write
 //!   filesystem is the RedoxFS server in `fs_server/` (DECISIONS §34), which is a different job.
 //!
-//! Name: ratified 2026-08-01 (calef, milestone 63): the one run-together name kept when that rule
-//! was deleted. Refused `nife_fs` (`procfs` is the shape of a filesystem name outside this
-//! project, and nobody writes `proc_fs`).
+//! Name: ratified 2026-08-01 as `crickerfs` (calef, milestone 63): the one run-together name kept
+//! when that rule was deleted. Refused `cricker_fs` (`procfs` is the shape of a filesystem name
+//! outside this project, and nobody writes `proc_fs`). Renamed `nifefs` with the OS (calef,
+//! milestone 120, 2026-08-15); the run-together reasoning carried over unchanged.
 
 #![no_std]
 

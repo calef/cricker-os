@@ -97,7 +97,7 @@ cargo kani -p nvme     # the five harnesses, ~seconds
 Poke at the controller interactively:
 
 ```sh
-cargo xtask build && CRICKER_NVME=target/cricker-nvme.img cargo xtask run
+cargo xtask build && NIFE_NVME=target/nife-nvme.img cargo xtask run
 # (write the image first: an 8 MiB zero file, or keep one a test run made)
 ```
 

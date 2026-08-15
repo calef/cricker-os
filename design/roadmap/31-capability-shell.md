@@ -63,12 +63,12 @@ test suite boots the interactive shell**, so it would ship unexercised, and a de
 feature is worse than a recorded gap. Whoever takes it should consider gating that boot first.
 
 **Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
-entire authority; a cricker-os command line is a **grant expression**: every argument that
+entire authority; a nife command line is a **grant expression**: every argument that
 designates a resource passes a narrowed capability, and nothing else flows. `run wc report.txt`
 grants exactly one readable file capability, because typing the name IS the grant (Miller's
 principle: designation is authorization); `run wc` alone spawns a process that can read
 nothing, and the failure is "you hold no such capability", legible, not EPERM. Untyped budgets
-become first-class grants (`run --mem 16 prog`), the most cricker-os-native piece of the
+become first-class grants (`run --mem 16 prog`), the most nife-native piece of the
 inversion, with no Unix analog. From SHILL, adapted: a small **manifest** per program declaring
 its expected endowment (one readable file, one endpoint, N pages), checked at spawn, so a
 mismatch is a refusal at the prompt rather than a mystery hang; this is milestone 23's

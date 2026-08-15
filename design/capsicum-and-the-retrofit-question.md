@@ -38,7 +38,7 @@ projects, opposite directions, same answer.
 
 ## The argument cuts both ways, and that is the useful part
 
-Capsicum is **the best argument against building cricker-os**: you can have capabilities without a
+Capsicum is **the best argument against building nife**: you can have capabilities without a
 new operating system, on a production OS, today, running real software.
 
 It is also **the best evidence for building it**, and the evidence is the Capsicum authors' own. Their

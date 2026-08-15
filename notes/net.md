@@ -53,7 +53,7 @@ transaction id is the only path to that report, so a match proves the DISCOVER l
 returned (RX), across both queues and both directions of the confinement. Tests (both ISAs, both
 transports): `a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net` and its `_pci` twin.
 
-The runners attach two NICs (mmio + PCI-behind-IOMMU) on slirp when `CRICKER_NET` is set, which xtask
+The runners attach two NICs (mmio + PCI-behind-IOMMU) on slirp when `NIFE_NET` is set, which xtask
 sets for both test legs. slirp needs no host file, so unlike the disk there is nothing for the runner
 to fail loud on; the manufactured-fact hazard (a NIC asked for but not enumerated) is caught by the
 test asserting the exchange rather than skipping.
@@ -289,9 +289,9 @@ note below).
   suits the `std::net` PAL's blocking calls; concurrent connections and listening sockets want either
   userspace threads (milestone 19c TCBs) or a select-like wait, the phase-two extension.
 - **One binary, one archive entry.** The client rides in the net_stack binary (a nonzero entry role runs
-  it) rather than a separate binary, because the crickerfs archive directory held at most 15 files at
-  the time and the initrd was already near that ceiling. (The ceiling is `crickerfs::MAX_FILES`, 76
-  since 2026-08-01; see [crickerfs.md](crickerfs.md). The decision stands on its own merits, but the
+  it) rather than a separate binary, because the nifefs archive directory held at most 15 files at
+  the time and the initrd was already near that ceiling. (The ceiling is `nifefs::MAX_FILES`, 76
+  since 2026-08-01; see [nifefs.md](nifefs.md). The decision stands on its own merits, but the
   pressure behind it is gone.) A subtlety worth recording: net_stack reports its DHCP
   lease with a *blocking* `send`, so the spawn service drains that report before returning, or net_stack
   never reaches its serve loop and the client's first request hangs. That was the one real bug in
@@ -433,7 +433,7 @@ PCIe twin, deterministically.
 ## The inbound half: the guest can be connected to (milestone 107)
 
 Everything above is the guest as a client. The TCP gate connects out to a slirp `guestfwd` peer, the
-UDP gate sends a request, DHCP is a client protocol. cricker-os could reach the network and could not
+UDP gate sends a request, DHCP is a client protocol. nife could reach the network and could not
 be reached, and the contract had no listen verb to fix that with.
 
 Milestone 107 adds `LISTEN` and `ACCEPT` (`crates/socket_proto`, opcodes 9 and 10, **names
@@ -572,21 +572,21 @@ loop {
 `user/src/socket_test_client.rs::tcp_accept_inbound` is that sequence with the assertions in it.
 
 **Running the gate.** It is part of the ordinary suite and needs no host setup; xtask picks a free
-loopback port, hands it to the runner as `CRICKER_HOSTFWD_PORT`, and runs the prober thread itself:
+loopback port, hands it to the runner as `NIFE_HOSTFWD_PORT`, and runs the prober thread itself:
 
 ```console
 $ script/test                                  # both ISAs, inbound gate included
 $ cargo xtask test --arch aarch64              # just the aarch64 leg
 ```
 
-A plain `cargo xtask run` sets no `CRICKER_HOSTFWD_PORT`, so nothing binds a port on your machine
+A plain `cargo xtask run` sets no `NIFE_HOSTFWD_PORT`, so nothing binds a port on your machine
 outside a test run.
 
 ### The gate: a host process connects to the guest, twice
 
 `hostfwd` is `guestfwd`'s mirror, so this costs no host setup: QEMU listens on a loopback port and
 forwards connections to the guest's `10.0.2.15:7778`. The runners add it to the **mmio** NIC only,
-and only when `CRICKER_HOSTFWD_PORT` is set, which is the test flow and nothing else. That flag is
+and only when `NIFE_HOSTFWD_PORT` is set, which is the test flow and nothing else. That flag is
 the one thing here that **binds a port on the developer's machine**, so it stays off a plain
 `cargo xtask run` and off the benchmark boot, both of which share the runner.
 
@@ -596,7 +596,7 @@ it is taken between the ask and QEMU's bind, and that failure is loud (QEMU refu
 
 The host side is `InboundProber`, a thread beside the scanout referee and there for the same reason:
 **nothing inside the guest can open a connection to the guest from outside it.** It connects, sends
-`cricker-in!`, and requires `cricker-out!` back. The two strings differ on purpose: an echo would pass
+`nife-in!`, and requires `nife-out!` back. The two strings differ on purpose: an echo would pass
 even if the guest were only reflecting our bytes, and the claim is that the guest *composed* an
 answer to a connection it did not make. It retries for the whole run, because nothing on the host
 knows when the accept test starts; a connection that lands while another net test holds the NIC finds

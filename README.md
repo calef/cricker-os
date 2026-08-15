@@ -1,6 +1,8 @@
-# cricker-os
+# nife
 
-[![CI](https://github.com/calef/cricker-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/calef/cricker-os/actions/workflows/ci.yml)
+*Formerly cricker-os; renamed 2026-08-15, milestone 120. Old links redirect.*
+
+[![CI](https://github.com/crickertech/nife/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/crickertech/nife/actions/workflows/ci.yml)
 
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
@@ -101,8 +103,8 @@ When something faults, you get this instead of a silent death:
 ## Quick start
 
 ```bash
-git clone https://github.com/calef/cricker-os
-cd cricker-os
+git clone https://github.com/crickertech/nife
+cd nife
 script/setup               # installs the pinned Rust toolchain and QEMU, then builds
 
 script/server              # boot it
@@ -134,7 +136,7 @@ kernel/
   src/                 capabilities, scheduler, IPC, untyped, revocation, the syscall surface
 user/                  EL0: init, the shell, the console/input/block drivers, servers
 crates/                pure logic, host-tested in milliseconds: caps, ipc, paging, elf,
-                       dtb, pci, frames, slots, crickerfs, intrusive, asid, ...
+                       dtb, pci, frames, slots, nifefs, intrusive, asid, ...
 bench/                 the benchmark suite and committed baselines (both ISAs)
 script/                normalized entry points (setup, test, console, verify, bench, ...)
 xtask/                 build orchestration (build, run, test, bench, gdb, objdump, image)

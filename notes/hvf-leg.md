@@ -93,7 +93,7 @@ three markers the harness prints *before* the exit that will not happen: `test r
 passed`, `[PANIC] `, and `WATCHDOG:`. Once something has failed it relays 200 more lines (enough
 for the longest thread dump) and stops, because there is no end of output to read to. The first
 version of this leg had no such budget and left an xtask spinning on the storm for four minutes,
-holding `target/crickerfs-blank.img` and failing the *next* run with `Failed to get "write" lock`,
+holding `target/nifefs-blank.img` and failing the *next* run with `Failed to get "write" lock`,
 which is precisely the trap CLAUDE.md warns about.
 
 ## The SMMU correction

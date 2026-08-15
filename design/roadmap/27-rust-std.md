@@ -4,7 +4,7 @@
 
 **In brief.** A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them
 
-**Why it matters.** **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path
+**Why it matters.** **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for nife becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path
 
 **Built 2026-07-28, both ISAs green; phase two complete 2026-07-29.** std's platform layer runs
 directly on the capability ABI (Hermit's shape); a real std program (`Vec`, `String`, `HashMap`,
@@ -17,10 +17,10 @@ hold", so an absolute path or a `..` is refused as un-nameable rather than serve
 remains `Unsupported`, as do the operations no contract verb backs (creating or truncating a file,
 directory iteration, permissions, symlinks). See notes/std.md and DECISIONS §22.
 
-**Deliverable.** A custom rustc target (`aarch64-unknown-cricker` / `riscv64-unknown-cricker`,
+**Deliverable.** A custom rustc target (`aarch64-unknown-nife` / `riscv64-unknown-nife`,
 `-Zbuild-std` against a target spec first, a real target later if ever warranted) whose `std`
 compiles and links against the capability ABI (notes/abi.md). Concretely: implement std's
-Platform Abstraction Layer (PAL, `library/std/src/sys/pal/*`), a **native** cricker-os backend
+Platform Abstraction Layer (PAL, `library/std/src/sys/pal/*`), a **native** nife backend
 over what a process already has, not a libc shim under the Unix one. Allocation draws from the process's own untyped
 (the `user_rt` heap growing into a real `GlobalAlloc`); `stdout`/`stderr` SEND to the console
 endpoint by slot convention; `Instant`/`SystemTime` read the virtual counter; `panic!` aborts (a
@@ -28,7 +28,7 @@ fault the kernel reports) before unwinding is ever attempted; `thread::spawn` re
 returns `Unsupported` in phase one; `fs` and `net` return `Unsupported`, honestly, until
 capability-granted servers exist to back them.
 
-**Why.** The first wall an application hits on cricker-os is "no std" (the note
+**Why.** The first wall an application hits on nife is "no std" (the note
 why-not-general-purpose.md names it), and milestone 23's vendor-component ambition needs
 components writable by people who are not kernel people. `std` on the native ABI widens "runs
 real workloads" from hand-built `no_std` binaries to most of crates.io that stays off fs and

@@ -53,7 +53,7 @@ them was reverted for producing exactly the wrong artefact.
   showing that intersection is the only transfer operation, `measured_boot` showing that an
   unmeasured name fails CLOSED, `regions` showing the two refusals that are not about the budget).
   The ones left are mostly parsers that need a real fixture to demonstrate (`elf`, `dtb`,
-  `crickerfs`, `gpt`), which is more work per example, not less valuable.
+  `nifefs`, `gpt`), which is more work per example, not less valuable.
 - **`missing_docs`** is still not adoptable, and the number says why: item coverage runs from
   **36.4%** (`socket_proto`) to 100%, with `pci` at 48.9% and `intrusive` at 50%. Adding it to
   `[workspace.lints]` is a commitment to write several hundred item docs first, which is §61's rule

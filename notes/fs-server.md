@@ -95,7 +95,7 @@ choices keep that inside the test's watchdog:
 
 The disk order matters and is a real hazard. QEMU's `virt` assigns virtio-mmio devices to slots in
 **reverse** command-line order, and the kernel finds block devices by ascending slot. So the runners
-place the crickerfs disk LAST on the command line to keep it at slot 0 (the phase-1 driver tests use
+place the nifefs disk LAST on the command line to keep it at slot 0 (the phase-1 driver tests use
 `find_block_device`), which leaves the RedoxFS disk at the next slot for `find_block_device_n(1)`.
 Getting this backwards silently hands the phase-1 tests the wrong disk; the runner comments say so.
 
@@ -262,7 +262,7 @@ result, because `Server::open` refuses an image it cannot make sense of.
 **The disk is dedicated and regenerated every run.** This test deliberately leaves a filesystem
 half-written; doing that to the shared fixture would make every other FS test's result depend on
 whether this one ran first, which is the order-coupled gate this note already spends a section on.
-`CRICKER_KEEP_REDOXFS` deliberately does not apply to it: the cross-boot case is interesting for the
+`NIFE_KEEP_REDOXFS` deliberately does not apply to it: the cross-boot case is interesting for the
 shared disk and is nothing but noise for this one.
 
 **The assertion is the property, not an outcome.** Either payload passes; what fails is a mixture, a
@@ -484,10 +484,10 @@ real disk does. At the device's own 8 MiB cap it completes **30 mount-and-write 
 heap high-water **flat at 352 KiB**, and the cap never once refuses a growth. Four percent of the budget,
 and thirty generations of accumulation move it nowhere. So raising the budget would have fixed nothing,
 and any number picked to make a test pass would have been a coincidence rather than an argument. The
-dials are deliberate (`CRICKER_HEAP_MIB`, `CRICKER_MOUNTS`) so this is re-runnable.
+dials are deliberate (`NIFE_HEAP_MIB`, `NIFE_MOUNTS`) so this is re-runnable.
 
 *A device-only cause: dead too.* Once the heap was ruled out, the remaining reading was that something
-existing only on device was at fault. `CRICKER_KEEP_REDOXFS=1` makes the second-boot case deliberate
+existing only on device was at fault. `NIFE_KEEP_REDOXFS=1` makes the second-boot case deliberate
 (run the suite, then run it again and every mount is a mount of an image a previous boot wrote), and
 with the client's payloads corrected to one length both ISA legs pass it completely: aarch64 150 tests,
 riscv64 95, including `std_fs` and the FS client's three repeat writes. The device was never the problem

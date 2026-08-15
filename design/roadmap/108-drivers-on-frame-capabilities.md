@@ -26,7 +26,7 @@ construction and there is no capability anywhere in the arrangement.
 kernel decides the rights and nobody can narrow them afterwards), not delegable (a driver cannot
 hand its buffer on), and not revocable through the path §13 built (a `Frame` capability is what
 `Frame::REVOKE` and the mapping database are indexed by). More to the point for a demonstrator: a
-reader looking at how cricker-os shares memory finds the general capability answer in the note and
+reader looking at how nife shares memory finds the general capability answer in the note and
 the special case in the code, and the special case is what every real driver uses. The thesis is
 that authority is visible in what a program holds, and a page a program was handed at birth is not
 visible anywhere.

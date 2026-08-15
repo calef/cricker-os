@@ -1,4 +1,4 @@
-# 99. `git` on cricker-os: the tool this project is built with, hosting its own history
+# 99. `git` on nife: the tool this project is built with, hosting its own history
 
 **Status: NOT-STARTED.** Raised 2026-08-04 by calef. A second "somebody else's real application"
 target beside milestone 66's Vaultwarden, chosen for a different reason: not the hardest workload,

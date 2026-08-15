@@ -281,7 +281,7 @@ composes between processes at runtime instead of being wired by the kernel once.
 ## A new process holds nothing
 
 `CSpace::empty()`, and every thread starts with one. That constructor **is** the decision. A Unix
-process inherits its parent's descriptors and can `open()` anything its uid allows. A cricker-os
+process inherits its parent's descriptors and can `open()` anything its uid allows. A nife
 thread can name nothing until `sched::grant` puts something in its table, and the only thing
 `user::exec_elf` grants is a `Console` with `WRITE`.
 

@@ -47,7 +47,7 @@ being the whole story:
    above them are unbounded loops over a symbolic blob carrying a depth counter and two 16-entry
    per-depth arrays. Both of the bugs found on 2026-08-02 were in that unproved region, and one of
    them was an out-of-bounds index into one of those arrays.
-3. **`crates/crickerfs`.** `Fs::parse` is proved total, with no bound on the image size at all
+3. **`crates/nifefs`.** `Fs::parse` is proved total, with no bound on the image size at all
    (`the_validation_implies_reads_slice_is_in_bounds`). Fuzzing it for panics would be burning CI
    time to rediscover a theorem. What is *not* proved, and cannot be by a harness of that shape, is
    that the writer and the reader agree, and that is where its bug was.
@@ -71,14 +71,14 @@ coverage the project does not have.
 | `dtb_walk` | firmware (QEMU, OpenSBI, a board's ROM) | parsed **before anything else exists**, on both ISAs, from a pointer in a register; a panic here is a kernel that cannot boot and cannot say why. Kani reaches the leaf readers and not the walkers. |
 | `elf_parse` | any binary a user asks to run | the only parser that **loads what it parses**: its output becomes page-table entries. The whole-parse totality proof is recorded as intractable. |
 | `gpt_table` | a disk somebody else formatted | decides which LBA range is a filesystem. Heavily checked already, which is the point: the gap is *combinations* of hostile fields, which neither the proofs nor the single-byte mutation tests can build. |
-| `crickerfs_roundtrip` | (structured) the writer's own output | not a panic hunt. Asserts that **what goes in comes out**, which is the property `write_image`'s truncation bug violated until 2026-08-01 and its NUL bug until 2026-08-02. |
+| `nifefs_roundtrip` | (structured) the writer's own output | not a panic hunt. Asserts that **what goes in comes out**, which is the property `write_image`'s truncation bug violated until 2026-08-01 and its NUL bug until 2026-08-02. |
 
 ### And the ones deliberately not fuzzed
 
 Naming these matters as much as naming the four, because "we have fuzzers" is the kind of claim that
 quietly grows to cover everything.
 
-- **`crickerfs`'s `Fs::parse` on raw bytes.** Kani proves it total with no size bound. A fuzz target
+- **`nifefs`'s `Fs::parse` on raw bytes.** Kani proves it total with no size bound. A fuzz target
   there would be a fuzz target that cannot find anything.
 - **`fs_proto`, `sink_proto`, `socket_proto`.** These *are* a trust boundary (a malicious client on
   the other end of an endpoint), and they are unproved. But their decoders are written with
@@ -151,7 +151,7 @@ anyone can construct has to hold on its own. That second argument is not new her
 **Found by the fuzzer**, in about ten minutes from a cold corpus, starting from a mutated copy of the
 committed `qemu-aarch64-virt.dtb`. Nobody had thought to look at `end()`.
 
-### 3. `crickerfs::write_image` accepted a name it could not store
+### 3. `nifefs::write_image` accepted a name it could not store
 
 A name containing a NUL byte was written into the entry's NUL-padded name field, where every reader
 stops at the first NUL. So `"a\0b"` was written and read back as `"a"`, and `read("a\0b")` answered
@@ -162,7 +162,7 @@ with a NUL in it.
 
 Fixed with `Error::NameHasNul`, the same shape as `NameTooLong`.
 
-**Found by `crickerfs_roundtrip` in under a minute**, minimal input `[("\0", [])]`. No totality proof
+**Found by `nifefs_roundtrip` in under a minute**, minimal input `[("\0", [])]`. No totality proof
 could have found it, because nothing panicked: it is a *property* violation, and the property had
 never been written down.
 
@@ -184,7 +184,7 @@ already has `cpu-matrix` as precedent for "its own runner, not a slower gate".
 | `dtb_walk` | 11,702,017 | 19,470 |
 | `elf_parse` | 269,592,178 | 448,572 |
 | `gpt_table` | 14,532,550 | 24,180 |
-| `crickerfs_roundtrip` | 21,469,277 | 35,722 |
+| `nifefs_roundtrip` | 21,469,277 | 35,722 |
 | **total** | **317,296,022** | |
 
 The spread is the shape of each parser rather than noise: `elf_parse` rejects most inputs in its first
@@ -204,7 +204,7 @@ $ rm -rf fuzz/corpus fuzz/artifacts && script/fuzz --time 60
 dtb_walk               1,495,284 execs    24,512/s
 elf_parse             51,234,895 execs   839,916/s
 gpt_table              1,548,246 execs    25,381/s
-crickerfs_roundtrip    1,763,965 execs    28,917/s
+nifefs_roundtrip    1,763,965 execs    28,917/s
 ==> fuzz: no crashes in 4 targets at 60s each
 ```
 
@@ -273,7 +273,7 @@ It is machine-generated, machine-specific, and unbounded.
 **Crash artifacts are not committed either**, and that is the discipline rather than an omission.
 When a target finds a crash, **the input becomes a host test in the crate that owns the bug**, where
 it runs in milliseconds on every `script/test` forever and where a reader meets it next to the code.
-`crates/dtb/tests/hostile.rs` and `crickerfs`'s `a_name_with_a_nul_in_it_is_refused` are the two
+`crates/dtb/tests/hostile.rs` and `nifefs`'s `a_name_with_a_nul_in_it_is_refused` are the two
 written this way. A hand-built 200-byte blob with a docstring explaining what it attacks is worth
 more than a 7,642-byte artifact named after its SHA-1.
 
@@ -306,10 +306,10 @@ cargo fuzz run dtb_walk fuzz/artifacts/dtb_walk/crash-b93bbc15...
 ```
 
 **See what the input actually was**, which matters for a structured target like
-`crickerfs_roundtrip` where the bytes are not the data:
+`nifefs_roundtrip` where the bytes are not the data:
 
 ```sh
-cargo fuzz fmt crickerfs_roundtrip fuzz/artifacts/crickerfs_roundtrip/crash-0ad4fab2...
+cargo fuzz fmt nifefs_roundtrip fuzz/artifacts/nifefs_roundtrip/crash-0ad4fab2...
 # [
 #     (
 #         "\0",
@@ -340,7 +340,7 @@ doing.
 
 1. **Answer "what does this find that a proof does not".** If the crate's Kani harnesses already
    cover the function's totality, do not add a panic-hunting target; add a *property* target, or
-   nothing. `crickerfs_roundtrip` is the worked example of the first, and the "deliberately not
+   nothing. `nifefs_roundtrip` is the worked example of the first, and the "deliberately not
    fuzzed" list above is the worked example of the second.
 2. `fuzz/fuzz_targets/<name>.rs`, plus a `[[bin]]` block in `fuzz/Cargo.toml` (with
    `test = false, doc = false, bench = false`) and the path dependency on the crate under test.
@@ -373,7 +373,7 @@ is `crates/dtb/tests/hostile.rs`, which runs on every `script/test`.
 
 **Only panics and hangs are caught, plus whatever a target asserts.** A parser that returns the
 *wrong answer* without panicking is invisible to `dtb_walk`, `elf_parse` and `gpt_table`, because
-those three assert nothing beyond "it returned". `crickerfs_roundtrip` is the one target with a real
+those three assert nothing beyond "it returned". `nifefs_roundtrip` is the one target with a real
 property, and it is the one that found a silent-corruption bug. That asymmetry is a hint about where
 the next targets should go, not a fact about fuzzing.
 
@@ -393,7 +393,7 @@ appear in one of these crates would be the one that needs it. The checks actuall
 `debug-assertions` and `overflow-checks`, set in `fuzz/Cargo.toml`'s release profile, which is what
 turned bug 2 from a silent wrap into a crash.
 
-**The `crickerfs_roundtrip` target filters its own inputs**, skipping name sets the writer refuses.
+**The `nifefs_roundtrip` target filters its own inputs**, skipping name sets the writer refuses.
 That keeps the budget on the accepted region, and it means the target cannot notice if a *rejection*
 regresses. The crate's host tests cover that instead.
 
@@ -413,5 +413,5 @@ doing; not done.
 
 - notes/verification.md, the proofs and their bounds. Read it first; this note is its complement.
 - notes/scripts.md, where `script/fuzz` sits in the front door.
-- notes/device-tree.md, notes/elf.md, notes/gpt.md, notes/crickerfs.md for what each parser is for.
+- notes/device-tree.md, notes/elf.md, notes/gpt.md, notes/nifefs.md for what each parser is for.
 - `deny.toml` and `script/supply-chain`, milestone 42's first two legs.

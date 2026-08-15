@@ -2,7 +2,7 @@
 
 DECISIONS §10 has a one-line rule for the data path: **IPC carries control, shared memory carries
 data.** The endpoint moves the small stuff (a length, a request code) and the bulk bytes live in a
-page both parties can see, so the kernel never copies them. For a long time cricker-os honored that
+page both parties can see, so the kernel never copies them. For a long time nife honored that
 rule only by accident of setup: the kernel allocated the shared page and mapped it into both the
 console client and server at spawn, and both sides just found it at a fixed virtual address they had
 agreed on in advance. The sharing was real but frozen. Two processes could share memory only if the
@@ -55,7 +55,7 @@ the test checks by trying.
 ## The lifetime question, and why there is no double-free
 
 A page shared into two address spaces cannot be owned by either, or the first one to die frees memory
-the other is still using. cricker-os sidesteps this cleanly because of how teardown already works: an
+the other is still using. nife sidesteps this cleanly because of how teardown already works: an
 `AddressSpace` frees only the frames it recorded at spawn (`self.frames`) plus its page tables and
 root. A page mapped at *runtime*, by `Untyped::MAP` or `Frame::MAP`, is never in that list, so
 teardown does not free it. A frame's page (and the page tables that map it) belong to the untyped

@@ -53,7 +53,7 @@ you are right, and that is worth a milestone rather than a drive-by.
 
 ### 5. Keep the name under 32 bytes
 
-`crickerfs` caps `NAME_LEN` at 32, raised from 24 so `os_primitives_benchmarker` would fit. Raising
+`nifefs` caps `NAME_LEN` at 32, raised from 24 so `os_primitives_benchmarker` would fit. Raising
 it again costs directory entries per block, so do not let a name spend it.
 
 ### 6. If the shell should be able to spawn it: a `Prog` variant

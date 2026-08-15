@@ -1,4 +1,4 @@
-# Porting cricker-os to RISC-V (the second architecture)
+# Porting nife to RISC-V (the second architecture)
 
 The point of a second port is not to reach RISC-V. It is to **prove rule #1**: that all
 architecture-specific code lives under `kernel/src/arch/`, an assumption maintained on faith since
@@ -353,7 +353,7 @@ is the thread's or the hart's.** `tp` is the hart's.
    userspace program the kernel did not hand-write.
 
    **And userspace init builds the system, from a richer initrd.** The single-ELF initrd became a
-   crickerfs archive holding two programs: `init` (the portable `builder`) and `worker`. The kernel
+   nifefs archive holding two programs: `init` (the portable `builder`) and `worker`. The kernel
    (`riscv_initrd_demo`, a minimal `spawn_init` with no GIC/PL011/IRQ baggage) loads only `init`, maps
    the whole archive read-only into it, and grants it two capabilities: an untyped budget and a report
    endpoint. From those, `init` reads `worker` out of the archive by name, builds it as a child

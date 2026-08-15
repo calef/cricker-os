@@ -63,7 +63,7 @@ the tree fixture goes in through upstream's archiver.
 The store directory now goes with the last attribute on the filesystem, which closes a limitation
 recorded for a reason that was wrong: `remove_node` on a directory already refuses with `ENOTEMPTY`,
 so the emptiness check is the engine's and costs no walk. It matters because `extract` copies the
-store out, and a leftover empty `.cricker-attrs` would land in a recovered Documents folder. And
+store out, and a leftover empty `.nife-attrs` would land in a recovered Documents folder. And
 crash atomicity is measured rather than inherited: milestone 37's sweep now carries each name's
 attributes in its state and four attribute operations in its workload, interleaved with a write to
 the same file, so "the file and its metadata land together" is decided rather than argued.
@@ -127,7 +127,7 @@ they need and `Header::new`. Un-gating them is mechanical for all but **one** ca
 `Key::new`), and that one does not matter here because this volume is deliberately unencrypted.
 
 So the blocker is that **a filesystem needs a unique identifier and the engine has no source of
-randomness in a `no_std` build.** cricker-os does: milestone 55's entropy service. The shape of the
+randomness in a `no_std` build.** nife does: milestone 55's entropy service. The shape of the
 fix is therefore small and upstreamable, and it is the shape upstream already uses one line away:
 `create` takes `ctime` and `ctime_nsec` as *parameters* precisely because a `no_std` engine has no
 clock. A `Header::new_with_uuid(size, uuid: [u8; 16])` does for randomness exactly what those
@@ -157,7 +157,7 @@ Seven Kani harnesses in `script/verify`. The claim that makes it credible is tha
 fixtures; re-emitting `sgdisk`'s table reproduces its bytes exactly, and so does rebuilding it from
 scratch. Two findings landed in notes/gpt.md: **macOS writes no GPT partition names at all**, so
 nothing may identify a partition by its label, and the two tools disagree about the protective MBR's
-CHS fields, which is why those are not validated. The cricker-os partition type GUID is DECISIONS §45.
+CHS fields, which is why those are not validated. The nife partition type GUID is DECISIONS §45.
 That sentence used to end "what remains on this milestone is unchanged: the transaction check for
 xattrs, `mkfs` on the target, block-device enumeration, and the host extraction tool", and by
 2026-08-03 three of those four were done and the fourth had turned out to be a decision. The list
