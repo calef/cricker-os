@@ -237,9 +237,11 @@ holds: a preempted thread's context is saved before any core can pop it (single-
 interrupts masked from the requeue through `finish_switch`), a deferred wake (`wake_pending`)
 completes on the thread's own core after the context is real, and the one lock-free cross-core
 protocol, the steal slot, is loom-checked in `crates/steal_request`. The block/wake protocol itself
-has **no loom coverage**: it is lock-based, and modelling it means extracting SCHED plus the run
-queues plus the inbox into a host-checkable crate, which is a milestone of its own, not a
-bench-night patch. The riscv64 `tp` plumbing, the prior art for exactly this smell, was re-audited
+had **no loom coverage** when this was written: it is lock-based, and modelling it means extracting
+SCHED plus the run queues plus the inbox into a host-checkable crate, which is a milestone of its
+own, not a bench-night patch. (Since done, 2026-08-14: `crates/wake_handshake` extracts the
+handshake with SCHED as a loom mutex, and each of this protocol's recorded races is a harness plus
+a failing reconstruction; notes/interleaving.md.) The riscv64 `tp` plumbing, the prior art for exactly this smell, was re-audited
 and reads correct: trap entry reloads `tp` from the per-hart stash, an S-mode return keeps the live
 `tp`, `switch_to` never carries one, and the stash is per-hart, written once.
 

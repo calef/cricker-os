@@ -386,6 +386,7 @@ dependencies = [
  "steal_request",
  "tock-registers",
  "video_terminal",
+ "wake_handshake",
 ]
 
 [[package]]
@@ -878,6 +879,13 @@ dependencies = [
  "crickerfs",
  "fs_proto",
  "user_rt",
+]
+
+[[package]]
+name = "wake_handshake"
+version = "0.1.0"
+dependencies = [
+ "loom",
 ]
 
 [[package]]

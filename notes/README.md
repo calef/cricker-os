@@ -512,7 +512,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   is worth having anyway; and the real find, **a torn read in the clock page's seqlock** that was
   missing the store-store barrier between claiming the sequence and writing the data, unreachable on
   x86 and invisible to every other gate. Including which fixes do *not* work: `AcqRel` and `SeqCst`
-  on the claim both still tear. Run by `script/interleaving-check`.
+  on the claim both still tear. Extended 2026-08-14 with the scheduler's block/wake protocol
+  (`crates/wake_handshake`, the fourth bench stop's retrofit): a lock-based protocol whose search
+  space is the gaps between critical sections, with each of its three recorded races held as a
+  harness plus a `#[should_panic]` reconstruction. Run by `script/interleaving-check`.
 - [Mutation testing](mutation-testing.md): milestone 85, and the question coverage cannot ask:
   **would any test notice if this line were wrong?** cargo-mutants (pinned in
   `.cargo-mutants-version`, exclusions with reasons in `.cargo/mutants.toml`) rewrites one function

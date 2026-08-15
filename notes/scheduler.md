@@ -51,7 +51,8 @@ A wake is not a favor, it is the second half of a delivery, and since 2026-08-14
 enforces that. Every genuine wake of a thread parked in IPC happens in the same `SCHED` critical
 section that gave the parked operation something to return: a rendezvous stages the mailbox, an
 interrupt counts a signal, a reply fills the reply words, revocation flags the abort. Each of
-those sites sets `Thread::ipc_served` (or `ipc_aborted`) before calling `wake`, and `wake` /
+those sites sets the handshake's `ipc_served` (or `ipc_aborted`; both on
+`wake_handshake::Handshake`, embedded in `Thread`) before calling `wake`, and `wake` /
 `wake_load_aware` **refuse** to make a waiting thread Ready when neither flag is set, recording
 `refuse:tid` on the per-core event ring. The parked thread stays parked and still linked on its
 endpoint's wait queue, and the real counterparty completes the rendezvous normally later.
@@ -72,6 +73,16 @@ queued current produces), because that restores an already-consumed context and 
 thread onto a reused stack. Guarded by
 `a_wake_without_delivery_cannot_complete_a_parked_recv` and
 `a_reply_to_a_thread_parked_as_a_receiver_is_dropped`, which inject through the real `wake` path.
+
+**The protocol is a crate now, and loom searches it** (2026-08-14, the retrofit the fourth bench
+stop's audit asked for). The whole block/wake state machine (`state`, `on_cpu`, `wake_pending`,
+`wait_on`, `ipc_served`, `ipc_aborted`, and the gate, deferral and finish-switch transitions over
+them) lives in `crates/wake_handshake`, embedded in `Thread` and **called** by `sched.rs` rather
+than mirrored, so the model-checked code and the shipped code are the same code. Each of the
+protocol's three recorded races (wake-before-switch-out, the steal edge of the same window, and
+boot 8's stranded receiver) is a loom harness that holds with the current semantics and a
+`#[should_panic]` reconstruction that fails with the historical ones. See notes/interleaving.md
+for the model's honest limits.
 
 **BUGS.** The gate protects threads whose `wait_on` is set, which is every IPC block site today; a
 future block path that forgets to set `wait_on` opts itself out silently. A kernel-thread caller
