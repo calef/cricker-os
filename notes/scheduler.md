@@ -45,6 +45,53 @@ the current core so a driver taking a completion interrupt every request (the bl
 RedoxFS mount) is not migrated each time. The device-line **affinity** that spreads which core takes
 each IRQ in the first place is the companion mechanism, in notes/interrupts.md.
 
+## The undelivered-wake gate (boot 8, VisionFive 2)
+
+A wake is not a favor, it is the second half of a delivery, and since 2026-08-14 the scheduler
+enforces that. Every genuine wake of a thread parked in IPC happens in the same `SCHED` critical
+section that gave the parked operation something to return: a rendezvous stages the mailbox, an
+interrupt counts a signal, a reply fills the reply words, revocation flags the abort. Each of
+those sites sets the handshake's `ipc_served` (or `ipc_aborted`; both on
+`wake_handshake::Handshake`, embedded in `Thread`) before calling `wake`, and `wake` /
+`wake_load_aware` **refuse** to make a waiting thread Ready when neither flag is set, recording
+`refuse:tid` on the per-core event ring. The parked thread stays parked and still linked on its
+endpoint's wait queue, and the real counterparty completes the rendezvous normally later.
+
+The reason is the VisionFive 2's boot 8 (notes/visionfive2.md, fourth bench stop): the boot
+thread, parked in `ipc_recv`, took a `wake:0x0` on a boot where no sender to its endpoint
+existed, and the recv tail, which reads the mailbox unconditionally after `schedule()` returns,
+completed a rendezvous that never happened and ran off the rails for good. The gate turns that
+transition into a refused no-op plus a ring event, whoever the caller is; the recv tails carry a
+`debug_assert` tripwire ("resumed with nothing delivered") for the state the gate makes
+unreachable.
+
+Two companions from the same boot: `ipc_reply`, the one wake site addressed by a tid rather than
+through an endpoint pop, delivers only to a thread whose `wait_on` says it awaits a reply
+(anything else would clobber a parked receiver's mailbox and double-enqueue its one intrusive
+link), and `schedule()` refuses to switch into its own current thread (the shape a spuriously
+queued current produces), because that restores an already-consumed context and time-travels the
+thread onto a reused stack. Guarded by
+`a_wake_without_delivery_cannot_complete_a_parked_recv` and
+`a_reply_to_a_thread_parked_as_a_receiver_is_dropped`, which inject through the real `wake` path.
+
+**The protocol is a crate now, and loom searches it** (2026-08-14, the retrofit the fourth bench
+stop's audit asked for). The whole block/wake state machine (`state`, `on_cpu`, `wake_pending`,
+`wait_on`, `ipc_served`, `ipc_aborted`, and the gate, deferral and finish-switch transitions over
+them) lives in `crates/wake_handshake`, embedded in `Thread` and **called** by `sched.rs` rather
+than mirrored, so the model-checked code and the shipped code are the same code. Each of the
+protocol's three recorded races (wake-before-switch-out, the steal edge of the same window, and
+boot 8's stranded receiver) is a loom harness that holds with the current semantics and a
+`#[should_panic]` reconstruction that fails with the historical ones. See notes/interleaving.md
+for the model's honest limits.
+
+**BUGS.** The gate protects threads whose `wait_on` is set, which is every IPC block site today; a
+future block path that forgets to set `wait_on` opts itself out silently. A kernel-thread caller
+of `ipc_recv` still cannot tell an abort from a message unless it checks `take_ipc_aborted`
+itself; the gate guarantees *something* was delivered, not which thing. And the blocking
+`ipc_send` resume path carries no tripwire assert, deliberately: it takes no lock after
+`schedule()` today, and adding one on the IPC hot path to double-check an invariant the gate
+already holds was judged not worth the cycles the bench tripwire watches.
+
 ## The costs migration made real
 
 Turning on any migration at all strips the accidental cover off same-core assumptions. Two bit us
