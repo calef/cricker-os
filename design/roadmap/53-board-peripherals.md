@@ -1,6 +1,11 @@
 # 53. The board's own peripherals: network and storage on real silicon
 
-**Status: NOT-STARTED.**
+**Status: PARTIAL.** The storage half is built for QEMU as of 2026-08-15 (pull request #193): the
+`nvme` crate (queue mechanics, host-tested, 5 Kani harnesses), a rule-2 kernel driver confined
+through the IOMMU before enable, class-code enumeration over §18, and an end-to-end boot test on
+both ISAs. What remains of the milestone: the network half (the JH7110's GMAC), the board-side
+PLDA XpressRICH root complex that carries the NVMe driver to the real M.2 slot, and the EL0
+question, which is §86 (PROPOSED). Scope and honest limits: notes/nvme.md, BUGS included.
 
 **Gate: NONE.** Both halves of the old gate are gone. The hardware cleared 2026-08-14: the board
 is on the desk and 16a boots it through the full tour, so the two drivers finally have silicon to
