@@ -108,22 +108,16 @@ const ROLE_REDIRECT: u64 = 4;
 const FS_VA: u64 = 0x0000_0000_0060_0000;
 
 fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>, clock: Option<u64>) -> Option<Wiring> {
-    let image = match program("swish") {
-        Some(i) => i,
-        None => {
-            crate::println!("start_with: no swish in the archive");
-            return None;
-        }
+    let Some(image) = program("swish") else {
+        crate::println!("start_with: no swish in the archive");
+        return None;
     };
     let term = crate::sched::create_endpoint();
     let spawn_ep = crate::sched::create_endpoint();
     let result = crate::sched::create_endpoint();
-    let budget = match crate::untyped::create(SH_BUDGET_PAGES) {
-        Some(b) => b,
-        None => {
-            crate::println!("start_with: untyped::create({SH_BUDGET_PAGES}) refused");
-            return None;
-        }
+    let Some(budget) = crate::untyped::create(SH_BUDGET_PAGES) else {
+        crate::println!("start_with: untyped::create({SH_BUDGET_PAGES}) refused");
+        return None;
     };
     let out_phys = match crate::memory::alloc() {
         Some(f) => f,
