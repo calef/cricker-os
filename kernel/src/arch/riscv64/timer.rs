@@ -209,6 +209,13 @@ fn rearm() {
 
     if next <= now {
         MISSED_TICKS[id].fetch_add(1, Ordering::Relaxed);
+        // Test builds only: keep the numbers, so a failure says HOW LATE rather than only that it
+        // was late. Three relaxed stores, no branch on the hot path, and nothing printed: this runs
+        // in trap context and DECISIONS §9's rule (handlers record and defer) applies to
+        // diagnostics too. aarch64's `rearm` has carried this since milestone 78; the twin was the
+        // rule-5 gap this closes.
+        #[cfg(test)]
+        miss_detail::record(now, next);
         next = now + interval();
     }
 
@@ -279,6 +286,50 @@ pub fn missed_ticks_on(hart: usize) -> u64 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn deadline() -> u64 {
     DEADLINE[cpu::id()].load(Ordering::Relaxed)
+}
+
+/// Why a miss happened, kept only in test builds. The aarch64 twin, word for word in intent.
+///
+/// [`missed_ticks`] says a deadline was already past when [`rearm`] ran. It does not say by how
+/// much, and the difference is the whole taxonomy: **late by less than one interval is a slow
+/// handler and is this kernel's bug; late by a whole interval or more is the emulator having been
+/// descheduled and says nothing about this kernel.** Without the numbers those two are the same
+/// observation from inside the guest, which is the position milestone 78 records the suite being
+/// in, and which broke three unrelated pull requests on aarch64 in one afternoon before the twin
+/// there got these numbers.
+///
+/// The last miss only, plus a count. A burst records once and reports the final pair, which is
+/// enough to tell the two cases apart and cheaper than a ring buffer in trap context.
+#[cfg(test)]
+pub mod miss_detail {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::cpu::{self, MAX_CPUS};
+
+    static NOW: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static NEXT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static COUNT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+    /// Record the counter and the deadline it had already passed. Called from [`super::rearm`], in
+    /// trap context, so this is three relaxed stores and nothing else.
+    pub fn record(now: u64, next: u64) {
+        let id = cpu::id();
+        NOW[id].store(now, Ordering::Relaxed);
+        NEXT[id].store(next, Ordering::Relaxed);
+        COUNT[id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// This hart's last miss as `(now, next, count)`. `now - next` is how late the re-arm was, in
+    /// counter ticks; compare it against [`super::interval`] to tell a slow handler from a
+    /// descheduled emulator.
+    pub fn last() -> (u64, u64, u64) {
+        let id = cpu::id();
+        (
+            NOW[id].load(Ordering::Relaxed),
+            NEXT[id].load(Ordering::Relaxed),
+            COUNT[id].load(Ordering::Relaxed),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -438,19 +489,43 @@ mod tests {
         use crate::arch::timer;
 
         // Hart-scoped, for `ticks_on`'s reason: a migration between the two reads compares two
-        // harts' miss counts. That removes one of this test's two confounds. **The other is not
-        // fixed here and cannot be**: with no `-icount`, a deschedule long enough to pass a
-        // deadline is counted as a miss and the guest cannot tell it from a slow handler. See
-        // notes/load-sensitive-assertions.md.
+        // harts' miss counts. That removes one of this test's two confounds; the numbers below
+        // remove the other. See notes/load-sensitive-assertions.md.
         let hart = crate::cpu::id();
         let before = timer::missed_ticks_on(hart);
         timer::spin_for(timer::interval() * 5);
+        let after = timer::missed_ticks_on(hart);
 
-        assert_eq!(
-            timer::missed_ticks_on(hart),
-            before,
-            "the timer handler is taking longer than a whole tick period, with no lock held"
-        );
+        // The numbers decide, not just the fact. `now - next` is how late the re-arm was: less
+        // than an interval is a slow handler and is our bug; a whole `interval` or more is the
+        // emulator having been descheduled, which says nothing about this kernel. The test runner
+        // passes no `-icount`, so guest time follows host time and both are possible. This is
+        // milestone 78's taxonomy, which the aarch64 twin has applied since 2026-08-15 and this
+        // one did not: a rule-5 parity gap that left the same flake live on one ISA. A slow
+        // handler still fails.
+        let (now, next, misses) = super::miss_detail::last();
+        if after != before {
+            let late_by = now.saturating_sub(next);
+            assert!(
+                late_by >= timer::interval(),
+                "the timer handler is taking longer than a whole tick period, with no lock held. \
+                 missed {} -> {}; last miss re-armed {} counter ticks late against an interval of \
+                 {} ({} misses recorded on this hart). Late by less than one interval means the \
+                 handler itself is slow, which is this kernel's bug.",
+                before,
+                after,
+                late_by,
+                timer::interval(),
+                misses,
+            );
+            crate::println!(
+                "    (missed {} tick(s), re-armed {} ticks late, >= interval {}: the emulator \
+                 was descheduled; not this kernel's bug, not failed)",
+                after - before,
+                late_by,
+                timer::interval(),
+            );
+        }
     }
 
     /// **The cost of masking, made visible.**
