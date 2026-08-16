@@ -1,0 +1,25 @@
+#!/bin/sh
+# pre-push: the formatting gate, run where it is cheap.
+#
+# CI's rustfmt is one of seven required checks, and a lane that pushes unformatted code learns
+# that from a runner ten minutes later, then pushes again. Every lane on 2026-08-15 and -16 paid
+# that tax at least once, three of them on the same night, which is a gate teaching the wrong
+# lesson: "run CI to find out how to format". This runs the identical check in ~0.7 s before the
+# push leaves the machine.
+#
+# Installed by `script/setup` via core.hooksPath, so it covers every worktree sharing this .git
+# (which is how lanes work) rather than needing per-worktree installation.
+#
+# Bypass with `git push --no-verify` when you mean it: pushing a work-in-progress branch for
+# safekeeping is a legitimate reason, and this hook is a courtesy to the queue rather than a
+# rule about what may exist on a branch.
+
+root="$(git rev-parse --show-toplevel)"
+[ -x "$root/script/fmt" ] || exit 0   # a branch predating the script pushes unimpeded
+
+if ! "$root/script/fmt" --check >/dev/null 2>&1; then
+    echo "pre-push: rustfmt would change files, and CI's rustfmt check will fail." >&2
+    echo "  Fix:    script/fmt        (then commit and push again)" >&2
+    echo "  Bypass: git push --no-verify" >&2
+    exit 1
+fi

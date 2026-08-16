@@ -8,15 +8,20 @@ was measured, not assumed: `dns-sd -B _adisk._tcp` on the family network returns
 working reference does it, and proving it unnecessary would mean disabling it on a working family
 backup system (design/roadmap/55-time-machine.md, "mDNS is required after all").
 
-Two pieces exist or are pending:
+Three pieces exist or are pending:
 
 - **`crates/mdns_proto`** (built): the DNS wire format, compression handling, the DNS-SD PTR/SRV/TXT
   structuring, the probe-before-claim wire halves, and `respond()`, the responder's entire decision
   as a pure function. Host-tested against real captured router packets; Kani harnesses cover the
   parser's termination and bounds.
-- **The responder program** (not built, deliberately): it needs multicast reception, and the stack
-  does not offer it yet. The verdict and the missing pieces are below; building them is a lane of
-  its own.
+- **The stack half** (built, both ISAs): smoltcp's `multicast` feature is on and `net_stack` joins
+  224.0.0.251 at startup; `BIND_UDP` claims a fixed port against a granted range
+  (`socket_proto::udp_bind_grant`, the UDP twin of milestone 107's listen grant, riding the high
+  half of the same spawn word); a UDP `RECV` reply carries the datagram's source endpoint in the
+  frame's dst fields. The gate is below.
+- **The responder program** (not built, deliberately): the next lane. Everything it needs from the
+  stack now exists; what remains is `mdns_proto`'s `respond()` wired to a `BIND_UDP(5353)` socket,
+  spawned with the grant.
 
 ## The measured reference, captured 2026-08-15
 
@@ -69,40 +74,63 @@ cargo feature (in smoltcp's own default set, which `default-features = false` di
   before UDP ever sees them. The ethernet layer already accepts multicast MAC frames either way;
   the filter that matters is the IP one.
 
-So the responder is *nearly* ordinary socket code, and the distance is measured in small pieces,
-none of them in this lane:
+So the responder is *nearly* ordinary socket code, and the distance was measured in small pieces.
+**All three landed with the stack half** (milestone 55, the lane after the one that wrote this
+note), the shapes the sizing proposed:
 
-1. **The feature flag**: add `"multicast"` to the smoltcp features in `user/Cargo.toml`. One line.
-   Not a new dependency, but it is a change to a vendored-engine pin's configuration, so it should
-   land visibly, not ride along.
-2. **The join**: `net_stack` calls `join_multicast_group(Ipv4Address::new(224, 0, 0, 251))` at
-   startup and polls so the IGMP report goes out. A few lines.
-3. **Socket surface, the real work.** The `socket_proto` contract cannot express an mDNS responder
-   today, three ways:
-   - `OP_OPEN_UDP` binds an **ephemeral** local port only. mDNS must bind 5353. A fixed UDP port is
-     a claim on a shared namespace, the same authority question `LISTEN` answered for TCP with the
-     listen grant, and it should be granted the same way rather than opened to any client.
-   - `OP_RECV` **discards the datagram's source endpoint** (`net_stack.rs`, `sock_recv`:
-     `.map(|(n, _)| n)`). A responder must see the source, both to reply unicast and because RFC
-     6762 §6.7 makes the semantics turn on whether the source port is 5353. The shared frame's
-     `dst_ip`/`dst_port` header fields are dead space on a RECV reply and could carry the source
-     without a format change; that is a proposal, not a decision.
-   - `OP_SENDTO` to a multicast destination should work as-is (smoltcp maps IPv4 multicast to the
-     multicast MAC without ARP), but nothing in the tree has exercised it. Measure before trusting.
+1. **The feature flag**: `"multicast"` in `user/Cargo.toml`'s smoltcp features. Landed as its own
+   commit, being a change to a vendored-engine pin's configuration.
+2. **The join**: `net_stack` joins 224.0.0.251 right after DHCP configures, then polls so the IGMP
+   membership report carries a real source address. Membership is interface state, not socket
+   state, so the join is unconditional; what is granted per client is the port.
+3. **Socket surface.** The three gaps, closed:
+   - `OP_BIND_UDP` (name provisional) binds a **fixed** UDP port, checked against a **UDP bind
+     grant** the spawn site packs with `socket_proto::udp_bind_grant` into the high half of the
+     same spawn word milestone 107's listen grant occupies. The halves are independent
+     authorities; the zero word still grants nothing anywhere. The reply vocabulary is `LISTEN`'s
+     three outcomes, which are properties of claiming a port, not of TCP.
+   - A UDP `RECV` reply now writes the datagram's **source endpoint** into the shared frame's
+     `dst_ip`/`dst_port` fields, the dead-space proposal above, taken. TCP `RECV` leaves them
+     untouched; the peer is fixed by the connection.
+   - `OP_SENDTO` to a multicast destination was measured, not trusted: the QEMU gate's host-side
+     prober takes the guest's group-addressed datagram off the raw wire.
 
-The honest size: the stack half of the responder is a small milestone (a feature line, a join call,
-one granted-port mechanism, source addressing on RECV), and the protocol half is already built and
-tested. What was *not* needed is any change to smoltcp itself.
+What was *not* needed is any change to smoltcp itself.
 
-## Testing the eventual responder under QEMU
+## The QEMU gate: what it proves, and how
 
-The QEMU nets in `xtask` are slirp (user-mode networking) with `hostfwd` for inbound TCP. Slirp
-does not deliver external multicast into the guest, so the existing harness cannot inject an mDNS
-query from the host the way the TCP tests connect in. The responder milestone should measure its
-options before designing the gate; the candidates are a `-netdev socket,mcast=` pair (two guests,
-or host code speaking the socket protocol), a tap backend, or driving `respond()`'s decision purely
-on-device with hand-fed frames. The protocol logic itself does not need QEMU at all; that is what
-the crate split buys.
+Slirp cannot carry multicast in either direction, so the gate goes under it. When xtask runs the
+suite, the runners attach the mmio NIC to a **QEMU hub** (`-netdev hubport`) with two backends:
+slirp, unchanged (DHCP, TFTP, guestfwd, hostfwd all keep working, because a hub floods every frame
+to every port), and a `-netdev socket` listener that xtask's **multicast prober** connects to,
+speaking QEMU's frame protocol (4-byte big-endian length, then the raw ethernet frame). The prober
+is the multicast twin of milestone 107's inbound prober: constructed before the child so the
+runner inherits `NIFE_MCAST_PORT`, passive for the whole boot, reported after the suite.
+
+The exchange rides **inside milestone 107's accept test**
+(`a_host_process_connects_to_the_guest_and_is_answered`, both ISAs), after its TCP rounds, rather
+than in a spawn of its own: a net server's spawn is ~154 frames nothing ever reclaims, and a
+twelfth one died as `Unmappable(OutOfFrames)` in an unrelated later test, the exact failure
+notes/net.md's memory receipt predicted. The fold has a side benefit: that spawn's grant word
+carries `listen_grant(7778, 7778) | udp_bind_grant(5353, 5353)`, so the *composed* packing is what
+the machine exercises, not one half alone. The mDNS half
+(`udp_mdns_half` in `user/src/socket_test_client.rs`):
+
+1. The client asks to bind a port outside the grant: refused as **authority** (`LISTEN_DENIED`).
+   5353 binds; a second bind of 5353 collides (`LISTEN_IN_USE`).
+2. The guest multicasts a trigger to 224.0.0.251:5353. The prober receives it off the raw wire,
+   which is the measurement that multicast `SENDTO` reaches it (smoltcp maps the group to the
+   multicast MAC without ARP, as predicted; now proven).
+3. The prober injects a UDP datagram **addressed to the group**, not to the guest, from a spoofed
+   source (10.0.2.99:5353) nothing on the virtual network holds. The guest's `RECV` returns it,
+   which is the RX-acceptance proof the `multicast` feature exists for, and the client asserts the
+   spoofed source came back in the frame header, ip and port both.
+4. The guest multicasts a composed answer (different bytes, the inbound gate's anti-echo
+   discipline), and the prober requires it, closing the loop from outside.
+
+The TFTP gate carries the slirp-shaped half of source reporting on both ISAs: it asserts the DATA
+packet's source and ACKs to it, which is what TFTP's TID scheme (RFC 1350 §4) wanted all along and
+is the same reply-to-the-querier move an mDNS legacy-unicast responder makes.
 
 ## EXAMPLES
 
@@ -132,6 +160,23 @@ what a test vector needs.
 
 ## BUGS
 
+- **What the QEMU gate cannot prove, for the bench to pick up.** The hub is a wire with no router
+  on it, so everything a real network's multicast turns on is out of its reach: **IGMP snooping**
+  (a switch that forwards group traffic only to reported members; the gate never checks the
+  guest's membership report is well-formed enough to satisfy one, only that acceptance works),
+  **TTL handling by real forwarding** (the injected frame carries TTL 255 but nothing routes it),
+  coexistence with a real network's **mDNS chatter** (the gate's group traffic is exactly three
+  known datagrams; a live segment delivers a firehose of other hosts' queries and announcements to
+  every member, and nothing here proves the stack keeps up or that the 2048-byte socket buffer
+  survives it), and **a real querier**: no Mac's mDNSResponder has asked this stack anything. The
+  bench on hardware, on the family network, with `dns-sd -B` as the client, is where those claims
+  get proven; the gate's job is only that the stack's own filters, grants, and headers are right.
+- **The injected query is a payload marker, not a DNS message.** The gate proves carriage, not
+  protocol; `mdns_proto`'s host tests against the captured router packets prove protocol. The
+  responder lane joins the two, and its gate should inject a real query through this same hub.
+- **The prober holds one TCP connection and never reconnects.** If QEMU drops the frame socket
+  mid-run the check fails as "reading frames failed" rather than retrying; acceptable for a gate,
+  recorded so its first flake is not a mystery.
 - **The multicast-response shape is asserted from the RFC, not from a capture.** All three captured
   packets are legacy unicast responses (the capture tool cannot bind 5353 while mDNSResponder holds
   it). The crate's multicast responses (ID 0, additionals, cache-flush, TTL 4500/120) follow RFC

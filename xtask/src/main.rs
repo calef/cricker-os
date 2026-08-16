@@ -979,6 +979,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     // the referee is: it is what sets `NIFE_HOSTFWD_PORT`, and the runner reads it from the
     // environment the child inherits.
     let prober = InboundProber::new(arch);
+    // The multicast prober (milestone 55's stack half), on the same terms: it sets
+    // `NIFE_MCAST_PORT` before the child exists, so it must be constructed first, and it runs
+    // passively for the whole boot because nothing here knows when the mDNS test starts.
+    let mcast = MulticastProber::new(arch);
     // And the SMB prober (milestone 54), same terms: it sets `NIFE_SMB_HOSTFWD_PORT` before the
     // child exists, and it drives the mount-shaped exchange the SMB gate asserts.
     let smb_prober = SmbProber::new(arch);
@@ -1007,12 +1011,13 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         referee.poll();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    // All three, and not short-circuited: a run that lost the scanout AND an inbound answer
-    // should say so once rather than making the reader run it again to find the next failure.
+    // All four, and not short-circuited: a run that lost the scanout AND a network answer should
+    // say so once rather than making the reader run it again to find the next failure.
     let scanout = referee.report();
     let inbound = prober.report();
+    let multicast = mcast.report();
     let smb = smb_prober.report();
-    scanout && inbound && smb
+    scanout && inbound && multicast && smb
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1394,6 +1399,302 @@ fn probe_inbound(
              to 127.0.0.1:{port}; last attempt: {last}"
         ))
     }
+}
+
+/// The multicast exchange's three payloads, which must match `user/src/socket_test_client.rs`
+/// (`MDNS_TRIGGER`/`MDNS_QUERY`/`MDNS_ANSWER` there). The trigger is what the guest multicasts
+/// first; its arrival HERE, off the raw wire, is the proof that a multicast SENDTO leaves the
+/// guest at all. The query is what this prober injects to the group, and the answer is what the
+/// guest composes back, a different string for the inbound gate's reason: an echo would pass even
+/// if the guest were reflecting bytes.
+const MDNS_TRIGGER: &[u8] = b"nife-mdns?";
+const MDNS_QUERY: &[u8] = b"nife-mdns-in";
+const MDNS_ANSWER: &[u8] = b"nife-mdns-out";
+/// RFC 6762's group and port, and the ethernet address IPv4 multicast maps onto (01:00:5e plus
+/// the group's low 23 bits).
+const MDNS_GROUP: [u8; 4] = [224, 0, 0, 251];
+const MDNS_PORT: u16 = 5353;
+const MDNS_GROUP_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb];
+/// The injected frame's spoofed source. The address is on slirp's subnet but held by nothing, so
+/// when the guest asserts it back from its RECV header the value can only have come from the
+/// datagram; the source port is 5353 because that is the RFC 6762 §6.7 case whose semantics the
+/// eventual responder will branch on. The MAC is locally administered and never claimed by ARP.
+const MDNS_PROBER_IP: [u8; 4] = [10, 0, 2, 99];
+const MDNS_PROBER_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x99, 0x99, 0x99];
+
+/// **The host side of the mDNS gate** (milestone 55's stack half): the peer on the frame-level
+/// hub the runner wires beside slirp when `NIFE_MCAST_PORT` is set.
+///
+/// It exists because slirp cannot carry multicast in either direction, so no exchange through it
+/// can prove the one thing the `multicast` feature was enabled for: that a datagram addressed to
+/// a *group*, not to the guest, is accepted once the guest has joined. This prober speaks QEMU's
+/// socket-netdev protocol (each ethernet frame prefixed with a 4-byte big-endian length, over one
+/// TCP connection) and therefore sees and injects raw frames, below every slirp limitation.
+///
+/// Same shape and lifecycle as [`InboundProber`]: constructed before the child so the runner
+/// inherits the port, running for the whole boot because nothing here knows when the mDNS test
+/// starts, stopped and reported after the suite. It is passive until the guest's trigger arrives,
+/// so the other net tests never see it.
+struct MulticastProber {
+    arch: String,
+    port: Option<u16>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl MulticastProber {
+    /// Pick the port, tell the runner about it, and start listening. Call this **before** the
+    /// child is spawned: the runner reads `NIFE_MCAST_PORT` from the environment it inherits.
+    fn new(arch: &str) -> Self {
+        let Some(port) = free_loopback_port() else {
+            eprintln!("multicast prober ({arch}): could not get a free loopback port");
+            return Self {
+                arch: arch.to_string(),
+                port: None,
+                stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                thread: None,
+            };
+        };
+        // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads. This
+        // runs on the main thread before both the child that reads it and the prober thread
+        // below, and that thread only touches sockets; no thread xtask starts ever writes the
+        // environment.
+        unsafe { std::env::set_var("NIFE_MCAST_PORT", port.to_string()) };
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let thread = std::thread::spawn(move || probe_multicast(port, stop_thread));
+        Self {
+            arch: arch.to_string(),
+            port: Some(port),
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stop listening, and say whether the whole exchange happened: the guest's own multicast
+    /// send seen raw on the wire, the injected group-addressed query, and the guest's composed
+    /// answer back to the group. The guest's assertion covers what it received; this covers what
+    /// actually crossed the wire.
+    fn report(mut self) -> bool {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let arch = &self.arch;
+        let Some(thread) = self.thread.take() else {
+            eprintln!("multicast check ({arch}) FAILED: the prober never started");
+            return false;
+        };
+        match thread.join() {
+            Ok(Ok(())) => {
+                eprintln!(
+                    "multicast check ({arch}): the guest's send to {}.{}.{}.{} reached the wire, \
+                     the injected group-addressed query was accepted, and the guest answered the \
+                     group with its own bytes.",
+                    MDNS_GROUP[0], MDNS_GROUP[1], MDNS_GROUP[2], MDNS_GROUP[3],
+                );
+                true
+            }
+            Ok(Err(reason)) => {
+                let port = self.port.unwrap_or(0);
+                eprintln!();
+                eprintln!("multicast check ({arch}) FAILED: {reason}");
+                eprintln!(
+                    "  (frame socket on 127.0.0.1:{port}.) Slirp cannot carry multicast, so this \
+                     frame-level exchange is the only QEMU proof the joined group receives. See \
+                     notes/mdns.md."
+                );
+                false
+            }
+            Err(_) => {
+                eprintln!("multicast check ({arch}) FAILED: the prober thread panicked");
+                false
+            }
+        }
+    }
+}
+
+/// One prober thread: connect to the hub's socket backend, wait for the guest's trigger, inject
+/// the group-addressed query, and require the guest's composed answer, all as raw frames.
+///
+/// Passive until spoken to, deliberately: the hub floods every frame of the whole boot here
+/// (DHCP for every net test, TFTP, the TCP exchanges), and this thread must never answer any of
+/// it, so it filters for exactly the two group-addressed payloads it knows. Re-injects on every
+/// trigger rather than once, because the guest retries when the first round was lost to this
+/// prober connecting late, and a duplicate injection is at worst a duplicate datagram the guest's
+/// single RECV never sees.
+fn probe_multicast(
+    port: u16,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    use std::io::{ErrorKind, Read, Write};
+    use std::sync::atomic::Ordering;
+
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+
+    // QEMU owns the listening side and comes up whenever the runner gets there; retry until then.
+    let mut s = loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(format!(
+                "the run ended before QEMU ever listened on 127.0.0.1:{port}; is the runner's \
+                 NIFE_MCAST_PORT block attaching the injection hub?"
+            ));
+        }
+        match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)) {
+            Ok(s) => break s,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    };
+    // Short, so the loop can notice `stop`; not a deadline for anything.
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+    let _ = s.set_nodelay(true);
+
+    let mut triggered = false;
+    let mut acc: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(if triggered {
+                "the guest's trigger arrived and the query was injected, but the guest never \
+                 answered the group: the injected datagram was most likely dropped by the IPv4 \
+                 accept filter, which is exactly what an unjoined group looks like"
+                    .to_string()
+            } else {
+                "the guest never sent its trigger to the group: either the mDNS test did not run, \
+                 or multicast SENDTO never reached the wire"
+                    .to_string()
+            });
+        }
+        match s.read(&mut buf) {
+            Ok(0) => return Err("QEMU closed the frame socket".to_string()),
+            Ok(n) => acc.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                continue;
+            }
+            Err(e) => return Err(format!("reading frames failed: {e}")),
+        }
+        // The stream is 4-byte big-endian length, then that many bytes of ethernet frame.
+        while acc.len() >= 4 {
+            let flen = u32::from_be_bytes([acc[0], acc[1], acc[2], acc[3]]) as usize;
+            if flen > 65536 {
+                return Err(format!(
+                    "desynchronized from the frame stream (claimed frame length {flen})"
+                ));
+            }
+            if acc.len() < 4 + flen {
+                break;
+            }
+            let payload = group_udp_payload(&acc[4..4 + flen]).map(<[u8]>::to_vec);
+            acc.drain(..4 + flen);
+            if payload.as_deref() == Some(MDNS_TRIGGER) {
+                triggered = true;
+                let frame = mdns_query_frame();
+                let mut msg = (frame.len() as u32).to_be_bytes().to_vec();
+                msg.extend_from_slice(&frame);
+                if let Err(e) = s.write_all(&msg) {
+                    return Err(format!("injecting the query frame failed: {e}"));
+                }
+            } else if payload.as_deref() == Some(MDNS_ANSWER) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// The UDP payload of `frame`, if it is an IPv4 datagram addressed to the mDNS group and port;
+/// `None` for everything else on the hub (ARP, DHCP, TCP, unicast UDP), which this prober must
+/// ignore.
+fn group_udp_payload(frame: &[u8]) -> Option<&[u8]> {
+    let ip = frame.get(14..)?;
+    if frame[12..14] != [0x08, 0x00] || ip.first()? >> 4 != 4 {
+        return None;
+    }
+    let ihl = ((ip[0] & 0xf) as usize) * 4;
+    if *ip.get(9)? != 17 || ip.get(16..20)? != MDNS_GROUP {
+        return None;
+    }
+    let udp = ip.get(ihl..)?;
+    if u16::from_be_bytes([*udp.get(2)?, *udp.get(3)?]) != MDNS_PORT {
+        return None;
+    }
+    let udp_len = u16::from_be_bytes([udp[4], udp[5]]) as usize;
+    udp.get(8..udp_len)
+}
+
+/// The frame this prober injects: ethernet to the group's multicast MAC, IPv4 from the spoofed
+/// source to the group with TTL 255 (RFC 6762 §11), UDP 5353 to 5353 carrying [`MDNS_QUERY`],
+/// checksums real so nothing in the guest's stack has a reason to drop it.
+fn mdns_query_frame() -> Vec<u8> {
+    let udp_len = 8 + MDNS_QUERY.len();
+    let ip_len = 20 + udp_len;
+
+    let mut ip = vec![
+        0x45,
+        0x00,
+        (ip_len >> 8) as u8,
+        ip_len as u8,
+        0,
+        0,
+        0,
+        0,
+        255,
+        17,
+        0,
+        0,
+    ];
+    ip.extend_from_slice(&MDNS_PROBER_IP);
+    ip.extend_from_slice(&MDNS_GROUP);
+    let c = internet_checksum(&ip, 0);
+    ip[10] = (c >> 8) as u8;
+    ip[11] = c as u8;
+
+    let mut udp = vec![
+        (MDNS_PORT >> 8) as u8,
+        MDNS_PORT as u8,
+        (MDNS_PORT >> 8) as u8,
+        MDNS_PORT as u8,
+        (udp_len >> 8) as u8,
+        udp_len as u8,
+        0,
+        0,
+    ];
+    udp.extend_from_slice(MDNS_QUERY);
+    // The UDP checksum runs over a pseudo-header of the addresses, the protocol, and the length.
+    let mut pseudo = 0u32;
+    for chunk in MDNS_PROBER_IP.chunks(2).chain(MDNS_GROUP.chunks(2)) {
+        pseudo += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    pseudo += 17 + udp_len as u32;
+    let uc = internet_checksum(&udp, pseudo);
+    // A computed zero means "no checksum" on the wire; the ones'-complement convention transmits
+    // it as all-ones instead.
+    let uc = if uc == 0 { 0xffff } else { uc };
+    udp[6] = (uc >> 8) as u8;
+    udp[7] = uc as u8;
+
+    let mut frame = Vec::with_capacity(14 + ip_len);
+    frame.extend_from_slice(&MDNS_GROUP_MAC);
+    frame.extend_from_slice(&MDNS_PROBER_MAC);
+    frame.extend_from_slice(&[0x08, 0x00]);
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&udp);
+    frame
+}
+
+/// RFC 1071's ones'-complement sum over `data` (odd trailing byte padded with zero), folded and
+/// inverted, starting from `init` (zero for an IPv4 header, the pseudo-header sum for UDP).
+fn internet_checksum(data: &[u8], init: u32) -> u16 {
+    let mut sum = init;
+    for chunk in data.chunks(2) {
+        let word = if chunk.len() == 2 {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_be_bytes([chunk[0], 0])
+        };
+        sum += word as u32;
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// How many SMB connections the prober must complete (milestone 54). Two, mirroring the echo
@@ -3805,6 +4106,9 @@ fn hvf_kernel_leg() -> bool {
     // accept test is not accelerator-sensitive, but it is in the suite, so a leg without a prober
     // would fail it. Its "before the child" placement is load-bearing exactly as the referee's is.
     let prober = InboundProber::new("aarch64");
+    // And the multicast prober (milestone 55's stack half), for the same reason: the mDNS test is
+    // in the suite, and a leg without the injection hub and its peer would fail it.
+    let mcast = MulticastProber::new("aarch64");
     // And the SMB prober (milestone 54), same reasoning and same placement.
     let smb_prober = SmbProber::new("aarch64");
 
@@ -3892,6 +4196,7 @@ fn hvf_kernel_leg() -> bool {
     // Same ordering argument as the referee's: the probers have to stop while the guest is still
     // there, and their verdicts are collected before QEMU is killed.
     let inbound_ok = prober.report();
+    let mcast_ok = mcast.report();
     let smb_ok = smb_prober.report();
 
     // It is parked at a semihosting trap HVF will not answer, so it will never exit by itself.
@@ -3899,7 +4204,7 @@ fn hvf_kernel_leg() -> bool {
     let _ = child.wait();
 
     match verdict {
-        Some(true) => scanout_ok && inbound_ok && smb_ok,
+        Some(true) => scanout_ok && inbound_ok && mcast_ok && smb_ok,
         Some(false) => {
             eprintln!();
             eprintln!(
@@ -4089,18 +4394,18 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
-    ("echo hello world | wc", Some("1 2 12")),
-    ("echo hello world > gate.txt", None),
-    ("wc < gate.txt", Some("1 2 12")),
-    ("echo hello world >> gate.txt", None),
-    ("wc < gate.txt", Some("2 4 24")),
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 40] = [
+    ("echo hello world | wc", &["1 2 12"]),
+    ("echo hello world > gate.txt", &[]),
+    ("wc < gate.txt", &["1 2 12"]),
+    ("echo hello world >> gate.txt", &[]),
+    ("wc < gate.txt", &["2 4 24"]),
     // **Milestone 31's headline, at the one interface a human touches**: naming a resource in a
     // command IS granting it. The answer has to be the same as the `<` above it, because it is the
     // same designation with the operator left out, and the pair is what makes that a claim rather
     // than an assertion: one line reaches the file through an operator and one through a name, so
     // if they disagree, one of them opened something else.
-    ("wc gate.txt", Some("2 4 24")),
+    ("wc gate.txt", &["2 4 24"]),
     // **And the same name at the head of a pipeline**, which is the line that answered nothing at
     // all until milestone 50's draining lane. An input operand is resolved by the planner, and the
     // shell used to wire a pipeline's head off the `Line` (which has no `<` on it), so the planned
@@ -4111,15 +4416,15 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // `2 4 24` plus a newline is seven bytes and three words on one line, so the answer is the
     // answer above it counted. Spelled out rather than derived for this file's reason: it is a boot
     // gate, and deriving one number from another would hide the case where both are wrong.
-    ("wc gate.txt | wc", Some("1 3 7")),
+    ("wc gate.txt | wc", &["1 3 7"]),
     // The negative control the pair would be weaker without. `wc` alone is refused **at the
     // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
     // on Unix the same command is a shell that appears to hang. So the line above granted
     // something, rather than falling back on a default.
-    ("wc", Some("name a file")),
+    ("wc", &["name a file"]),
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
-    ("caps wc gate.txt", Some("input    gate.txt")),
+    ("caps wc gate.txt", &["input    gate.txt"]),
     // **Milestone 40 at the same interface, and only this much of it.** `doc` is in the image, is
     // spawnable, and declares that it reads a stream, so bare `doc` is refused at the prompt before
     // anything is spawned, exactly as `wc` is and for the same reason: a viewer that could open the
@@ -4133,19 +4438,19 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // for a second reason: neither `doc gate.txt | wc` nor `doc gate.txt > page.txt` delivers the
     // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
     // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
-    ("doc", Some("name a file")),
+    ("doc", &["name a file"]),
     // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
     // the check is the one word that separates a real time from both ways of not having one:
     // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
     // has no clock it believes" / "this process holds no clock capability") contain no `UTC` at
     // all. So this fails if the clock service did not run, if the kernel granted init no page, if
     // init did not endow `date`, or if `date` was handed a page nobody published to.
-    ("date", Some("UTC")),
+    ("date", &["UTC"]),
     // And the visibility surface agrees with the wiring. `caps` is the only thing in this system
     // that claims to print a process's whole authority, so a clock endowed and not printed would
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
-    ("caps date", Some("cap 1  frame     clock")),
+    ("caps date", &["cap 1  frame     clock"]),
     // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
     // whole of the decision, and only this gate runs them through the real init: the guest tests
     // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a
@@ -4155,15 +4460,15 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // the assertion is that its second stream exists, is separate, and is **empty**: `2> err.txt`
     // creates the file, `date` closes the stream with nothing on it, and `wc` counts zero of
     // everything. A shell that had merged the two streams would put a timestamp in there.
-    ("date 2> err.txt", Some("UTC")),
-    ("wc < err.txt", Some("0 0 0")),
+    ("date 2> err.txt", &["UTC"]),
+    ("wc < err.txt", &["0 0 0"]),
     // And the visibility surface names the second destination, which is what stops `caps date >
     // when.txt` being a half-truth: two destinations on one line, and a reader can see that the
     // complaint is not going into the file.
-    ("caps date 2> err.txt", Some("diags    err.txt")),
+    ("caps date 2> err.txt", &["diags    err.txt"]),
     // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
     // and its diagnostics ride it, so `2>` names nothing and the line does not run.
-    ("wc gate.txt 2> err.txt", Some("declares no second output")),
+    ("wc gate.txt 2> err.txt", &["declares no second output"]),
     // **`time`, at the one interface a human touches** (milestone 86). Only this gate runs the real
     // inits, and the clock the shell times with is granted by them: the guest tests wire it from the
     // kernel, so a boot where init never handed the shell a clock would pass every one of those and
@@ -4173,18 +4478,49 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // milestone rests on: the tail runs exactly as typed and timing it changes nothing about it. A
     // `time` that re-tokenized its tail, or spawned a differently endowed child, would answer
     // something else here and the duration would still look fine.
-    ("time wc gate.txt", Some("2 4 24")),
+    ("time wc gate.txt", &["2 4 24"]),
     // And the duration itself, checked for its shape rather than its value: the number is a real
     // measurement and cannot be a constant, but `real` and a unit are what a stopwatch prints.
-    ("time date", Some("time: real")),
+    ("time date", &["time: real"]),
     // The visibility surface agrees with the wiring, the same pairing `caps date` makes for the
     // child's clock. This one is about the shell's own: `caps` is the only thing in this system that
     // claims to print a process's whole authority, and a clock the boot really grants would make
     // that claim false if it went unprinted. The rights half is the load-bearing word: READ without
     // GRANT is why nothing typed here can hand a clock to a child.
+    //
+    // **The second wanted phrase is milestone 31 phase 3's**, and it is the machine-checked form of "flip
+    // `holdings()`": the shell's `holdings().dir` is true exactly when init granted it a directory,
+    // and this row is the only place a person can read that at the real prompt. Every other test
+    // that runs the shell has the kernel play init, so a boot that stopped granting it would fail
+    // nothing; `wc gate.txt` above would keep working, because the shell opens that file itself.
     (
         "caps",
-        Some("frame     clock      READ only, NOT delegable"),
+        &[
+            "frame     clock      READ only, NOT delegable",
+            "endpoint  directory",
+        ],
+    ),
+    // **Milestone 31 phase 3's one remaining item, gated as the gap it is.** The line above proves
+    // the shell holds a directory; these two prove what it can and cannot do with one, so the day
+    // init builds a caretaker per grant, both of these change and the gate says so.
+    //
+    // A directory grant is delivered by a `fs_subtree_caretaker`, and init is the only process that
+    // can build one (the shell's file-service endpoint carries no `GRANT`, so it holds nothing it
+    // could hand a caretaker). init deletes that endpoint during the boot, so the answer is a
+    // refusal at the prompt with **nothing spawned**, which is the one outcome this model must
+    // never trade away: a program told to destroy something, holding nothing, saying nothing.
+    // Neither line costs a job, so the pool arithmetic at the end of this script is unchanged.
+    ("rm gate.txt", &["needs init to build the caretaker"]),
+    // And the preview says exactly what the missing delivery would move, which is why the refusal
+    // is a gap rather than a hole: `caps` can name the grant before anything exists to carry it.
+    // The root is the interesting half. `caps rm globmany/m-*.txt` below designates a directory one
+    // component down, which is the only depth every wiring in this tree can build a caretaker for
+    // (`fs_service::narrow_dir` descends one name from the image root); a name typed at the top
+    // prompt designates the root itself, which has no name to descend into. See
+    // notes/grant-expression.md.
+    (
+        "caps rm gate.txt",
+        &["dir      /  (the directory holding gate.txt)"],
     ),
     // **`xargs`, at the one interface a human touches** (milestone 109). `globmany` holds eleven
     // names one pattern matches, which is more than the eight a single grant can carry.
@@ -4196,7 +4532,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // printed grant a lie.
     (
         "echo globmany/m-*.txt",
-        Some("matched more names than one grant can carry"),
+        &["matched more names than one grant can carry"],
     ),
     // And batched, the same pattern is swept. **Asserting the second batch is what pins the resume
     // rule**: `m-08.txt` first means batch one ended at `m-07.txt` and the watermark carried, so
@@ -4204,7 +4540,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // and a batch that took the first eight the directory happened to yield.
     (
         "xargs echo globmany/m-*.txt",
-        Some("batch 2: m-08.txt m-09.txt m-10.txt"),
+        &["batch 2: m-08.txt m-09.txt m-10.txt"],
     ),
     // **And the authority per batch is exactly that batch**, which is the claim the milestone rests
     // on and the one only `caps` can make before the delegation chain exists. The preview prints
@@ -4212,7 +4548,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // remaining names: not the eleven the pattern matched, and not the directory they live in.
     (
         "xargs caps rm globmany/m-*.txt",
-        Some("the directory holding m-08.txt m-09.txt m-10.txt"),
+        &["the directory holding m-08.txt m-09.txt m-10.txt"],
     ),
     // **Quoting, at the one interface a human touches** (milestone 67). The gap it closes is an
     // authority one: a file called `my notes.txt` could not be *named* before this, so it could not
@@ -4223,23 +4559,23 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // notes.txt"` is the same designation with the operator left out, so if the two disagree, one of
     // them opened something else. That is `gate.txt`'s trio above, asked of a name with a space in
     // it.
-    ("echo hello world > \"my notes.txt\"", None),
-    ("wc < \"my notes.txt\"", Some("1 2 12")),
-    ("wc \"my notes.txt\"", Some("1 2 12")),
+    ("echo hello world > \"my notes.txt\"", &[]),
+    ("wc < \"my notes.txt\"", &["1 2 12"]),
+    ("wc \"my notes.txt\"", &["1 2 12"]),
     // **And the one thing quoting does to authority**: it suppresses expansion, so the same four
     // characters are one name quoted and a set unquoted. `echo` prints what a grant would move, so
     // this line is the narrowing made visible before anything moves. Unquoted, the same pattern is
     // the refusal five lines up.
-    ("echo \"*.txt\"", Some("*.txt")),
+    ("echo \"*.txt\"", &["*.txt"]),
     // And the preview names it, which is the pairing `caps` exists for: what the line designates is
     // on the screen before anything moves, and a name with a space in it is now something that
     // sentence can be about.
-    ("caps wc \"my notes.txt\"", Some("input    my notes.txt")),
+    ("caps wc \"my notes.txt\"", &["input    my notes.txt"]),
     // **Sequencing and the status** (milestone 67). `worker 3` runs and `worker` alone is refused at
     // the prompt for the integer its manifest requires, so these three lines cover both arms of the
     // condition table with real commands rather than with a branch written for a gate.
-    ("worker 3 && echo yes", Some("yes")),
-    ("worker || echo no", Some("no")),
+    ("worker 3 && echo yes", &["yes"]),
+    ("worker || echo no", &["no"]),
     // **The decision this milestone settled, read at a prompt.** `worker` alone is refused, and a
     // refusal is not an error: nothing was spawned, nothing was opened, and the status says so with
     // its own number. Unix cannot draw this line, because there `127` and a program's own `exit(1)`
@@ -4249,8 +4585,8 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // `worker || echo no` and got `0`, which was the shell being right: the last thing that ran was
     // the `echo`. `$?` is the previous **command**, not the previous line, and that is bash's rule
     // and this shell's.
-    ("worker", Some("needs an integer argument")),
-    ("echo $?", Some("2")),
+    ("worker", &["needs an integer argument"]),
+    ("echo $?", &["2"]),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
@@ -4262,13 +4598,13 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // from any one lane.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
-    ("worker 3", Some("3*3 = 9")),
-    ("worker 4", Some("4*4 = 16")),
-    ("worker 5", Some("5*5 = 25")),
-    ("worker 6", Some("6*6 = 36")),
-    ("worker 7", Some("7*7 = 49")),
-    ("worker 8", Some("8*8 = 64")),
-    ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
+    ("worker 3", &["3*3 = 9"]),
+    ("worker 4", &["4*4 = 16"]),
+    ("worker 5", &["5*5 = 25"]),
+    ("worker 6", &["6*6 = 36"]),
+    ("worker 7", &["7*7 = 49"]),
+    ("worker 8", &["8*8 = 64"]),
+    ("echo shell-boot-gate-done", &["shell-boot-gate-done"]),
 ];
 
 /// How long to wait for the banner, for one line's echo, and for the whole transcript. Generous:
@@ -4493,13 +4829,18 @@ fn shell_check_leg(riscv: bool) -> bool {
             match shell_check_answer(&transcript, cursor, line) {
                 Some((answer, next)) => {
                     cursor = next;
-                    if let Some(want) = want
-                        && !answer.contains(want)
-                    {
-                        failed.push(format!(
-                            "`{line}` answered {:?}, wanted {want:?}",
-                            answer.trim()
-                        ));
+                    // **Every wanted phrase, not the first**, because one answer can carry several
+                    // independent claims and checking one of them makes the rest decoration. `caps`
+                    // is the case that forced it: it prints the shell's whole endowment, and a gate
+                    // that read only the clock row would pass a boot that had stopped granting the
+                    // shell a directory, which is the wiring milestone 31's headline rests on.
+                    for want in want {
+                        if !answer.contains(want) {
+                            failed.push(format!(
+                                "`{line}` answered {:?}, wanted {want:?}",
+                                answer.trim()
+                            ));
+                        }
                     }
                 }
                 None => failed.push(format!("`{line}` produced no answer at all")),
@@ -4515,11 +4856,12 @@ fn shell_check_leg(riscv: bool) -> bool {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
              file to a reader, read the clock, timed a command with a clock of its own, kept \
-             a declared second stream off the redirection, swept a match too large to hand \
-             over in batches whose authority is exactly what each was designated, named a file \
-             whose name has a space in it, ran a && past a command that succeeded and not past \
-             one it refused, and ran eighteen jobs through init's six-job pool after init gave \
-             its construction budget away"
+             a declared second stream off the redirection, printed a directory among the \
+             capabilities it holds and refused the one grant it cannot yet deliver, swept a \
+             match too large to hand over in batches whose authority is exactly what each was \
+             designated, named a file whose name has a space in it, ran a && past a command \
+             that succeeded and not past one it refused, and ran eighteen jobs through init's \
+             six-job pool after init gave its construction budget away"
         );
         return true;
     }

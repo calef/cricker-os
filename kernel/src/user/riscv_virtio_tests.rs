@@ -31,6 +31,9 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
 /// other and never hold it at once.
 const NET_LISTEN_PORT: u16 = 7778;
+/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
+/// 5353.
+const NET_MDNS_PORT: u16 = 5353;
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
@@ -541,10 +544,13 @@ fn smb_server_image() -> &'static [u8] {
 /// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
 /// outside the stack's grant is refused as a matter of authority, the granted one binds and is
 /// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
-/// while the guest accepts, reads and answers each. **Milestone 54's SMB adapter rides the same
-/// spawn on this ISA too**: a second stack client serving a real SMB2 exchange to xtask's SMB
-/// prober through a second `hostfwd`, both verdicts gating. See the aarch64 twin for the shape,
-/// for why the claims share one exchange, and for what the stage codes mean.
+/// while the guest accepts, reads and answers each. **The mDNS-shaped exchange then rides in the
+/// same spawn** (milestone 55's stack half): the UDP bind grant refuses and admits, the joined
+/// group receives xtask's injected datagram with its spoofed source intact, and the guest answers
+/// the group. **Milestone 54's SMB adapter rides the same spawn on this ISA too**: a second stack
+/// client serving a real SMB2 exchange to xtask's SMB prober through a second `hostfwd`, both
+/// verdicts gating. See the aarch64 twin for the shape, for why all of it shares one exchange (a
+/// net server's spawn is frames nothing reclaims), and for what the stage codes mean.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
     let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
@@ -554,6 +560,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         NET_LISTEN_PORT,
         NET_LISTEN_PORT + 1,
         2,
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -561,9 +568,11 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
-         port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
-         which is the host side",
+        "the guest did not serve the inbound exchange (client code {verdict:#x}); 0xE050/0xE080 \
+         mean a port outside a grant was bound anyway, 0xE060 or 0xE070 means nobody ever \
+         connected (the host side), 0xE087 means nothing addressed to the joined multicast group \
+         arrived (RX acceptance, or NIFE_MCAST_PORT and xtask's multicast prober), 0xE08A/0xE08B \
+         mean the source endpoint was lost",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(

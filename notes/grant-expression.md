@@ -166,8 +166,10 @@ A refusal is a fact about what the shell holds, phrased in the capability model'
   endowment.
 - `worker eight` → "worker: needs an integer argument." Not a file, because worker has no file slot
   for the word to fall into.
-- `wc report.txt`, at a program that *does* declare a file, in this shell → "wc: **you hold no such
-  capability**: this shell was granted no directory to narrow."
+- `wc report.txt`, at a program that *does* declare a file, in a shell that was granted no directory
+  → "wc: **you hold no such capability**: this shell was granted no directory to narrow." Since
+  milestone 50 the *interactive* shell is not that shell (it holds the image root); the wiring with
+  no disk attached still is, and it is the same binary in both.
 - `wc sub/report.txt` → "wc: that is not a name this shell can grant: one component, at most 16
   bytes." There is no namespace here to walk, so a path is refused where it was typed rather than
   becoming an `ENOENT` from a server asked something meaningless.
@@ -331,6 +333,54 @@ a caretaker per grant.** Two consequences, both visible from the prompt:
   filesystem contract at all, on the argument that "a `wc` that could open the file it counts would
   be a `wc` that could open any file". That argument is right and it is *later*, so the block's
   `wc report.txt` is a proof of designation rather than of the file-capability path.
+
+**Both halves are gated now**, which is the difference between a gap and a hole. `script/shell-check`
+reads two lines at the real prompt: `caps` must print `cap 4  endpoint  directory` among the shell's
+holdings, and `rm gate.txt` must answer the refusal above. The first is the machine-checked form of
+"flip `holdings()`", and it needs the real init: every other test that runs the shell has the kernel
+play init, so a boot that stopped granting the shell a directory would fail nothing else, and
+`wc gate.txt` would keep passing because the shell opens that file itself. The second means the day
+init builds a caretaker, the gate line has to change with it.
+
+### What "init builds the caretaker per grant" actually costs, measured before building it
+
+Read the roadmap's phase 3 as three items and the first two are done: the interactive boot wires an
+FS service, and `holdings()` reports it. The third is not one edit, and the reason is worth writing
+down where the next person meets it rather than discovering it at the third silent boot.
+
+**The wire carries no directory grant, and it cannot be widened in place.** A request is three words
+(`spawnproto::request`: the program id, the integer argument, and a word carrying the page count and
+the operator flags), and what follows it is *capabilities*. A directory grant is neither: the shell
+holds nothing it could delegate (its file-service endpoint carries no `GRANT`), so what has to travel
+is names, five words of them, the directory for the caretaker to descend (two), the operand for the
+program (two), and the rights and options (one). That is an additional message on the same endpoint
+rather than a field, and it is the one piece here that is two programs agreeing on a format.
+
+**The grant's directory is a path, and every wiring in this tree descends exactly one name.**
+`DirGrant::dir` is a `nav::Cwd`, so `rm globmany/old.txt` designates `/globmany`, which
+`fs_service::narrow_dir` knows how to build a caretaker for, and `rm gate.txt` typed at the top
+prompt designates `/`, which has no name to descend into: `fs_server`'s `check_component` refuses an
+empty name with `EINVAL`, on purpose, because a name in this contract is a single component. So the
+commonest line at the prompt is the depth no existing wiring covers. Depth two and beyond is the same
+question one level out, and chaining caretakers (one per component, each an ordinary FS client above
+and an ordinary FS server below, which is exactly what the caretaker already claims to be) is the
+answer that needs no contract change. The root is not solved by chaining and needs a decision.
+
+**A caretaker outlives the program it serves, and nothing collects it.** `fs_subtree_caretaker`'s
+serve loop never returns. A job is built in its own 40-page region off a pool of six, and
+`job_undertaker` returns the region when the job dies (DECISIONS §13, and §16's LIFO); a caretaker
+built the same way never dies, so its region never comes home, and the LIFO rule then pins the
+region above it too. Six `rm`s and the prompt answers "could not spawn". Giving the caretaker a
+lifetime tied to its client's is a supervision question rather than a filesystem one, which is why
+it is not a detail of the wiring.
+
+**And init's cspace is the constraint it has always been.** Sixteen slots, the last reserved for the
+fault endpoint, and the spawn service already holds seven for life (`Channels`: the spawn, result and
+supervision endpoints, two budgets, the clock page and the terminal's sink). Keeping the file service
+and its shared page instead of deleting them is two more, and building a caretaker *before* the child
+needs the narrowed endpoint, a readiness endpoint and a TCB, held across a `build_child` that is
+itself retyping an address space, frames and a TCB. `crates/system_initializer`'s own BUGS records
+what running out looks like: nothing at all, twice, an evening each.
 
 ### `wc report.txt`: the input operand, and what it does and does not prove
 
