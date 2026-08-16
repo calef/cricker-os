@@ -415,6 +415,15 @@ where
         map_range(m, bottom, top, Flags::kernel_data())?;
     }
 
+    // 4c. THE PER-CPU INTERRUPT STACKS (milestone 124), the same slot-at-a-time loop as 4b and for
+    // the same reason: each slot's bottom page must stay a hole. These are where a trap taken on
+    // kernel code builds its handler frames, so that a preemption is not charged to the thread it
+    // interrupted. See kernel/src/interrupt_stack.rs.
+    for id in 0..crate::cpu::MAX_CPUS {
+        let (bottom, top) = crate::interrupt_stack::span(id);
+        map_range(m, bottom, top, Flags::kernel_data())?;
+    }
+
     // 5. The UART, device memory, in the direct map. Silence otherwise, the instant we switch.
     direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
 
@@ -549,6 +558,16 @@ where
         assert!(
             m.translate(crate::smp::secondary_stack_guard(id)).is_none(),
             "a secondary's guard page IS mapped: its stack overflow protection is off"
+        );
+    }
+
+    // And every core's interrupt-stack guard page (milestone 124), on the same grounds: a stack
+    // whose guard is mapped has silently lost its protection, and the next thing to find out would
+    // be a handler running off the bottom into whatever the linker put below.
+    for id in 0..crate::cpu::MAX_CPUS {
+        assert!(
+            m.translate(crate::interrupt_stack::guard(id)).is_none(),
+            "an interrupt stack's guard page IS mapped: its overflow protection is off"
         );
     }
 }

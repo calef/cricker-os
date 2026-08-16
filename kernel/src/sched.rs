@@ -1294,6 +1294,23 @@ pub fn take_need_resched() -> bool {
 /// IRQ handler (a preemption). The two paths are identical from here down, which is a large
 /// part of why this is only forty lines.
 pub fn schedule() {
+    // **Not from an interrupt stack** (milestone 124). A switch parks the running `sp` in the
+    // outgoing thread's `Context` and resumes it there, arbitrarily later; a per-core interrupt
+    // stack cannot promise those bytes will still be the thread's, so a thread parked there would
+    // resume on whatever the next interrupt on that core had written. The interrupt path defers its
+    // switch to `preempt_if_needed`, which its dispatcher calls one frame outside the trampoline,
+    // back on the interrupted thread's own stack.
+    //
+    // Debug-only because it costs a `sp` read and a scan of `MAX_CPUS` spans on the hottest path in
+    // the kernel, and because `script/stack-depth-check` proves the same property statically in CI,
+    // on both architectures, by showing no context switch is reachable from the interrupt-stack
+    // entry point. This is the runtime half of that pair, for the edges a call graph cannot see.
+    debug_assert!(
+        !crate::interrupt_stack::contains(crate::arch::current_sp()),
+        "schedule() called on an interrupt stack: the outgoing thread would be parked on memory \
+         that belongs to a core (see kernel/src/interrupt_stack.rs)",
+    );
+
     // Rule 2: no interrupts across the decision *or* the switch. Between "I chose a thread" and
     // "I am running it" there must be no window for the timer to choose again.
     //
@@ -3032,6 +3049,23 @@ pub fn preemptions() -> u64 {
 
 pub fn count_preemption() {
     PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// **The deferred half of preemption**: switch away if this core's tick asked for it.
+///
+/// Called by both ISAs' trap dispatchers *after* the handler has returned to the interrupted
+/// thread's own stack, which is the whole reason it is a function rather than four lines at the
+/// bottom of `handle_irq` where it lived until milestone 124. The handler may have run on this
+/// core's interrupt stack, and `schedule()` may only be called on a stack the interrupted thread
+/// owns; see kernel/src/interrupt_stack.rs.
+///
+/// Portable, and identical on both architectures, which is the other half of why it moved: the four
+/// lines were written twice and had drifted in their comments already.
+pub fn preempt_if_needed() {
+    if take_need_resched() && is_running() {
+        count_preemption();
+        schedule();
+    }
 }
 
 pub fn is_running() -> bool {

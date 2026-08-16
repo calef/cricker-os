@@ -166,6 +166,42 @@ exception_vectors:
     VECTOR_ENTRY 14
     VECTOR_ENTRY 15
 
+// RUN THE HANDLER ON THIS CORE'S INTERRUPT STACK (milestone 124).
+//
+//   x0 = &mut TrapFrame      x1 = vector index      x2 = the stack to run on, or 0 to stay
+//
+// The frame is already built, on whatever stack the trap interrupted, and it has to be: a preempted
+// thread's frame must still be there when that thread runs again, and a per-core stack cannot
+// promise that. What moves is everything ABOVE the frame, which is the part that made a preemption
+// cost the interrupted thread ~2.3 KiB at its deepest instant. See kernel/src/interrupt_stack.rs.
+//
+// Rust decides whether to switch (`interrupt_stack::top_for_trap`) and hands the answer down in x2,
+// so the policy is readable in Rust and only the stack pointer move is assembly.
+//
+// x19 holds the interrupted `sp` across the call, because a callee-saved register cannot be
+// clobbered by the handler and needs no slot on either stack. Its own save goes on the interrupted
+// stack, which costs that stack 32 bytes: the price of the switch, against the kilobytes it moves.
+//
+// `exception_body` returns a bool in w0 saying whether the caller owes a deferred `schedule()`, and
+// nothing here touches x0.
+.global dispatch_on_interrupt_stack
+dispatch_on_interrupt_stack:
+    stp     x29, x30, [sp, #-32]!
+    str     x19, [sp, #16]
+    mov     x29, sp
+
+    cbz     x2,  1f                 // 0: stay on this stack (from EL0, pre-init, or nesting)
+    mov     x19, sp
+    mov     sp,  x2
+    bl      exception_body
+    mov     sp,  x19                // back to the interrupted stack BEFORE anything can switch away
+    b       2f
+1:  bl      exception_body
+
+2:  ldr     x19, [sp, #16]
+    ldp     x29, x30, [sp], #32
+    ret
+
 // `eret` is the counterpart to the exception: it restores the processor state from
 // SPSR_EL1 and jumps to ELR_EL1, in one instruction. That includes DROPPING THE
 // EXCEPTION LEVEL, because SPSR_EL1 carries the level to return to.

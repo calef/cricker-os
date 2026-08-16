@@ -33,6 +33,7 @@ mod cap;
 mod console;
 mod cpu;
 mod drivers;
+mod interrupt_stack;
 mod iommu;
 mod kmem;
 mod memory;
@@ -197,6 +198,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             "  paging      : fine-grained W^X Sv39 tables installed, satp switched (paging on: {})",
             arch::mmu::is_enabled(),
         );
+
+        // The per-CPU interrupt stacks go live here, for the reason the aarch64 boot arms them
+        // right after its own `mmu::init`: their guard pages are holes in the map that was just
+        // installed. This hart has had interrupts on since the timer step above, so every trap
+        // before this one ran on the stack it interrupted, exactly as it used to.
+        interrupt_stack::init();
 
         // And say what the machine is. Here rather than in the tour below, so the test, shell and
         // bench boots report it too: it is the line whoever brings up a board reads first.
@@ -660,6 +667,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // And now the sketchiest moment in the kernel. The instant SCTLR_EL1.M is set, the very
     // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.
     arch::mmu::init();
+
+    // The per-CPU interrupt stacks go live here, and not one line earlier: their guard pages are
+    // holes in the map `mmu::init` just installed, and the coarse boot map has no holes at all. A
+    // trap before this point runs its handler on whatever stack it interrupted, which is what every
+    // trap did before milestone 124. See kernel/src/interrupt_stack.rs.
+    interrupt_stack::init();
 
     // The SMMUv3 (milestone 16b), if the machine was started with `iommu=smmuv3`. Its register
     // block is a device-tree node (memory::smmu_region), mapped by mmu::init just above; absent, the
