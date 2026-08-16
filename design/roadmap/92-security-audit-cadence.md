@@ -4,9 +4,7 @@
 milestone 43 asks for a second with a different lens; this milestone is the machine that makes
 them routine, so that auditing stops depending on someone remembering to ask.
 
-**Gate: DECISION.** One thing is calef's before it starts: **the cadence**. Quarterly is this
-block's proposal, not a decision. The index name and location were settled on 2026-08-04,
-`design/audit-reports/`, which is what the overdue tripwire reads.
+**Gate: NONE.** The cadence was decided 2026-08-16 (§74): event triggers first, a count-based trigger at 15 milestones or 8 components, the calendar a six-week backstop for quiet periods. The numbers and the measured interval behind them are in that entry.
 
 **Why a mechanism rather than a habit.** The same argument as script/gates: a practice that lives
 in memory gets skipped exactly when it matters. And the failure mode of audits specifically is
