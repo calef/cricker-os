@@ -785,13 +785,19 @@ Three mechanisms hold the rule, and the overlap is deliberate:
 **The static bound moved less than the headline suggests, and that is the interesting part.**
 `script/stack-depth-check`, which walks the call graph and hangs `-Z emit-stack-sizes` frames on it:
 
-| | aarch64 | riscv64 |
+| at base commit `e56ae848` | aarch64 | riscv64 |
 |---|---|---|
 | handler chain a kernel-mode trap could leave on the interrupted stack, **before** | 3984 | 3888 |
 | the same, **after** | 3728 | 3552 |
 | deepest chain the interrupt stack itself carries (of 16384) | 3984 | 3888 |
 | worst total on a thread stack, before | 13712 | 13344 |
 | worst total on a thread stack, after | 13456 | 13008 |
+
+**Take these from a run and not from here**, which the milestone 124 block says of its own numbers
+for a reason this table then demonstrated. Merging `main` an hour later moved the aarch64 row from
+3728 to 3904 and the total to 13632, with nothing in this change touching it: other lanes had
+deepened what `schedule()` can reach. The riscv64 rows did not move. The gate prints the numbers and
+the gate is the authority.
 
 **A 256-byte improvement in the worst-case bound is not what "moving 2.3 KiB off the thread" sounds
 like, and the reason is worth reading.** The remaining 3728 bytes are almost entirely
@@ -802,6 +808,25 @@ all**, which a thread already pays when it blocks voluntarily in `ipc_recv`. Wha
 it on the thread stack, and now cannot, is the handler: the GIC or PLIC claim, the tick, the
 watchdog (whose `dump_threads` alone carries a 1728-byte frame in a test build), the inbox drain,
 the interrupt routing.
+
+**And the measured watermark did not move at all, which is the other half of the honest answer.**
+The suite was run on the same machine either side of the change, and every painted stack read the
+same number to the byte:
+
+| high-water, one full suite run | aarch64 before | aarch64 after | riscv64 before | riscv64 after |
+|---|---|---|---|---|
+| boot (64 KiB) | 53936 | 53936 | 54344 | 54344 |
+| secondary (64 KiB) | 6624 | 6624 | 6568 | 6568 |
+| thread (24 KiB) | 9536 | 9536 | 9344 | 9344 |
+| **interrupt (16 KiB)** | n/a | **976** | n/a | **1088** |
+
+Read it carefully, because it says two things and only one of them is comfortable. The handler is
+demonstrably running over there: ~1 KiB of a previously unpainted stack is now used, which nothing
+but the switch could have done. And **nothing got shallower**, which means that in this suite the
+deepest byte of every other stack was reached by ordinary code rather than by an interrupt landing
+on top of it. That is exactly what a watermark can and cannot say: the interrupt-at-the-worst-instant
+case is rare (which is why the CI fault was intermittent, one run in six), and a measurement of what
+did happen has nothing to report about a case that did not.
 
 So the honest statement of what changed is not "the thread's worst case dropped by a third". It is:
 

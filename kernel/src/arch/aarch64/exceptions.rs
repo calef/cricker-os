@@ -294,7 +294,8 @@ unsafe extern "C" {
 /// `schedule()` parks this thread's `sp` in its `Context` and resumes it there later, so it may only
 /// ever be called on a stack that belongs to the thread. Calling it from the interrupt stack would
 /// park a per-core address in a thread, and the thread would resume on bytes the next interrupt had
-/// already spent. See kernel/src/interrupt_stack.rs, which holds the whole rule and its mechanisms.
+/// already spent. See `kernel/src/interrupt_stack.rs`, which holds the whole rule and its
+/// mechanisms.
 #[unsafe(no_mangle)]
 extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
     let top = crate::interrupt_stack::top_for_trap(from_lower_el(index));

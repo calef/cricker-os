@@ -342,8 +342,8 @@ unsafe extern "C" {
 ///
 /// The twin of aarch64's `exception_dispatch`, with the same two jobs: pick the stack the handler
 /// runs on, and run the deferred `schedule()` afterwards, on a stack that belongs to the interrupted
-/// thread rather than to this hart. See kernel/src/interrupt_stack.rs for why the second one cannot
-/// happen anywhere else.
+/// thread rather than to this hart. See `kernel/src/interrupt_stack.rs` for why the second one
+/// cannot happen anywhere else.
 #[unsafe(no_mangle)]
 extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
     // U-mode traps keep their old behaviour: that thread's kernel stack is empty at this instant,

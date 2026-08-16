@@ -3076,7 +3076,7 @@ pub fn count_preemption() {
 /// thread's own stack, which is the whole reason it is a function rather than four lines at the
 /// bottom of `handle_irq` where it lived until milestone 124. The handler may have run on this
 /// core's interrupt stack, and `schedule()` may only be called on a stack the interrupted thread
-/// owns; see kernel/src/interrupt_stack.rs.
+/// owns; see `kernel/src/interrupt_stack.rs`.
 ///
 /// Portable, and identical on both architectures, which is the other half of why it moved: the four
 /// lines were written twice and had drifted in their comments already.
