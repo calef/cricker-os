@@ -25,6 +25,13 @@ script/bootstrap
 # the build never uses, so its cost was real and its effect was nil. See notes/scripts.md and the
 # rationale at the top of rust-toolchain.toml.
 
+# The versioned hooks, of which pre-push runs the formatting check CI would otherwise fail ten
+# minutes later. One config line rather than copying files into .git/hooks, because that
+# directory is neither versioned nor shared, and a lane's worktree shares this .git: setting
+# core.hooksPath covers every worktree at once, which is the case that motivated the hook.
+echo "==> Installing the versioned git hooks (core.hooksPath)"
+git config core.hooksPath .githooks
+
 echo "==> Building the kernel, the user program, and the disk image"
 cargo xtask build
 
