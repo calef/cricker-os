@@ -28,15 +28,16 @@
 # at all** on either ISA. So those faults were not stack depth, and milestone 124's fix does cover
 # every path that reaches a thread stack. See notes/stack.md.
 #
-# The number is worth trusting for a second reason, and the reason is not the one the first draft of
-# this header claimed. Milestone 84's watermark measured the deepest thread stack in the same suite
-# at 9536 bytes (aarch64) and 9344 (riscv64), against this walker's `thread_entry` chains of 9456
-# and 9168. **It reads 80 to 176 bytes LOW**, in exactly the direction its own blind spot predicts:
-# it reads `.stack_sizes`, assembly has no entries there, and `switch_to`'s 96-byte frame,
-# `user_entry_trampoline`'s 272-byte reservation and `spawn_into`'s closure slot are all assembly or
-# above the first Rust frame. So this is a **lower** bound with a small measured bias, and the two
-# instruments corroborate each other rather than one bounding the other. An earlier version reported
-# 9536 on aarch64 and the exact match read as validation; it was mis-parsing RISC-V local labels.
+# **Do not compare the per-root chains against milestone 84's watermark**, which two drafts of this
+# header did and got wrong twice. The watermark measures whatever was on the stack, nested trap
+# frames included; a per-root chain is one entry path with no trap on top. Over 31 aarch64 runs the
+# watermark read 9536, 9640 and 10600 against a `thread_entry` chain of 9456, and the excursions are
+# the size of a trap frame plus a handler, which is exactly what the composed number below models.
+# Compare against that one.
+#
+# The answer is a **lower** bound rather than an upper one, for the reasons in BUGS: indirect calls
+# and assembly frames are both invisible. What makes it usable is the size of the gaps it is asked
+# about, thousands of bytes, not its precision, which is hundreds.
 #
 # Name: recorded (this header, and its row in notes/scripts.md). Takes the `-check` suffix because
 # it fails builds rather than answering questions, which is the family `interleaving-check`,
@@ -63,12 +64,10 @@
 #     its closure through `call_closure::<F>`, and every instantiation of that is added as an edge.
 #     The rest (the `core::fmt` vtables, `pci`'s bar walk, `dma_validator`'s shadow callback) are
 #     counted and printed so a reader can see how much is unaccounted for, never guessed at.
-#   - **Assembly is invisible, and this is the bias that was actually measured.** `-Z
-#     emit-stack-sizes` is a rustc flag, so a hand-written `.s` frame has no entry: `switch_to`'s 96
-#     bytes, `user_entry_trampoline`'s 272-byte trap-frame reservation, and the closure slot
-#     `spawn_into` parks above the first Rust frame are all uncounted. Measured against milestone
-#     84's watermark on the same suite, that is 80 bytes low on aarch64 and 176 on riscv64. Add a
-#     few hundred bytes before treating a "fits" as comfortable.
+#   - **Assembly is invisible.** `-Z emit-stack-sizes` is a rustc flag, so a hand-written `.s` frame
+#     has no entry: `switch_to`'s 96 bytes, `user_entry_trampoline`'s 272-byte trap-frame
+#     reservation, and the closure slot `spawn_into` parks above the first Rust frame are all
+#     uncounted. Add a few hundred bytes before treating a "fits" as comfortable.
 #   - **It gates thread stacks only.** The boot stack carries every test body and is reached
 #     through `kernel::testing::runner`'s indirect call, which this cannot follow; the secondaries
 #     run idle loops and traps. Both are 64 KiB and both are covered by the watermark's own

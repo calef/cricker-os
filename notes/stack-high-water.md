@@ -326,13 +326,15 @@ together by the convenient shape, and the connection was invisible until somethi
   unbuilt through two rounds of guard-page faults. It reads direct calls out of the disassembly,
   hangs these frame sizes on the graph, and takes the longest path from the entry points a kernel
   thread stack starts at. Its first answer: 13712 bytes worst case on aarch64, 13344 on riscv64.
-  **Its `thread_entry` chain runs slightly BELOW the watermark measured on the same suite**, 9456
-  against 9536 on aarch64 and 9168 against 9344 on riscv64, and that direction is the point: it
-  reads `.stack_sizes`, **assembly has no entries there**, so `switch_to`'s 96-byte frame,
-  `user_entry_trampoline`'s 272-byte reservation and `spawn_into`'s closure slot are all invisible
-  to it, as are indirect calls. Its number is a lower bound on the true worst case with a measured
-  bias of 80 to 176 bytes, not an upper bound. (An intermediate version reported 9536 on aarch64 and
-  the exact match read as a validation; it was a parsing bug, and this is the corrected pair.)
+  **Do not compare its `thread_entry` chain against a watermark**, which is the mistake two drafts
+  of that comparison made: this note's number is whatever was on the stack, nested trap frames
+  included, and that chain is the thread's own work with no trap on it. Measured over 31 aarch64
+  runs the watermark read 9536, 9640 and 10600 against a 9456 chain and a 13712 composed bound, and
+  the excursions are the size of a trap frame plus a handler. The comparison that means something is
+  against the composed number.
+  Its answer is still a lower bound rather than an upper one, because indirect calls are invisible
+  to it and **assembly has no `.stack_sizes` entries at all**, so `switch_to`'s 96-byte frame,
+  `user_entry_trampoline`'s 272-byte reservation and `spawn_into`'s closure slot are uncounted.
 - **~~Nothing gates frame size.~~** `script/stack-frame-check` does, since 2026-08-13, at the
   4096-byte guard page. The entry is kept because the sentence that follows it is still the
   argument for the gate: the 6816-byte frame was legal, compiled without a warning, and was found

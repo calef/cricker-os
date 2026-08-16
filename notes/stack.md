@@ -459,7 +459,7 @@ riscv64**, measured by `script/stack-depth-check` over the same test binary CI b
 | trap frame the vector builds | 272 | 288 |
 | handler chain that can nest on kernel code (no syscall or user-fault arm) | 3984 | 3888 |
 | **worst total on a 16384-byte stack** | **13712** | **13344** |
-| measured high water, same suite, milestone 84's watermark, this machine | 9536 | 9344 |
+| measured high water, milestone 84's watermark, 31 runs on this machine | 9536 to 10600 | 9344 |
 
 Two things make that close to a bound. The call graph is **acyclic**: no recursion, so the longest
 path is the worst case for everything the graph contains. And **no frame over the 4096-byte guard
@@ -467,27 +467,37 @@ page is reachable from a thread-stack entry point at all** on either ISA, so mil
 does cover every path that reaches a thread, and the frame-jumps-the-guard hazard is genuinely
 closed there.
 
-**The third thing is a correction, and it is the useful one.** The first draft of this section said
-the walker and the watermark agreed to the byte on aarch64. They do not. The measured watermark is
-**above** the walker's chain on both ISAs, by 80 bytes on aarch64 (9536 against 9456) and 176 on
-riscv64 (9344 against 9168), and the aarch64 "9536 = 9536" that read as a perfect match came from an
-intermediate run of a script that was still mis-parsing RISC-V local labels.
+**The third thing is where the measurement lands, and it took two corrections to state properly.**
+A first draft said the walker and the watermark agreed to the byte on aarch64 at 9536, which came
+from a script still mis-parsing RISC-V local labels. A second said the watermark ran 80 to 176 bytes
+*above* the walker's `thread_entry` chain, and blamed the walker's blind spot for assembly frames.
+Then 31 aarch64 runs produced 9536 twenty-nine times, 9640 once, and **10600 once**, which is 1144
+bytes above that chain and too much for `switch_to`'s 96 bytes to explain.
 
-The direction is the walker's own declared blind spot rather than a surprise: **assembly carries no
-`.stack_sizes` entry**, so `switch_to`'s 96-byte frame, `user_entry_trampoline`'s 272-byte trap-frame
-reservation, and the closure slot `spawn_into` parks at the stack top are all invisible to it. Those
-alone more than cover 80 and 176 bytes. So the number is a **lower** bound with a small measured
-bias, not an upper one, and every use of it here is a comparison against a gap of thousands of bytes
-rather than tens.
+The second draft was comparing the wrong two numbers. **The watermark measures whatever was on the
+stack, nested traps included**; the `thread_entry` chain is only the thread's own work, with no trap
+on top. The comparison that means something is against the composed row: a timer interrupt landing
+near the deepest point costs a 272-byte trap frame plus a handler, which is exactly the shape of a
+1144-byte excursion, and the walker's own model of that is the 13712 in the table. So:
 
-The riscv64 watermark row is this machine's own run, not the 11672 in notes/stack-high-water.md's
+    thread_entry chain   9456    the thread's own work, no trap
+    measured watermark   9536 to 10600    what actually happened, traps included
+    composed worst       13712   the bound, chain + trap frame + nestable handler
+
+The measurement sits between them, which is where it should sit, and the bound is not contradicted
+by anything measured. It is still a **lower** bound in principle, because indirect calls and
+assembly frames are invisible to the walker, and the honest reason to trust it here is the size of
+the gap it is being used across rather than its precision: 10600 measured against a 20480 the fault
+would require.
+
+The riscv64 watermark is one run on this machine, not the 11672 in notes/stack-high-water.md's
 table. **That number predates milestone 124**, which took the worst `spawn_on` instantiation from
 4592 bytes to 1040, so it describes a kernel that no longer exists.
 
 A fault at a slot's guard-page **base** needs `sp` at 20480 bytes into a 16384-byte stack. That is
-6768 bytes deeper than anything the binary can produce, and 10944 deeper than anything a run of the
-suite has ever been measured to reach. Neither figure is within a hundred bytes of the other, which
-is why the walker's small downward bias does not touch the conclusion.
+6768 bytes deeper than the modelled worst case and 9880 deeper than the deepest thing 31 runs of the
+suite ever measured. The walker's imprecision is measured in hundreds of bytes and the gap is
+measured in thousands, which is the only reason the imprecision does not matter here.
 
 ## What the report was actually entitled to say
 
@@ -578,14 +588,15 @@ address is reached at the same point in the same suite on each run, which is ano
 this is deterministic in the sequence of allocations and not in the timing. The intermittency then
 has to come from something else deciding whether that path runs at all, not from where it lands.
 
-**It did not reproduce here, and that is a result rather than a gap in the effort.** Full-suite
-aarch64 runs under host load on a 4-CPU Linux box, `-smp 4` under TCG, every one green. The thread
-watermark read **9536 bytes in fourteen runs out of fifteen and 9640 in the other**, which is worth
-recording on its own: the 104-byte spread is the interrupt-timing jitter milestone 84 predicted, and
-the depth is otherwise a constant. The reproduction cost is the honest blocker: CI hit it perhaps
-two runs in six, on a runner this machine does not resemble. A hunt harness that restores the
-fixture images and stands in for xtask's two host actors got the cycle to about 32 seconds, and 32
-seconds times zero failures is still zero information about the cause.
+**It did not reproduce here, and that is a result rather than a gap in the effort.** 31 full-suite
+aarch64 runs under host load on a 4-CPU Linux box, `-smp 4` under TCG, every one green, plus a green
+riscv64 leg. The thread watermark read **9536 twenty-nine times, 9640 once, and 10600 once**, which
+is worth recording on its own: the depth is a near-constant with occasional excursions of the size a
+nested trap frame explains, and it is nothing like a stack that intermittently runs 4096 bytes past
+its own bottom. The reproduction cost is the honest blocker: CI hit it perhaps two runs in six, on a
+runner this machine does not resemble. A hunt harness that restores the fixture images and stands in
+for xtask's two host actors got the cycle to about 32 seconds, and 32 seconds times zero failures is
+still zero information about the cause.
 
 **The next occurrence should be legible without another investigation**, which is what the `sp` line
 buys. If it prints a slot *below* the faulting address, the store-past-the-top reading is confirmed
