@@ -76,8 +76,8 @@
 //!   the table is being replaced wholesale. A future `mkpart` that adds an entry to a table it did
 //!   not write must check.
 //!
-//! Name: unrecorded, and **explicitly provisional**, which makes it the clearest ratification owed
-//! on this surface. The introducing commit (4db2fd7, 2026-08-03, milestone 57) says
+//! Name: provisional (§89's state, adopted 2026-08-16; this block wrote the workaround that
+//! argued for it). The clearest ratification owed on this surface. The introducing commit (4db2fd7, 2026-08-03, milestone 57) says
 //! "`disk_partitioner` (provisional name) writes the map `disk_surveyor` reads" and calls its
 //! sibling "`fs_maker` (provisional name)" in the same breath. So the record does not explain the
 //! word; it records that nobody decided it. That sibling is `fs_server/src/bin/mkfs.rs` now, which
