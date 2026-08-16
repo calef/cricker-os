@@ -485,6 +485,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   were not more (every length travels in a register, never in the page); and the two patterns that
   recurred, a guarantee assumed from the wrong side of a boundary and half a discipline written by
   instinct.
+- [Auditing untrusted counterparty input](untrusted-input-audit.md): milestone 43 continued, taking
+  the block's further lenses (network and bus input, and §79's secret-material rules) to the crates
+  that landed after the shared-page pass. The question is whether a value a hostile counterparty
+  supplies in one message or completion is bounded before it is believed. One finding: the NVMe kernel
+  driver panics on two device-written completion fields, the reciprocal of shared-page-audit.md's
+  finding 6 one layer down (the IOMMU confines placement, not values). `mdns_proto`'s decoder and the
+  cred/ntlm secret handling are cleared, with the reachability and scope caveats attached.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
