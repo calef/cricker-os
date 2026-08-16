@@ -85,3 +85,28 @@ job runs `script/verify`, the bench job runs `script/bench --check` on both ISAs
 runs `script/coverage`, and the supply-chain job runs `script/supply-chain`. So CI executes the same
 commands a developer does, and one place (these files) defines what "test", "lint", "verify", and
 "supply chain" mean.
+
+## The versioned hooks
+
+`.githooks/` holds hooks the repository owns, wired by `script/setup` with
+`git config core.hooksPath .githooks`. One line rather than copying files into `.git/hooks`,
+because that directory is neither versioned nor shared, and a lane's worktree shares the main
+checkout's `.git`: setting `core.hooksPath` covers every worktree at once, which is the case
+that motivated the first hook.
+
+- **`pre-push`** runs `script/fmt --check` (~0.7 s) and refuses the push if rustfmt would change
+  a file, because CI's `rustfmt` is a required check and learning about a wrapped line from a
+  runner ten minutes later is the slowest possible way to learn it. Every lane on 2026-08-15 and
+  -16 paid that tax at least once. `git push --no-verify` bypasses it, deliberately: pushing a
+  work-in-progress branch for safekeeping is a legitimate reason, and the hook is a courtesy to
+  the queue rather than a rule about what may exist on a branch.
+
+An existing clone installs it by rerunning `script/setup`, or by hand with the config line above.
+
+### BUGS
+
+- **The hook is opt-in per clone.** A contributor who never runs `script/setup` never has it, and
+  nothing detects that; the gate in CI stays the authority, which is the correct direction for
+  this to be wrong in.
+- **It checks the whole tree, not the pushed range.** Cheap enough at this size that the
+  precision is not worth the complexity, and a tree that is unformatted anywhere fails CI anyway.
