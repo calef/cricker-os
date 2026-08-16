@@ -3060,8 +3060,8 @@ fn workspace_root() -> std::path::PathBuf {
     // no longer exists. Cargo sets the variable at run time for every cargo-invoked binary, and
     // that one is always the live path. The render test in crates/manual had the same bug the
     // same day; if a third place grows this pattern, it is worth a lint.
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("cargo sets CARGO_MANIFEST_DIR for xtask");
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for xtask");
     std::path::Path::new(&manifest)
         .parent()
         .expect("xtask has no parent directory")
