@@ -820,6 +820,11 @@ same number to the byte:
 | thread (24 KiB) | 9536 | 9536 | 9344 | 9344 |
 | **interrupt (16 KiB)** | n/a | **976** | n/a | **1088** |
 
+(The aarch64 interrupt row reads **1024** on the merged tree rather than 976, 48 bytes more, because
+`top_for_trap` became `#[inline(always)]` for the icount reason below and its locals now sit in the
+dispatcher's frame. Fifteen further suite runs, ten aarch64 and five riscv64, reproduced every number
+in this table to the byte.)
+
 Read it carefully, because it says two things and only one of them is comfortable. The handler is
 demonstrably running over there: ~1 KiB of a previously unpainted stack is now used, which nothing
 but the switch could have done. And **nothing got shallower**, which means that in this suite the
