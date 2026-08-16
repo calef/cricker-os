@@ -719,4 +719,134 @@ cannot see.
 
 ---
 
+# The per-CPU interrupt stack (milestone 124, 2026-08-16)
+
+Everything above this line describes a kernel in which **an interrupt was paid for by whoever it
+interrupted**. This section is the change that stopped that, and the honest account of how much it
+bought, which is less than the headline suggests and in a different currency.
+
+## The shape of the old cost
+
+A trap arrives. The vector saves a frame at the live `sp`, and every frame of the handler above it
+is built on the same stack, which is whichever stack was running: a kernel thread's 24 KiB, a
+secondary's 64 KiB idle stack, or the boot stack the test suite runs on. So a kernel thread's stack
+had to hold **its own deepest chain plus a whole interrupt**, and the interrupt could arrive at the
+worst instant by definition, because that is what "asynchronous" means.
+
+The 2026-08-15 section above has the arithmetic: ~11.7 KiB of thread, ~1.4 KiB resident while
+blocked, and ~2.3 KiB for one preemption landing at the deepest point. Fifteen and a half of
+sixteen. `STACK_PAGES` went 4 to 6 in response, and that block said in the same breath that growing
+the stack was the interim and **bounding the interrupt was the fix**.
+
+## What was built
+
+One stack per core, 16 KiB over its own unmapped guard page, in a `(NOLOAD)` region beside the
+secondary stacks (`.interrupt_stacks`, laid out by `kernel/src/interrupt_stack.rs`). A trap **from
+kernel mode** saves its frame where it always did and then runs the handler over there; a trap from
+user mode does not switch at all.
+
+The mechanism is deliberately small. Rust decides (`interrupt_stack::top_for_trap`, which answers 0
+for "stay") and three instructions of assembly move `sp`
+(`dispatch_on_interrupt_stack` in vectors.s and trap.s). The dispatcher is split in two: an outer
+half on the interrupted stack, and a body that runs on the interrupt stack.
+
+**Three things do not move, and each is a constraint rather than an omission.**
+
+- **The trap frame.** A preempted thread's frame must still be there when that thread runs again,
+  arbitrarily later, and a per-core stack cannot promise that. 272 bytes on aarch64, 288 on riscv64,
+  still billed to the interrupted stack.
+- **A trap from user mode.** That thread's kernel stack is empty at the moment it traps, so there is
+  nothing to relieve, and the syscall it is probably taking may **block**, which means its frames
+  have to live on a stack that belongs to the thread.
+- **The deferred `schedule()`.** This is the one that shapes the whole design, below.
+
+## The one rule: nothing on an interrupt stack may context-switch away from it
+
+A switch parks the running `sp` in the outgoing thread's `Context` and resumes it there later. Park
+a per-core address and the thread comes back on bytes the next interrupt on that core has already
+spent. That corrupts a stack rather than faulting, which puts it in the worst class of bug this
+project has: invisible at the site, fatal somewhere else.
+
+So the four lines of preemption moved out of `handle_irq` (and its riscv64 twin, where they had been
+written twice and had already drifted in their comments) into `sched::preempt_if_needed`, called by
+the dispatcher's **outer** half, which is provably back on the interrupted thread's own stack.
+
+Three mechanisms hold the rule, and the overlap is deliberate:
+
+1. `sched::schedule` debug-asserts that `sp` is not on an interrupt stack.
+2. `script/stack-depth-check` proves in CI, on both ISAs, that no context switch is *reachable* in
+   the call graph from the interrupt-stack entry point. This is the strong one: it is a static
+   property of the binary, checked every build, and it does not need the bad path to run.
+3. The paragraph in `interrupt_stack.rs`, at the thing itself.
+
+## What it measured, before and after
+
+**The static bound moved less than the headline suggests, and that is the interesting part.**
+`script/stack-depth-check`, which walks the call graph and hangs `-Z emit-stack-sizes` frames on it:
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| handler chain a kernel-mode trap could leave on the interrupted stack, **before** | 3984 | 3888 |
+| the same, **after** | 3728 | 3552 |
+| deepest chain the interrupt stack itself carries (of 16384) | 3984 | 3888 |
+| worst total on a thread stack, before | 13712 | 13344 |
+| worst total on a thread stack, after | 13456 | 13008 |
+
+**A 256-byte improvement in the worst-case bound is not what "moving 2.3 KiB off the thread" sounds
+like, and the reason is worth reading.** The remaining 3728 bytes are almost entirely
+`schedule()`'s own chain: `preempt_if_needed` 16, `schedule` 448, `finish_switch` 224, and then the
+reaper freeing a finished predecessor's address space, plus the panic-and-print tail the walker
+appends to any chain that can reach a `panic!`. Every byte of that is **the cost of scheduling at
+all**, which a thread already pays when it blocks voluntarily in `ipc_recv`. What used to sit beside
+it on the thread stack, and now cannot, is the handler: the GIC or PLIC claim, the tick, the
+watchdog (whose `dump_threads` alone carries a 1728-byte frame in a test build), the inbox drain,
+the interrupt routing.
+
+So the honest statement of what changed is not "the thread's worst case dropped by a third". It is:
+
+> **After this, a preemption costs the interrupted thread a trap frame plus the same scheduler tail
+> it would have paid to block on its own. The handler is bounded on a stack of its own.**
+
+That is a structural property rather than a number, and it is the one that stops the budget being
+spent by accident: a handler that grows now trips `script/stack-depth-check`'s interrupt-stack
+ceiling or the high-water gate on that stack, instead of quietly making every thread's margin
+smaller.
+
+## `STACK_PAGES` could come down, and deliberately did not
+
+The measured case for 6 pages was the ~15.5 KiB sum above, of which ~1.6 KiB has now moved. At 5
+pages (20 KiB) the static worst case of 13456 still fits with 6.6 KiB spare, and 4 pages (16 KiB, the
+size that overflowed in CI on 2026-08-15) fits the static bound with 2.5 KiB spare.
+
+**It stays at 6.** #225 raised it one day earlier with a measurement in hand, after a real overflow
+in CI, and lowering it needs its own measurement rather than the argument that something else got
+better. The number to beat is a *measured* worst case under load on the runner that produced the
+fault, not a static bound computed on a laptop. Nothing here produces that number, so nothing here
+is entitled to spend it. It is a lane of its own, and the instruments it needs now exist.
+
+## What it cost
+
+**160 KiB of RAM and address space**: `MAX_CPUS` (8) slots of 16 KiB stack over a 4 KiB guard,
+whether or not a core ever fills the seat, exactly like the secondary stacks beside them. It is a
+`(NOLOAD)` region, so the flat image does not grow; `__image_size` does, which is what tells the
+bootloader the memory is ours.
+
+## BUGS
+
+- **An overflow whose first fault is the vector's own frame store still cascades.** The vector saves
+  before any Rust can decide to switch, so this does not rescue a stack that is already past its
+  guard; it makes reaching that state much less likely. The cascade is described under the
+  2026-08-15 section above and is unchanged.
+- **The static bound is a lower bound**, for the reasons `script/stack-depth-check`'s own BUGS
+  section gives: indirect calls and assembly frames are invisible to a call-graph walker. The
+  trampoline's own 32 bytes (aarch64) and 16 (riscv64) are exactly such a frame, uncounted.
+- **The debug assertion in `schedule()` is debug-only.** A release kernel relies on the static proof
+  and on review. That is the right trade on the hottest path in the kernel, and it is an exception
+  worth naming rather than assuming.
+- **Nothing measures the interrupt stack on a release build.** The paint-and-scan instrument is
+  `cfg(test)`, like every other stack's, so the number in the report is the test suite's depth and
+  not the shell's or the board tour's.
+
+---
+
 *Add to this file as new stack concepts come up.*
