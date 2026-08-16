@@ -96,7 +96,7 @@ Every number is **counted, not remembered**, by `script/audits --baseline` at th
 the report. Milestones built is the `BUILT` rows in
 [design/roadmap/README.md](../roadmap/README.md); components is `crates/*/` plus `[[bin]]` targets in
 `user/Cargo.toml`; ABI constants is the `pub const NAME: u64` surface of `crates/abi`; external
-packages is the distinct registry packages across our five committed lockfiles.
+packages is the distinct registry packages across every committed lockfile but the vendored one.
 
 | Date | Kind | Milestones built | Components | ABI constants | External packages |
 |---|---|---|---|---|---|
@@ -117,15 +117,15 @@ were counted honestly at slightly different commits, which is the same class of 
 records about the Kani harness count. The method above is stated so the number is re-derivable, which
 matters more than which of the two is right.
 
-## Where the reports live, and why three of them are not in this directory
+## Where the reports live, and why none of the four is in this directory
 
 **New audit reports land here.** The four on record predate this directory and stay in `notes/`,
 linked rather than moved, and the reason is a measurement rather than a preference: those four files
-are referenced **67 times from 20 files**, including kernel source comments
-(`kernel/src/arch/riscv64/trap.s`, `kernel/src/drivers/plic.rs`), a dozen notes, `SECURITY.md`,
-`README.md`, and two files under `design/` that a lane may not edit at all. Moving them means
-rewriting all of that by hand or by a blind `sed`, and a blind `sed` is the specific mechanism that
-destroyed a naming refusal in this tree once already.
+are referenced **85 times from 27 files**, including kernel source comments
+(`kernel/src/arch/riscv64/trap.s`, `kernel/src/drivers/plic.rs`, `kernel/src/sched.rs`), a dozen
+notes, six user programs, `SECURITY.md`, `README.md`, and four files under `design/` that a lane may
+not edit at all. Moving them means rewriting all of that by hand or by a blind `sed`, and a blind
+`sed` is the specific mechanism that destroyed a naming refusal in this tree once already.
 
 The cost of not moving them is one hop for a reader, and it is the smaller cost. The index carries
 the date, the lens, the dispositions and the link, which is everything the mechanism needs and most
