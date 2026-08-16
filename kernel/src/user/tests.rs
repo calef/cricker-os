@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_arch = "aarch64")]
 use super::std_tests::{
     assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
-    assert_std_transcript, std_fs_expected,
+    assert_smb_write_landed, assert_std_transcript, std_fs_expected,
 };
 use super::*;
 use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
@@ -1720,11 +1720,14 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
             fs_proto::fixture::SUCCESS,
             "the seeding client could not put the SMB gate's file on the filesystem",
         );
-        fs_service::root_directory(
+        let (ep, shared) = fs_service::root_directory(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
         )
-        .expect("the FS service was wired a moment ago")
+        .expect("the FS service was wired a moment ago");
+        // Read-write: the write half of the gate needs the adapter to accept a write, and the
+        // read-only refusals are proven by `smb_proto`'s host tests against a share that says no.
+        (ep, shared, virtio_service::SMB_SHARE_FS_READ_WRITE)
     });
     if fs.is_none() {
         crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
@@ -1733,6 +1736,9 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "    (combined boot wired: {} frames free before the net + SMB spawn)",
         crate::memory::free_frames()
     );
+    // Taken before `fs` is handed to the spawn below: the write verifier needs to know whether
+    // there was a filesystem at all, and the spawn consumes the capability.
+    let had_fs = fs.is_some();
     let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -1763,8 +1769,12 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "the SMB adapter did not serve a mount-shaped exchange (code {verdict:#x}). 0xE11x is the \
          listen grant, 0xE120 means no SMB connection ever arrived (is the runner adding the \
          NIFE_SMB_HOSTFWD_PORT hostfwd, and is xtask's SMB prober running?), 0xE121 means a \
-         connection arrived but no SMB message was answered on it",
+         connection arrived but no SMB message was answered on it, 0xE130 an arg2 share mode \
+         nobody defined",
     );
+    // Before the release: the verifier spawns a fresh FS client, and reclaiming the net
+    // service's regions is the last thing this test should do.
+    assert_smb_write_landed(had_fs);
     net.release_or_fail("a net test's net_stack");
 }
 

@@ -837,9 +837,14 @@ pub fn smb_serve_boot() {
     // The share: the real filesystem when a RedoxFS disk is attached (`cargo xtask smb-serve`
     // builds and attaches one), the baked-in fixture otherwise. Wired before the adapter exists,
     // like every service-before-client here.
-    let fs = program("fs_server").and_then(|fs_server| {
-        fs_service::root_directory(fs_service::blk_server_image(), fs_server)
-    });
+    // Read-write, because the point of this boot is a real Mac exercising the whole adapter and
+    // the write path is half of it. That is a loud choice rather than a default: sessions are
+    // guest, guest means everyone (`smb_proto`'s BUGS), so anything reachable on the forwarded
+    // port may change the image. The banner below says so where the person about to mount it
+    // will read it.
+    let fs = program("fs_server")
+        .and_then(|fs_server| fs_service::root_directory(fs_service::blk_server_image(), fs_server))
+        .map(|(ep, shared)| (ep, shared, virtio_service::SMB_SHARE_FS_READ_WRITE));
     if fs.is_none() {
         println!("smb-serve: no RedoxFS disk; serving the baked-in fixture share");
     }
@@ -869,9 +874,10 @@ pub fn smb_serve_boot() {
             "smb-serve:   or: mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share"
         );
         println!(
-            "smb-serve: read-only share; see notes/smb.md, including its BUGS. The files are \
-             the RedoxFS image's (motd, scratch, doc/...) unless the fixture fallback was \
-             announced above."
+            "smb-serve: the share is READ-WRITE and every session is admitted as guest, so \
+             anything that can reach the forwarded port can change the image. See notes/smb.md, \
+             including its BUGS. The files are the RedoxFS image's (motd, scratch, doc/...) \
+             unless the fixture fallback was announced above, which is read-only."
         );
     } else {
         println!("smb-serve: the adapter failed to bind its port (code {word:#x})");

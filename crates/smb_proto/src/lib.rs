@@ -23,15 +23,25 @@
 //! guest without checking anything, which is what "anonymous first, identity later" means
 //! concretely (the `cred`/`ntlm` machinery from milestone 65 is the recorded next step; nothing
 //! here stores or checks a secret, per DECISIONS §79's constraints on credential material). The
-//! share is **read-only**. See the `BUGS` section at the bottom of this header.
+//! share is readable always and writable when its backing says so
+//! ([`share::Share::writable`]); a read-only share refuses every mutating command **at this
+//! layer**, before the backing is asked. See the `BUGS` section at the bottom of this header.
 //!
 //! # BUGS
 //!
 //! - **Guest only, and guest means everyone.** Every AUTHENTICATE is accepted and flagged as a
 //!   guest session. There is no user database, no proof check, and no signing. Do not put anything
-//!   on a share this serves that the local network may not read.
-//! - **Read-only.** `WRITE`, `SET_INFO`, and every disposition that would create or truncate are
-//!   refused with `STATUS_ACCESS_DENIED`. Milestone 55 needs writes; this records where they go.
+//!   on a share this serves that the local network may not read, **and now that writes exist,
+//!   nothing you would mind the local network changing.**
+//! - **Free space is nominal.** `FileFsSizeInformation` reports
+//!   [`share::NOMINAL_VOLUME_BYTES`] because `fs_proto` has no `statfs` verb, so a client that
+//!   sizes its work against the answer (Time Machine does) is sizing it against a constant. A
+//!   write past the real end of the image fails with [`STATUS_DISK_FULL`] at the write.
+//! - **Timestamps are accepted and discarded.** `SET_INFO`'s `FileBasicInformation` succeeds and
+//!   changes nothing, because this server holds no clock capability and `fs_proto`'s `FSTAT`
+//!   carries no times. A client that sets a modification time and reads it back gets the epoch.
+//! - **`FileAllocationInformation` is a no-op**, deliberately: preallocation is a hint, and
+//!   turning it into a truncate would zero-extend a file a client was about to write into.
 //! - **No credit or message-id accounting.** Credits granted are whatever was asked (at least 1),
 //!   and message ids are echoed, never validated. A well-behaved client is fine; a hostile one can
 //!   replay. The listener re-arms between connections, so one bad connection costs one connection.
@@ -192,6 +202,17 @@ pub const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
 pub const STATUS_FS_DRIVER_REQUIRED: u32 = 0xC000_019C;
 pub const STATUS_FILE_CLOSED: u32 = 0xC000_0128;
 pub const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
+/// A create that said "create" met a name that already exists. The write path's status, and the
+/// one a client's create-or-open fallback keys on.
+pub const STATUS_OBJECT_NAME_COLLISION: u32 = 0xC000_0035;
+/// A name this share cannot hold (longer than [`server::MAX_NAME`]).
+pub const STATUS_OBJECT_NAME_INVALID: u32 = 0xC000_0033;
+/// The filesystem is full. Reported at the write that hits the end rather than predicted, because
+/// nothing here can ask how much room is left; see [`share::NOMINAL_VOLUME_BYTES`].
+pub const STATUS_DISK_FULL: u32 = 0xC000_007F;
+/// The backing failed in a way the share model has no word for. Better than a short read a client
+/// would take for end of file.
+pub const STATUS_UNEXPECTED_IO_ERROR: u32 = 0xC000_00E9;
 
 /// The one dialect this server offers and accepts: SMB 2.1. See the crate header for why.
 pub const DIALECT_0210: u16 = 0x0210;

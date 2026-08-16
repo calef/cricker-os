@@ -191,6 +191,51 @@ pub(super) fn assert_fs_service_ready(readiness: Option<(crate::sched::EpId, cra
     fs_service::wait_for_service(readiness);
 }
 
+/// **The SMB write path's independent reader** (milestone 54's second half), shared by both ISAs
+/// for the same reason [`assert_fs_service_ready`] is: the two combined-inbound tests are twins
+/// and this is the half of each that must not drift.
+///
+/// The host's SMB prober wrote a file over TCP and believed its own write. This spawns a
+/// *different* process, holding a directory capability and nothing that names the network, to
+/// read the same file back through the FS server. Bytes crossing in both directions with a
+/// different process witnessing each is what makes this a gate rather than a client agreeing with
+/// itself, and it is exactly the discipline the seed role applies to the read direction.
+///
+/// It runs after both verdicts, because the adapter has to have finished serving before there is
+/// anything settled to read.
+pub(super) fn assert_smb_write_landed(had_fs: bool) {
+    use fs_proto::fixture::smb_wrote;
+    if !had_fs {
+        crate::println!("    (no RedoxFS disk attached; nothing to verify the SMB write against)");
+        return;
+    }
+    let (_, report) = fs_service::start(
+        fs_service::blk_server_image(),
+        program("fs_server").expect("no fs_server program in the initrd archive"),
+        program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
+        8, // ROLE_SMB_VERIFY, matching user/src/fs_test_client.rs
+    )
+    .expect("the FS service was wired for the SMB share a moment ago");
+    let words = crate::sched::ipc_recv(report);
+    assert_eq!(
+        words[0],
+        fs_proto::fixture::SUCCESS,
+        "the SMB write verifier did not report",
+    );
+    assert_eq!(
+        words[1],
+        smb_wrote::EXACT,
+        "what the host wrote over SMB2 is not what the filesystem holds (verdict {}). {} means \
+         the name is not there, so the write never reached RedoxFS; {} means the length is \
+         wrong, which is the SET_INFO truncate leg; {} means the bytes are wrong, which is an \
+         offset or a chunking bug in the write path",
+        words[1],
+        smb_wrote::ABSENT,
+        smb_wrote::WRONG_SIZE,
+        smb_wrote::WRONG_BYTES,
+    );
+}
+
 /// Build the exact bytes `std_exerciser` prints when it is granted a directory capability, into
 /// `buf`; returns the length. Not a `const` because the motd's contents are spliced in from the
 /// shared fixture, and that is the load-bearing part: those bytes came off the RedoxFS image,
