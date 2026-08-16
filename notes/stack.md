@@ -404,6 +404,34 @@ bottom 0xffffffd0001ff000, so sp went 4088 bytes past it, on a 16384-byte stack.
 scause=0xf (code 15)                                        (riscv64, PR #213's cpu matrix, rv64)
 ```
 
+## The fact that settles it, and it was sitting in this file the whole time
+
+**Both addresses are byte-identical to the 2026-08-14 pair recorded above.** Read them side by
+side:
+
+| | 2026-08-14 | 2026-08-16 |
+|---|---|---|
+| aarch64 | `FAR_EL1 0xffff0010001b3000`, slot 87 | `FAR_EL1 0xffff0010001b3000`, slot 87 |
+| riscv64 | `0xffffffd0001fe008`, slot 102 | `0xffffffd0001fe008`, slot 102 |
+
+Same slot, same offset into it, same test family, on both architectures, four days and one milestone
+apart. Milestone 124 restructured the entire spawn path in between (the worst `spawn_on`
+instantiation went from 4592 bytes to 1040) and the addresses did not move by one byte.
+
+**A depth-driven overflow cannot do that.** Depth is a property of which calls ran and when an
+interrupt landed; the note above says so in its own words ("the same kernel image overflows on one
+run and not the next"). An overflow's faulting address wanders with the chain that produced it.
+These do not wander at all. Two addresses, reproducible to the byte across a change that moved
+thousands of bytes of frames, are a **fixed computation landing on a fixed address**, not a stack
+pointer arriving somewhere by accumulation.
+
+That also revises the 2026-08-14 entry above. Its aarch64 fault was attributed to
+`sched::reap_region_objects`'s 6816-byte frame and closed by #157; the same address came back after
+that fix and after milestone 124's. Either the attribution was wrong, or there were two faults at
+one address and only one of them was fixed. The frame *was* real and shrinking it *was* right (a
+frame larger than the guard page defeats the guard page regardless), so nothing about that work is
+wasted. But it did not close this.
+
 ## The arithmetic that says it is not depth
 
 **The deepest chain a kernel thread stack can carry is 13712 bytes on aarch64 and 13344 on
@@ -482,13 +510,21 @@ addresses support:
   (`paint`/`high_water` over `[bottom, top)`, `spawn_into`'s closure slot and `Context`,
   `arm_for_start`, `enter_frame`'s `top - 272`, `user_pc`), so if this is the shape, the pointer is
   not one of those or it is being used after its stack died.
-- **A stray store through a corrupted pointer** that happens to name a slot base. Two independent
-  runs landing within eight bytes of one argues against a random address.
+- **A stray store through a corrupted pointer** that happens to name a slot base. Four faults across
+  four days landing on two addresses argues against a random one, and argues for a computation with
+  a fixed input.
 
-**It did not reproduce here.** 13 + 5 full-suite runs on aarch64 under host load, on a 4-CPU Linux
-box with `-smp 4` under TCG, all green, with the thread watermark reading 9536 every single time.
-The reproduction cost is the honest blocker: CI hit it perhaps two runs in six on a runner this
-machine does not resemble.
+**The two slot numbers are themselves a clue nobody has spent.** Why 87 on aarch64 and 102 on
+riscv64, every time? A slot index is `(va - STACK_AREA) / 0x5000`, so a repeatable index means a
+repeatable *count* of stacks handed out before the offending one. Whatever computes the faulting
+address is reached at the same point in the same suite on each run, which is another way of saying
+this is deterministic in the sequence of allocations and not in the timing. The intermittency then
+has to come from something else deciding whether that path runs at all, not from where it lands.
+
+**It did not reproduce here.** Full-suite aarch64 runs under host load on a 4-CPU Linux box with
+`-smp 4` under TCG, all green, with the thread watermark reading 9536 every single time; the riscv64
+leg is green too, at 9344. The reproduction cost is the honest blocker: CI hit it perhaps two runs
+in six on a runner this machine does not resemble.
 
 **The next occurrence should be legible without another investigation**, which is what the `sp` line
 buys. If it prints a slot *below* the faulting address, the store-past-the-top reading is confirmed
