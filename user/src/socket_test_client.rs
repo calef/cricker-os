@@ -152,7 +152,7 @@ fn r16le(va: u64) -> u16 {
     unsafe { core::ptr::read_volatile(va as *const u16) }
 }
 
-/// The source endpoint a UDP RECV reply left in the frame header (socket_proto's layout note).
+/// The source endpoint a UDP RECV reply left in the frame header (`socket_proto`'s layout note).
 fn recv_source() -> ([u8; 4], u16) {
     let mut ip = [0u8; 4];
     for (i, b) in ip.iter_mut().enumerate() {
