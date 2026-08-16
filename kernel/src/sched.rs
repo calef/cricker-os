@@ -3888,6 +3888,68 @@ mod tests {
         assert_eq!(guard_page_at(guard_page_at as *const () as u64), None);
     }
 
+    /// **The slots are contiguous, so one stack's guard page begins where the previous stack
+    /// ends**, and a fault report has to be able to say which of the two it is looking at.
+    ///
+    /// This is the geometry that made two 2026-08-16 guard-page faults ambiguous. Both landed on a
+    /// slot's guard page at offset 0 and 8, and the report said "sp went 4096 bytes past the
+    /// bottom" without ever reading `sp`. Those same two addresses are also the first two words
+    /// **above the top of the stack in the slot below**, which is a completely different bug with
+    /// a completely different fix, and nothing printed could tell them apart.
+    ///
+    /// `thread_stack_site` is what lets the report place `sp` in the same units as the faulting
+    /// address. The assertions below are the arithmetic that claim rests on: a slot's usable span
+    /// measured from its own bottom, its guard page as negative offsets, and the join, where slot
+    /// `n`'s guard base is exactly one past slot `n-1`'s last usable byte.
+    #[test_case]
+    fn a_slots_guard_page_begins_where_the_slot_below_it_ends() {
+        use crate::stack::thread_stack_site;
+        use crate::thread::{KernelStack, STACK_PAGES, STACK_SLOT_SPAN};
+
+        let stack = KernelStack::new().expect("could not allocate a thread stack");
+        let (area, _) = crate::thread::stack_area_span();
+        let slot = (stack.guard() - area) / STACK_SLOT_SPAN;
+
+        assert_eq!(
+            thread_stack_site(stack.bottom()),
+            Some((slot, 0)),
+            "the lowest usable byte is zero bytes above the bottom"
+        );
+        assert_eq!(
+            thread_stack_site(stack.top() - 8),
+            Some((slot, (STACK_PAGES * 4096) as i64 - 8)),
+            "the last usable word is one word short of the stack's size above the bottom"
+        );
+        assert_eq!(
+            thread_stack_site(stack.guard()),
+            Some((slot, -4096)),
+            "the guard page's base is a whole page below the bottom"
+        );
+
+        // The join. `top` is exclusive, so it is the next slot's guard base, and the site function
+        // must report it as *that* slot's guard rather than as this one's stack.
+        assert!(
+            slot >= 1,
+            "the first stack allocated in the suite is not slot 0"
+        );
+        assert_eq!(
+            thread_stack_site(area + slot * STACK_SLOT_SPAN),
+            Some((slot, -4096)),
+        );
+        assert_eq!(
+            thread_stack_site(area + slot * STACK_SLOT_SPAN - 8),
+            Some((slot - 1, (STACK_PAGES * 4096) as i64 - 8)),
+            "the word below a slot's guard base belongs to the previous slot's stack, and a report \
+             that cannot say so cannot tell an overflow from a store past a neighbour's top",
+        );
+
+        // Outside the area entirely: kernel text is not a thread stack.
+        assert_eq!(
+            thread_stack_site(thread_stack_site as *const () as u64),
+            None
+        );
+    }
+
     /// **The rendezvous, receiver-first.** A thread blocks on an empty endpoint, and stays
     /// blocked, and a *later* sender is what frees it: carrying the message.
     #[test_case]
