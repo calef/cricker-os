@@ -190,9 +190,29 @@ if [ -n "$NIFE_SMB_HOSTFWD_PORT" ]; then
     HOSTFWD="$HOSTFWD,hostfwd=tcp:127.0.0.1:$NIFE_SMB_HOSTFWD_PORT-10.0.2.15:${NIFE_SMB_GUEST_PORT:-7779}"
 fi
 
+# The multicast injection hub (milestone 55's mDNS stack half). Slirp cannot carry multicast in
+# either direction: it never delivers host multicast into the guest, and it silently eats what the
+# guest sends to a group. So when xtask names a port, the mmio NIC is attached to a QEMU hub with
+# two backends behind it: slirp, unchanged (DHCP, TFTP, guestfwd, hostfwd all keep working through
+# the hub, which floods every frame to every port), and a socket backend xtask's multicast prober
+# connects to. The prober then sees the guest's frames raw off the wire, including group-addressed
+# ones, and can inject frames slirp would never deliver, which is the whole mechanism of the mDNS
+# gate. The socket protocol is QEMU's own: each ethernet frame prefixed with a 4-byte big-endian
+# length, over one TCP connection.
+#
+# Conditional for hostfwd's reason: `listen=` binds a port on the developer's machine, which does
+# not belong on a plain `cargo xtask run` or the benchmark boot. Without the variable the NIC
+# attaches straight to slirp exactly as before, and no hub exists.
+NET0_ATTACH="net0"
+MCAST=""
+if [ -n "$NIFE_MCAST_PORT" ]; then
+    NET0_ATTACH="hubnic0"
+    MCAST="-netdev socket,id=mcast0,listen=127.0.0.1:$NIFE_MCAST_PORT -netdev hubport,id=hubslirp0,hubid=0,netdev=net0 -netdev hubport,id=hubmcast0,hubid=0,netdev=mcast0 -netdev hubport,id=hubnic0,hubid=0"
+fi
+
 NET=""
 if [ -n "$NIFE_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD $MCAST -device virtio-net-device,netdev=$NET0_ATTACH -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # Attach a virtio-gpu when NIFE_GPU is set (milestone 29, the display ladder's rung one).

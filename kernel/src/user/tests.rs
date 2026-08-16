@@ -126,6 +126,10 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
 const NET_LISTEN_PORT: u16 = 7778;
+/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
+/// 5353. Named here for the same reason as the listen port: the spawn service grants it.
+#[cfg(target_arch = "aarch64")]
+const NET_MDNS_PORT: u16 = 5353;
 /// The port the SMB adapter is granted in the same boot (milestone 54): the echo port's
 /// neighbour, so the two-port grant `[7778, 7779]` still refuses the client's 8080 probe. The
 /// runners forward a second host port (`NIFE_SMB_HOSTFWD_PORT`) to this one. Guest-side the
@@ -1653,6 +1657,21 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// untyped region nothing reclaims, and the boot has no such run left (see `virtio::MAX_DEVICES`).
 /// The stage codes stand in for the names the second test would have had.
 ///
+/// **The mDNS-shaped exchange rides in this same spawn too** (milestone 55's stack half), for the
+/// same memory reason, re-measured by the lane that built it: a twelfth net server died as
+/// `Unmappable(OutOfFrames)` in an unrelated later test. After the accept rounds, the client
+/// proves the three things a responder needs and nothing else touches: binding UDP 5353 is an
+/// authority (a port outside the spawn's `udp_bind_grant` is refused, the granted one binds and
+/// is exclusive; and since this spawn's word carries both grants, the composed packing is what
+/// the machine exercises); a datagram addressed to 224.0.0.251, not to the guest, is accepted
+/// because the stack joined the group (without smoltcp's `multicast` feature it dies in the IPv4
+/// input path, unseen by UDP); and the querier's source endpoint rides back on RECV, which RFC
+/// 6762 §6.7's semantics turn on. Slirp cannot carry multicast, so the host side is xtask's
+/// multicast prober on the frame-level hub the runner wires beside slirp: it takes the guest's
+/// own multicast send off the wire (which is what proves SENDTO to a group reaches it), injects
+/// the group-addressed query with a spoofed source nothing on the network holds, and requires
+/// the guest's composed answer. See notes/mdns.md for what QEMU still cannot prove.
+///
 /// **Milestone 54 rides the same spawn, for the same reason.** The SMB adapter (`smb_server`) is
 /// a second client of this stack, granted the neighbouring port, and xtask's SMB prober drives a
 /// real SMB2 exchange (negotiate, guest session setup, tree connect, create, read of a fixture
@@ -1671,6 +1690,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         NET_LISTEN_PORT,
         SMB_LISTEN_PORT,
         SMB_ROUNDS,
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -1678,10 +1698,13 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}). 0xE050 means a \
-         port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
-         0xE070 means nobody ever connected, which is the host side: is the runner adding a \
-         hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
+        "the guest did not serve the inbound exchange (client code {verdict:#x}). 0xE050 or \
+         0xE080 mean a port outside a grant was bound anyway, which is the capability failure; \
+         0xE060 or 0xE070 means nobody ever connected, which is the host side: is the runner \
+         adding a hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this \
+         suite? 0xE087 means nothing addressed to the joined multicast group arrived: either RX \
+         acceptance, or the host side (NIFE_MCAST_PORT and xtask's multicast prober); \
+         0xE08A/0xE08B mean the datagram arrived without its source endpoint",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(
