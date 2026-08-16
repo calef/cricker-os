@@ -1,8 +1,44 @@
 # 124. A thread is born where it lives: the spawn path's copies
 
-**Status: BUILT** 2026-08-14. Minted the same day by calef, out of the riscv64 stack overflow
-milestone 108 was held on. The hold turned out to be the wrong suspect twice over, and this is what
-was underneath.
+**Status: PARTIAL.** Built 2026-08-14, and **reopened 2026-08-16 because the overflow came back on
+both ISAs**. Minted the same day by calef, out of the riscv64 stack overflow milestone 108 was held
+on. The hold turned out to be the wrong suspect twice over, and this is what was underneath.
+
+**Gate: NONE.** A lane is on it; what it needs is measurement, not a decision.
+
+## Reopened: the guard page is being stepped over again (2026-08-16)
+
+The same `*** KERNEL STACK OVERFLOW ***` banner, the same one-page guard, the same test on both
+architectures:
+
+- **aarch64**, in a merge-queue run at 01:48Z: slot 87's guard page, `sp` **4096 bytes** past the
+  bottom of a 16384-byte stack, panicking at `arch/aarch64/exceptions.rs:630`.
+- **riscv64**, in pull request #213's `cpu matrix` job at 22:29Z: slot 102's guard page, **4088 bytes**
+  past, on the `rv64` model only, with the other four models green.
+
+Both land in `kernel::user::supervision_tests::a_faulting_child_reports_to_its_supervisor_and_is_
+reaped_then_respawned`.
+
+**Three things are already known and are what make this worth reopening rather than filing fresh.**
+
+**It is not any pull request's fault.** The aarch64 failure was a merge-queue candidate whose pull
+request is 59 lines of markdown, so it reproduces against `main`'s own content. It had been read as
+pull request #213's problem for four hours on that evidence, which was wrong.
+
+**It is intermittent**, which is why the tree stayed green around it: merge-queue runs at 01:52Z and
+01:53Z passed on the same base that failed at 01:41Z. The working hypothesis, unproven, is cumulative
+depth plus an exception frame arriving at the deepest point, which is load-dependent and therefore
+looks like flakiness while being a sizing bug.
+
+**`script/stack-frame-check` passes throughout**, and its ratchet was deleted by this milestone's own
+fix rather than lowered. Its rule is per frame (no frame over a third of a thread stack), so a chain
+of legal frames that overflows together is invisible to it. **That is the gap this reopening has to
+close**, because a fix with no gate behind it is how the first one came back.
+
+**What the original fix did, and why it may not cover this**: it removed the copies between
+`Thread::spawn`'s frame and `ptr.write`, taking the worst `spawn_on` instantiation from 4592 bytes to
+1040. That is a claim about one path's frames. Neither the measurement nor the ratchet says anything
+about the total depth of a call chain, which is what the evidence above now points at.
 
 **The worst `spawn_on` instantiation went from 4592 bytes to 1040**, every one of them now clears the
 4096-byte guard page on its own merits, and `script/stack-frame-check`'s ratchet is deleted rather
