@@ -14,7 +14,7 @@ broker_rtt 348136 1000
 spawn_reap 32550 64
 map_new 2362 64
 coremark 3654262 256
-null_syscall 65629 20000
+null_syscall 72229 20000
 ctx_switch 487250 5000
 ipc_rtt_el0 1796142 5000
 sink_throughput 737352 80000
