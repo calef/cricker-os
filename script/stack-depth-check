@@ -140,9 +140,15 @@ from collections import defaultdict
 # So: **fail at the stack size**, which is the real cliff, and **warn at the watermark's number**,
 # which is where the two instruments should be saying the same thing. A warn is the signal that the
 # headroom is going, said before a run has to find out.
-STACK = 16384
+STACK = 24576
 FAIL_AT = STACK
-WARN_AT = 14336
+WARN_AT = 18432
+
+# The interrupt stack a trap taken on kernel code runs its handler on (milestone 124), and the same
+# pair of thresholds one stack over. `interrupt_stack::SIZE` is the authority; these must move with
+# it, and the report prints both so a drift is visible rather than silent.
+INTERRUPT_STACK = 16384
+INTERRUPT_WARN_AT = 8192
 
 # The trap frame the vector builds before any Rust runs, so an interrupted thread's total is its own
 # chain plus this plus the handler's. Contracts with vectors.s (272) and trap.s (288), both asserted
@@ -153,8 +159,17 @@ TRAP_FRAME = {"aarch64": 272, "riscv64": 288}
 # frame (context.s's thread_trampoline calls it), `user_thread_entry` is the EL0 mirror, and the
 # arch dispatcher is every trap taken while running on this stack.
 DISPATCH = {"aarch64": "exception_dispatch", "riscv64": "riscv_trap_dispatch"}
+
+# **The trap path is two halves since milestone 124, and which half you are on decides which stack
+# you are on.** `DISPATCH` is the outer half, which always runs on the stack the trap interrupted:
+# it picks a stack and, afterwards, runs the deferred `schedule()`. `BODY` is the handler proper,
+# which runs on this core's interrupt stack whenever the trap came from kernel mode. The assembly
+# trampoline between them (`dispatch_on_interrupt_stack`) has an edge in the disassembly and no
+# frame of its own, so the walker would happily charge the body to the thread stack; cutting that
+# edge is what models the switch. See kernel/src/interrupt_stack.rs.
+BODY = {"aarch64": "exception_body", "riscv64": "riscv_trap_body"}
 ARCH = os.environ["ARCH"]
-ROOTS = ["thread_entry", "user_thread_entry", DISPATCH[ARCH]]
+ROOTS = ["thread_entry", "user_thread_entry", DISPATCH[ARCH], BODY[ARCH]]
 
 
 def uleb(buf, i):
@@ -312,18 +327,50 @@ tf = TRAP_FRAME[ARCH]
 # bound and a scare.
 LOWER_EL_ARMS = {n for n in frames
                  if "syscall::dispatch" in pretty.get(n, n) or "::user_fault" in pretty.get(n, n)}
-nested, nested_path, _ = deepest(DISPATCH[ARCH], skip=LOWER_EL_ARMS)
+
+# **And the handler body, which runs somewhere else entirely** (milestone 124). A trap from kernel
+# mode switches to this core's interrupt stack for everything above the trap frame, so charging the
+# body to the thread would double-count it against a stack it cannot touch. What is left on the
+# thread is the outer dispatcher's own frame, the trampoline's spill, and the deferred `schedule()`
+# the dispatcher runs after the handler returns, which is the whole point of the split.
+OFF_THREAD = {BODY[ARCH]} | {n for n in frames if BODY[ARCH] in pretty.get(n, n)}
+nested, nested_path, _ = deepest(DISPATCH[ARCH], skip=LOWER_EL_ARMS | OFF_THREAD)
 
 # **A kernel thread can be interrupted at its own deepest point**, because `thread_entry` unmasks
 # before calling the closure. So the worst it carries is its own chain, a trap frame, and whatever
-# the handler needs for an interrupt or a kernel fault.
+# the handler leaves on *its* stack.
 interrupted = results["thread_entry"][0] + tf + nested
 # A user thread's kernel stack is EMPTY while it runs at EL0 (`enter_userspace` leaves SP_EL1 at the
 # top and the trap rebuilds its frame there), so a trap on one is the frame plus the full handler,
-# syscall arm included. Traps do not nest on top of that: both ISAs keep interrupts masked for the
-# whole handler.
+# syscall arm included, body and all: a trap from user mode does NOT switch stacks, because the
+# syscall it is probably taking may block and a per-core stack cannot hold a blocked thread's
+# frames. Traps do not nest on top of that: both ISAs keep interrupts masked for the whole handler.
 trapped = tf + results[DISPATCH[ARCH]][0]
 worst = max(interrupted, trapped, results["thread_entry"][0])
+
+# **What the interrupt stack itself carries**, and the reason this gate now has two ceilings. Only
+# a kernel-mode trap runs over there, so the syscall and user-fault arms are pruned for the same
+# reason they are pruned above, and the trap frame is NOT counted: it stays on the interrupted
+# stack, where the vector built it.
+on_interrupt, on_interrupt_path, _ = deepest(BODY[ARCH], skip=LOWER_EL_ARMS)
+
+# **Nothing that runs on an interrupt stack may context-switch away from it**, and this is the
+# static half of the pair that holds it (the runtime half is a `debug_assert!` in `sched::schedule`).
+# A switch parks the running `sp` in the outgoing thread's `Context` and resumes it there later; a
+# per-core stack cannot promise those bytes are still the thread's, so a switch from here would
+# corrupt a stack rather than fault. Reachability, not depth: one edge is a bug.
+SWITCHERS = {n for n in frames
+             if "sched::schedule" in pretty.get(n, n) or "switch_to" in pretty.get(n, n)}
+sw_reach, sw_stack, sw_via = set(), [BODY[ARCH]], {}
+while sw_stack:
+    n = sw_stack.pop()
+    if n in sw_reach or n not in frames or n in LOWER_EL_ARMS:
+        continue
+    sw_reach.add(n)
+    for c in list(edges.get(n, ())) + list(tails.get(n, ())):
+        sw_via.setdefault(c, n)
+        sw_stack.append(c)
+switchers_reachable = sorted(sw_reach & SWITCHERS)
 
 # Reachability, which is the other half of `script/stack-frame-check`'s exception table: that gate
 # excuses functions on the grounds they cannot run on a thread stack, and nothing checked the claim.
@@ -344,10 +391,18 @@ if os.environ.get("REPORT"):
         if cycles:
             print(f"      (cycles cut at: {', '.join(sorted(pretty.get(c, c) for c in cycles))})")
         print()
+    print(f"    {ARCH}: what a kernel-mode trap leaves on the INTERRUPTED stack: {nested} bytes")
+    show(nested_path)
+    print()
+    print(f"    {ARCH}: deepest chain on the INTERRUPT stack: {on_interrupt} bytes")
+    show(on_interrupt_path)
+    print()
     print(f"    {ARCH}: {len(reach)} functions reachable on a thread stack, "
           f"{sum(indirect.get(n, 0) for n in reach)} indirect call sites among them")
     print(f"    {ARCH}: worst total {worst} of {STACK} bytes "
-          f"(interrupted-at-deepest {interrupted}, trap-on-a-user-thread {trapped})")
+          f"(interrupted-at-deepest {interrupted}, trap-on-a-user-thread {trapped}); "
+          f"of which the handler leaves {nested} on the thread and {on_interrupt} on the "
+          f"interrupt stack")
     sys.exit(0)
 
 if over_guard:
@@ -360,6 +415,36 @@ if over_guard:
 the stated grounds that they cannot run on a kernel thread stack. Nothing checked those claims until
 this line. Either the frame is genuinely reachable from a thread and has to shrink, or its EXCEPT
 entry in that script is stale and has to go.""", file=sys.stderr)
+    sys.exit(1)
+
+if switchers_reachable:
+    print(f"    {ARCH}: a context switch is reachable from {BODY[ARCH]}, which runs on the "
+          f"per-CPU interrupt stack:", file=sys.stderr)
+    for n in switchers_reachable:
+        chain, cur = [], n
+        while cur in sw_via and len(chain) < 12:
+            chain.append(pretty.get(cur, cur)[:72])
+            cur = sw_via[cur]
+        print(f"      {pretty.get(n, n)[:96]}", file=sys.stderr)
+        for step in chain[1:]:
+            print(f"        via {step}", file=sys.stderr)
+    print("""
+`schedule()` parks the running `sp` in the outgoing thread's `Context` and resumes it there
+later. An interrupt stack belongs to a CORE, so a thread parked on one resumes on bytes the
+next interrupt has already spent, which corrupts a stack rather than faulting. The deferred
+switch belongs in the dispatcher's outer half, after the handler has returned to the
+interrupted stack; see kernel/src/interrupt_stack.rs.""", file=sys.stderr)
+    sys.exit(1)
+
+if on_interrupt >= INTERRUPT_STACK:
+    print(f"    {ARCH}: the deepest chain an interrupt stack can carry is {on_interrupt} bytes, "
+          f"and the stack is {INTERRUPT_STACK}. It does not fit.", file=sys.stderr)
+    show(on_interrupt_path)
+    print("""
+Shrink a frame on the chain, or raise `interrupt_stack::SIZE` and this number together.
+Raising it alone is cheap here (one page per core, and there are eight seats), which is
+exactly why the two numbers have to move in the same commit or the gate stops meaning
+anything.""", file=sys.stderr)
     sys.exit(1)
 
 if worst >= FAIL_AT:
@@ -378,8 +463,12 @@ over it (notes/stack.md).""", file=sys.stderr)
 
 headroom = STACK - worst
 warn = f"  ** {headroom} bytes of headroom, past the {WARN_AT} warn line **" if worst > WARN_AT else ""
+if on_interrupt > INTERRUPT_WARN_AT:
+    warn += (f"  ** the interrupt stack's chain is {on_interrupt}, past its "
+             f"{INTERRUPT_WARN_AT} warn line **")
 print(f"    {ARCH}: deepest thread-stack chain {worst} of {STACK} bytes, {headroom} spare "
-      f"(interrupted-at-deepest {interrupted}, user-thread trap {trapped}); "
+      f"(interrupted-at-deepest {interrupted}, user-thread trap {trapped}); interrupt stack "
+      f"{on_interrupt} of {INTERRUPT_STACK}, no context switch reachable from it; "
       f"{len(reach)} functions reachable, none over the guard page{warn}")
 PYEOF
 done

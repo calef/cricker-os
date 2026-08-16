@@ -89,7 +89,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level. Then the two guard-page incidents: 2026-08-14's real overflows, and
   2026-08-16's pair that were **not** overflows and said they were, because the report inferred
-  `sp` instead of reading it.
+  `sp` instead of reading it. Then milestone 124's per-CPU interrupt stack, which stopped a
+  preemption being billed to the thread it interrupted, and is honest that the static bound moved
+  by 256 bytes while the *shape* of the cost changed entirely.
 - [Adding a user program](adding-a-program.md): the six steps, task-oriented, written because
   milestone 117's first stranger run found that no file described them. The two initrd lists in
   two different shapes, the wire id that is expensive to change, and the manifest that declares a
@@ -100,8 +102,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   model, and the honest limit that an agent is not a person, so every number it produces is a
   lower bound on the friction a human would meet.
 - [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
-  after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
-  separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
+  after the suite, report the deepest byte. The inventory (boot, secondary, thread and, since
+  milestone 124, per-CPU interrupt stacks), the measured numbers, and the honest limits of a
   watermark. Milestone 90 closed the asymmetry that inventory found: the per-CPU secondary stacks
   left `.bss` for a region with an unmapped page under each, proven by a page-table walk. Its
   longest-standing BUGS entry, that nothing walks the call graph, closed on 2026-08-16 with

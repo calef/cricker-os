@@ -332,11 +332,50 @@ fn advance_past_trapping_insn(frame: &mut TrapFrame) {
     frame.sepc += if low & 0b11 == 0b11 { 4 } else { 2 };
 }
 
-/// The Rust half of the trap path, called from trap.s with the saved [`TrapFrame`]. Fans out on
-/// `scause`: an `ecall` from U-mode is a syscall; a breakpoint is a debug/self-test trap; an
-/// interrupt goes to the (not-yet-built) interrupt path; anything else is a fault.
+unsafe extern "C" {
+    /// Switch to `top` (or stay put if it is 0), call [`riscv_trap_body`], come back.
+    /// Defined in trap.s, because moving `sp` is assembly and policy is not.
+    fn dispatch_on_interrupt_stack(frame: &mut TrapFrame, top: u64) -> bool;
+}
+
+/// **The outer half of the trap path, and the half that stays on the interrupted stack.**
+///
+/// The twin of aarch64's `exception_dispatch`, with the same two jobs: pick the stack the handler
+/// runs on, and run the deferred `schedule()` afterwards, on a stack that belongs to the interrupted
+/// thread rather than to this hart. See `kernel/src/interrupt_stack.rs` for why the second one
+/// cannot happen anywhere else.
 #[unsafe(no_mangle)]
 extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
+    // U-mode traps keep their old behaviour: that thread's kernel stack is empty at this instant,
+    // and the syscall it is probably taking may block, which an interrupt stack may not do.
+    let from_user = frame.sstatus & SPP == 0;
+    let top = crate::interrupt_stack::top_for_trap(from_user);
+    let deferred_switch = if top == 0 {
+        // The common case, and it must not pay for the uncommon one: see the aarch64 twin, where
+        // routing every `ecall` through the trampoline for a stack move that does not happen cost
+        // 8.6 instructions per `null_syscall`.
+        riscv_trap_body(frame)
+    } else {
+        // SAFETY: `top` is this hart's own interrupt-stack top, from the module that owns the
+        // region; the trampoline calls `riscv_trap_body` with our own argument and restores `sp`
+        // before returning. The frame outlives the call: it is on the stack we are standing on.
+        unsafe { dispatch_on_interrupt_stack(frame, top) }
+    };
+
+    // Back on the interrupted thread's stack, whichever branch ran. Preemption happens HERE.
+    if deferred_switch {
+        crate::sched::preempt_if_needed();
+    }
+}
+
+/// The trap handler proper: everything that runs on the interrupt stack when there is one. Fans out
+/// on `scause`: an `ecall` from U-mode is a syscall; a breakpoint is a debug/self-test trap; an
+/// interrupt goes to the interrupt path; anything else is a fault.
+///
+/// Returns whether the caller owes a deferred `schedule()`, which is true for an interrupt and false
+/// for everything else.
+#[unsafe(no_mangle)]
+extern "C" fn riscv_trap_body(frame: &mut TrapFrame) -> bool {
     let scause = frame.scause;
 
     if scause & INTERRUPT != 0 {
@@ -389,18 +428,16 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             }
         }
 
-        // --- and here is preemption, the same four lines as aarch64 (see that file's handle_irq).
-        // If a tick asked for a reschedule and the scheduler is up, switch away now. `schedule()`
-        // saves this thread's kernel context and may not return until this thread is picked again;
-        // when it does, we fall through to `trap_return`, which restores `frame` and `sret`s back to
-        // exactly the instruction the timer interrupted. A thread that never yields is preempted
-        // anyway, which is the whole point (DECISIONS §5). It works for a U-mode thread and an
-        // S-mode kernel thread alike, because trap.s saved a full frame for whichever we interrupted.
-        if crate::sched::take_need_resched() && crate::sched::is_running() {
-            crate::sched::count_preemption();
-            crate::sched::schedule();
-        }
-        return;
+        // --- and preemption used to be here, the same four lines as aarch64 ---
+        //
+        // Both ISAs moved it out to the dispatcher's outer half at milestone 124, because this
+        // function may be running on a per-hart interrupt stack and `schedule()` may only be called
+        // on a stack the interrupted thread owns. Saying `true` is how this half asks for it. What
+        // the switch then does is unchanged: it saves this thread's kernel context and may not
+        // return until this thread is picked again, and when it does, the return falls through to
+        // `trap_return`, which restores `frame` and `sret`s back to exactly the instruction the
+        // timer interrupted (DECISIONS §5). See kernel/src/interrupt_stack.rs.
+        return true;
     }
 
     let code = scause & 0xff;
@@ -434,7 +471,9 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             // `scause=0xf ... from_user=false` and an address nothing interpreted, and it took
             // arithmetic on the CI log to work out that both were the base of a thread stack's
             // guard page. The kernel knew; it just was not saying.
-            crate::stack::warn_if_guard_page(frame.stval);
+            // `x[2]` is the interrupted `sp`, which trap.s saved out of the stash. The live `sp`
+            // would name this hart's interrupt stack instead (milestone 124).
+            crate::stack::warn_if_guard_page(frame.stval, frame.x[2]);
             panic!(
                 "unexpected RISC-V trap: scause={scause:#x} (code {code}) stval={:#x} sepc={:#x} \
                  from_user={from_user}",
@@ -442,6 +481,9 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             );
         }
     }
+
+    // A synchronous trap has already done whatever it was going to do. Nothing is deferred.
+    false
 }
 
 /// A user thread did something it is not allowed to do. Kill it; keep the machine.

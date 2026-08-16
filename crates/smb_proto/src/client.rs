@@ -15,7 +15,7 @@
 
 use crate::{
     CMD_CLOSE, CMD_CREATE, CMD_ECHO, CMD_FLUSH, CMD_NEGOTIATE, CMD_QUERY_DIRECTORY, CMD_QUERY_INFO,
-    CMD_READ, CMD_SESSION_SETUP, CMD_TREE_CONNECT, CMD_WRITE, DIALECT_0210,
+    CMD_READ, CMD_SESSION_SETUP, CMD_SET_INFO, CMD_TREE_CONNECT, CMD_WRITE, DIALECT_0210,
     FLAG_RELATED_OPERATIONS, H_COMMAND, H_CREDIT, H_FLAGS, H_MESSAGE_ID, H_NEXT_COMMAND,
     H_SESSION_ID, H_STRUCT, H_TREE_ID, HDR_LEN, PROTOCOL_ID, ascii_to_utf16le, ntlmssp, r16, r32,
     r64, utf16le_to_ascii_lower, w16, w32, w64,
@@ -150,10 +150,24 @@ pub fn create(msg_id: u64, sid: u64, tid: u32, name: &[u8]) -> Msg {
     create_disposition(msg_id, sid, tid, name, 1)
 }
 
-/// A CREATE with a chosen disposition (the read-only tests probe refusals with it).
+/// A CREATE with a chosen disposition (the read-only tests probe refusals with it, and the write
+/// path opens with it).
 pub fn create_disposition(msg_id: u64, sid: u64, tid: u32, name: &[u8], disposition: u32) -> Msg {
+    create_full(msg_id, sid, tid, name, disposition, 0)
+}
+
+/// A CREATE with a chosen disposition **and** create options: how a client asks for
+/// `FILE_DELETE_ON_CLOSE` (`0x1000`), which is what an SMB `rm` is.
+pub fn create_full(
+    msg_id: u64,
+    sid: u64,
+    tid: u32,
+    name: &[u8],
+    disposition: u32,
+    options: u32,
+) -> Msg {
     let mut b = [0u8; MSG_MAX];
-    let len = build_create(&mut b, 0, msg_id, sid, tid, name, disposition, 0);
+    let len = build_create(&mut b, 0, msg_id, sid, tid, name, disposition, options, 0);
     msg(len, b)
 }
 
@@ -167,6 +181,7 @@ fn build_create(
     tid: u32,
     name: &[u8],
     disposition: u32,
+    options: u32,
     flags: u32,
 ) -> usize {
     request_header(b, at, CMD_CREATE, msg_id, sid, tid);
@@ -175,9 +190,13 @@ fn build_create(
     b[h..h + 56].fill(0);
     w16(b, h, 57); // StructureSize
     w32(b, h + 4, 2); // ImpersonationLevel: impersonation
-    w32(b, h + 24, 0x0012_0089); // DesiredAccess: generic read-ish
+    // DesiredAccess: read and write plus DELETE, the whole of what this share offers. The server
+    // does not gate on it (a read-only share refuses by disposition and by command instead; see
+    // notes/smb.md's wire decisions), so one mask serves every builder.
+    w32(b, h + 24, 0x0013_019F);
     w32(b, h + 32, 7); // ShareAccess: read | write | delete
     w32(b, h + 36, disposition);
+    w32(b, h + 40, options); // CreateOptions
     let name_at = h + 56;
     let wide = ascii_to_utf16le(name, &mut b[name_at..]);
     w16(b, h + 44, name_at as u16 - at as u16); // NameOffset, from this header
@@ -194,6 +213,11 @@ pub fn create_file_id(resp: &[u8]) -> [u8; 16] {
 /// The `EndOfFile` (size) a CREATE response reports.
 pub fn create_end_of_file(resp: &[u8]) -> u64 {
     r64(resp, HDR_LEN + 48)
+}
+/// The `CreateAction` a CREATE response reports: 0 superseded, 1 opened, 2 created,
+/// 3 overwritten. The field a client's create-or-open logic reads, so the tests read it too.
+pub fn create_action(resp: &[u8]) -> u32 {
+    r32(resp, HDR_LEN + 4)
 }
 
 /// A READ of `len` bytes at `offset`.
@@ -217,19 +241,77 @@ pub fn read_data(resp: &[u8]) -> &[u8] {
     &resp[off..off + len]
 }
 
-/// A WRITE (which this server refuses; the test asserts with what).
+/// A WRITE of `data` at offset 0.
 pub fn write(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], data: &[u8]) -> Msg {
+    write_at(msg_id, sid, tid, fid, 0, data)
+}
+
+/// A WRITE of `data` at `offset`. The bytes must fit [`MSG_MAX`] minus the header and body; a
+/// prober writing more than that chunks its own writes, exactly as a real client does against
+/// `MaxWriteSize`.
+pub fn write_at(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], offset: u64, data: &[u8]) -> Msg {
     let mut b = [0u8; MSG_MAX];
     request_header(&mut b, 0, CMD_WRITE, msg_id, sid, tid);
     let h = HDR_LEN;
     b[h..h + 48].fill(0);
     w16(&mut b, h, 49);
     let data_at = h + 48;
-    w16(&mut b, h + 2, data_at as u16);
+    w16(&mut b, h + 2, data_at as u16); // DataOffset, from the start of the header
     w32(&mut b, h + 4, data.len() as u32);
+    w64(&mut b, h + 8, offset);
     b[h + 16..h + 32].copy_from_slice(fid);
     b[data_at..data_at + data.len()].copy_from_slice(data);
     msg(data_at + data.len(), b)
+}
+
+/// The `Count` a WRITE response reports: how many bytes the share actually took.
+pub fn write_count(resp: &[u8]) -> u32 {
+    r32(resp, HDR_LEN + 4)
+}
+
+/// A `SET_INFO` carrying `body` for one file information class ([MS-SMB2] §2.2.39).
+pub fn set_info(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], class: u8, body: &[u8]) -> Msg {
+    let mut b = [0u8; MSG_MAX];
+    request_header(&mut b, 0, CMD_SET_INFO, msg_id, sid, tid);
+    let h = HDR_LEN;
+    b[h..h + 32].fill(0);
+    w16(&mut b, h, 33); // StructureSize
+    b[h + 2] = 1; // InfoType: FILE
+    b[h + 3] = class;
+    w32(&mut b, h + 4, body.len() as u32); // BufferLength
+    let buf_at = h + 32;
+    w16(&mut b, h + 8, buf_at as u16); // BufferOffset
+    b[h + 16..h + 32].copy_from_slice(fid);
+    b[buf_at..buf_at + body.len()].copy_from_slice(body);
+    msg(buf_at + body.len(), b)
+}
+
+/// `SET_INFO` / `FileEndOfFileInformation` (class 20): truncate or extend to exactly `size`.
+pub fn set_end_of_file(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], size: u64) -> Msg {
+    set_info(msg_id, sid, tid, fid, 20, &size.to_le_bytes())
+}
+
+/// `SET_INFO` / `FileDispositionInformation` (class 13): mark (or unmark) delete-on-close.
+pub fn set_disposition(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], delete: bool) -> Msg {
+    set_info(msg_id, sid, tid, fid, 13, &[delete as u8])
+}
+
+/// `SET_INFO` / `FileRenameInformation` (class 10): rename the open file to `to`.
+pub fn set_rename(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], to: &[u8]) -> Msg {
+    let mut body = [0u8; 20 + 2 * 64];
+    body[0] = 1; // ReplaceIfExists
+    // Bytes 1..8 reserved, 8..16 RootDirectory (must be 0: this share has one directory).
+    let wide = ascii_to_utf16le(to, &mut body[20..]);
+    w32(&mut body, 16, wide as u32);
+    set_info(msg_id, sid, tid, fid, 10, &body[..20 + wide])
+}
+
+/// `SET_INFO` / `FileBasicInformation` (class 4): the four timestamps and the attributes a client
+/// writes at the end of a copy. This server accepts and discards them (crate BUGS).
+pub fn set_basic(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], attributes: u32) -> Msg {
+    let mut body = [0u8; 40];
+    w32(&mut body, 32, attributes);
+    set_info(msg_id, sid, tid, fid, 4, &body)
 }
 
 /// A CLOSE.
@@ -364,6 +446,28 @@ pub fn query_info_all(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16]) -> Msg {
     msg(len, b)
 }
 
+/// A `QUERY_INFO` for an arbitrary info type and class: 1 is FILE, 2 is FILESYSTEM. The volume
+/// classes are how a client learns whether the share is writable before it tries.
+pub fn query_info(
+    msg_id: u64,
+    sid: u64,
+    tid: u32,
+    fid: &[u8; 16],
+    info_type: u8,
+    class: u8,
+) -> Msg {
+    let mut b = [0u8; MSG_MAX];
+    request_header(&mut b, 0, CMD_QUERY_INFO, msg_id, sid, tid);
+    let h = HDR_LEN;
+    b[h..h + 40].fill(0);
+    w16(&mut b, h, 41);
+    b[h + 2] = info_type;
+    b[h + 3] = class;
+    w32(&mut b, h + 4, 0x1_0000); // OutputBufferLength
+    b[h + 24..h + 40].copy_from_slice(fid);
+    msg(h + 41, b)
+}
+
 fn build_query_info_all(
     b: &mut [u8],
     at: usize,
@@ -391,7 +495,7 @@ fn build_query_info_all(
 pub fn compound_create_query_close(msg_id: u64, sid: u64, tid: u32, name: &[u8]) -> Msg {
     let mut b = [0u8; MSG_MAX];
     let fid = [0xFFu8; 16];
-    let mut pos = build_create(&mut b, 0, msg_id, sid, tid, name, 1, 0);
+    let mut pos = build_create(&mut b, 0, msg_id, sid, tid, name, 1, 0, 0);
     pos = pad8(&mut b, pos);
     w32(&mut b, H_NEXT_COMMAND, pos as u32);
 

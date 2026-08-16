@@ -2330,10 +2330,17 @@ const SMB_ROUNDS: usize = 2;
 /// negotiate, guest session setup, tree connect, open of the file the guest's boot seeded
 /// through its FS server, a read whose bytes are asserted against `fs_proto::fixture::SMB_SEED`
 /// (the same constant the seeding client wrote, so there is no second copy of the expected
-/// contents), close, and logoff. Asserting the *seeded* file is what makes this the
-/// RedoxFS-to-TCP gate rather than a wire check against the adapter's baked-in fixture. Same
-/// retry discipline, including the never-abandon-a-slow-connection rule the echo prober
-/// documents: a connected stream is held until it answers, dies, or the run ends.
+/// contents), close, **the write leg** ([`smb_write_leg`]), and logoff. Asserting the *seeded*
+/// file is what makes this the RedoxFS-to-TCP gate rather than a wire check against the adapter's
+/// baked-in fixture. Same retry discipline, including the never-abandon-a-slow-connection rule
+/// the echo prober documents: a connected stream is held until it answers, dies, or the run ends.
+///
+/// **Bytes cross in both directions and neither is checked by whoever sent them.** The read leg
+/// asserts bytes a different in-guest process put on the filesystem; the write leg puts bytes
+/// there and a different in-guest process reads them back through the FS server after this
+/// prober has finished (the kernel test's `assert_smb_write_landed`). A prober that read back its
+/// own write would prove only that the adapter remembers, which is a thing an adapter can do
+/// without a filesystem underneath it.
 struct SmbProber {
     arch: String,
     port: Option<u16>,
@@ -2386,8 +2393,10 @@ impl SmbProber {
                 eprintln!(
                     "smb check ({arch}): {SMB_ROUNDS} SMB2 sessions to 127.0.0.1:{port} were \
                      forwarded into the guest and served end to end: negotiate, guest session, \
-                     tree connect, and a read of the FS-server-seeded file whose bytes matched \
-                     (RedoxFS to TCP). The second session is the proof the adapter re-arms."
+                     tree connect, a read of the FS-server-seeded file whose bytes matched \
+                     (RedoxFS to TCP), and a create-write-truncate-close of a second file (TCP \
+                     to RedoxFS), which the guest's own verifier reads back through the FS \
+                     server. The second session is the proof the adapter re-arms."
                 );
                 true
             }
@@ -2599,10 +2608,119 @@ fn smb_session(
         return Err(format!("close: status {:#x}", status(&resp)));
     }
 
-    smb_send(s, &client::logoff(8, sid))?;
+    smb_write_leg(s, stop, sid, tid)?;
+
+    smb_send(s, &client::logoff(20, sid))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!("logoff: status {:#x}", status(&resp)));
+    }
+    Ok(())
+}
+
+/// **The other direction** (milestone 54's write path): put a file on the guest's filesystem over
+/// SMB2 and leave it there for the guest's own verifier to find.
+///
+/// Every step is one a real client takes when it saves a file, in the order it takes them: open
+/// with `FILE_OVERWRITE_IF` (which both creates and replaces, so the second round is not a
+/// collision), write in two chunks at two offsets, write a tail, shorten with `SET_INFO` so the
+/// truncate leg is exercised on something that had bytes past the cut, stamp the timestamps a
+/// copy ends with, and close.
+///
+/// **This function deliberately does not read the file back.** A client believing its own write
+/// is exactly what the gate must not accept, so the read-back is a different process on the other
+/// side of the machine: `fs_test_client`'s verify role, spawned by the kernel test once the
+/// adapter has stopped serving, reading through the FS server with no network in its cspace.
+fn smb_write_leg(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+    sid: u64,
+    tid: u32,
+) -> Result<(), String> {
+    use smb_proto::{H_STATUS, client, r32};
+    let status = |resp: &[u8]| r32(resp, H_STATUS);
+
+    let name = fs_proto::fixture::SMB_WROTE_NAME.as_bytes();
+    let want = fs_proto::fixture::SMB_WROTE;
+    // A tail past the payload, so the truncate below has something to remove. Without it a
+    // successful truncate and a truncate that did nothing look identical.
+    let tail = b"...and this tail must not survive the truncate...";
+
+    // FILE_OVERWRITE_IF = 5: create it, or replace what a previous round left.
+    smb_send(s, &client::create_disposition(10, sid, tid, name, 5))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "create {} for writing: status {:#x} (ACCESS_DENIED means the guest wired the share \
+             read-only; NOT_FOUND means the fixture share, so no RedoxFS disk)",
+            String::from_utf8_lossy(name),
+            status(&resp)
+        ));
+    }
+    let fid = client::create_file_id(&resp);
+    if client::create_end_of_file(&resp) != 0 {
+        return Err(format!(
+            "the overwrite-if create left {} bytes; it must truncate what it replaced",
+            client::create_end_of_file(&resp)
+        ));
+    }
+
+    // Two chunks at two offsets: an offset bug in the write path shows up as a scrambled file
+    // rather than as a missing one, and only a multi-chunk write can catch it.
+    let cut = want.len() / 2;
+    let mut msg_id = 11u64;
+    for (offset, chunk) in [
+        (0u64, &want[..cut]),
+        (cut as u64, &want[cut..]),
+        (want.len() as u64, &tail[..]),
+    ] {
+        smb_send(s, &client::write_at(msg_id, sid, tid, &fid, offset, chunk))?;
+        let resp = smb_recv(s, stop)?;
+        if status(&resp) != smb_proto::STATUS_SUCCESS {
+            return Err(format!(
+                "write of {} bytes at offset {offset}: status {:#x}",
+                chunk.len(),
+                status(&resp)
+            ));
+        }
+        let count = client::write_count(&resp);
+        if count as usize != chunk.len() {
+            return Err(format!(
+                "write at offset {offset} took {count} of {} bytes",
+                chunk.len()
+            ));
+        }
+        msg_id += 1;
+    }
+
+    // SET_INFO / FileEndOfFileInformation: cut the tail off.
+    smb_send(
+        s,
+        &client::set_end_of_file(msg_id, sid, tid, &fid, want.len() as u64),
+    )?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("set end of file: status {:#x}", status(&resp)));
+    }
+    msg_id += 1;
+
+    // SET_INFO / FileBasicInformation: the timestamp stamp every copy ends with. The guest
+    // accepts and discards it (smb_proto's BUGS); what is proven here is that it does not refuse,
+    // because a client that meets a refusal here reports the whole copy as failed.
+    smb_send(s, &client::set_basic(msg_id, sid, tid, &fid, 0x80))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "set basic information: status {:#x}",
+            status(&resp)
+        ));
+    }
+    msg_id += 1;
+
+    smb_send(s, &client::close(msg_id, sid, tid, &fid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("close after writing: status {:#x}", status(&resp)));
     }
     Ok(())
 }

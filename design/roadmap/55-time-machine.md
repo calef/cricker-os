@@ -1,6 +1,14 @@
 # 55. Time Machine: SMB3 with Apple's extensions, and mDNS
 
-**Status: NOT-STARTED.**
+**Status: PARTIAL.** The **discovery half is built** (pull request #246, 2026-08-16): a responder
+program binds UDP 5353 through a grant, announces `_smb._tcp`, `_adisk._tcp` and
+`_device-info._tcp` from a configuration document carrying the values measured off calef's router,
+and answers browses and legacy one-shot queries per RFC 6762 §6.7, gated on both ISAs. It holds a
+report endpoint, the stack endpoint and a budget and **nothing else**: no share, no file, no TCP
+port, where the reference implementation is one process with one config file. What remains of this
+milestone is the SMB side, which is the large half: the `AAPL` create context, Time Machine's own
+flags, Apple metadata (xattrs down the stack or AppleDouble sidecars), `posix_rename`, and the
+durability macOS trusts.
 
 **Gate: NONE.** The scoping decision is made: **the subset of SMB3 that Time Machine needs**, not
 a general server (calef, 2026-08-15). Decided on the ranking principle: every part of a general
@@ -14,6 +22,13 @@ names was recorded here as unowned: `RENAME`. **That is no longer true** (correc
 `fs_proto::fs::RENAME` is op 11, fully specified with its rights (`REMOVE` on the source directory,
 `CREATE` on the destination) and its atomicity, and the std PAL implements `rename` against it. So
 this block's third gate has closed and only the decision, 65 and 107 remain.
+
+**Nothing here has met a Mac.** QEMU's user-mode networking cannot carry multicast to the host, so
+`dns-sd -B` finds nothing under the emulator by construction; IGMP snooping, forwarding TTLs, a
+live segment's mDNS traffic and a real querier all need hardware on the family network. The
+lane's gate did accidentally prove the segment exists: its injected query escaped slirp, reached
+the real router, and came back NATed with the very records the test expected, which is a false
+green it caught with a source-address filter and recorded.
 
 **In brief.** The actual goal, and **probably the largest single piece of work in the project**. It is
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is

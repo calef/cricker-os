@@ -33,7 +33,10 @@ use crate::arch::mmu;
 use crate::cap::{Object, Rights};
 use crate::sched;
 
-/// Called from the `svc` arm of `exception_dispatch`.
+/// Called from the `svc` arm of `exception_body` (`ecall` on riscv64, in `riscv_trap_body`). The
+/// *body*, not the dispatcher, since milestone 124 split the two: a syscall arrives from user mode,
+/// which is the case that deliberately does NOT move to the interrupt stack, because this path can
+/// block and a blocked thread's frames must live on its own stack.
 pub fn dispatch(frame: &mut TrapFrame) {
     // The syscall number and arguments come from the trap frame through arch accessors, not raw
     // register indices, because the ABI register file differs per architecture (aarch64 `svc` with

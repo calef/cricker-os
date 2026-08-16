@@ -354,15 +354,40 @@ pub fn start_net_stack(
 /// (`user/src/smb_server.rs`'s `FS_VA`). MUST match that program's source, like every VA here.
 const FS_VA_SMB: u64 = 0x0000_0000_00B0_0000;
 
+/// **What the SMB adapter's `arg2` means**, mirroring `user/src/smb_server.rs`'s `SHARE_*`
+/// constants, which MUST agree with these the way [`FS_VA_SMB`] must agree with its `FS_VA`.
+///
+/// Spelled twice rather than shared through `smb_proto`, deliberately and as an exception worth
+/// naming: the kernel does not depend on that crate, and taking a dependency to import three
+/// integers is the trade the port constant beside it already refused ("spelled here as a literal
+/// so the kernel does not take the crate for one constant"). The cost is that a drift is caught
+/// by the gate rather than by the compiler, which is one rung down from where AGENTS.md would
+/// like it; the gate does catch it, because a wrong mode makes the adapter refuse a write the
+/// prober requires or accept one the read-only run forbids.
+///
+/// The fixture is the no-disk fallback and is read-only by construction, so it has no writable
+/// twin.
+pub const SMB_SHARE_FIXTURE: u64 = 0;
+/// No boot wires this yet, and it is spelled anyway: the encoding is a mirror of the program's,
+/// and a mirror with a hole in it is worse than no mirror. Both boots that exist want the write
+/// path (the test to gate it, `smb-serve` to demonstrate it); a read-only view of the real
+/// filesystem is the wiring a deployment would want and nothing in-tree needs.
+#[allow(dead_code)]
+pub const SMB_SHARE_FS_READ_ONLY: u64 = 1;
+pub const SMB_SHARE_FS_READ_WRITE: u64 = 2;
+
 /// Spawn one client of a `Stack` endpoint: WRITE on the shared endpoint, its own untyped, a
-/// report endpoint, two extra stack pages, no heap. The shared body of [`start_net_stack`]'s
+/// report endpoint, [`NET_CLIENT_STACK_PAGES`] extra stack pages, no heap. The shared body of [`start_net_stack`]'s
 /// socket-contract client and the SMB adapter below; `arg0`/`arg1` are the client's, and mean
 /// whatever its `_start` says they mean.
 ///
 /// `fs` is the SMB adapter's directory capability: the file-service endpoint and the physical
 /// frame of the page its clients share with the FS server, granted as slot 3 and mapped at
-/// [`FS_VA_SMB`]. `Some` also tells the program so (`arg2`, `smb_server`'s contract); `None` is
-/// every other stack client, and the fixture-serving adapter of a boot with no RedoxFS disk.
+/// [`FS_VA_SMB`], together with the `arg2` share mode it is to be served in
+/// ([`SMB_SHARE_FS_READ_ONLY`] or [`SMB_SHARE_FS_READ_WRITE`]). `None` is every other stack
+/// client, and the fixture-serving adapter of a boot with no RedoxFS disk; it forces
+/// [`SMB_SHARE_FIXTURE`] here rather than trusting a caller to pair the two, because a mode
+/// naming a filesystem the client was not granted is a wiring bug with no useful behaviour.
 ///
 /// `held` is the caller's [`Holding`]: this client's thread and the three regions behind it are
 /// added to whatever the net server already put there, so one `release` at the end of a test ends
@@ -372,12 +397,12 @@ fn spawn_stack_client(
     arg0: u64,
     arg1: u64,
     stack: EpId,
-    fs: Option<(EpId, u64)>,
+    fs: Option<(EpId, u64, u64)>,
     held: &mut Holding,
 ) -> EpId {
     use crate::cap::untyped_cap;
 
-    // The client's report endpoint and its two stack pages share one region with the budget's
+    // The client's report endpoint and its stack pages share one region with the budget's
     // lifetime rules: the report endpoint may go while the client still exists (that is the wake),
     // the stack pages may not. A client that reports and exits needs neither, but a client that
     // wedges is exactly the case worth being able to end.
@@ -388,7 +413,9 @@ fn spawn_stack_client(
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the net client");
     let cli_stack_region =
         crate::untyped::create(NET_CLIENT_STACK_PAGES).expect("no stack region for the net client");
-    // Three slots: the two stack pages, and the shared FS page an SMB adapter also gets.
+    // One slot per stack page, plus the shared FS page an SMB adapter also gets. The FS page is
+    // the tail slot, so it moves with NET_CLIENT_STACK_PAGES rather than sitting at a literal
+    // index a raise of that constant would silently turn into a stack page.
     let mut maps = [Mapping {
         va: 0,
         phys: 0,
@@ -405,7 +432,7 @@ fn spawn_stack_client(
         m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
         m.phys = phys;
     }
-    let n_maps = if let Some((_, file_shared)) = fs {
+    let n_maps = if let Some((_, file_shared, _)) = fs {
         maps[NET_CLIENT_STACK_PAGES as usize] = Mapping {
             va: FS_VA_SMB,
             phys: file_shared,
@@ -427,7 +454,7 @@ fn spawn_stack_client(
             // needs a fourth element either way; this placeholder is never granted.
             endpoint_cap(cli_report, Rights::WRITE),
         ];
-        let n_grants = if let Some((file_ep, _)) = fs {
+        let n_grants = if let Some((file_ep, _, _)) = fs {
             grants[3] = endpoint_cap(file_ep, Rights::WRITE);
             4
         } else {
@@ -438,7 +465,7 @@ fn spawn_stack_client(
             Spawn {
                 arg0,
                 arg1,
-                arg2: fs.is_some() as u64,
+                arg2: fs.map_or(SMB_SHARE_FIXTURE, |(_, _, mode)| mode),
                 grants: &grants[..n_grants],
                 maps: &maps[..n_maps],
             },
@@ -501,7 +528,7 @@ pub fn start_net_stack_with_smb(
     smb_port: u16,
     smb_rounds: u64,
     mdns_queries: u64,
-    fs: Option<(EpId, u64)>,
+    fs: Option<(EpId, u64, u64)>,
     udp_bind_grant: u64,
 ) -> Option<(EpId, EpId, EpId, Holding)> {
     let dev = crate::virtio::find_net_device()?;
@@ -550,7 +577,7 @@ pub fn start_smb_serve(
     net_stack_image: &'static [u8],
     smb_image: &'static [u8],
     mdns_image: &'static [u8],
-    fs: Option<(EpId, u64)>,
+    fs: Option<(EpId, u64, u64)>,
 ) -> Option<(u64, EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {

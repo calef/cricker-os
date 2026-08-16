@@ -198,6 +198,37 @@ trap_return:
 
     sret
 
+# RUN THE HANDLER ON THIS HART'S INTERRUPT STACK (milestone 124).
+#
+#   a0 = &mut TrapFrame      a1 = the stack to run on, or 0 to stay
+#
+# The twin of aarch64's `dispatch_on_interrupt_stack` in vectors.s, and the same contract: the frame
+# stays where trap_entry built it (a preempted thread's frame must survive until that thread runs
+# again, which a per-hart stack cannot promise), and everything above it moves. Rust decides whether
+# to switch, in `interrupt_stack::top_for_trap`; this only moves `sp`.
+#
+# s0 holds the interrupted sp across the call because it is callee-saved, so the handler cannot
+# clobber it and it needs no slot on either stack. Its own save costs the interrupted stack 16 bytes.
+# `riscv_trap_body` returns its bool in a0, which nothing here touches.
+.global dispatch_on_interrupt_stack
+dispatch_on_interrupt_stack:
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
+    sd      s0, 0(sp)
+
+    beqz    a1, 5f                  # 0: stay on this stack (from U-mode, pre-init, or nesting)
+    mv      s0, sp
+    mv      sp, a1
+    call    riscv_trap_body
+    mv      sp, s0                  # back to the interrupted stack BEFORE anything can switch away
+    j       6f
+5:  call    riscv_trap_body
+
+6:  ld      ra, 8(sp)
+    ld      s0, 0(sp)
+    addi    sp, sp, 16
+    ret
+
 # The first entry to U-mode: load `frame` (a0) as the trap frame and return into it. The frame was
 # built by TrapFrame::for_user_entry with sstatus.SPP = 0 (U-mode) and SPIE set, sepc = the entry,
 # x[2] = the user sp, a0..a2 = the child's arguments. Reached only through `enter_user` in
