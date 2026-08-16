@@ -414,10 +414,10 @@ fn spawn_stack_client(
 }
 
 /// **Spawn the net server, the inbound socket-contract client, AND the SMB adapter** (milestones
-/// 107 and 54), all on one NIC and one `Stack` endpoint. Returns
+/// 107, 54 and 55's stack half), all on one NIC and one `Stack` endpoint. Returns
 /// `(socket client's report, smb server's report)`, or `None` with no NIC.
 ///
-/// One spawn serves two milestones for the same reason milestone 107's grant checks ride in its
+/// One spawn serves three milestones for the same reason milestone 107's grant checks ride in its
 /// accept exchange: **a second `net_stack` does not fit the test boot.** Its 192-page untyped
 /// region is never reclaimed, and the aarch64 suite already ran out of contiguous memory the day
 /// someone tried (see `virtio::MAX_DEVICES`). So the SMB adapter is spawned as a *second client
