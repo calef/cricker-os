@@ -433,6 +433,14 @@ fn spawn_stack_client(
 /// `fs` is the adapter's directory capability into the FS service (milestone 54's second act):
 /// [`spawn_stack_client`] documents its two halves. With `Some` the adapter serves the RedoxFS
 /// share the seeding client just wrote; with `None` it serves its baked-in fixture.
+///
+/// `udp_bind_grant` is the third milestone in the same spawn (55's mDNS stack half): the UDP port
+/// range the socket client may `BIND_UDP`, [`socket_proto::udp_bind_grant`]'s half of the word, or
+/// zero when no client needs one. It is a *separate* parameter rather than folded into the port
+/// arguments because it grants a different verb over a different namespace, and because the two
+/// halves living in one word is exactly what the composed packing has to be exercised on: this is
+/// the only spawn in the tree that hands out both at once, so it is the only place the machine
+/// checks that the listen grant and the UDP grant do not leak into each other.
 pub fn start_net_stack_with_smb(
     image: &'static [u8],
     smb_image: &'static [u8],
@@ -441,12 +449,14 @@ pub fn start_net_stack_with_smb(
     smb_port: u16,
     smb_rounds: u64,
     fs: Option<(EpId, u64)>,
+    udp_bind_grant: u64,
 ) -> Option<(EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
     };
-    let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port));
+    let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port))
+        | udp_bind_grant;
     let (net_stack_report, stack) = wire_net_server(image, transport, dev.intid, None, grant);
     let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
     let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs);

@@ -27,6 +27,19 @@ citation), `unrecorded` (nothing outside this block says why). **The gate checks
 **The name is calef's** (AGENTS.md, "calef names the crates, the programs, and the shared modules").
 Ship a provisional one, say so in your report, expect it to change.
 
+**Do not write `provisional` in the block, even though that is AGENTS.md's word for it.** The gate
+takes exactly `ratified <date>`, `recorded` or `unrecorded`, and rejects anything else:
+
+```
+names: program doubler: the block must start `ratified <date>` or `unrecorded`
+       (found '**provisional**. Introduced 2026-08-16 while wal')
+```
+
+A provisional name **is** `unrecorded` (nothing outside the block says why it is called that), so
+write `unrecorded` and add the word after it if it matters: `unrecorded, and explicitly
+**provisional**`, which two programs in the tree already do. The clash between the rule's vocabulary
+and the gate's is real, cost run 2 a red gate, and is §89's question rather than this page's.
+
 ### 3. A `[[bin]]` block in `user/Cargo.toml`
 
 ```toml
@@ -42,11 +55,23 @@ bench = false
 
 ### 4. Pack it into both initrds, in `xtask/src/main.rs`
 
-**Two hand-maintained lists, in two different shapes, and skipping the second silently breaks a
-parity gate (§19).**
+**Three hand-maintained lists, in three different shapes, and skipping any of them breaks something
+different.** This page said "two" until run 2 walked it and found the third.
 
-- `mkinitrd()` for aarch64: one `let` block per program.
-- `initrd_riscv()` for riscv64: an entry in the `entries` table.
+- `mkinitrd()` for aarch64: **a line in the `for name in [ ... ]` list.** There is also an older tier
+  of hand-written `let name = match read_stripped(...)` blocks, one per program, which is what this
+  page used to send you to write; a new program does not need one, and following the old advice
+  costs you eight lines of boilerplate the tree stopped needing.
+- `initrd_riscv()` for riscv64: **two edits, not one.** A `"--bin", "your_program",` pair in the
+  `cargo build` argument list at the top of the function, **and** a `("your_program",
+  "your_program")` row in the `entries` table below it. The table reads an ELF that only the `--bin`
+  list causes cargo to build, so half the edit fails the build with `mkinitrd: cannot read
+  .../your_program: No such file or directory`.
+
+That last trap is not hypothetical, and the file carries its own scar about it: the credential pair
+(milestone 56) sat in the riscv tables while nobody added them to the `--bin` list, so a clean tree
+could not build them, and the lane's own riscv leg went green on a stale binary its target directory
+still held.
 
 There is no reason for the asymmetry beyond history. If you find yourself wishing it were one list,
 you are right, and that is worth a milestone rather than a drive-by.
@@ -58,12 +83,31 @@ it again costs directory entries per block, so do not let a name spend it.
 
 ### 6. If the shell should be able to spawn it: a `Prog` variant
 
-In `crates/grant_plan/src/lib.rs`: a `name()`, a `from_id()` arm, a **stable wire id**, and a
-`manifest()`.
+In `crates/grant_plan/src/lib.rs`, **six edits**, not the four this page used to list:
+
+1. the `Prog` variant itself;
+2. `from_name()`, which is how the shell resolves what you type. Without it the program is in the
+   archive, loadable, and unreachable from the prompt, which looks like the program being broken
+   rather than unlisted;
+3. `name()`;
+4. `id()`, the **stable wire id**;
+5. `from_id()`;
+6. **`PROG_COUNT`**, which this page never mentioned and whose own doc comment says forgetting it is
+   "an out-of-bounds panic in init rather than a compile error".
 
 **The wire id is the expensive part.** It is a thing two programs agree on, which CLAUDE.md classes
 as hard to reverse: the shell sends it and init decodes it, so changing one later is a flag day. The
 code around it is cheap; the number is not.
+
+**Then expect the build to fail in a crate you did not edit**, and expect that to be the design
+working:
+
+```
+error[E0004]: non-exhaustive patterns: `Prog::Doubler` not covered
+   --> crates/swish/src/lib.rs:785:11
+```
+
+The shell must say how your program's answer renders, so the compiler asks. Add the arm.
 
 ## What you declare: the manifest
 
@@ -82,9 +126,24 @@ grant aimed at a clock reader stops at the prompt.
 ## Check your work
 
 ```sh
+cargo xtask build    # ~20s, and it is what packs both archives
 script/lint          # the name block, the conventions, the host pass
 script/test          # both ISAs, which is where a missed riscv initrd entry surfaces
 script/shell-check   # if the shell spawns it
+```
+
+If the shell spawns it, add a line to `SHELL_CHECK_SCRIPT` in `xtask/src/main.rs` and bump the
+array length the compiler asks for: `("doubler 21", Some("21*2 = 42")),`.
+
+**Then run it once with a deliberately wrong expectation.** A green harness only proves the harness
+did not complain; a red one proves your program was really loaded from the archive, measured,
+granted its endpoint and run at EL0:
+
+```
+$ doubler 21
+  a process at EL0 computed 21*2 = 42
+--- shell-check (aarch64) FAILED ---
+  `doubler 21` answered "a process at EL0 computed 21*2 = 42", wanted "21*2 = 43"
 ```
 
 ## BUGS
@@ -95,6 +154,14 @@ script/shell-check   # if the shell spawns it
 - **This page is prose and the code can move without it.** The step that rots first is the manifest
   field list, which is why it is not repeated here: [program-manifest.md](program-manifest.md) has it,
   and the struct in `crates/grant_plan/src/lib.rs` is the authority over both.
-- **Not written from having done it.** This was reconstructed after a stranger reconstructed it,
-  which means it is a second-hand account of a first-hand guess. The first person to add a program
-  against this page should correct whatever it gets wrong.
+- **Written from having done it, once, on 2026-08-16.** It began as a second-hand account of a
+  first-hand guess: reconstructed after milestone 117's first stranger reconstructed it, and its own
+  BUGS section asked the first person to add a program against it to correct whatever it got wrong.
+  Run 2 did exactly that, adding a program called `doubler` and getting it answering at the prompt on
+  both ISAs, and the page was wrong in four places: the aarch64 tier, the riscv `--bin` list, two of
+  the six `grant_plan` edits, and the `provisional` spelling the gate rejects. Those are fixed above.
+  **One walk-through is not a guarantee**, and the next person to add a program should treat a
+  surprise here as this page's bug rather than their own.
+- **One fact is written in five places** and nothing joins them: two initrd lists in different
+  shapes, a `--bin` list, a six-part `Prog` table, and an exhaustive match in the shell. Steps 4 and
+  6 are long because the tree is, not because adding a program is hard.

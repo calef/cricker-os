@@ -311,7 +311,7 @@ pub fn log_get(seq: u64) -> u64 {
 // The component itself: one serving loop, two implementations of one function.
 // ===========================================================================================
 
-/// The capability layout every instance is built with. The operator's `Endow.caps` lists them in
+/// The capability layout every instance is built with. The operator's `ChildEndowment.caps` lists them in
 /// this order, so they land in these slots.
 pub const SVC: u64 = 0; // READ: requests arrive here. The stable name.
 pub const RPT: u64 = 1; // WRITE: the record the test reads.

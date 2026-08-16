@@ -22,6 +22,16 @@
 //!     not the guest as a client. A port outside the stack's listen grant is refused as a matter of
 //!     authority, the granted one binds and is exclusive, and then a *host* process connects to it
 //!     through QEMU's `hostfwd` twice, which proves the listener re-arms.
+//!     The same spawn then carries **the mDNS-shaped exchange** (milestone 55's stack half),
+//!     because a second net server does not fit the aarch64 boot (the memory receipt in
+//!     notes/net.md; this lane re-measured it: an eleventh spawn died as
+//!     `Unmappable(OutOfFrames)` in an unrelated later test). The UDP twin of the grant half (a
+//!     fixed port outside the UDP bind grant is refused, 5353 binds, and is exclusive, which
+//!     incidentally proves the two grant halves compose in one word on the machine), then the
+//!     multicast round trip slirp cannot carry on its own: the guest sends to 224.0.0.251 (the
+//!     trigger), xtask's multicast prober injects a datagram to the group through the hub the
+//!     runner wires beside slirp, and the guest proves the joined group receives, that the source
+//!     endpoint arrived with it, and that it can answer the group with bytes it composed.
 //!
 //! On success it reports `OK`; any failure reports a stage code, so the kernel test fails loudly
 //! with a hint rather than hanging.
@@ -97,6 +107,30 @@ const OUT_MSG: &[u8] = b"nife-out!";
 const TFTP_NAME: &[u8] = b"nife";
 const TFTP_BODY: &[u8] = b"nife-tftp!";
 
+/// **The mDNS-shaped exchange** (milestone 55's stack half). The group and port are RFC 6762's;
+/// the denied port is deliberately outside the one-port grant the kernel test spawns, so asking
+/// for it proves the grant refuses rather than that nothing happened to bind. The three payloads
+/// must match xtask's multicast prober (`MDNS_TRIGGER`/`MDNS_QUERY`/`MDNS_ANSWER` there): the
+/// trigger is what the guest multicasts first (its arrival at the prober is itself the proof that
+/// multicast SENDTO reaches the wire), the query is what the prober injects to the group, and the
+/// answer is what the guest composes back. Query and answer are different strings on purpose, the
+/// inbound gate's discipline: an echo would pass even if the guest were reflecting bytes.
+const MDNS_IP: [u8; 4] = [224, 0, 0, 251];
+const MDNS_PORT: u16 = 5353;
+const MDNS_DENIED_PORT: u64 = 4444;
+const MDNS_TRIGGER: &[u8] = b"nife-mdns?";
+const MDNS_QUERY: &[u8] = b"nife-mdns-in";
+const MDNS_ANSWER: &[u8] = b"nife-mdns-out";
+/// The source address the prober writes on its injected frame. Nothing on the virtual network
+/// holds it; the guest asserts it back from the RECV header, which proves the reported source is
+/// the datagram's and not something slirp-shaped the stack already knew.
+const MDNS_PROBER_IP: [u8; 4] = [10, 0, 2, 99];
+/// Trigger-and-receive attempts. Two, not DNS's three: every hop is a lossless local pipe (guest
+/// to QEMU's hub to the prober's TCP socket and back), so the only loss worth covering is the
+/// prober not yet being attached, and each attempt already waits out the server's full bounded
+/// RECV. More attempts would push a genuine failure past the QEMU watchdog.
+const MDNS_ATTEMPTS: u32 = 2;
+
 /// How many times the real-DNS check sends its query before giving up. A DNS client retries; UDP has
 /// no retransmit of its own and the measured single-query loss to a real resolver was ~2.5%, so one
 /// attempt made an environment-dependent test look like a code defect. Three attempts is ordinary
@@ -114,6 +148,19 @@ fn w16le(va: u64, v: u16) {
 fn r8(va: u64) -> u8 {
     // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u8) }
+}
+fn r16le(va: u64) -> u16 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
+    unsafe { core::ptr::read_volatile(va as *const u16) }
+}
+
+/// The source endpoint a UDP RECV reply left in the frame header (`socket_proto`'s layout note).
+fn recv_source() -> ([u8; 4], u16) {
+    let mut ip = [0u8; 4];
+    for (i, b) in ip.iter_mut().enumerate() {
+        *b = r8(FRAME_VA + OFF_DST_IP + i as u64);
+    }
+    (ip, r16le(FRAME_VA + OFF_DST_PORT))
 }
 
 /// Set the shared frame's destination header.
@@ -294,16 +341,33 @@ fn udp_tftp() -> ! {
         }
     }
 
+    // The RECV reply now carries the DATA packet's source endpoint in the frame header (milestone
+    // 55's stack half), and this is the slirp-provable check of it: the DATA came from the gateway,
+    // from a real port. The port is deliberately not pinned to 69: TFTP's own protocol has the
+    // server answer from a transfer-id port of its choosing (RFC 1350 §4), so asserting 69 would
+    // pin a libslirp implementation detail.
+    let (src_ip, src_port) = recv_source();
+    if src_ip != GW_IP {
+        done(0xE046); // the reported source is not the server that answered
+    }
+    if src_port == 0 {
+        done(0xE047); // no source port arrived at all
+    }
+
     // ACK block 1, which ends the transfer properly: { u16 opcode = 4 }{ u16 block = 1 }. The fixture
     // is one short block, so this is the last packet of the exchange. Without it the server would sit
     // retransmitting its DATA at a socket we are about to close, which is rude to the next test that
     // brings this NIC up even though libslirp eventually gives up on its own.
+    //
+    // Addressed to the DATA's reported source rather than to :69, which is what TFTP's TID scheme
+    // asks for and is the first real consumer of the source endpoint: replying to the querier is
+    // exactly the move an mDNS legacy-unicast responder makes.
     let mut a = FRAME_VA + OFF_PAYLOAD;
     put8(0x00, &mut a);
     put8(0x04, &mut a);
     put8(0x00, &mut a);
     put8(0x01, &mut a);
-    set_dst(GW_IP, TFTP_PORT);
+    set_dst(src_ip, src_port);
     let _ = call(STACK, req(OP_SENDTO, 0), a - (FRAME_VA + OFF_PAYLOAD));
 
     let _ = call(STACK, req(OP_CLOSE, 0), 0);
@@ -430,6 +494,13 @@ fn tcp_accept_inbound() -> ! {
     serve_one_inbound(0xE070);
 
     let _ = call(STACK, req(OP_CLOSE, LISTEN_SID), 0);
+
+    // The mDNS half rides in this same spawn (milestone 55's stack half), because a second net
+    // server does not fit the aarch64 boot: the spawn is ~154 frames nothing ever reclaims, and
+    // this lane measured the eleventh one dying as `Unmappable(OutOfFrames)` in an unrelated later
+    // test, the exact failure notes/net.md's memory receipt predicted. Milestone 107 folded its
+    // grant half for the same reason; the stage codes stand in for the separate test's name.
+    udp_mdns_half();
     done(OK);
 }
 
@@ -461,6 +532,105 @@ fn serve_one_inbound(base: u64) {
     if call(STACK, req(OP_CLOSE, CONN_SID), 0).0 != REP_OK {
         done(base + 4);
     }
+}
+
+/// **The mDNS-shaped half: a granted fixed port, and the joined group receives** (milestone 55's
+/// stack half; runs inside the accept test's spawn, see `tcp_accept_inbound`). What it proves, in
+/// order, is exactly the list notes/mdns.md said the responder was missing:
+///
+/// - **The UDP bind grant is an authority.** A port outside it is `LISTEN_DENIED` (no retry helps),
+///   5353 binds because the spawn granted it, and a second bind on the same port collides. The
+///   grant half's shape, for UDP, and since this spawn's word also carries the TCP listen grant
+///   the accept half just spent, the machine is exercising the composed word, not one half alone.
+/// - **Multicast SENDTO reaches the wire.** The trigger datagram to 224.0.0.251 is only useful
+///   because the host-side prober *receives* it off the hub, so its arrival is the measurement the
+///   note asked for rather than an unobserved `REP_OK`.
+/// - **The joined group receives.** The prober's injected datagram is addressed to 224.0.0.251,
+///   not to the guest's own address; without the `multicast` feature and the join, the IPv4 input
+///   path drops it before UDP ever sees it, and this RECV times out.
+/// - **The source endpoint arrives with it.** The frame header must carry the prober's spoofed
+///   source, ip and port both; RFC 6762 §6.7's legacy-unicast semantics turn on exactly this.
+///
+/// The answer then goes back to the group with bytes the guest composed, and the prober requires
+/// them, closing the loop from outside. Retried once: every hop is a lossless local pipe, so the
+/// only miss worth covering is the prober attaching late, and each attempt already waits out the
+/// server's full 15 s bounded RECV.
+///
+/// The bound socket lives at `CONN_SID`, whose frame the accept half already attached (a closed
+/// socket id keeps its frame; that is the reopen test's contract). `LISTEN_SID` is the spare the
+/// refusal checks use, which need no frame because they fail before any byte crosses.
+fn udp_mdns_half() {
+    match call(STACK, req(OP_BIND_UDP, LISTEN_SID), MDNS_DENIED_PORT).0 {
+        LISTEN_DENIED => {}
+        LISTEN_GRANTED => done(0xE080), // bound a port nothing granted: the whole point, lost
+        _ => done(0xE081),
+    }
+
+    match call(STACK, req(OP_BIND_UDP, CONN_SID), MDNS_PORT as u64).0 {
+        LISTEN_GRANTED => {}
+        LISTEN_DENIED => done(0xE082), // the spawn granted the wrong range
+        _ => done(0xE083),
+    }
+
+    // Exclusive, the property that makes a fixed port grantable rather than merely a number.
+    match call(STACK, req(OP_BIND_UDP, LISTEN_SID), MDNS_PORT as u64).0 {
+        LISTEN_IN_USE => {}
+        LISTEN_GRANTED => done(0xE084), // two sockets on one fixed port
+        _ => done(0xE085),
+    }
+
+    // Trigger, then wait for the prober's injection to the group.
+    let mut got = 0u64;
+    for _ in 0..MDNS_ATTEMPTS {
+        for (i, &b) in MDNS_TRIGGER.iter().enumerate() {
+            w8(FRAME_VA + OFF_PAYLOAD + i as u64, b);
+        }
+        set_dst(MDNS_IP, MDNS_PORT);
+        if call(STACK, req(OP_SENDTO, CONN_SID), MDNS_TRIGGER.len() as u64).0 != REP_OK {
+            done(0xE086); // the multicast send itself failed inside the stack
+        }
+        let (rlen, _) = call(STACK, req(OP_RECV, CONN_SID), 0);
+        if rlen != REP_ERR && rlen != 0 {
+            got = rlen;
+            break;
+        }
+    }
+    if got == 0 {
+        // Nothing addressed to the joined group ever arrived. Either the RX acceptance this lane
+        // exists to prove is broken, or the host side is missing; the kernel test's message says
+        // how to tell them apart.
+        done(0xE087);
+    }
+    if got != MDNS_QUERY.len() as u64 {
+        done(0xE088);
+    }
+    for (i, &b) in MDNS_QUERY.iter().enumerate() {
+        if r8(FRAME_VA + OFF_PAYLOAD + i as u64) != b {
+            done(0xE089); // something reached the group and said something else
+        }
+    }
+
+    // The source endpoint rode back in the header, and it is the prober's spoofed one, which
+    // nothing on the virtual network holds: the stack cannot have known it any way but from the
+    // datagram. Port 5353 is the "full mDNS querier" case of RFC 6762 §6.7.
+    let (src_ip, src_port) = recv_source();
+    if src_ip != MDNS_PROBER_IP {
+        done(0xE08A);
+    }
+    if src_port != MDNS_PORT {
+        done(0xE08B);
+    }
+
+    // Answer the group with composed bytes; the prober requires them from outside.
+    for (i, &b) in MDNS_ANSWER.iter().enumerate() {
+        w8(FRAME_VA + OFF_PAYLOAD + i as u64, b);
+    }
+    set_dst(MDNS_IP, MDNS_PORT);
+    if call(STACK, req(OP_SENDTO, CONN_SID), MDNS_ANSWER.len() as u64).0 != REP_OK {
+        done(0xE08C);
+    }
+
+    let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);
 }
 
 /// Run the selected client exchange. Entered from `net_stack`'s `_start` when the entry role is nonzero.

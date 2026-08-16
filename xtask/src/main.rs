@@ -984,6 +984,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     // the referee is: it is what sets `NIFE_HOSTFWD_PORT`, and the runner reads it from the
     // environment the child inherits.
     let prober = InboundProber::new(arch);
+    // The multicast prober (milestone 55's stack half), on the same terms: it sets
+    // `NIFE_MCAST_PORT` before the child exists, so it must be constructed first, and it runs
+    // passively for the whole boot because nothing here knows when the mDNS test starts.
+    let mcast = MulticastProber::new(arch);
     // And the SMB prober (milestone 54), same terms: it sets `NIFE_SMB_HOSTFWD_PORT` before the
     // child exists, and it drives the mount-shaped exchange the SMB gate asserts.
     let smb_prober = SmbProber::new(arch);
@@ -1012,12 +1016,13 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         referee.poll();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    // All three, and not short-circuited: a run that lost the scanout AND an inbound answer
-    // should say so once rather than making the reader run it again to find the next failure.
+    // All four, and not short-circuited: a run that lost the scanout AND a network answer should
+    // say so once rather than making the reader run it again to find the next failure.
     let scanout = referee.report();
     let inbound = prober.report();
+    let multicast = mcast.report();
     let smb = smb_prober.report();
-    scanout && inbound && smb
+    scanout && inbound && multicast && smb
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1399,6 +1404,302 @@ fn probe_inbound(
              to 127.0.0.1:{port}; last attempt: {last}"
         ))
     }
+}
+
+/// The multicast exchange's three payloads, which must match `user/src/socket_test_client.rs`
+/// (`MDNS_TRIGGER`/`MDNS_QUERY`/`MDNS_ANSWER` there). The trigger is what the guest multicasts
+/// first; its arrival HERE, off the raw wire, is the proof that a multicast SENDTO leaves the
+/// guest at all. The query is what this prober injects to the group, and the answer is what the
+/// guest composes back, a different string for the inbound gate's reason: an echo would pass even
+/// if the guest were reflecting bytes.
+const MDNS_TRIGGER: &[u8] = b"nife-mdns?";
+const MDNS_QUERY: &[u8] = b"nife-mdns-in";
+const MDNS_ANSWER: &[u8] = b"nife-mdns-out";
+/// RFC 6762's group and port, and the ethernet address IPv4 multicast maps onto (01:00:5e plus
+/// the group's low 23 bits).
+const MDNS_GROUP: [u8; 4] = [224, 0, 0, 251];
+const MDNS_PORT: u16 = 5353;
+const MDNS_GROUP_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb];
+/// The injected frame's spoofed source. The address is on slirp's subnet but held by nothing, so
+/// when the guest asserts it back from its RECV header the value can only have come from the
+/// datagram; the source port is 5353 because that is the RFC 6762 §6.7 case whose semantics the
+/// eventual responder will branch on. The MAC is locally administered and never claimed by ARP.
+const MDNS_PROBER_IP: [u8; 4] = [10, 0, 2, 99];
+const MDNS_PROBER_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x99, 0x99, 0x99];
+
+/// **The host side of the mDNS gate** (milestone 55's stack half): the peer on the frame-level
+/// hub the runner wires beside slirp when `NIFE_MCAST_PORT` is set.
+///
+/// It exists because slirp cannot carry multicast in either direction, so no exchange through it
+/// can prove the one thing the `multicast` feature was enabled for: that a datagram addressed to
+/// a *group*, not to the guest, is accepted once the guest has joined. This prober speaks QEMU's
+/// socket-netdev protocol (each ethernet frame prefixed with a 4-byte big-endian length, over one
+/// TCP connection) and therefore sees and injects raw frames, below every slirp limitation.
+///
+/// Same shape and lifecycle as [`InboundProber`]: constructed before the child so the runner
+/// inherits the port, running for the whole boot because nothing here knows when the mDNS test
+/// starts, stopped and reported after the suite. It is passive until the guest's trigger arrives,
+/// so the other net tests never see it.
+struct MulticastProber {
+    arch: String,
+    port: Option<u16>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl MulticastProber {
+    /// Pick the port, tell the runner about it, and start listening. Call this **before** the
+    /// child is spawned: the runner reads `NIFE_MCAST_PORT` from the environment it inherits.
+    fn new(arch: &str) -> Self {
+        let Some(port) = free_loopback_port() else {
+            eprintln!("multicast prober ({arch}): could not get a free loopback port");
+            return Self {
+                arch: arch.to_string(),
+                port: None,
+                stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                thread: None,
+            };
+        };
+        // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads. This
+        // runs on the main thread before both the child that reads it and the prober thread
+        // below, and that thread only touches sockets; no thread xtask starts ever writes the
+        // environment.
+        unsafe { std::env::set_var("NIFE_MCAST_PORT", port.to_string()) };
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let thread = std::thread::spawn(move || probe_multicast(port, stop_thread));
+        Self {
+            arch: arch.to_string(),
+            port: Some(port),
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stop listening, and say whether the whole exchange happened: the guest's own multicast
+    /// send seen raw on the wire, the injected group-addressed query, and the guest's composed
+    /// answer back to the group. The guest's assertion covers what it received; this covers what
+    /// actually crossed the wire.
+    fn report(mut self) -> bool {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let arch = &self.arch;
+        let Some(thread) = self.thread.take() else {
+            eprintln!("multicast check ({arch}) FAILED: the prober never started");
+            return false;
+        };
+        match thread.join() {
+            Ok(Ok(())) => {
+                eprintln!(
+                    "multicast check ({arch}): the guest's send to {}.{}.{}.{} reached the wire, \
+                     the injected group-addressed query was accepted, and the guest answered the \
+                     group with its own bytes.",
+                    MDNS_GROUP[0], MDNS_GROUP[1], MDNS_GROUP[2], MDNS_GROUP[3],
+                );
+                true
+            }
+            Ok(Err(reason)) => {
+                let port = self.port.unwrap_or(0);
+                eprintln!();
+                eprintln!("multicast check ({arch}) FAILED: {reason}");
+                eprintln!(
+                    "  (frame socket on 127.0.0.1:{port}.) Slirp cannot carry multicast, so this \
+                     frame-level exchange is the only QEMU proof the joined group receives. See \
+                     notes/mdns.md."
+                );
+                false
+            }
+            Err(_) => {
+                eprintln!("multicast check ({arch}) FAILED: the prober thread panicked");
+                false
+            }
+        }
+    }
+}
+
+/// One prober thread: connect to the hub's socket backend, wait for the guest's trigger, inject
+/// the group-addressed query, and require the guest's composed answer, all as raw frames.
+///
+/// Passive until spoken to, deliberately: the hub floods every frame of the whole boot here
+/// (DHCP for every net test, TFTP, the TCP exchanges), and this thread must never answer any of
+/// it, so it filters for exactly the two group-addressed payloads it knows. Re-injects on every
+/// trigger rather than once, because the guest retries when the first round was lost to this
+/// prober connecting late, and a duplicate injection is at worst a duplicate datagram the guest's
+/// single RECV never sees.
+fn probe_multicast(
+    port: u16,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), String> {
+    use std::io::{ErrorKind, Read, Write};
+    use std::sync::atomic::Ordering;
+
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+
+    // QEMU owns the listening side and comes up whenever the runner gets there; retry until then.
+    let mut s = loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(format!(
+                "the run ended before QEMU ever listened on 127.0.0.1:{port}; is the runner's \
+                 NIFE_MCAST_PORT block attaching the injection hub?"
+            ));
+        }
+        match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)) {
+            Ok(s) => break s,
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    };
+    // Short, so the loop can notice `stop`; not a deadline for anything.
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+    let _ = s.set_nodelay(true);
+
+    let mut triggered = false;
+    let mut acc: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err(if triggered {
+                "the guest's trigger arrived and the query was injected, but the guest never \
+                 answered the group: the injected datagram was most likely dropped by the IPv4 \
+                 accept filter, which is exactly what an unjoined group looks like"
+                    .to_string()
+            } else {
+                "the guest never sent its trigger to the group: either the mDNS test did not run, \
+                 or multicast SENDTO never reached the wire"
+                    .to_string()
+            });
+        }
+        match s.read(&mut buf) {
+            Ok(0) => return Err("QEMU closed the frame socket".to_string()),
+            Ok(n) => acc.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                continue;
+            }
+            Err(e) => return Err(format!("reading frames failed: {e}")),
+        }
+        // The stream is 4-byte big-endian length, then that many bytes of ethernet frame.
+        while acc.len() >= 4 {
+            let flen = u32::from_be_bytes([acc[0], acc[1], acc[2], acc[3]]) as usize;
+            if flen > 65536 {
+                return Err(format!(
+                    "desynchronized from the frame stream (claimed frame length {flen})"
+                ));
+            }
+            if acc.len() < 4 + flen {
+                break;
+            }
+            let payload = group_udp_payload(&acc[4..4 + flen]).map(<[u8]>::to_vec);
+            acc.drain(..4 + flen);
+            if payload.as_deref() == Some(MDNS_TRIGGER) {
+                triggered = true;
+                let frame = mdns_query_frame();
+                let mut msg = (frame.len() as u32).to_be_bytes().to_vec();
+                msg.extend_from_slice(&frame);
+                if let Err(e) = s.write_all(&msg) {
+                    return Err(format!("injecting the query frame failed: {e}"));
+                }
+            } else if payload.as_deref() == Some(MDNS_ANSWER) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// The UDP payload of `frame`, if it is an IPv4 datagram addressed to the mDNS group and port;
+/// `None` for everything else on the hub (ARP, DHCP, TCP, unicast UDP), which this prober must
+/// ignore.
+fn group_udp_payload(frame: &[u8]) -> Option<&[u8]> {
+    let ip = frame.get(14..)?;
+    if frame[12..14] != [0x08, 0x00] || ip.first()? >> 4 != 4 {
+        return None;
+    }
+    let ihl = ((ip[0] & 0xf) as usize) * 4;
+    if *ip.get(9)? != 17 || ip.get(16..20)? != MDNS_GROUP {
+        return None;
+    }
+    let udp = ip.get(ihl..)?;
+    if u16::from_be_bytes([*udp.get(2)?, *udp.get(3)?]) != MDNS_PORT {
+        return None;
+    }
+    let udp_len = u16::from_be_bytes([udp[4], udp[5]]) as usize;
+    udp.get(8..udp_len)
+}
+
+/// The frame this prober injects: ethernet to the group's multicast MAC, IPv4 from the spoofed
+/// source to the group with TTL 255 (RFC 6762 §11), UDP 5353 to 5353 carrying [`MDNS_QUERY`],
+/// checksums real so nothing in the guest's stack has a reason to drop it.
+fn mdns_query_frame() -> Vec<u8> {
+    let udp_len = 8 + MDNS_QUERY.len();
+    let ip_len = 20 + udp_len;
+
+    let mut ip = vec![
+        0x45,
+        0x00,
+        (ip_len >> 8) as u8,
+        ip_len as u8,
+        0,
+        0,
+        0,
+        0,
+        255,
+        17,
+        0,
+        0,
+    ];
+    ip.extend_from_slice(&MDNS_PROBER_IP);
+    ip.extend_from_slice(&MDNS_GROUP);
+    let c = internet_checksum(&ip, 0);
+    ip[10] = (c >> 8) as u8;
+    ip[11] = c as u8;
+
+    let mut udp = vec![
+        (MDNS_PORT >> 8) as u8,
+        MDNS_PORT as u8,
+        (MDNS_PORT >> 8) as u8,
+        MDNS_PORT as u8,
+        (udp_len >> 8) as u8,
+        udp_len as u8,
+        0,
+        0,
+    ];
+    udp.extend_from_slice(MDNS_QUERY);
+    // The UDP checksum runs over a pseudo-header of the addresses, the protocol, and the length.
+    let mut pseudo = 0u32;
+    for chunk in MDNS_PROBER_IP.chunks(2).chain(MDNS_GROUP.chunks(2)) {
+        pseudo += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    pseudo += 17 + udp_len as u32;
+    let uc = internet_checksum(&udp, pseudo);
+    // A computed zero means "no checksum" on the wire; the ones'-complement convention transmits
+    // it as all-ones instead.
+    let uc = if uc == 0 { 0xffff } else { uc };
+    udp[6] = (uc >> 8) as u8;
+    udp[7] = uc as u8;
+
+    let mut frame = Vec::with_capacity(14 + ip_len);
+    frame.extend_from_slice(&MDNS_GROUP_MAC);
+    frame.extend_from_slice(&MDNS_PROBER_MAC);
+    frame.extend_from_slice(&[0x08, 0x00]);
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&udp);
+    frame
+}
+
+/// RFC 1071's ones'-complement sum over `data` (odd trailing byte padded with zero), folded and
+/// inverted, starting from `init` (zero for an IPv4 header, the pseudo-header sum for UDP).
+fn internet_checksum(data: &[u8], init: u32) -> u16 {
+    let mut sum = init;
+    for chunk in data.chunks(2) {
+        let word = if chunk.len() == 2 {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_be_bytes([chunk[0], 0])
+        };
+        sum += word as u32;
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// How many SMB connections the prober must complete (milestone 54). Two, mirroring the echo
@@ -3818,6 +4119,9 @@ fn hvf_kernel_leg() -> bool {
     // accept test is not accelerator-sensitive, but it is in the suite, so a leg without a prober
     // would fail it. Its "before the child" placement is load-bearing exactly as the referee's is.
     let prober = InboundProber::new("aarch64");
+    // And the multicast prober (milestone 55's stack half), for the same reason: the mDNS test is
+    // in the suite, and a leg without the injection hub and its peer would fail it.
+    let mcast = MulticastProber::new("aarch64");
     // And the SMB prober (milestone 54), same reasoning and same placement.
     let smb_prober = SmbProber::new("aarch64");
 
@@ -3905,6 +4209,7 @@ fn hvf_kernel_leg() -> bool {
     // Same ordering argument as the referee's: the probers have to stop while the guest is still
     // there, and their verdicts are collected before QEMU is killed.
     let inbound_ok = prober.report();
+    let mcast_ok = mcast.report();
     let smb_ok = smb_prober.report();
 
     // It is parked at a semihosting trap HVF will not answer, so it will never exit by itself.
@@ -3912,7 +4217,7 @@ fn hvf_kernel_leg() -> bool {
     let _ = child.wait();
 
     match verdict {
-        Some(true) => scanout_ok && inbound_ok && smb_ok,
+        Some(true) => scanout_ok && inbound_ok && mcast_ok && smb_ok,
         Some(false) => {
             eprintln!();
             eprintln!(

@@ -32,6 +32,48 @@ to any question it asks.
    than one that is silent.
 5. **No help mid-run.** If it is stuck, that is the measurement finishing, not a prompt to intervene.
 
+### What run 2 withholds, and what it cannot, decided 2026-08-16 before the run
+
+Run 1's first `BUGS` entry said run 2 must not have this note in the tree it is given. Trying to
+obey it exactly is what showed the entry was asking for something the tree cannot supply, so the
+rule this run used is narrower and is written here rather than left as an intention:
+
+**Withhold the answer key, not the fact that a test exists.** Each stranger got a clone of
+`d6a16b7` with `notes/stranger-test.md` and its `notes/README.md` entry removed and the deletion
+amended into the tip, so the working tree is clean and no `git status` line advertises it. Nothing
+else was touched.
+
+**The mentions of run 1 stay, because removing them would fabricate a different repository.**
+`README.md`, `DECISIONS.md`, `notes/README.md` and the milestone 117 block all cite the first run,
+and three of them do it while making a point a newcomer needs (why `CLAUDE.md` is misnamed, where
+`§N` resolves, what `adding-a-program.md` is for). A tree with those cut is not the tree under test,
+and the milestone's own sentence is *with only this repository*. So a run 2 stranger can discover
+that this project tests its onboarding; what it cannot discover is the rubric's "pass means" column,
+which is the part that made run 1's answers uncountable.
+
+**The stranger writes its log as it goes, and that is a change to the instrument.** Run 2's first
+attempt died part way and left nothing at all: the findings lived in the stranger's own context and
+went with it, which is rung four of the ladder wearing a different hat. So the second attempt keeps
+an append-only journal outside the tree, written before and after each step, with the questions and
+the had-to-work-it-out items recorded at the moment they are hit rather than assembled at the end.
+The cost is real and belongs in `BUGS`: a stranger told its confusion is the deliverable is watching
+itself, which run 1's stranger was not.
+
+**The machine is no longer cold, and the build half is weaker for it.** The maintainer ran
+`cargo --version` inside the repository while getting oriented, which installed the pinned nightly
+from `rust-toolchain.toml`, and the attempt that died had already installed `qemu-system-aarch64`
+and `qemu-system-riscv64`. So B2 and B4 measure a partly warmed machine: whatever those two steps
+would have cost a newcomer, this run cannot see. A cold measurement wants a fresh container and is
+worth doing separately rather than pretending this one is it.
+
+**The strangers were subagents of a maintainer session whose working directory is the repository**,
+which is a weaker isolation than run 1's container and may hand them `CLAUDE.md` before they choose
+to read anything. That would contaminate the reading-order row and four of the eight mental-model
+questions, all of which `CLAUDE.md` answers directly. It is measured rather than assumed: each
+stranger is asked afterwards what it read and in what order, and what was in front of it before it
+chose. A run whose answer is "the constitution was already there" reports no B1 and no M3, M5, M6 or
+M8, rather than reporting them generously.
+
 ## The rubric, written 2026-08-14, before the first run
 
 Two halves. Only the first is mechanical.
@@ -124,14 +166,100 @@ have been. The full report is in the pull requests that carry the fixes.
 **Run 2 is owed**, with a different stranger, after these fixes. That is what makes this a milestone
 rather than an audit: one pass measures, two show whether the fixes worked.
 
+### Run 2, 2026-08-16: a stock Linux box, and a stranger that was not one
+
+**Task given:** the same words run 1 got, plus a journal. "Get the project building and its tests
+passing, then write up what this system is and how you would add a new user program to it," with an
+append-only log written before and after each step, because run 2's first attempt died part way and
+left nothing behind at all.
+
+**It got to green, and the build half is the finding.** `script/test` exits 0 on both ISAs (260
+aarch64 and 263 riscv64 kernel assertions under QEMU, on top of the host crates), `script/lint`,
+`script/fmt --check`, `script/names --check` and `script/shell-check` all pass, and `script/verify`
+reached 91 harnesses across 17 of 19 crates with no failures before the stranger stopped waiting on
+`calendar` and `glob`. It also added a program, `doubler`, and answered `doubler 21` at the prompt on
+both instruction sets, which is the only way to test the how-to page rather than read it.
+
+**`script/setup` cannot complete on a stock Linux box, and had not been able to for weeks.** No
+Ubuntu release ships a QEMU with `riscv-iommu-pci`, so `script/qemu-check` hard-fails by design;
+`script/bootstrap` is `set -e`, so it ended there, before the clang step; and the remedy the error
+named, `script/ci-qemu`, described itself in its own first line as **"CI only"**. The reader was told
+to run a script that told them not to. Every contributor's machine was already warm, so nobody had
+met it. Fixed: bootstrap now prints the whole sequence on Linux, and `ci-qemu` no longer claims to be
+for CI alone.
+
+**The four corrections to `notes/adding-a-program.md`** are the second half, and they are the page's
+own BUGS entry coming true: it asked the first person to add a program against it to correct whatever
+it got wrong. The aarch64 initrd has a newer list the page did not know about, so following it wrote
+eight lines of dead boilerplate. The riscv64 side is two edits rather than one, and missing the
+`--bin` half fails the build on a file cargo was never asked to produce. The `grant_plan` step is six
+edits rather than four, and the two the page omitted are `from_name()` (without it the program is
+unreachable from the prompt) and `PROG_COUNT` (whose own comment says forgetting it is an
+out-of-bounds panic in init rather than a compile error). And the page did not warn that the build
+will fail in `crates/swish`, which is the design working.
+
+**One real code defect, found because the manifest already knew the answer.** `swish`'s `caps`
+preview printed the `arg` line under `matches!(e.prog, Prog::Worker)`, a hand-maintained second copy
+of a fact the manifest holds. `Worker` is the only argument-taking program today, so the tree could
+not see it; the next program to take an argument would have previewed `arg (none)` and then been
+handed the argument anyway. That is the worst direction for that line to be wrong in, since the next
+thing it prints is that reading the command is reading its whole authority. Fixed to read
+`manifest().arg`, with a test that sweeps every `Prog` rather than naming one, because a test naming
+`Worker` would have passed against the bug.
+
+**The `provisional` trap**, which is §89: AGENTS.md tells a lane to ship a provisional name,
+`script/names` accepts only `ratified`/`recorded`/`unrecorded`, and writing the rules' own word gets
+you a red gate. Two programs already work around it in prose. The decision is calef's; the page now
+documents the trap either way.
+
+#### What run 2 cannot claim, and it is most of the mental-model half
+
+**The stranger was not a stranger, and it said so itself.** Asked afterwards what had been in front
+of it before it chose to read anything, it answered that `AGENTS.md`'s full contents arrived in its
+context at turn zero, from the maintainer's checkout it had been told not to read, and that it used
+that document throughout while **never opening the copy in its own tree**. Every "AGENTS.md says X"
+in its write-up is really the other checkout's copy, asserted as though read.
+
+So the pre-registered discount applies, and the rows it covers are reported rather than scored:
+**B1** (a reading order exists) and **M3, M5, M6, M8**, all of which `AGENTS.md` answers directly.
+What survives is what the tree had to supply on its own: **M1** and **M2** it answered from
+`notes/capabilities.md` and `crates/abi`, quoting the note's own "you did not *hold* anything, you
+**said a name**"; **M7** it answered by doing it, which is the strongest evidence in either run and
+is exactly where the tree turned out to be wrong in four places. **M4** is weak: it read
+`design/roadmap/README.md` only in part.
+
+**It also saw that the repository instruments stranger runs, three times, and did not conclude it was
+being measured.** `README.md`, `notes/adding-a-program.md` and `DECISIONS.md` all cite run 1 by name;
+its own grep surfaced `design/roadmap/117-newcomer-onboarding.md` beside the page it wanted, and it
+chose the page and never opened the block. That is the withholding rule working exactly as written
+and no better: the fact leaked, the answer key did not, and the run stayed honest because the
+stranger disclosed rather than because the tree hid anything.
+
+**The one thing this run measured better than run 1** is the build from cold on Linux, and even that
+is partial: the machine had the pinned nightly already, and a dead first attempt had installed both
+QEMUs before the real run started.
+
 ## BUGS
 
 - **The rubric is reachable by grep from inside the test, and run 1 hit it.** The stranger found
   this note while researching an ordinary question and read the "pass means" column, which leaks
   partial answers for at least (a), (c), (e), (g) and (h). It disclosed this unprompted, which is the
-  only reason the contamination is known rather than silently baked into a score. **Run 2 must not
-  have this note in the tree it is given**, or the rubric must move out of the repository, and the
-  latter costs the property that everything here is in-tree and versioned with the code. Unresolved.
+  only reason the contamination is known rather than silently baked into a score. **Resolved for run
+  2 by withholding the answer key rather than the whole subject**, per the rule above: the note and
+  its index entry were removed from the tree each stranger got, and nothing else. It worked as far as
+  it claims and no further. Run 2 met three references to run 1 in ordinary reading, had
+  `design/roadmap/117-newcomer-onboarding.md` returned by its own grep, and knew the project
+  instruments onboarding; it simply never opened the block. **The fact leaks and cannot stop leaking
+  while the instrument is in-tree.** Only the answers are hidden.
+- **The instrument's isolation is the harness's to give, and this harness did not give it.** Run 2's
+  strangers were subagents of a maintainer session whose working directory is the repository, so
+  `AGENTS.md` arrived in the stranger's context at turn zero, from a checkout it had been told not to
+  read. It used that document throughout and never opened the copy in its own tree. **This is worse
+  than the rubric leak it replaced**: the rubric leaks answers to eight questions, while this leaks
+  the single document the whole reading-order finding is about, and it does so before the stranger
+  makes any choice at all. Run 3 must be a process that cannot see this repository except through the
+  tree it is handed: a container, or a session whose working directory is the clone. Unresolved, and
+  it is the reason run 2 reports no B1 and no M3, M5, M6 or M8.
 - **The rubric was written by an agent that has worked in this tree**, which is the same
   disqualification the instrument exists to avoid, one level up. It knows which answers the tree
   gives, so the questions may be shaped around what is answerable. A stranger falling down somewhere
@@ -140,4 +268,16 @@ rather than an audit: one pass measures, two show whether the fixes worked.
   ladder and the same weakness the milestone was written to fix one level down. A periodic run is
   possible and is not built.
 - **The build half cannot be measured from a warm machine**, and every contributor's is warm. The
-  first run should be from a container with nothing installed, or the B-rows measure nothing.
+  first run should be from a container with nothing installed, or the B-rows measure nothing. Run 2
+  came closest and still fell short: the maintainer's own `cargo --version` inside the repository had
+  installed the pinned nightly, and an attempt that died part way had already installed both QEMUs.
+  It found the Linux setup blocker anyway, because that one is a hard failure rather than a saved
+  step.
+- **A journalled stranger is watching itself.** Run 2 was asked to log its questions and its
+  had-to-work-it-out items as it hit them, which is why anything survived its predecessor's death,
+  and it changes the instrument: run 1's stranger produced friction, run 2's produced friction it
+  knew was the deliverable. The log is worth more than the loss, but the two runs are not
+  measurements of quite the same thing.
+- **Two runs by two agents is not two data points about a person.** Both were agents, both read
+  further before asking than a human would, and both were told nobody was available. The note's
+  standing caveat holds and gets no weaker with repetition: every number here is a lower bound.
