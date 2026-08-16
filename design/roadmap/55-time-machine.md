@@ -2,8 +2,13 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: DECISION, MILESTONE 65, MILESTONE 107.** The scoping decision comes before any code: the
-subset of SMB3 that Time Machine needs, or a general SMB3 server. Milestone 65 holds the key
+**Gate: NONE.** The scoping decision is made: **the subset of SMB3 that Time Machine needs**, not
+a general server (calef, 2026-08-15). Decided on the ranking principle: every part of a general
+server the subset omits serves no customer this project has, and the subset's ceiling is
+measurable against the working router where a general server's is a guess. The choice forecloses
+little: milestone 54's mountable-share core and its protocol crate are the shared substrate, and
+a general server would grow from the same crates. (The former MILESTONE 65 and 107 halves cleared
+2026-08-04; found stale 2026-08-15 with the statuses that hid them.) Milestone 65 holds the key
 `ntlm_response` computes with, and 107 is what lets a Mac connect at all. One dependency this block
 names was recorded here as unowned: `RENAME`. **That is no longer true** (corrected 2026-08-14):
 `fs_proto::fs::RENAME` is op 11, fully specified with its rights (`REMOVE` on the source directory,
@@ -70,11 +75,13 @@ expectations will test, and that half was always right.
 
 ## Three users, and this is where the thesis gets a concrete demonstration
 
-calef's setup serves **graeme, corinne and chris**, one partition and one share each, and privacy
-between family members rests on Samba correctly honouring a "Read-Write User = graeme" line in a
-config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
+calef's setup served **graeme, corinne and chris** when this was written; as of 2026-08-15 it is
+**corinne and chris** (measured: the router's `_adisk._tcp` TXT advertises `dk0=adVN=corinne` and
+`dk1=adVN=chris`), graeme having migrated to Windows, whose backups leave Time Machine entirely.
+One partition and one share each, and privacy between family members rests on Samba correctly
+honouring a "Read-Write User = corinne" line in a config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
 
-**Ours would be three adapter instances, each holding one directory capability**, and one adapter
+**Ours would be one adapter instance per user, each holding one directory capability**, and one adapter
 **cannot name** another's partition. Not an ACL check that could be wrong: no capability, no path, no
 way to express the request. That is the security claim of the whole project, stated in terms of
 something calef actually relies on, which makes it the best demonstration target on the roadmap.

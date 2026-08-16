@@ -1,6 +1,16 @@
-# 70. Is milestone 82 BUILT when its finding was "nothing to fix"?
+# 70. BUILT measures the end-state, and a false premise is rewritten in as the finding
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, and the answer sets a precedent.)
+**Status: DECIDED.** calef, 2026-08-15, and the precedent is the point: **a milestone is BUILT
+when its block's end-state holds in the tree, however it came to hold.** The status column exists
+so a reader can ask "does the tree have this property?", not "how much work did it take?": a
+benchmark milestone is BUILT when the numbers exist however easy the run was, and an audit that
+finds nothing wrong still happened. The guard that keeps this from laundering wrong premises into
+history is mandatory: **the false premise is rewritten into the block as a finding, not a
+footnote**, because "we looked and it already holds" is knowledge the tree did not have before
+the looking, and it is usually a §76-shaped discovery that the records and the tree disagreed.
+Milestone 82's block received exactly this treatment on 2026-08-04, provisionally; this ruling
+makes it the rule. The shape recurs with every audit or sweep that finds nothing to fix, and the
+answer is now the same each time.
 
 **What.** Milestone 82 asked for `unsafe_op_in_unsafe_fn` to be adopted after fixing every
 violation. The lane found **zero** violations: every package we own is edition 2024, where the lint
