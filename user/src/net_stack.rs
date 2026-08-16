@@ -19,9 +19,10 @@
 //! - slot 3: an untyped budget, for the heap and for mapping clients' shared frames
 //! - slot 4: the `Stack` endpoint (READ), where clients' requests arrive
 //! - arg1: the DMA page's physical address
-//! - arg2: the **listen grant** (milestone 107), the port range clients of this stack may bind.
-//!   Zero, the default, means no port anywhere: a stack serves inbound connections only when
-//!   whoever spawned it said which ports it may serve them on.
+//! - arg2: the **grant word**: the TCP listen range (milestone 107) in its low half and the
+//!   fixed-UDP bind range (milestone 55's mDNS stack half) in its high half, both packed by
+//!   `socket_proto`. Zero, the default, means no port anywhere in either protocol: a stack serves
+//!   inbound connections, or claims a fixed UDP port, only when whoever spawned it said which.
 //!
 //! Name: ratified 2026-07-30 (calef, DECISIONS §39, landed by milestone 46), replacing `netd`, and
 //! respelled from `netstack` on 2026-08-01 (milestone 63) because `net` is already this tree's word
@@ -106,6 +107,10 @@ fn a_w16(va: u64, v: u16) {
     // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
+fn a_w8(va: u64, v: u8) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
+    unsafe { core::ptr::write_volatile(va as *mut u8, v) }
+}
 
 /// One open socket: its smoltcp handle, whether it is TCP, where its shared frame is mapped, and the
 /// ephemeral local port it was assigned.
@@ -166,10 +171,12 @@ const SOCK_BUF: usize = 2048;
 /// Entry role 0 is the net server; any other role runs the socket-contract client (the same
 /// binary, so the initrd stays under its 15-file directory limit).
 ///
-/// `a2` is the server's **listen grant** (milestone 107, `socket_proto::listen_grant`): the port
-/// range clients of this stack may bind. Whoever spawns the server decides it; a server spawned
-/// without one (`NO_LISTEN_GRANT`, which every outbound-only test uses) can be asked to listen and
-/// will refuse every port. The client half ignores it.
+/// `a2` is the server's **grant word**, both port authorities in one spawn argument: the TCP
+/// listen range in the low half (milestone 107, `socket_proto::listen_grant`) and the fixed-UDP
+/// bind range in the high half (milestone 55's mDNS stack half, `socket_proto::udp_bind_grant`).
+/// Whoever spawns the server decides both; a server spawned with zero (`NO_LISTEN_GRANT`, which
+/// every outbound-only test uses) refuses every `LISTEN` and every `BIND_UDP`. The client half
+/// ignores it.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, dma_phys: u64, a2: u64) -> ! {
     if role == 0 {
@@ -180,7 +187,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, a2: u64) -> ! {
 }
 
 /// The net server: bring the NIC up, run DHCP, then serve the socket contract.
-fn server(dma_phys: u64, listen_grant: u64) -> ! {
+fn server(dma_phys: u64, grant_word: u64) -> ! {
     HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
 
     let mut dev = net_transport::VirtioNet::bring_up(dma_phys);
@@ -338,7 +345,12 @@ fn server(dma_phys: u64, listen_grant: u64) -> ! {
             }
 
             OP_LISTEN => {
-                let rep = tcp_listen(&mut sockets, &mut socks, sid, w1, listen_grant);
+                let rep = tcp_listen(&mut sockets, &mut socks, sid, w1, grant_word);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_BIND_UDP => {
+                let rep = udp_bind(&mut sockets, &mut socks, frame_va[sid], sid, w1, grant_word);
                 reply(cap_slot, rep, 0);
             }
 
@@ -503,11 +515,21 @@ fn sock_recv(
             .recv_slice(&mut buf)
             .unwrap_or(0)
     } else {
-        sockets
-            .get_mut::<udp::Socket>(handle)
-            .recv_slice(&mut buf)
-            .map(|(n, _)| n)
-            .unwrap_or(0)
+        match sockets.get_mut::<udp::Socket>(handle).recv_slice(&mut buf) {
+            Ok((n, meta)) => {
+                // The datagram's source endpoint rides back in the frame's dst fields, which are
+                // dead space on a reply (socket_proto's layout note). A responder needs it: mDNS's
+                // reply semantics turn on the querier's source port (RFC 6762 §6.7), and this used
+                // to be discarded here with `.map(|(n, _)| n)`.
+                let IpAddress::Ipv4(src) = meta.endpoint.addr;
+                for (i, &b) in src.octets().iter().enumerate() {
+                    a_w8(sk.va + OFF_DST_IP + i as u64, b);
+                }
+                a_w16(sk.va + OFF_DST_PORT, meta.endpoint.port);
+                n
+            }
+            Err(_) => 0,
+        }
     };
     for (i, &b) in buf[..n].iter().enumerate() {
         // SAFETY: the payload area of this socket's mapped shared frame; `n` is the byte count smoltcp just produced into `buf`, which is sized to that frame's payload capacity.
@@ -696,6 +718,58 @@ fn tcp_accept(
         listen_port: 0,
     });
     REP_OK
+}
+
+/// **`BIND_UDP`: claim a fixed UDP port, if this stack was granted it** (milestone 55's mDNS stack
+/// half). `tcp_listen`'s three refusals, verbatim, because they are properties of claiming an
+/// exclusive port and not of TCP: outside the grant is a refusal of *authority* (`LISTEN_DENIED`),
+/// a port some live socket already holds is a collision (`LISTEN_IN_USE`, and the check spans
+/// *all* sockets, so a fixed bind cannot silently shadow an ephemeral port a live socket was
+/// allocated), and asking on an occupied socket id is the client's own bookkeeping bug
+/// (`REP_ERR`). Unlike a listener the socket carries bytes, so it takes the frame attached at
+/// `sid` exactly as `OP_OPEN_UDP` would.
+fn udp_bind(
+    sockets: &mut SocketSet,
+    socks: &mut [Option<Sock>; MAX_SOCKETS],
+    va: u64,
+    sid: usize,
+    port_word: u64,
+    grant: u64,
+) -> u64 {
+    if socks[sid].is_some() {
+        return REP_ERR;
+    }
+    // Not truncated to 16 bits, tcp_listen's reasoning: a request for 65536 is a request for a
+    // port no grant can name, and silently taking it as port 0 answers a question nobody asked.
+    if port_word > u16::MAX as u64 {
+        return LISTEN_DENIED;
+    }
+    let port = port_word as u16;
+    if !udp_grant_allows(grant, port) {
+        return LISTEN_DENIED;
+    }
+    if socks.iter().flatten().any(|s| s.local_port == port) {
+        return LISTEN_IN_USE;
+    }
+    let s = udp::Socket::new(
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 8], vec![0u8; SOCK_BUF]),
+        udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 8], vec![0u8; SOCK_BUF]),
+    );
+    let handle = sockets.add(s);
+    if sockets.get_mut::<udp::Socket>(handle).bind(port).is_err() {
+        // Only port 0 is refused, and the grant already excludes it; kept so a surprise is a
+        // clean error rather than a socket nothing owns parked in the set.
+        sockets.remove(handle);
+        return REP_ERR;
+    }
+    socks[sid] = Some(Sock {
+        handle,
+        is_tcp: false,
+        va,
+        local_port: port,
+        listen_port: 0,
+    });
+    LISTEN_GRANTED
 }
 
 fn tcp_send(

@@ -17,11 +17,22 @@
 //! asynchronous or streaming sockets, which the concurrency model defers (notes/net.md).
 //!
 //! ```text
-//!   +0x000  u8[4]  dst_ip      destination address, octets (SENDTO / CONNECT)
-//!   +0x004  u16    dst_port    destination port, little-endian (SENDTO / CONNECT)
+//!   +0x000  u8[4]  dst_ip      destination address, octets (SENDTO / CONNECT);
+//!                              source address on a UDP RECV reply
+//!   +0x004  u16    dst_port    destination port, little-endian (SENDTO / CONNECT);
+//!                              source port on a UDP RECV reply
 //!   +0x006  u16    len         payload length, in for SEND*/out for RECV
 //!   +0x008  ...    payload     up to DATA_MAX bytes
 //! ```
+//!
+//! **A UDP `RECV` reply carries the datagram's source endpoint** in the `dst_ip`/`dst_port`
+//! fields. Those fields are request state that the reply never needed until a server-shaped
+//! client existed: a UDP responder must see who asked, both to answer unicast and because mDNS's
+//! semantics turn on the querier's source port (RFC 6762 §6.7, legacy unicast). The fields are
+//! dead space on a reply, so the source rides there with no format change; a client that only
+//! ever speaks to one peer can keep ignoring them, at the cost of re-writing the destination
+//! before its next `SENDTO`. On a TCP `RECV` they are untouched: the peer is fixed by the
+//! connection and already known to whoever made or accepted it.
 //!
 //! # The inbound half: a listener is not a connection (milestone 107)
 //!
@@ -57,6 +68,16 @@
 //! with) means the server accepts nothing from anywhere: **inbound authority is granted, never
 //! assumed.**
 //!
+//! **A fixed UDP port is the same claim, and gets the same answer** (milestone 55's mDNS stack
+//! half). `OPEN_UDP` allocates an ephemeral local port, contended by nobody; an mDNS responder
+//! must bind 5353, which is an exclusive name in the same shared namespace a TCP listen port is.
+//! So `BIND_UDP` is checked against a **UDP bind grant**, a second inclusive range packed by
+//! [`udp_bind_grant`] into the *same spawn word* (the listen grant lives in the low 32 bits, this
+//! one in the high 32; the two compose with `|`), and it answers with `LISTEN`'s own vocabulary,
+//! because the three outcomes are properties of claiming a port, not of TCP: granted, refused as
+//! a matter of authority, or held by somebody else. The zero word still means no inbound
+//! authority of either kind.
+//!
 //! **BUGS / limits, named here because this is where a reader meets the feature.** The grant's
 //! granularity is the *`Stack` endpoint*, not the client, because an endpoint carries no sender
 //! identity: two clients sharing one endpoint share its grant, and the server cannot tell them
@@ -86,6 +107,12 @@ pub const OP_LISTEN: u64 = 9;
 /// `lsid`, then install it at socket id `target_sid`, which must already have a frame attached and
 /// must not be `lsid`. Replies [`REP_OK`] or [`REP_ERR`]. The listener keeps listening.
 pub const OP_ACCEPT: u64 = 10;
+/// `CALL(req(OP_BIND_UDP, sid), port)`: create a UDP socket bound to the **fixed** `port`, subject
+/// to the stack's [`udp_bind_grant`]. Replies the [`LISTEN_GRANTED`] vocabulary, which is the
+/// port-claim vocabulary rather than a TCP one. Unlike a listener, the socket this creates carries
+/// bytes, so it uses the frame attached at `sid` exactly as `OP_OPEN_UDP`'s would. Name
+/// provisional (milestone 55's mDNS stack half).
+pub const OP_BIND_UDP: u64 = 11;
 
 /// Pack an opcode and socket id into the request word.
 pub const fn req(op: u64, sid: u64) -> u64 {
@@ -141,6 +168,26 @@ pub const fn grant_allows(grant: u64, port: u16) -> bool {
     lo != 0 && port >= lo && port <= hi
 }
 
+/// Pack an inclusive **UDP bind** port range into the high half of the spawn word (milestone 55's
+/// mDNS stack half; the [`listen_grant`] holds the low half, and the two compose with `|`). The
+/// same degenerate cases as the listen grant, for the same reasons: `lo == 0` grants nothing, and
+/// an inverted range is a spawn-site mistake whose safe reading is "grants nothing".
+pub const fn udp_bind_grant(lo: u16, hi: u16) -> u64 {
+    if lo == 0 || hi < lo {
+        return NO_LISTEN_GRANT;
+    }
+    ((lo as u64) << 32) | ((hi as u64) << 48)
+}
+
+/// May a holder of a stack carrying `grant` bind a UDP socket to the fixed `port`? [`grant_allows`]
+/// for the word's UDP half; the two halves are independent authorities, so granting a TCP listen
+/// range grants no UDP port and the reverse.
+pub const fn udp_grant_allows(grant: u64, port: u16) -> bool {
+    let lo = ((grant >> 32) & 0xffff) as u16;
+    let hi = ((grant >> 48) & 0xffff) as u16;
+    lo != 0 && port >= lo && port <= hi
+}
+
 /// Frame header offsets.
 pub const OFF_DST_IP: u64 = 0x000;
 pub const OFF_DST_PORT: u64 = 0x004;
@@ -172,6 +219,7 @@ mod tests {
         OP_CLOSE,
         OP_LISTEN,
         OP_ACCEPT,
+        OP_BIND_UDP,
     ];
 
     /// **The request word round-trips.** `req` packs an opcode and a socket id into one word and
@@ -305,6 +353,59 @@ mod tests {
         // An inverted range is a mistake at the spawn site, and the safe reading of a mistake in a
         // grant is "grants nothing", never "grants the ports between them in the other order".
         assert_eq!(listen_grant(7780, 7778), NO_LISTEN_GRANT);
+    }
+
+    /// **The UDP bind grant admits exactly its range**, the twin of the listen-grant test above
+    /// and for the same reason: this is the authority check itself, and the on-device gate asks
+    /// for one allowed port and one denied one, so an off-by-one here is a server binding a UDP
+    /// port it was never granted with no other test to see it.
+    #[test]
+    fn a_udp_bind_grant_admits_its_range_and_refuses_everything_outside_it() {
+        let g = udp_bind_grant(5353, 5355);
+        assert!(!udp_grant_allows(g, 5352), "one below the range was allowed");
+        for p in 5353..=5355 {
+            assert!(udp_grant_allows(g, p), "port {p} inside the range was refused");
+        }
+        assert!(!udp_grant_allows(g, 5356), "one above the range was allowed");
+
+        // The single-port grant is the one milestone 55 actually spawns (mDNS's 5353).
+        let one = udp_bind_grant(5353, 5353);
+        assert!(udp_grant_allows(one, 5353));
+        assert!(!udp_grant_allows(one, 5354));
+
+        // The degenerate cases read as "grants nothing", exactly as the listen grant's do.
+        assert_eq!(udp_bind_grant(0, 65535), NO_LISTEN_GRANT);
+        assert_eq!(udp_bind_grant(5355, 5353), NO_LISTEN_GRANT);
+        for p in [0u16, 1, 5353, 65535] {
+            assert!(!udp_grant_allows(NO_LISTEN_GRANT, p), "port {p} allowed with no grant");
+        }
+    }
+
+    /// **The two grants share one word and neither leaks into the other.** They are different
+    /// authorities (receive TCP connections on a port, versus claim a fixed UDP port), so a spawn
+    /// that grants one must not have granted the other, and the composed word must answer each
+    /// question from its own half only. A packing overlap here is a stack granting mDNS's port to
+    /// anything that was granted a TCP listen range, silently.
+    #[test]
+    fn the_listen_and_udp_bind_grants_compose_without_leaking() {
+        let listen_only = listen_grant(7778, 7778);
+        assert!(grant_allows(listen_only, 7778));
+        assert!(!udp_grant_allows(listen_only, 7778), "a listen grant granted a UDP bind");
+
+        let udp_only = udp_bind_grant(5353, 5353);
+        assert!(udp_grant_allows(udp_only, 5353));
+        assert!(!grant_allows(udp_only, 5353), "a UDP bind grant granted a TCP listen");
+
+        let both = listen_grant(7778, 7778) | udp_bind_grant(5353, 5353);
+        assert!(grant_allows(both, 7778));
+        assert!(udp_grant_allows(both, 5353));
+        assert!(!grant_allows(both, 5353), "the UDP half answered a listen question");
+        assert!(!udp_grant_allows(both, 7778), "the listen half answered a UDP question");
+
+        // The top of the port space survives the high half's packing.
+        let top = udp_bind_grant(65535, 65535);
+        assert!(udp_grant_allows(top, 65535));
+        assert!(!udp_grant_allows(top, 65534));
     }
 
     /// A grant round-trips through the one word a spawn argument carries, up to the top of the
