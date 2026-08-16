@@ -325,10 +325,14 @@ together by the convenient shape, and the connection was invisible until somethi
   (2026-08-16), written after this entry and `script/stack-frame-check`'s twin of it had both stood
   unbuilt through two rounds of guard-page faults. It reads direct calls out of the disassembly,
   hangs these frame sizes on the graph, and takes the longest path from the entry points a kernel
-  thread stack starts at. Its first answer: 13712 bytes worst case on aarch64, 13344 on riscv64, and
-  a `thread_entry` chain of 9536 that matches this note's measured 9536 exactly. The remaining
-  honest gap is indirect calls, which it cannot see and counts rather than guesses at, so its number
-  is a lower bound on the true worst case.
+  thread stack starts at. Its first answer: 13712 bytes worst case on aarch64, 13344 on riscv64.
+  **Its `thread_entry` chain runs slightly BELOW the watermark measured on the same suite**, 9456
+  against 9536 on aarch64 and 9168 against 9344 on riscv64, and that direction is the point: it
+  reads `.stack_sizes`, **assembly has no entries there**, so `switch_to`'s 96-byte frame,
+  `user_entry_trampoline`'s 272-byte reservation and `spawn_into`'s closure slot are all invisible
+  to it, as are indirect calls. Its number is a lower bound on the true worst case with a measured
+  bias of 80 to 176 bytes, not an upper bound. (An intermediate version reported 9536 on aarch64 and
+  the exact match read as a validation; it was a parsing bug, and this is the corrected pair.)
 - **~~Nothing gates frame size.~~** `script/stack-frame-check` does, since 2026-08-13, at the
   4096-byte guard page. The entry is kept because the sentence that follows it is still the
   argument for the gate: the 6816-byte frame was legal, compiled without a warning, and was found

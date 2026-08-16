@@ -415,23 +415,35 @@ riscv64**, measured by `script/stack-depth-check` over the same test binary CI b
 | trap frame the vector builds | 272 | 288 |
 | handler chain that can nest on kernel code (no syscall or user-fault arm) | 3984 | 3888 |
 | **worst total on a 16384-byte stack** | **13712** | **13344** |
-| measured high water, same suite, milestone 84's watermark | 9536 | (see below) |
+| measured high water, same suite, milestone 84's watermark, this machine | 9536 | 9344 |
 
-Three things make that a bound rather than a guess. The call graph is **acyclic**: no recursion, so
-the longest path is the worst case. **No frame over the 4096-byte guard page is reachable from a
-thread-stack entry point at all** on either ISA, so milestone 124's fix does cover every path that
-reaches a thread, and the frame-jumps-the-guard hazard is genuinely closed there. And the walker's
-`thread_entry` figure and the watermark's measured maximum agree **to the byte** on aarch64 (9536),
-which is a static upper bound and a runtime measurement meeting, from opposite directions.
+Two things make that close to a bound. The call graph is **acyclic**: no recursion, so the longest
+path is the worst case for everything the graph contains. And **no frame over the 4096-byte guard
+page is reachable from a thread-stack entry point at all** on either ISA, so milestone 124's fix
+does cover every path that reaches a thread, and the frame-jumps-the-guard hazard is genuinely
+closed there.
 
-The riscv64 watermark row is deliberately blank rather than filled in from
-notes/stack-high-water.md's table, which reads 11672 there. **That number predates milestone 124**,
-which took the worst `spawn_on` instantiation from 4592 bytes to 1040, so it describes a kernel that
-no longer exists and is above this walker's bound for the kernel that does. Take a fresh one from a
-riscv64 run before quoting either.
+**The third thing is a correction, and it is the useful one.** The first draft of this section said
+the walker and the watermark agreed to the byte on aarch64. They do not. The measured watermark is
+**above** the walker's chain on both ISAs, by 80 bytes on aarch64 (9536 against 9456) and 176 on
+riscv64 (9344 against 9168), and the aarch64 "9536 = 9536" that read as a perfect match came from an
+intermediate run of a script that was still mis-parsing RISC-V local labels.
+
+The direction is the walker's own declared blind spot rather than a surprise: **assembly carries no
+`.stack_sizes` entry**, so `switch_to`'s 96-byte frame, `user_entry_trampoline`'s 272-byte trap-frame
+reservation, and the closure slot `spawn_into` parks at the stack top are all invisible to it. Those
+alone more than cover 80 and 176 bytes. So the number is a **lower** bound with a small measured
+bias, not an upper one, and every use of it here is a comparison against a gap of thousands of bytes
+rather than tens.
+
+The riscv64 watermark row is this machine's own run, not the 11672 in notes/stack-high-water.md's
+table. **That number predates milestone 124**, which took the worst `spawn_on` instantiation from
+4592 bytes to 1040, so it describes a kernel that no longer exists.
 
 A fault at a slot's guard-page **base** needs `sp` at 20480 bytes into a 16384-byte stack. That is
-6768 bytes deeper than anything the binary can produce.
+6768 bytes deeper than anything the binary can produce, and 10944 deeper than anything a run of the
+suite has ever been measured to reach. Neither figure is within a hundred bytes of the other, which
+is why the walker's small downward bias does not touch the conclusion.
 
 ## What the report was actually entitled to say
 
