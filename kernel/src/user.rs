@@ -591,10 +591,15 @@ const INIT_STACK_PAGES: u64 = 8;
 #[cfg_attr(not(test), allow(dead_code))]
 pub const INIT_BOOT_ROLE: u64 = 27;
 
+/// Returns a [`holding::Holding`] over init's thread and its building budget, so a test that is
+/// finished with this init can hand **2048 frames** back. That number is not incidental: six
+/// `spawn_init` tests reserve 8 MiB each and the measured aarch64 boot spent 12289 frames on them,
+/// **42% of everything the suite never returned** (notes/frames.md). The boot path ignores the
+/// holding, correctly: the boot's init is the system.
 // The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
 // the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
+pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) -> holding::Holding {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
 
@@ -671,7 +676,14 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         None
     };
 
-    crate::sched::spawn(move || {
+    // **init's building budget is carved here, not inside the thread**, so the caller has a name for
+    // it and can reclaim it. A large untyped init retypes the child's aspace, frames and TCB from,
+    // sized for a full copy of the initrd program plus its tables and init's scratch. Carving it out
+    // here changes nothing about what init gets; it changes who can name it afterwards, which is the
+    // whole difference between 8 MiB spent and 8 MiB lent. See notes/frames.md.
+    let build_region = crate::untyped::create(2048).expect("no building budget for init");
+
+    let tid = crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
             Ok(e) => e,
             Err(e) => {
@@ -713,10 +725,6 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
                 )
                 .expect("could not map the initrd into init");
         }
-
-        // init's building budget: a large untyped it retypes the child's aspace, frames, and TCB
-        // from. Sized for a full copy of the initrd program plus its tables and init's scratch.
-        let build_region = crate::untyped::create(2048).expect("no building budget for init");
 
         crate::sched::adopt_address_space(space);
         // The delegable root budget: init narrows and hands budgets to the children it builds, so
@@ -785,6 +793,8 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, fs_rights)
     })
     .expect("could not spawn init");
+
+    holding::Holding::new().thread(tid).region(build_region)
 }
 
 /// **The init boot path** (milestone 19d.2c): spawn init at the boot role and return. init
@@ -797,7 +807,9 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
 #[cfg(not(any(test, feature = "bench")))]
 pub fn boot_via_init(image: &'static [u8]) {
     let report = crate::sched::create_endpoint();
-    spawn_init(image, INIT_BOOT_ROLE, report);
+    // The holding is dropped on purpose: on this path init **is** the system, and there is nobody
+    // to hand its memory back to.
+    let _ = spawn_init(image, INIT_BOOT_ROLE, report);
 }
 
 /// **The SMB serve boot** (milestone 54, `--features smb_serve`, `cargo xtask smb-serve`): wire
@@ -1445,6 +1457,13 @@ pub mod console_service;
 /// kernel does not touch the device.
 #[cfg_attr(not(test), allow(dead_code))] // the tour spawns it; the tests drive it
 pub mod virtio_service;
+
+/// **A service's memory, remembered so a finished test can hand it back.** The bookkeeping half of
+/// DECISIONS §16 object revocation, applied to the services the test boot builds: without it a boot
+/// that runs many service-shaped tests runs out of frames, and does so in whichever innocent test
+/// happens to allocate next. See the module note and notes/frames.md.
+#[cfg_attr(not(test), allow(dead_code))] // the tests are the callers; the tour never tears down
+pub mod holding;
 
 /// **The RedoxFS filesystem service** (milestone 32 phase 2): three confined processes and the
 /// endpoints and shared pages that wire them, spawned by the test that proves the stack end to end.
