@@ -180,7 +180,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 37 | BUILT | [Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)](37-redoxfs-crash-consistency.md) | decides whether §34's "primary filesystem" label is earned | 2026-07-30 |
 | 38 | NOT-STARTED | [Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25)](38-filesystem-throughput.md) | "primary filesystem" invites a comparison we cannot currently make | |
 | 39 | RECORDED | [Repository structure for a loosely-coupled OS, and the road to a distribution](39-repository-structure.md) | the structure has to serve the thesis, and one constraint dominates | |
-| 40 | NOT-STARTED | [Documentation as a system service: searchable, rendered, and installed by packages](40-documentation-service.md) | the OS explains itself, on itself | |
+| 40 | PARTIAL | [Documentation as a system service: searchable, rendered, and installed by packages](40-documentation-service.md) | the OS explains itself, on itself | |
 | 41 | BUILT | [Dead code: triage the suppressions, and un-blindfold the gate](41-dead-code-triage.md) | a `-D warnings` gate with holes in a third of the kernel is not a gate | 2026-07-30 |
 | 42 | BUILT | [Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit)](42-supply-chain-and-fuzzing.md) | we confine code we did not write, and the parsers that read what firmware and disks hand us are where a bound is a lie | 2026-08-02 |
 | 43 | BUILT | [A second security audit, with a different lens](43-second-security-audit.md) | the attack surface roughly doubled after the first audit was written | |
