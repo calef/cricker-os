@@ -8,7 +8,7 @@
 //! Set up on day one on purpose. The alternative is debugging by `println!` for a
 //! year (DECISIONS.md §7).
 
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::semihosting;
 use crate::{print, println};
@@ -76,6 +76,112 @@ static TEST_START: AtomicU64 = AtomicU64::new(0);
 static TEST_BUDGET: AtomicU64 = AtomicU64::new(0);
 static TEST_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static TEST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
+
+// ---------------------------------------------------------------------------------------------
+// The frame ledger.
+//
+// **A boot has one pool of physical frames and no test gives an account of what it took.** That is
+// how the aarch64 suite spent its way to `Unmappable(OutOfFrames)` in whatever test happened to
+// spawn last, one run in three, three milestones in a row blaming the wrong code (notes/frames.md).
+// The instrument that settled it in milestone 107 was four lines in `untyped::create`, thrown away
+// after one run; this is the same idea kept, so the next person reads a number instead of building
+// one.
+//
+// Two numbers per test, because they answer different questions and only the second fails a boot:
+// how many frames the test never gave back, and the longest run still allocatable afterwards. A
+// suite can hold a comfortable free total and refuse a 128-page request; 137 free with no run of
+// 128 is the measured case.
+//
+// Costs one bitmap scan per test (O(total), ~32k frames), between tests, off every hot path.
+// ---------------------------------------------------------------------------------------------
+
+/// Free frames when the first test started: the ledger's opening balance.
+static FRAMES_AT_START: AtomicUsize = AtomicUsize::new(0);
+/// Whether [`FRAMES_AT_START`] has been stamped (0 is a legal reading, so a flag rather than a
+/// sentinel).
+static FRAMES_STAMPED: AtomicBool = AtomicBool::new(false);
+/// The reading taken at the top of the test now running, and that test's name. The charge against a
+/// test is the drop from *its* reading to the *next* one, which is why both are carried forward.
+static FRAMES_AT_PREV: AtomicUsize = AtomicUsize::new(0);
+static PREV_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static PREV_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
+/// The worst single spender so far, and its name, for the closing summary. Same pointer/length
+/// trick as the test name above: no allocation, no lock.
+static WORST_SPEND: AtomicUsize = AtomicUsize::new(0);
+static WORST_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static WORST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Report a test's frame cost once it reaches this many frames. Below it, silence: a test that
+/// spends two pages on an endpoint is not news, and a number on every line buries the ones that
+/// are. Sixteen frames is 64 KiB, about the smallest thing a service-shaped test takes.
+const FRAME_REPORT_MIN: usize = 16;
+
+/// **Charge the test that just finished, and open an account for the one about to start.**
+///
+/// Called at the top of every test, and once more from the ledger, so the readings **partition the
+/// run**: what a test is charged is the drop between its own reading and the next one, and every
+/// frame lost between the first test and the last is charged to exactly one test. That matters more
+/// than it sounds. Reading free frames before and after the test body instead attributes only what
+/// the test spent *while it was running*, and a test that spawns a service and returns as soon as it
+/// has its report leaves the service still mapping its heap: on the first measured aarch64 boot that
+/// under-attribution was **17362 of the 29091 frames**, a clear majority landing nowhere.
+///
+/// The cost is a one-test lag in the transcript, which is why the line is printed after the previous
+/// test's `ok` rather than on it.
+fn charge_previous(now: usize, next: &'static str) {
+    let prev_ptr = PREV_NAME_PTR.load(Ordering::Relaxed);
+    if !prev_ptr.is_null() {
+        let spent = FRAMES_AT_PREV.load(Ordering::Relaxed).saturating_sub(now);
+        if spent >= FRAME_REPORT_MIN {
+            println!("    [that test kept {spent} frames]");
+        }
+        if spent > WORST_SPEND.load(Ordering::Relaxed) {
+            WORST_SPEND.store(spent, Ordering::Relaxed);
+            WORST_NAME_PTR.store(prev_ptr, Ordering::Relaxed);
+            WORST_NAME_LEN.store(PREV_NAME_LEN.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+    }
+    FRAMES_AT_PREV.store(now, Ordering::Relaxed);
+    PREV_NAME_PTR.store(next.as_ptr() as *mut u8, Ordering::Relaxed);
+    PREV_NAME_LEN.store(next.len(), Ordering::Relaxed);
+}
+
+/// The worst spender's name, reassembled. Only called by the closing summary.
+fn worst_spender_name() -> Option<&'static str> {
+    let ptr = WORST_NAME_PTR.load(Ordering::Relaxed);
+    let len = WORST_NAME_LEN.load(Ordering::Relaxed);
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: the pair was stored from a `&'static str` (`core::any::type_name`), which lives for
+    // the whole program, and is only ever overwritten by another such pair.
+    unsafe { core::str::from_utf8(core::slice::from_raw_parts(ptr as *const u8, len)).ok() }
+}
+
+/// Print the ledger. **Reporting only, for now**: what the run may keep is a number nobody has yet,
+/// and inventing one before the measurement is the mistake this instrument exists to stop. The two
+/// ceilings arrive once the reclamation below has made them meaningful.
+fn report_frame_ledger() {
+    if !FRAMES_STAMPED.load(Ordering::Relaxed) {
+        return; // no test ran; nothing was spent
+    }
+    let end = crate::memory::free_frames();
+    // Close the last test's account, so the charges partition the whole run with nothing left over.
+    charge_previous(end, "");
+    let start = FRAMES_AT_START.load(Ordering::Relaxed);
+    let run = crate::memory::largest_free_run();
+    let spent = start.saturating_sub(end);
+    println!(
+        "frames: {start} free before the first test, {end} after the last ({spent} never returned); \
+         longest free run {run}"
+    );
+    if let Some(name) = worst_spender_name() {
+        println!(
+            "  the biggest single spender was {name} at {} frames",
+            WORST_SPEND.load(Ordering::Relaxed)
+        );
+    }
+}
 
 /// Report a test's duration once it reaches this many seconds. Below it, silence: most tests are
 /// milliseconds and a duration on every line would bury the signal. Above it, the number is what makes
@@ -226,6 +332,17 @@ pub trait Testable {
 impl<T: Fn()> Testable for T {
     fn run(&self) {
         let name = core::any::type_name::<T>();
+
+        // The frame ledger, before this test's name is printed: the reading closes the *previous*
+        // test's account (and prints its charge under its own `ok` line) and opens this one's. The
+        // opening balance is taken at the first test rather than at boot, because what the kernel
+        // spends coming up is not a test's doing and is not what this measures.
+        let frames_now = crate::memory::free_frames();
+        if !FRAMES_STAMPED.swap(true, Ordering::Relaxed) {
+            FRAMES_AT_START.store(frames_now, Ordering::Relaxed);
+        }
+        charge_previous(frames_now, name);
+
         print!("test {name} ... ");
         HEARTBEAT.fetch_add(1, Ordering::Relaxed); // tell the watchdog this test started
 
@@ -329,6 +446,7 @@ pub fn runner(tests: &[&dyn Testable]) {
     #[cfg(test)]
     // the runner itself is compiled in every build; the instrument only exists in test
     crate::stack::report_high_water();
+    report_frame_ledger();
 
     println!();
     println!("test result: ok. {} passed", tests.len());

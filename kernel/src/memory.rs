@@ -327,6 +327,21 @@ pub fn free_frames() -> usize {
     ALLOCATOR.lock().as_ref().map_or(0, |a| a.stats().free())
 }
 
+/// **The longest run of free frames**, in frames: what `alloc_contiguous` could still satisfy.
+///
+/// The companion to [`free_frames`], and the one the test boot actually runs out of. A boot can hold
+/// a comfortable free total and still refuse a 128-page request because the free frames are in
+/// pieces, which is exactly what milestone 107 measured (137 free, no run of 128) and read as
+/// exhaustion. The frame ledger prints both, so the next person meets the distinction rather than
+/// deducing it. See notes/frames.md.
+#[cfg_attr(not(test), allow(dead_code))] // the frame ledger in testing.rs is the caller
+pub fn largest_free_run() -> usize {
+    ALLOCATOR
+        .lock()
+        .as_ref()
+        .map_or(0, |a| a.largest_free_run())
+}
+
 /// Is this address inside the kernel image?
 #[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn is_in_kernel_image(addr: u64) -> bool {

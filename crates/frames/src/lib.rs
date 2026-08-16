@@ -280,6 +280,30 @@ impl<'a> FrameAllocator<'a> {
         None
     }
 
+    /// **The longest run of free frames, in frames.** The number
+    /// [`alloc_contiguous`](Self::alloc_contiguous) can still satisfy, which is not the same
+    /// question as [`Stats::free`] and is the one that actually fails a boot: milestone 107 found
+    /// 137 frames free and no run of 128, and the failure surfaced three tests away as
+    /// "no swish program in the initrd archive".
+    ///
+    /// Same O(total) scan as `alloc_contiguous` and for the same reason: it is an instrument, called
+    /// between tests, never in a hot path.
+    pub fn largest_free_run(&self) -> usize {
+        let mut best = 0;
+        let mut run = 0;
+        for i in 0..self.total {
+            if self.get(i) {
+                run = 0;
+            } else {
+                run += 1;
+                if run > best {
+                    best = run;
+                }
+            }
+        }
+        best
+    }
+
     /// Return a frame to the pool.
     ///
     /// # Panics
