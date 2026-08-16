@@ -321,12 +321,23 @@ together by the convenient shape, and the connection was invisible until somethi
 - **The static frame sizes above are per function, not per call chain.** `-Z emit-stack-sizes` says
   what one frame costs; it does not say which frames stack on top of each other, so it cannot give a
   worst-case depth on its own. Pairing it with the watermark is what makes either number actionable,
-  and a tool that walks the call graph (`cargo-call-stack` and its kin) would close the gap. Nothing
-  in this tree does that today.
-- **Nothing gates frame size.** The 6816-byte frame was legal, compiled without a warning, and was
-  found only because a stack overflowed and somebody went looking. A `script/` front door around the
-  measurement above, failing when any single frame exceeds a fraction of the smallest stack, is the
-  obvious next rung and is not built.
+  and a tool that walks the call graph closes the gap. **`script/stack-depth-check` is that tool**
+  (2026-08-16), written after this entry and `script/stack-frame-check`'s twin of it had both stood
+  unbuilt through two rounds of guard-page faults. It reads direct calls out of the disassembly,
+  hangs these frame sizes on the graph, and takes the longest path from the entry points a kernel
+  thread stack starts at. Its first answer: 13712 bytes worst case on aarch64, 13344 on riscv64, and
+  a `thread_entry` chain of 9536 that matches this note's measured 9536 exactly. The remaining
+  honest gap is indirect calls, which it cannot see and counts rather than guesses at, so its number
+  is a lower bound on the true worst case.
+- **~~Nothing gates frame size.~~** `script/stack-frame-check` does, since 2026-08-13, at the
+  4096-byte guard page. The entry is kept because the sentence that follows it is still the
+  argument for the gate: the 6816-byte frame was legal, compiled without a warning, and was found
+  only because a stack overflowed and somebody went looking.
+- **The two thresholds are the same number for different reasons, and only one of them needs
+  margin.** This note's thread row gates a measurement at 14336 and needs margin because the next
+  run may go deeper. `script/stack-depth-check` gates a worst-case bound, which already covers every
+  path it can see, so it fails at the stack size and only *warns* at 14336. Raise them together or
+  they stop describing the same stack.
 - A stack whose deepest word happened to store the paint value reads one word shallow.
 - The live scans at end of suite are snapshots; a thread that deepens after being scanned is
   under-read by that run. Reaped thread stacks are exact.

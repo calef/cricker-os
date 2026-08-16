@@ -1,0 +1,377 @@
+#!/bin/sh
+# script/stack-depth-check: how deep a KERNEL THREAD STACK can get, by walking the call graph.
+#
+# The third instrument, and until now the missing one. Two already existed and neither could answer
+# the question a guard-page fault poses:
+#
+#   - `script/stack-frame-check` measures ONE FRAME, statically, and gates it against the guard
+#     page. It cannot say which frames sit on top of each other, so ten legal frames still stack.
+#   - milestone 84's watermark (notes/stack-high-water.md) measures the DEPTH THE SUITE REACHED,
+#     at runtime. It sees only paths the suite exercised, so an unexercised deep chain is invisible.
+#
+# This is the third: **the deepest chain the binary can produce**, from the entry points a kernel
+# thread stack actually starts at, by reading the disassembly for direct calls, hanging
+# `-Z emit-stack-sizes` frames on the resulting graph, and taking the longest path.
+#
+# Both older notes named it as the gap and neither built it. notes/stack-high-water.md's BUGS says
+# "a tool that walks the call graph (`cargo-call-stack` and its kin) would close the gap. Nothing in
+# this tree does that today"; milestone 124's block says "if it recurs, the call-graph walker is the
+# next instrument and nothing in the tree has one, which is now the answer to 'why did we not catch
+# this' twice over." It recurred on 2026-08-16, on both architectures.
+#
+# ## What it settled the day it was written
+#
+# The 2026-08-16 faults reported themselves as "sp went 4096 bytes past the bottom" of a 16384-byte
+# thread stack, which requires a chain 20480 bytes deep. This says the deepest chain that exists is
+# **9536 bytes on aarch64 and 9168 on riscv64**, the graph is acyclic (no recursion), and **no
+# function with a frame over the 4096-byte guard page is reachable from a thread stack entry point
+# at all** on either ISA. So those faults were not stack depth, and milestone 124's fix does cover
+# every path that reaches a thread stack. See notes/stack.md.
+#
+# The number is worth trusting for a second reason: milestone 84's watermark measured the deepest
+# thread stack in the same suite at **9536 bytes**, which is this walker's aarch64 answer to the
+# byte. A static upper bound and a runtime measurement agreeing exactly is what makes either one
+# usable.
+#
+# Name: recorded (this header, and its row in notes/scripts.md). Takes the `-check` suffix because
+# it fails builds rather than answering questions, which is the family `interleaving-check`,
+# `qemu-check`, `shell-check` and `undefined-behavior-check` are in and the bare nouns
+# (`citations`, `decisions`, `names`, `roadmap`) are not. Says `depth` where its sibling
+# `stack-frame-check` says `frame`, because one chain versus one frame is exactly the difference
+# between the two gates and a reader who knows one should be able to guess the other. Refused
+# `call-stack-check` (reads as checking the call stack of the tool that is running, and "call
+# stack" is the wrong half: the subject is bytes of a kernel stack, not a list of callers) and
+# `stack-chain-check` (nobody is worried about a chain; they are worried about a depth).
+# **Provisional: calef has not ruled on it.**
+#
+# EXAMPLES
+#
+#     script/stack-depth-check                  # gate both architectures, the default
+#     script/stack-depth-check --arch riscv64   # one architecture
+#     script/stack-depth-check --report         # print the deepest chain per root, gate nothing
+#
+# BUGS
+#
+#   - **Indirect calls are edges it cannot see.** A call through a function pointer or a trait
+#     object is invisible, so the answer is a lower bound on the true worst case rather than an
+#     upper one. The one indirect call that matters here is resolved by hand: `thread_entry` calls
+#     its closure through `call_closure::<F>`, and every instantiation of that is added as an edge.
+#     The rest (the `core::fmt` vtables, `pci`'s bar walk, `dma_validator`'s shadow callback) are
+#     counted and printed so a reader can see how much is unaccounted for, never guessed at.
+#   - **It gates thread stacks only.** The boot stack carries every test body and is reached
+#     through `kernel::testing::runner`'s indirect call, which this cannot follow; the secondaries
+#     run idle loops and traps. Both are 64 KiB and both are covered by the watermark's own
+#     assertion. This covers the 16 KiB stacks, which are the ones with a history.
+#   - **A tail call is charged as a reused frame** (`max(own, callee)` rather than `own + callee`),
+#     which is right for a real tail call and wrong if the branch was actually a long-range jump
+#     inside one function that the symbol table split. Debug builds emit few tail calls, so the
+#     exposure is small, and the direction is optimistic.
+#   - **It builds the kernel test binary itself**, because the measurement needs
+#     `-Z emit-stack-sizes` and that flag changes the build. One extra kernel build per arch, and
+#     the test binary is the right one: half the spawn paths and every test body are `cfg(test)`.
+#   - The ceiling is shared with the watermark's thread row deliberately (14336 of 16384), so the
+#     two instruments fail at the same place from opposite directions. A trip is not automatically
+#     a bug: read the chain it prints, and if the growth is honest, raise both numbers together.
+
+set -e
+cd "$(dirname "$0")/.."
+
+arches="aarch64 riscv64"
+report_only=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) arches="$2"; shift 2 ;;
+        --report) report_only=1; shift ;;
+        -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
+        *) echo "script/stack-depth-check: unknown argument $1" >&2; exit 2 ;;
+    esac
+done
+
+status=0
+# shellcheck disable=SC2086  # $arches is a deliberate space-separated list; POSIX sh has no arrays
+for arch in $arches; do
+    case "$arch" in
+        aarch64) target=aarch64-unknown-none-softfloat ;;
+        riscv64) target=riscv64imac-unknown-none-elf ;;
+        *) echo "script/stack-depth-check: no target for arch $arch" >&2; exit 2 ;;
+    esac
+
+    echo "==> $arch: building the kernel test binary with stack-size metadata"
+    artifact=$(RUSTFLAGS="-Z emit-stack-sizes" \
+        cargo test -p kernel --target "$target" --no-run 2>&1 \
+        | grep -oE "\(target/[^)]*\)" | tr -d '()' | tail -1)
+
+    if [ -z "$artifact" ] || [ ! -f "$artifact" ]; then
+        echo "script/stack-depth-check: could not find the $arch test binary" >&2
+        exit 1
+    fi
+
+    tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | cut -d' ' -f2)/bin"
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+
+    "$tools/llvm-objcopy" --dump-section ".stack_sizes=$tmp/ss.bin" "$artifact" /dev/null
+    "$tools/llvm-objdump" -d --no-show-raw-insn "$artifact" > "$tmp/dis.txt"
+    "$tools/llvm-objdump" -d --no-show-raw-insn --demangle "$artifact" > "$tmp/dem.txt"
+
+    ARCH="$arch" SS="$tmp/ss.bin" DIS="$tmp/dis.txt" DEM="$tmp/dem.txt" REPORT="$report_only" \
+        python3 - <<'PYEOF' || status=1
+import os, re, struct, sys
+from collections import defaultdict
+
+# **Two thresholds, because a static bound and a measurement need different kinds of margin.**
+#
+# The watermark in notes/stack-high-water.md gates a *measurement* at 14336 of 16384, and it needs
+# margin because the next run may go deeper than this one did. A worst-case bound does not: it
+# already covers every path the graph can see, so anything under the stack size fits and anything
+# at or over it overflows. Its uncertainty runs the other way (an indirect call it cannot see makes
+# the true number LARGER), and no margin fixes that.
+#
+# So: **fail at the stack size**, which is the real cliff, and **warn at the watermark's number**,
+# which is where the two instruments should be saying the same thing. A warn is the signal that the
+# headroom is going, said before a run has to find out.
+STACK = 16384
+FAIL_AT = STACK
+WARN_AT = 14336
+
+# The trap frame the vector builds before any Rust runs, so an interrupted thread's total is its own
+# chain plus this plus the handler's. Contracts with vectors.s (272) and trap.s (288), both asserted
+# against `size_of::<TrapFrame>()` in their arch's exceptions.rs.
+TRAP_FRAME = {"aarch64": 272, "riscv64": 288}
+
+# Where a kernel thread stack starts carrying frames. `thread_entry` is a kernel thread's first Rust
+# frame (context.s's thread_trampoline calls it), `user_thread_entry` is the EL0 mirror, and the
+# arch dispatcher is every trap taken while running on this stack.
+DISPATCH = {"aarch64": "exception_dispatch", "riscv64": "riscv_trap_dispatch"}
+ARCH = os.environ["ARCH"]
+ROOTS = ["thread_entry", "user_thread_entry", DISPATCH[ARCH]]
+
+
+def uleb(buf, i):
+    r, s = 0, 0
+    while True:
+        b = buf[i]
+        i += 1
+        r |= (b & 0x7F) << s
+        if not b & 0x80:
+            return r, i
+        s += 7
+
+
+buf = open(os.environ["SS"], "rb").read()
+fsize = {}
+i = 0
+while i + 8 <= len(buf):
+    addr = struct.unpack_from("<Q", buf, i)[0]
+    i += 8
+    if i >= len(buf):
+        break
+    size, i = uleb(buf, i)
+    fsize[addr] = max(size, fsize.get(addr, 0))
+
+SYMLINE = re.compile(r"^([0-9a-f]+) <(.+)>:$")
+INSN = re.compile(r"^\s*([0-9a-f]+):\s+(.*)$")
+
+frames, edges, tails, indirect, addr2name = {}, defaultdict(set), defaultdict(set), defaultdict(int), {}
+cur = None
+for line in open(os.environ["DIS"]):
+    line = line.rstrip("\n")
+    m = SYMLINE.match(line)
+    if m:
+        name = m.group(2)
+        # `.Lpcrel_hiN` and its kin are local labels inside a function, not functions. RISC-V emits
+        # one per PC-relative address; taking them as symbol boundaries chops every function into
+        # fragments and hangs their edges on the wrong owner, which the first draft of this did and
+        # reported a 47 KB chain stitched together out of unrelated functions.
+        if name.startswith(".L"):
+            continue
+        addr = int(m.group(1), 16)
+        cur = name
+        addr2name[addr] = name
+        frames[name] = max(fsize.get(addr, 0), frames.get(name, 0))
+        continue
+    m = INSN.match(line)
+    if not m or cur is None:
+        continue
+    text = m.group(2)
+    tm = re.search(r"<([^>]+)>\s*$", text)
+    tgt = tm.group(1) if tm else None
+    if tgt and ("+0x" in tgt or tgt.startswith(".L")):
+        tgt = None                       # a branch inside a function, not a call
+    op = text.split()[0] if text.split() else ""
+    if ARCH == "aarch64":
+        if op == "bl" and tgt:
+            edges[cur].add(tgt)
+        elif op in ("blr", "br"):
+            indirect[cur] += 1
+        elif op == "b" and tgt and tgt != cur:
+            tails[cur].add(tgt)
+    else:
+        if op == "jal" and tgt:
+            (edges if re.search(r"jal\s+ra,", text) or re.match(r"jal\s+0x", text) else tails)[cur].add(tgt)
+        elif op == "jalr":
+            if tgt and "(ra)" in text:
+                edges[cur].add(tgt)
+            elif not tgt:
+                indirect[cur] += 1
+        elif op == "j" and tgt and tgt != cur:
+            tails[cur].add(tgt)
+
+demangled = {}
+for line in open(os.environ["DEM"]):
+    m = SYMLINE.match(line.rstrip("\n"))
+    if m:
+        demangled[int(m.group(1), 16)] = m.group(2)
+pretty = {n: demangled.get(a, n) for a, n in addr2name.items()}
+
+# The one indirect edge that has to be resolved by hand, and the only one on this path. A kernel
+# thread's closure is reached through a monomorphized `call_closure::<F>` handed over in a register
+# (thread.rs), so the graph has no edge for it and the whole of every service's body would be
+# invisible without this.
+shims = {n for n in frames if "call_closure" in pretty.get(n, n)}
+edges["thread_entry"] |= shims
+
+
+def deepest(root, skip=frozenset()):
+    """Longest path cost from root, and the path. Cycles are cut and reported.
+
+    `skip` prunes callees, for the one composition that needs it: see LOWER_EL_ARMS.
+    """
+    memo, onstack, cycles = {}, set(), set()
+
+    def visit(n):
+        if n in memo:
+            return memo[n]
+        if n in onstack:
+            cycles.add(n)
+            return (0, [])
+        onstack.add(n)
+        best, bestpath = 0, []
+        for c in edges.get(n, ()):
+            if c not in frames or c in skip:
+                continue
+            cost, path = visit(c)
+            if cost > best:
+                best, bestpath = cost, path
+        # A tail call reuses the frame rather than stacking on it.
+        tbest, tpath = 0, []
+        for c in tails.get(n, ()):
+            if c not in frames or c in skip:
+                continue
+            cost, path = visit(c)
+            if cost > tbest:
+                tbest, tpath = cost, path
+        onstack.discard(n)
+        own = frames.get(n, 0)
+        res = (tbest, [n + " (tail)"] + tpath) if tbest > own + best else (own + best, [n] + bestpath)
+        memo[n] = res
+        return res
+
+    sys.setrecursionlimit(200000)
+    cost, path = visit(root)
+    return cost, path, cycles
+
+
+def show(path, indent="      "):
+    acc = 0
+    for step in path:
+        n = step.replace(" (tail)", "")
+        f = frames.get(n, 0)
+        if "(tail)" not in step:
+            acc += f
+        ind = indirect.get(n, 0)
+        print(f"{indent}{f:>6}  (cum {acc:>6})  {pretty.get(n, n)[:96]}"
+              + (f"   [{ind} indirect]" if ind else ""))
+
+
+missing = [r for r in ROOTS if r not in frames]
+if missing:
+    print(f"script/stack-depth-check: {ARCH}: no symbol for {', '.join(missing)}. The entry-point "
+          f"names in this script have drifted from the kernel's.", file=sys.stderr)
+    sys.exit(1)
+
+results = {r: deepest(r) for r in ROOTS}
+tf = TRAP_FRAME[ARCH]
+
+# **The arms a trap taken from kernel code can never enter.** A syscall dispatch needs an `svc` /
+# `ecall` from EL0/U-mode, and `user_fault` needs a fault from there; neither can nest on a kernel
+# thread running its own closure, which is at EL1/S-mode by definition. Composing the dispatcher's
+# unrestricted longest path with a kernel thread's would charge a syscall's frames to an interrupt
+# and overstate the worst case by about 4.5 KB, which is the difference between this gate passing
+# and failing on a tree with 2.6 KB of real headroom. Pruning them is the difference between a
+# bound and a scare.
+LOWER_EL_ARMS = {n for n in frames
+                 if "syscall::dispatch" in pretty.get(n, n) or "::user_fault" in pretty.get(n, n)}
+nested, nested_path, _ = deepest(DISPATCH[ARCH], skip=LOWER_EL_ARMS)
+
+# **A kernel thread can be interrupted at its own deepest point**, because `thread_entry` unmasks
+# before calling the closure. So the worst it carries is its own chain, a trap frame, and whatever
+# the handler needs for an interrupt or a kernel fault.
+interrupted = results["thread_entry"][0] + tf + nested
+# A user thread's kernel stack is EMPTY while it runs at EL0 (`enter_userspace` leaves SP_EL1 at the
+# top and the trap rebuilds its frame there), so a trap on one is the frame plus the full handler,
+# syscall arm included. Traps do not nest on top of that: both ISAs keep interrupts masked for the
+# whole handler.
+trapped = tf + results[DISPATCH[ARCH]][0]
+worst = max(interrupted, trapped, results["thread_entry"][0])
+
+# Reachability, which is the other half of `script/stack-frame-check`'s exception table: that gate
+# excuses functions on the grounds they cannot run on a thread stack, and nothing checked the claim.
+reach, stack = set(), list(ROOTS) + list(shims)
+while stack:
+    n = stack.pop()
+    if n in reach or n not in frames:
+        continue
+    reach.add(n)
+    stack += list(edges.get(n, ())) + list(tails.get(n, ()))
+over_guard = sorted(((frames[n], pretty.get(n, n)) for n in reach if frames[n] > 4096), reverse=True)
+
+if os.environ.get("REPORT"):
+    for r in ROOTS:
+        cost, path, cycles = results[r]
+        print(f"    {ARCH}: deepest chain from {r}: {cost} bytes")
+        show(path)
+        if cycles:
+            print(f"      (cycles cut at: {', '.join(sorted(pretty.get(c, c) for c in cycles))})")
+        print()
+    print(f"    {ARCH}: {len(reach)} functions reachable on a thread stack, "
+          f"{sum(indirect.get(n, 0) for n in reach)} indirect call sites among them")
+    print(f"    {ARCH}: worst total {worst} of {STACK} bytes "
+          f"(interrupted-at-deepest {interrupted}, trap-on-a-user-thread {trapped})")
+    sys.exit(0)
+
+if over_guard:
+    print(f"    {ARCH}: frames over the 4096-byte guard page that ARE reachable from a thread "
+          f"stack entry point:", file=sys.stderr)
+    for size, name in over_guard:
+        print(f"      {size:<7} {name}", file=sys.stderr)
+    print("""
+`script/stack-frame-check` gates single frames against the guard page and excuses some BY HAND, on
+the stated grounds that they cannot run on a kernel thread stack. Nothing checked those claims until
+this line. Either the frame is genuinely reachable from a thread and has to shrink, or its EXCEPT
+entry in that script is stale and has to go.""", file=sys.stderr)
+    sys.exit(1)
+
+if worst >= FAIL_AT:
+    print(f"    {ARCH}: the deepest chain a kernel thread stack can carry is {worst} bytes, and the "
+          f"stack is {STACK}. It does not fit.", file=sys.stderr)
+    print(f"      thread_entry {results['thread_entry'][0]}, {DISPATCH[ARCH]} "
+          f"{results[DISPATCH[ARCH]][0]} (nested-on-kernel {nested}), trap frame {tf}",
+          file=sys.stderr)
+    print("      the deepest chain:", file=sys.stderr)
+    show(results["thread_entry"][1])
+    print("""
+Shrink a frame on the chain, or shorten the chain. Raising STACK_PAGES is the lever that looks
+right and is not: the guard page stays ONE page whatever the stack size, so a big frame still steps
+over it (notes/stack.md).""", file=sys.stderr)
+    sys.exit(1)
+
+headroom = STACK - worst
+warn = f"  ** {headroom} bytes of headroom, past the {WARN_AT} warn line **" if worst > WARN_AT else ""
+print(f"    {ARCH}: deepest thread-stack chain {worst} of {STACK} bytes, {headroom} spare "
+      f"(interrupted-at-deepest {interrupted}, user-thread trap {trapped}); "
+      f"{len(reach)} functions reachable, none over the guard page{warn}")
+PYEOF
+done
+
+exit $status

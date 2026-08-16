@@ -367,16 +367,122 @@ restructures them.
 Growing the stack moves the overflow further away while leaving it silent when it finally arrives.
 Shrinking the frame is what restores the fault.
 
-## What is still open
+## What was still open, and what closed it
+
+Both of these were open on 2026-08-14 and both are answered below by the guard-page faults of
+2026-08-16 and the walker they finally forced into the tree.
 
 - **Per-function frames are not call chains.** `-Z emit-stack-sizes` says what one function costs, not
   which functions stack on top of each other, so it cannot produce a worst-case depth. The watermark
   in notes/stack-high-water.md is the other half. Neither is sufficient alone, and a call-graph
-  walker would close the gap. Nothing in this tree has one.
+  walker would close the gap. **Nothing in this tree had one until `script/stack-depth-check`.**
 - **The riscv64 overflow is not proven fixed.** The aarch64 cause was found and fixed; the riscv64
   fault is a different chain on a different slot, and milestone 124 is the prime suspect rather than
   a demonstrated cause. §19 parity says a fix that works on one architecture and silently not the
   other is the bug.
+
+---
+
+# The guard-page faults of 2026-08-16, which were not overflows
+
+Two more guard-page faults, one per architecture, in the same test
+(`user::supervision_tests::a_faulting_child_reports_to_its_supervisor_and_is_reaped_then_respawned`),
+intermittent on both. They read exactly like the 2026-08-14 pair above and they are a different
+thing, and the reason the difference took a day to see is that **the kernel's own report asserted
+the wrong half of it.**
+
+## What the two faults said
+
+```
+*** KERNEL STACK OVERFLOW ***
+0xffff0010001b3000 is in THREAD stack slot 87's guard page (thread.rs).
+bottom 0xffff0010001b4000, so sp went 4096 bytes past it, on a 16384-byte stack.
+ESR_EL1 0x0000000096000047   FAR_EL1 0xffff0010001b3000     (aarch64, run 31920141776)
+
+0xffffffd0001fe008 is in THREAD stack slot 102's guard page (thread.rs).
+bottom 0xffffffd0001ff000, so sp went 4088 bytes past it, on a 16384-byte stack.
+scause=0xf (code 15)                                        (riscv64, PR #213's cpu matrix, rv64)
+```
+
+## The arithmetic that says it is not depth
+
+**The deepest chain a kernel thread stack can carry is 13712 bytes on aarch64 and 13344 on
+riscv64**, measured by `script/stack-depth-check` over the same test binary CI builds:
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| longest chain from `thread_entry` (a kernel thread's own work) | 9456 | 9168 |
+| trap frame the vector builds | 272 | 288 |
+| handler chain that can nest on kernel code (no syscall or user-fault arm) | 3984 | 3888 |
+| **worst total on a 16384-byte stack** | **13712** | **13344** |
+| measured high water, same suite, milestone 84's watermark | 9536 | (see below) |
+
+Three things make that a bound rather than a guess. The call graph is **acyclic**: no recursion, so
+the longest path is the worst case. **No frame over the 4096-byte guard page is reachable from a
+thread-stack entry point at all** on either ISA, so milestone 124's fix does cover every path that
+reaches a thread, and the frame-jumps-the-guard hazard is genuinely closed there. And the walker's
+`thread_entry` figure and the watermark's measured maximum agree **to the byte** on aarch64 (9536),
+which is a static upper bound and a runtime measurement meeting, from opposite directions.
+
+The riscv64 watermark row is deliberately blank rather than filled in from
+notes/stack-high-water.md's table, which reads 11672 there. **That number predates milestone 124**,
+which took the worst `spawn_on` instantiation from 4592 bytes to 1040, so it describes a kernel that
+no longer exists and is above this walker's bound for the kernel that does. Take a fresh one from a
+riscv64 run before quoting either.
+
+A fault at a slot's guard-page **base** needs `sp` at 20480 bytes into a 16384-byte stack. That is
+6768 bytes deeper than anything the binary can produce.
+
+## What the report was actually entitled to say
+
+`stack::warn_if_guard_page` derived every line from the faulting **address** and then wrote "so sp
+went N bytes past it", which is a claim about the stack **pointer** that the function never read.
+The two agree only when the fault is `sp` walking off the end.
+
+And the addresses point away from that reading. Both landed at **guard-page offset 0 and 8**, the
+far end of the guard, 4096 and 4088 bytes below their stack's bottom. A gradual overflow arrives at
+the *near* end, within a few hundred bytes of the bottom. Offset 0 is also, exactly, **one word past
+the top of the stack in the slot below**: the slots are contiguous and each slot's guard page is its
+first page, so `slot N guard base == slot N-1 stack top`. Two ISAs, two runs, both within eight
+bytes of that boundary.
+
+The handler also proves `sp` was mapped. On aarch64 the vector's `SAVE_CONTEXT` builds a 272-byte
+frame at the live `SP_EL1` before any Rust runs; if `sp` had been inside the unmapped guard, that
+store would have faulted again and the machine would have printed nothing. It printed a full
+register dump. RISC-V's `trap.s` stays on the interrupted `sp` for an S-mode trap and has the same
+property.
+
+So the report now prints `sp` beside the faulting address in the same units and lets the reader
+compare, rather than asserting the answer. `kernel/src/stack.rs`, and
+`sched::tests::a_slots_guard_page_begins_where_the_slot_below_it_ends` pins the geometry the
+comparison rests on.
+
+## What it therefore is, and what is still open
+
+**Not settled.** What is settled is what it is *not*: not thread-stack depth, not a frame larger
+than the guard page, and not the class milestone 124 closed. What remains, in order of what the
+addresses support:
+
+- **A store one or two words past the top of a kernel stack**, from a pointer that treats a stack
+  top as inclusive rather than exclusive, or from a stale pointer into a slot whose `KernelStack`
+  has been dropped and whose address range went back to `FREE_STACK_VAS`. Every in-tree computation
+  from a `KernelStack` was read for this and each is exclusive at the top
+  (`paint`/`high_water` over `[bottom, top)`, `spawn_into`'s closure slot and `Context`,
+  `arm_for_start`, `enter_frame`'s `top - 272`, `user_pc`), so if this is the shape, the pointer is
+  not one of those or it is being used after its stack died.
+- **A stray store through a corrupted pointer** that happens to name a slot base. Two independent
+  runs landing within eight bytes of one argues against a random address.
+
+**It did not reproduce here.** 13 + 5 full-suite runs on aarch64 under host load, on a 4-CPU Linux
+box with `-smp 4` under TCG, all green, with the thread watermark reading 9536 every single time.
+The reproduction cost is the honest blocker: CI hit it perhaps two runs in six on a runner this
+machine does not resemble.
+
+**The next occurrence should be legible without another investigation**, which is what the `sp` line
+buys. If it prints a slot *below* the faulting address, the store-past-the-top reading is confirmed
+and the search narrows to pointers derived from a stack top. If it prints the same slot, the depth
+reading comes back and the walker's bound is wrong somewhere, which would mean an indirect call it
+cannot see.
 
 ---
 
