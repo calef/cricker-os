@@ -9,6 +9,7 @@ members = [
     "crates/bitfont",
     "crates/block_roster",
     "crates/calendar",
+    "crates/canary_gate",
     "crates/capability",
     "crates/compositor",
     "crates/cpu_set",
