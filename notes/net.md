@@ -709,7 +709,9 @@ that region is what wakes it up to die. From `create_endpoint`'s shared kernel c
 handle, and there was no way to end a `net_stack` short of rebooting the machine.
 
 The measured result for the boot as a whole: **216 free frames at the end became 15307, and the
-longest free run went from 117 to 14080.**
+longest free run went from 117 to 14080.** (15249 on the merged tree, which runs one more process in
+the SMB test; notes/frames.md carries the remeasurement. The free run, which is the number that
+decides whether a boot lives, is 14080 either way.)
 
 Two things this does **not** fix, both recorded rather than papered over:
 
