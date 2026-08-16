@@ -26,11 +26,17 @@ use frames::FRAME_SIZE;
 
 use crate::sync::{IrqSafeMutex, rank};
 
-/// The carve: 768 pages (3 MiB). Endpoints (one page each, ~60 across a full test run), live
-/// kernel stacks (4 pages x up to `MAX_THREADS`), TCB pages (19c.2), and slack. Exhaustion fails
-/// the spawn or create cleanly, the same contract as every budget since milestone 11; raising
-/// this constant is the fix if the image ever legitimately needs more.
-const KERNEL_OBJ_PAGES: u64 = 768;
+/// The carve: 1024 pages (4 MiB). Endpoints (one page each, ~60 across a full test run), live
+/// kernel stacks (6 pages x up to `MAX_THREADS` = 768; see thread.rs `STACK_PAGES`), TCB pages
+/// (19c.2), and slack. Exhaustion fails the spawn or create cleanly, the same contract as every
+/// budget since milestone 11; raising this constant is the fix if the image ever legitimately
+/// needs more, and 2026-08-15 was such a day: this was 768 when stacks were 4 pages (512 of 768
+/// budgeted for stacks, the same two-to-one ratio kept here), and the 24 KiB stacks made stacks
+/// alone outgrow the whole carve. The symptom was `kmem::page()` returning `None` late in the
+/// aarch64 suite, surfacing as an unrelated test's spawn failing with "no memory to wire one",
+/// exactly the failure shape this module's budget contract promises (clean refusal, far from the
+/// cause).
+const KERNEL_OBJ_PAGES: u64 = 1024;
 
 struct Pool {
     /// The region id, once carved. Lazy: the first object need triggers the carve, which is
@@ -78,7 +84,10 @@ pub fn page() -> Option<u64> {
         let region = match pool.region {
             Some(r) => r,
             None => {
-                let r = crate::untyped::create(KERNEL_OBJ_PAGES)?;
+                let Some(r) = crate::untyped::create(KERNEL_OBJ_PAGES) else {
+                    crate::println!("kmem: the {KERNEL_OBJ_PAGES}-page carve itself was refused");
+                    return None;
+                };
                 pool.region = Some(r);
                 r
             }
@@ -86,7 +95,14 @@ pub fn page() -> Option<u64> {
         drop(pool);
         // Pin-and-carve, like every object page since 19a: this region hosts kernel objects for
         // the machine's lifetime, and nothing may ever destroy it.
-        crate::untyped::retype_object_page(region)?
+        let Some(phys) = crate::untyped::retype_object_page(region) else {
+            crate::println!(
+                "kmem: carve exhausted ({KERNEL_OBJ_PAGES} pages spent, none recycled); raise \
+                 KERNEL_OBJ_PAGES"
+            );
+            return None;
+        };
+        phys
     };
     Some(phys)
 }

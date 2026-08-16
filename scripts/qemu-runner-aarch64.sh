@@ -361,10 +361,19 @@ fi
 # itself via PSCI CPU_ON (see smp.rs).
 SMP="${NIFE_SMP:-4}"
 
+# 256 MiB, explicit where this file used to take QEMU's 128 MiB default. Raised 2026-08-15 with
+# the 24 KiB thread stacks (kernel/src/thread.rs): their bigger kmem carve (kmem.rs) takes one
+# more megabyte from the general pool, and the aarch64 suite at 128 MiB had no megabyte to give.
+# It failed twice in one evening, in two different pools (first kmem's carve, then the shell
+# budget's 128-page contiguous run), each surfacing as an unrelated test's spawn failing late in
+# the suite, which is the "unrelated test failing to get memory" shape disk_service.rs and
+# fs_service.rs already narrate from 128 MiB days. The kernel asserts this size in memory.rs, so
+# a drift between the two files fails loudly rather than silently changing what the suite means.
 exec qemu-system-aarch64 \
     -machine "$MACHINE" \
     -cpu "$CPU" \
     -smp "$SMP" \
+    -m 256M \
     -display none \
     -serial stdio \
     -semihosting \

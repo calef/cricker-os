@@ -565,11 +565,13 @@ mod tests {
 
         let s = crate::memory::stats().expect("allocator not initialized");
 
-        // QEMU virt gives us 128 MiB by default. If this ever reads zero, or something
-        // absurd, we have misparsed `reg` (which is big-endian, and whose cell width is
-        // declared by the *parent* node, both of which are easy to get wrong).
+        // The runners pass -m 256M (raised from QEMU's 128 MiB default on 2026-08-15 alongside
+        // the 24 KiB thread stacks; scripts/qemu-runner-aarch64.sh records why). If this reads
+        // zero, or something absurd, we have misparsed `reg` (which is big-endian, and whose
+        // cell width is declared by the *parent* node, both of which are easy to get wrong); if
+        // it reads 128 MiB again, a runner lost its -m flag.
         let total_bytes = s.total as u64 * FRAME_SIZE;
-        assert_eq!(total_bytes, 128 * 1024 * 1024, "unexpected RAM size");
+        assert_eq!(total_bytes, 256 * 1024 * 1024, "unexpected RAM size");
 
         // Some memory must already be spoken for: at minimum the kernel image, the
         // bitmap, and the device tree. A zero here means we reserved nothing, which

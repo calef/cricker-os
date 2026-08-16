@@ -97,7 +97,7 @@ pub enum GuardPage {
 ///
 /// **A `None` here does not mean the stack is fine.** A guard page is one page, and the kernel has
 /// stack frames bigger than that (`sched::reap_region_objects` is 6832 bytes on riscv64), so a
-/// function entered near the bottom of a 16 KiB thread stack can put `sp` clean below the guard
+/// function entered near the bottom of a 24 KiB thread stack can put `sp` clean below the guard
 /// page without ever touching it, and then write into the *neighbouring slot's* top stack page,
 /// which is mapped and in use. That produces silent corruption rather than a fault, and this
 /// function cannot see it. See notes/load-sensitive-assertions.md.
@@ -226,6 +226,7 @@ pub fn warn_if_guard_page(addr: u64) {
                 bottom.saturating_sub(addr),
                 crate::thread::STACK_PAGES * 4096,
             );
+            print_text_words(bottom, bottom + (crate::thread::STACK_PAGES * 4096) as u64);
         }
     }
 
@@ -254,6 +255,45 @@ pub fn warn_if_guard_page(addr: u64) {
     crate::println!("  or none: a stray pointer, not a stack at all.");
     crate::println!("  The guard page is ONE page. A frame larger than that can step over it");
     crate::println!("  into the slot below without faulting; see notes/stack.md.");
+}
+
+/// Print every word on the overflowed stack that points into the kernel's text section, deepest
+/// first: a conservative backtrace, and the only kind this kernel can produce, because it does
+/// not maintain frame pointers (the 2026-08-15 CI overflow was symbolized by rebuilding CI's
+/// exact binary in a container to learn what one register meant; this exists so the next report
+/// carries its own call chain). Most hits are genuine return addresses; some are spilled
+/// function pointers or stale words from a previous tenant of a reused stack slot, so read it as
+/// candidates for `llvm-addr2line`, not as a walked chain. Capped so a full stack cannot flood
+/// the serial log the dump itself needs.
+///
+/// Thread stacks only, deliberately: their pages are all mapped (thread.rs maps every slot
+/// whole), so the scan cannot itself fault. The boot and secondary arms above could take the
+/// same scan but have never overflowed outside milestone 3's era; add them when one does.
+fn print_text_words(bottom: u64, top: u64) {
+    const CAP: usize = 40;
+    let text = crate::arch::mmu::text_start()..crate::arch::mmu::text_end();
+    crate::println!(
+        "  Words on the dead stack that point into .text ({:#x}..{:#x}), deepest first,",
+        text.start,
+        text.end
+    );
+    crate::println!("  as `bottom+offset: word` (candidate return addresses; no frame pointers):");
+    let mut printed = 0usize;
+    let mut p = bottom;
+    while p < top && printed < CAP {
+        // SAFETY: `[bottom, top)` is a thread stack slot's mapped span (the caller derived it
+        // from the slot geometry), 8-byte aligned; volatile because the stack's owner is dead
+        // mid-store and nothing about this memory is ordinary.
+        let w = unsafe { core::ptr::read_volatile(p as *const u64) };
+        if text.contains(&w) {
+            crate::println!("    +{:#07x}: {w:#018x}", p - bottom);
+            printed += 1;
+        }
+        p += 8;
+    }
+    if printed == CAP {
+        crate::println!("    ... capped at {CAP} words; the shallower stack is not shown.");
+    }
 }
 
 /// Shout if the canary is dead. Called from the panic handler and the fault handler,
@@ -472,9 +512,14 @@ pub fn report_high_water() {
     //     (smp.rs), so this is no longer the only thing standing between a deep secondary and
     //     silent .bss corruption; it is now what a guard page cannot be, an alarm that fires ~48
     //     KiB BEFORE the fault, in the run that drifts rather than the run that dies.
-    //   - thread 14336: +2.6 KiB over observed, ~8x the cross-ISA spread, trips 2 KiB before the
-    //     thread guard. The tightest, deliberately: 16 KiB stacks are where recursion lives, and
-    //     the FS-server incident was exactly this class outgrowing its allowance unnoticed.
+    //   - thread 18432: sized against the measured worst-case STACKING, not just the observed
+    //     high-water. The 2026-08-15 CI overflows (thread.rs, `STACK_PAGES`) showed the honest
+    //     worst case is observed-deepest (~11.7 KiB) plus a blocked thread's resident residue
+    //     (~1.4 KiB) plus a preemption landing at the deepest instant (~2.3 KiB), about 15.5 KiB,
+    //     which is why the old 16 KiB stacks overflowed under load and why the old 14336 limit
+    //     could pass a green run whose true worst case was already past the stack. 18432 sits
+    //     ~3 KiB above that sum, and trips 6 KiB before the 24 KiB stack's guard, so a load-heavy
+    //     but healthy run passes while real growth still alarms long before the fault.
     assert!(
         used <= 61440,
         "boot stack high-water {used} exceeded 61440: the suite's deepest path has grown ~7 KiB \
@@ -487,9 +532,9 @@ pub fn report_high_water() {
          running much deeper on an idle-and-traps stack than the suite has ever measured",
     );
     assert!(
-        tmax <= 14336,
-        "thread stack high-water {tmax} exceeded 14336: some kernel thread is within 2 KiB of its \
-         guard page (notes/stack-high-water.md)",
+        tmax <= 18432,
+        "thread stack high-water {tmax} exceeded 18432: some kernel thread is within 6 KiB of its \
+         guard page, ~3 KiB past the measured worst-case stacking (notes/stack-high-water.md)",
     );
 }
 
