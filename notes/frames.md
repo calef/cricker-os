@@ -247,7 +247,7 @@ state of the world for every driver in the tree the day before.
   claims sit in the same paragraph. This exact `FAR` came back twice more, byte for byte, after
   #157 shrank `reap_region_objects` and after milestone 124 rebuilt the spawn path, which no
   depth-driven overflow could do; and `script/stack-depth-check` now says the deepest chain a thread
-  stack can carry is 13712 bytes against the 20480 this address would need. See notes/stack.md, "The
+  stack can carry is 13792 bytes against the 20480 this address would need. See notes/stack.md, "The
   guard-page faults of 2026-08-16, which were not overflows". **The rest of this entry stands**: the
   fault is real, it is not this milestone's, and the binary really was byte-identical between a red
   run and a green one.

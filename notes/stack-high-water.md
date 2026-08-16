@@ -325,11 +325,11 @@ together by the convenient shape, and the connection was invisible until somethi
   (2026-08-16), written after this entry and `script/stack-frame-check`'s twin of it had both stood
   unbuilt through two rounds of guard-page faults. It reads direct calls out of the disassembly,
   hangs these frame sizes on the graph, and takes the longest path from the entry points a kernel
-  thread stack starts at. Its first answer: 13712 bytes worst case on aarch64, 13344 on riscv64.
+  thread stack starts at. Its first answer: 13792 bytes worst case on aarch64, 13344 on riscv64.
   **Do not compare its `thread_entry` chain against a watermark**, which is the mistake two drafts
   of that comparison made: this note's number is whatever was on the stack, nested trap frames
   included, and that chain is the thread's own work with no trap on it. Measured over 31 aarch64
-  runs the watermark read 9536, 9640 and 10600 against a 9456 chain and a 13712 composed bound, and
+  runs the watermark read 9536, 9640 and 10600 against a 9456 chain and a 13792 composed bound, and
   the excursions are the size of a trap frame plus a handler. The comparison that means something is
   against the composed number.
   Its answer is still a lower bound rather than an upper one, because indirect calls are invisible

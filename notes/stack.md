@@ -450,16 +450,21 @@ wasted. But it did not close this.
 
 ## The arithmetic that says it is not depth
 
-**The deepest chain a kernel thread stack can carry is 13712 bytes on aarch64 and 13344 on
+**The deepest chain a kernel thread stack can carry is 13792 bytes on aarch64 and 13344 on
 riscv64**, measured by `script/stack-depth-check` over the same test binary CI builds:
 
 | | aarch64 | riscv64 |
 |---|---|---|
 | longest chain from `thread_entry` (a kernel thread's own work) | 9456 | 9168 |
 | trap frame the vector builds | 272 | 288 |
-| handler chain that can nest on kernel code (no syscall or user-fault arm) | 3984 | 3888 |
-| **worst total on a 16384-byte stack** | **13712** | **13344** |
+| handler chain that can nest on kernel code (no syscall or user-fault arm) | 4064 | 3888 |
+| **worst total on a 16384-byte stack** | **13792** | **13344** |
 | measured high water, milestone 84's watermark, 31 runs on this machine | 9536 to 10600 | 9344 |
+
+(The aarch64 handler row read 3984 before this work and 4064 after, because the `sp` line added to
+`warn_if_guard_page` is itself on the fault path. Eighty bytes to make the report say what it
+measures is worth it, and the instrument noticing its own cost is the sort of thing that says it is
+measuring the right binary.)
 
 Two things make that close to a bound. The call graph is **acyclic**: no recursion, so the longest
 path is the worst case for everything the graph contains. And **no frame over the 4096-byte guard
@@ -478,11 +483,11 @@ The second draft was comparing the wrong two numbers. **The watermark measures w
 stack, nested traps included**; the `thread_entry` chain is only the thread's own work, with no trap
 on top. The comparison that means something is against the composed row: a timer interrupt landing
 near the deepest point costs a 272-byte trap frame plus a handler, which is exactly the shape of a
-1144-byte excursion, and the walker's own model of that is the 13712 in the table. So:
+1144-byte excursion, and the walker's own model of that is the 13792 in the table. So:
 
     thread_entry chain   9456    the thread's own work, no trap
     measured watermark   9536 to 10600    what actually happened, traps included
-    composed worst       13712   the bound, chain + trap frame + nestable handler
+    composed worst       13792   the bound, chain + trap frame + nestable handler
 
 The measurement sits between them, which is where it should sit, and the bound is not contradicted
 by anything measured. It is still a **lower** bound in principle, because indirect calls and
