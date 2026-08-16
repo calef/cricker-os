@@ -499,14 +499,20 @@ And the addresses point away from that reading. Both landed at **guard-page offs
 far end of the guard, 4096 and 4088 bytes below their stack's bottom. A gradual overflow arrives at
 the *near* end, within a few hundred bytes of the bottom. Offset 0 is also, exactly, **one word past
 the top of the stack in the slot below**: the slots are contiguous and each slot's guard page is its
-first page, so `slot N guard base == slot N-1 stack top`. Two ISAs, two runs, both within eight
-bytes of that boundary.
+first page, so `slot N guard base == slot N-1 stack top`. Six faults, two ISAs, every one within
+eight bytes of that boundary.
 
-The handler also proves `sp` was mapped. On aarch64 the vector's `SAVE_CONTEXT` builds a 272-byte
+The handler argues `sp` was mapped, too. On aarch64 the vector's `SAVE_CONTEXT` builds a 272-byte
 frame at the live `SP_EL1` before any Rust runs; if `sp` had been inside the unmapped guard, that
-store would have faulted again and the machine would have printed nothing. It printed a full
-register dump. RISC-V's `trap.s` stays on the interrupted `sp` for an S-mode trap and has the same
-property.
+store would have faulted again. It printed a full register dump instead. RISC-V's `trap.s` stays on
+the interrupted `sp` for an S-mode trap and has the same property. (That argument is not airtight,
+and the next subsection is why: aarch64 recovers from a nested vector fault by walking `sp` down
+until the frame fits. It is refuted on other grounds.)
+
+So the report now prints `sp` beside the faulting address in the same units and lets the reader
+compare, rather than asserting the answer. `kernel/src/stack.rs`, with
+`sched::tests::a_slots_guard_page_begins_where_the_slot_below_it_ends` pinning the geometry the
+comparison rests on.
 
 ### A model that fits the offsets exactly, and why it is still wrong
 
@@ -540,11 +546,6 @@ occurrence has to print to settle it**: if the new `sp` line names the slot *bel
 address, the store is past a neighbour's top and the trap-entry model is dead for good; if it names
 the same slot, `sp` really was in the guard page and this section is back on the table with `ELR` to
 explain.
-
-So the report now prints `sp` beside the faulting address in the same units and lets the reader
-compare, rather than asserting the answer. `kernel/src/stack.rs`, and
-`sched::tests::a_slots_guard_page_begins_where_the_slot_below_it_ends` pins the geometry the
-comparison rests on.
 
 ## What it therefore is, and what is still open
 
