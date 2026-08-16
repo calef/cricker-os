@@ -557,9 +557,18 @@ pub fn boot_stage() -> u32 {
 /// - The watched memory is concurrently mutated under SCHED while the check reads it lock-free;
 ///   a torn read of an in-flight legal write can print as a divergence. That is a false alarm
 ///   only in the sense that the mutation was legal; the printed delta says so itself.
+/// - The instrument's own state (the watch table, the shadow) is serialized by
+///   `canary_gate::Gate`, a one-word state machine with loom-searched guards. Its first protocol
+///   was two hand-written flags here, and that pair raced (2026-08-15): a `check` that lost the
+///   single-flight slot returned silently having checked nothing, which the kernel test read as
+///   a missed corruption (the thead-c906 flake, notes/cpu-models.md BUGS), and a re-arm could
+///   rewrite the plan under a checker that had seen `ARMED` but not yet won the slot. See
+///   `crates/canary_gate` for both holes and the harnesses that falsify the old spelling.
 #[cfg(not(feature = "bench"))]
 mod canary {
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use canary_gate::Gate;
 
     /// One watched range and where its shadow copy lives.
     #[derive(Clone, Copy)]
@@ -577,16 +586,16 @@ mod canary {
     /// cannot flood the serial log that the dump itself needs.
     const PRINT_CAP: u64 = 48;
 
-    /// Interior-mutable statics with a hand-written protocol: `WATCHES`/`SHADOW` are written by
-    /// `arm` before `ARMED` is released and afterwards only inside the `IN_CHECK` single-flight
-    /// section, so no two writers ever overlap.
+    /// Interior-mutable statics whose one owner at a time is a live `canary_gate` guard:
+    /// `arm` writes them holding an `ArmGuard`, `check` reads and writes them holding a
+    /// `CheckGuard`, and the gate admits at most one guard of either kind (the exclusion is
+    /// loom-checked in `crates/canary_gate`, where the previous hand-written spelling of this
+    /// serialization is also falsified).
     struct Racy<T>(core::cell::UnsafeCell<T>);
-    // SAFETY: access is serialized by the ARMED release/acquire pair plus the IN_CHECK
-    // compare-exchange; see the struct comment.
+    // SAFETY: access is serialized by the gate's guards; see the struct comment.
     unsafe impl<T> Sync for Racy<T> {}
 
-    static ARMED: AtomicBool = AtomicBool::new(false);
-    static IN_CHECK: AtomicBool = AtomicBool::new(false);
+    static GATE: Gate = Gate::new();
     static DIVERGED: AtomicU64 = AtomicU64::new(0);
     static PRINTED: AtomicU64 = AtomicU64::new(0);
     static WATCHES: Racy<([Watch; MAX_RANGES], usize)> = Racy(core::cell::UnsafeCell::new((
@@ -600,16 +609,16 @@ mod canary {
     static SHADOW: Racy<[u8; SHADOW_BYTES]> = Racy(core::cell::UnsafeCell::new([0; SHADOW_BYTES]));
 
     /// Arm over `ranges`, snapshotting their current bytes. Caller guarantees the ranges stay
-    /// readable while armed (ours are `'static` kernel tables) and that no earlier arm is live.
+    /// readable while armed (ours are `'static` kernel tables). Serializes itself: any in-flight
+    /// check finishes before the plan is touched, and the new plan is published whole. Spins, so
+    /// call from thread context (both callers do); the tick side never spins, so a tick landing
+    /// mid-arm skips rather than deadlocks.
     pub fn arm(ranges: &[(usize, usize)]) {
-        ARMED.store(false, Ordering::Release);
-        while IN_CHECK.load(Ordering::Acquire) {
-            core::hint::spin_loop(); // let a straggling check drain before rewriting the plan
-        }
+        let guard = GATE.arm();
         DIVERGED.store(0, Ordering::Relaxed);
         PRINTED.store(0, Ordering::Relaxed);
-        // SAFETY: ARMED is clear and no check is in flight (the loop above), so these statics
-        // have no other accessor until the release store below republishes them.
+        // SAFETY: the ArmGuard is exclusive ownership of these statics (the gate's contract,
+        // loom-checked in crates/canary_gate); no check pass can start until it drops.
         let (watches, count) = unsafe { &mut *WATCHES.0.get() };
         // SAFETY: as above.
         let shadow = unsafe { &mut *SHADOW.0.get() };
@@ -631,11 +640,15 @@ mod canary {
             n += 1;
         }
         *count = n;
-        ARMED.store(true, Ordering::Release);
+        drop(guard); // the release store that publishes the plan
     }
 
+    /// Disarm, and QUIESCE: when this returns, no check pass is mid-flight and none can start,
+    /// so the caller may repurpose the watched memory. (Today's watched ranges are `'static`, so
+    /// the quiescence buys certainty rather than papers over a lifetime; it costs a bounded spin
+    /// while at most one in-flight pass finishes.)
     pub fn disarm() {
-        ARMED.store(false, Ordering::Release);
+        GATE.disarm();
     }
 
     /// How many bytes have diverged since arming. The test hook, and a bench-note number.
@@ -647,20 +660,25 @@ mod canary {
     /// Re-read every watched byte against the shadow; print and absorb what changed. Called from
     /// the timer tick (IRQ context, interrupts masked) and from the test. Single-flight, so a
     /// slow check on one core and the next tick on another cannot interleave shadow updates.
-    pub fn check() {
-        if !ARMED.load(Ordering::Acquire) {
-            return;
+    ///
+    /// Returns whether a full pass RAN. `false` means disarmed, mid-arm, or another core's pass
+    /// holds the slot. The tick ignores the answer (a sampling instrument may skip a beat); a
+    /// caller that must observe a completed pass loops until it gets `true`. Returning the
+    /// refusal instead of swallowing it is the fix for the c906 flake: the test's decisive check
+    /// used to lose the slot to a tick's pass that had read the byte before the flip, and its
+    /// silent no-op read as a missed corruption.
+    pub fn check() -> bool {
+        if !GATE.armed_hint() {
+            return false; // one relaxed load: every unarmed tick's whole cost
         }
-        if IN_CHECK
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return;
-        }
-        // SAFETY: IN_CHECK is ours (the compare-exchange), so no other reader/writer of these
-        // statics is live; ARMED's acquire saw arm's release.
+        let Some(guard) = GATE.try_check() else {
+            return false;
+        };
+        // SAFETY: the CheckGuard is exclusive ownership of these statics (the gate's contract,
+        // loom-checked in crates/canary_gate), and taking it saw the arm guard's release, so the
+        // plan is whole, never torn.
         let (watches, count) = unsafe { &*WATCHES.0.get() };
-        // SAFETY: as above, and mutation is confined to this single-flight section.
+        // SAFETY: as above, and mutation is confined to the guard's lifetime.
         let shadow = unsafe { &mut *SHADOW.0.get() };
         let tick = crate::arch::timer::ticks();
         for w in watches.iter().take(*count) {
@@ -684,7 +702,8 @@ mod canary {
                 }
             }
         }
-        IN_CHECK.store(false, Ordering::Release);
+        drop(guard); // the release store the next pass's acquire pairs with
+        true
     }
 }
 
@@ -693,7 +712,9 @@ mod canary {
 mod canary {
     pub fn arm(_ranges: &[(usize, usize)]) {}
     pub fn disarm() {}
-    pub fn check() {}
+    pub fn check() -> bool {
+        false
+    }
 }
 
 /// Arm the [`canary`] over the thread table and the endpoint registry, snapshotting under `SCHED`
@@ -717,7 +738,8 @@ pub fn canary_arm_registries() {
     canary::arm(&[threads, endpoints]);
 }
 
-/// Disarm the [`canary`]. The demo window's other bracket.
+/// Disarm the [`canary`]. The demo window's other bracket. Quiesces: when it returns, no check
+/// pass is in flight on any core.
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))] // the riscv tour is the caller today
 pub fn canary_disarm() {
     canary::disarm();
@@ -1243,7 +1265,9 @@ pub fn on_tick() {
     // load when it is not, which is every other tick everywhere. IRQ context is safe for its
     // println: the console's IrqSafeMutex masks interrupts while held, so the interrupted
     // context on this core cannot be mid-print (the irq_notify argument, one lock over).
-    canary::check();
+    // The answer is ignored on purpose: a sampling instrument may skip a beat when another
+    // core's pass (or an arm) holds the gate, and the tick must never spin in IRQ context.
+    let _ = canary::check();
 }
 
 pub fn take_need_resched() -> bool {
@@ -3451,22 +3475,34 @@ mod tests {
     /// and a byte flipped behind its back is counted (and printed) on the next check. The scratch
     /// is this test's own static, so the live registries are never poked; arming over the real
     /// tables is `canary_arm_registries`, which is plain plumbing over the same `arm`.
+    ///
+    /// Both checks LOOP until a pass actually runs, and the loop is the fix for a real flake
+    /// (thead-c906, 2026-08-15; notes/cpu-models.md BUGS): `check()` is single-flight, timer
+    /// ticks on other cores call it too (secondaries are online here), and this test's decisive
+    /// call used to lose the slot to a tick's pass that had read the scratch byte *before* the
+    /// flip. The old `check()` swallowed that refusal and the flip went uncounted; now it says
+    /// `false` and the test insists on a pass of its own.
     #[test_case]
     fn the_canary_reports_a_byte_that_changed_behind_its_back() {
         use core::sync::atomic::AtomicU8;
         static SCRATCH: [AtomicU8; 32] = [const { AtomicU8::new(0xA5) }; 32];
         let base = SCRATCH.as_ptr() as usize;
         super::canary::arm(&[(base, 32)]);
-        super::canary::check();
+        while !super::canary::check() {
+            core::hint::spin_loop();
+        }
         assert_eq!(
             super::canary::divergences(),
             0,
             "an unchanged range must not diverge"
         );
         SCRATCH[7].store(0x5A, Ordering::Relaxed);
-        // The timer's own check may absorb the flip before this explicit one; the counter is the
-        // assertion either way.
-        super::canary::check();
+        // The timer's own check may absorb the flip before this completed pass; either way the
+        // count is visible here (this core ran a full pass after the store, and taking the gate
+        // acquires whatever an earlier pass counted before releasing it).
+        while !super::canary::check() {
+            core::hint::spin_loop();
+        }
         assert!(
             super::canary::divergences() >= 1,
             "a flipped watched byte must be reported"

@@ -148,6 +148,31 @@ all three of this protocol's races were found by flakes and bench boots first an
 this model existed, and the model now holds the fixes in place where the next edit to `wake` or
 `finish_switch` cannot silently undo them.
 
+### `crates/canary_gate`, the corruption canary's serialization (2026-08-15)
+
+The fourth extraction, and the first whose bug was in the extracted protocol itself rather than
+held in place around it. The registry canary (first-silicon diagnostics, `kernel/src/sched.rs`)
+serialized arm/check/disarm with two hand-written flags, `ARMED` and `IN_CHECK`, and the pair had
+two holes. The observed one: a `check()` that lost the single-flight compare-exchange returned
+silently, so the kernel test's decisive check could be swallowed by a timer tick's pass that had
+read the watched byte before the flip; that is the `thead-c906` flake in
+[cpu-models.md](cpu-models.md)'s BUGS, two failures in four runs of one tree. The latent one: a
+checker between its `ARMED` load and its `IN_CHECK` win was invisible to `arm()`'s drain loop, so
+a re-arm could rewrite the watch table and the shadow while a pass read them, a data race whose
+torn `(base, len)` is a wild read in kernel space. No failure was ever traced to the second hole
+(every boot arms at most once today, over ranges that never change), but a corruption instrument
+that can itself read wild is not an instrument.
+
+The replacement is one state word (`DISARMED`/`ARMED`/`ARMING`/`CHECKING`, every transition a
+single compare-exchange) behind RAII guards; the kernel touches the plan and the shadow only
+while holding one. Three harnesses: armer/checker exclusion over a shared `UnsafeCell` (loom's
+access tracking makes a torn plan an error in itself, not a value someone must notice), disarm's
+quiescence promise (after `disarm()` returns the caller writes the cell bare-handed), and
+single-flight for two checkers. A fourth, scratch-only harness encoded the OLD two-flag spelling
+against the exclusion model and loom falsified it on the first run, which is the falsification
+discipline the wake_handshake section above describes, applied to a protocol that was actually
+broken.
+
 ## What loom found
 
 **A real weak-memory bug in the clock page's seqlock, on the first run.**
@@ -283,7 +308,7 @@ Add a protocol of your own. Four steps, and the third is the one that is easy to
 
 | | |
 |---|---|
-| Runtime, all three crates, warm | **under a second** wall on an M-series laptop (0.2 s measured 2026-08-14, with `wake_handshake`'s six harnesses adding ~10 ms of search) |
+| Runtime, all four crates, warm | **under a second** wall on an M-series laptop (0.2 s measured 2026-08-14, with `wake_handshake`'s six harnesses adding ~10 ms of search; `canary_gate`'s three, measured 2026-08-15, add under 10 ms) |
 | Runtime, cold (compiling loom and its 28 transitive crates) | ~6.5 s |
 | Crates added to `Cargo.lock` | **28** (loom plus `generator`, `scoped-tls`, `tracing`, `tracing-subscriber` and their trees) |
 | Crates compiled by an ordinary `cargo build`, `cargo test`, `cargo clippy` or `script/test` | **zero** |
