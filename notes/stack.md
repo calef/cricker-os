@@ -462,6 +462,24 @@ chain, or grow the budget:
   both ISAs and wants a lane of its own; until then the preemption cost is part of every thread's
   budget, and the high-water margin has to carry it.
 
+**What the enlargement cost elsewhere, which took three suite runs to find.** Thread stacks come
+from the kmem carve, not the frame allocator, and 6 pages x `MAX_THREADS` is 768 pages, the whole
+768-page carve; the carve grew to 1024, which in turn took the last spare megabyte of the 128 MiB
+test machine, so the machine grew to 256 MiB (both runners, and memory.rs's RAM assert moves with
+them). Both exhaustions surfaced the same way: an unrelated test's spawn failing late in the
+aarch64 suite with a message that ORed two causes. The refusal sites in `kmem::page` and the shell
+wiring now print which budget said no.
+
+**The repeated fault address is a signature, not a coincidence.** Every guard-page fault in this
+family lands on the guard page's base (aarch64) or base and base+8 (riscv64), across days and
+across fixes, and that is arithmetic rather than evidence of one recurring caller: `sp` is 16-byte
+aligned, the entry stub's stores walk upward from `sp`, and the cascade only ends once a frame
+clears the page-aligned guard base, so the terminal faulting store is always the first aligned
+address at or above the base. aarch64's 16-byte `stp`s give exactly the base; riscv64's 8-byte
+`sd`s give base or base+8, which are precisely the two values ever observed. A depth-driven
+overflow through the entry-stub cascade therefore DOES repeat an address, exactly this one; do not
+read address stability as proof of a single fixed-site writer.
+
 The overflow report also got the instrument this diagnosis lacked: on a thread-guard fault,
 `stack::warn_if_guard_page` now prints every word of the dead stack that points into `.text`,
 deepest first. This kernel keeps no frame pointers, so that conservative scan is the only
