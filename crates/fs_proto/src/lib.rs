@@ -1853,7 +1853,7 @@ pub mod fixture {
 
     /// **The file the SMB gate writes, in the other direction** (milestone 54's write path). The
     /// host's SMB prober creates it over the wire, writes [`SMB_WROTE`] plus a tail, shortens it
-    /// with `SET_INFO`, and closes; a *different* in-guest process ([`fs_test_client`]'s verify
+    /// with `SET_INFO`, and closes; a *different* in-guest process (`fs_test_client`'s verify
     /// role, holding a directory capability and nothing that names the network) then reads it
     /// back through the FS server and reports what it found.
     ///

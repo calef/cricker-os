@@ -72,14 +72,14 @@ const FILE_OPEN_IF: u32 = 3;
 const FILE_OVERWRITE: u32 = 4;
 const FILE_OVERWRITE_IF: u32 = 5;
 
-/// CreateAction, the CREATE response's word for what actually happened. A client's create-or-open
+/// `CreateAction`, the CREATE response's word for what actually happened. A client's create-or-open
 /// logic reads it, so getting it wrong is worse than refusing.
 const ACTION_SUPERSEDED: u32 = 0;
 const ACTION_OPENED: u32 = 1;
 const ACTION_CREATED: u32 = 2;
 const ACTION_OVERWRITTEN: u32 = 3;
 
-/// CreateOptions bits this server reads ([MS-SMB2] §2.2.13).
+/// `CreateOptions` bits this server reads ([MS-SMB2] §2.2.13).
 const OPT_DIRECTORY_FILE: u32 = 0x0000_0001;
 const OPT_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
 /// The client asking that the name go away when the last handle closes. This is how macOS's
@@ -1089,7 +1089,7 @@ impl Connection {
             (1, 6) => {
                 let id = match node {
                     Node::Root => 2u64,
-                    Node::File(i) => 3 + i as u64,
+                    Node::File(i) => 3 + i,
                 };
                 w64(d, 0, id);
                 8

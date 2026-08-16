@@ -7,13 +7,14 @@
 //! inbound half), reassemble the direct-TCP framing from `RECV`'s bounded chunks, hand each
 //! message to `smb_proto::server::Connection`, and push the answer back out through `SEND`.
 //!
-//! The share has two backings behind the one `Share` seam, chosen by `arg2`:
+//! The share has two backings behind the one `Share` seam, chosen by `arg2`, which also says
+//! which **direction** the share is served in (the write path made that a separate question):
 //!
 //! - **The fs_proto-backed share** ([`FsShare`]), the milestone's real one: this program holds a
 //!   directory capability into the FS server (the endpoint IS the capability, DECISIONS §27) and
 //!   answers every `Share` question with `fs_proto` verbs, so a client of the mount is reading
-//!   RedoxFS bytes. This is what both the test boot and the serve boot wire when a RedoxFS disk
-//!   is attached.
+//!   and writing RedoxFS bytes. This is what both the test boot and the serve boot wire when a
+//!   RedoxFS disk is attached, both of them read-write.
 //! - **The fixture** (`smb_proto::share::FIXTURE`), files baked into this binary: the no-disk
 //!   fallback, kept because it lets the whole protocol path run and gate with no FS service in
 //!   the boot, and because a wire bug is easier to hunt against a share that cannot be wrong.
@@ -70,8 +71,9 @@
 //! - **A dropped connection costs a 15 s stall**: `RECV` on a dead connection runs into
 //!   `net_stack`'s bounded wait before it reports failure, and only then does this server re-arm.
 //!   A clean unmount (LOGOFF) is detected and costs nothing.
-//! - The protocol-level limitations (guest-only auth, read-only, ASCII names) are `smb_proto`'s
-//!   and are listed in that crate's header.
+//! - The protocol-level limitations (guest-only auth, ASCII names, discarded timestamps,
+//!   nominal free space) are `smb_proto`'s and are listed in that crate's header. **Guest means
+//!   everyone, and on a writable share that means everyone may change it.**
 //!
 //! Name: unrecorded. Provisional, minted by milestone 54's lane on 2026-08-15: the program is the
 //! server half of SMB, and `fs_server` set the `<protocol>_server` shape. Expect ratification to

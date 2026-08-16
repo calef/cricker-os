@@ -197,7 +197,7 @@ pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
 /// This runs *after* the SMB adapter has finished serving, in a process that holds a directory
 /// capability and nothing that names the network. That separation is the whole point: the bytes
 /// were put there by a host process over TCP, and are read here by a different process through
-/// `fs_proto`, so "the write crossed SMB2 -> the `Share` seam -> fs_proto -> RedoxFS" is
+/// `fs_proto`, so "the write crossed SMB2 -> the `Share` seam -> `fs_proto` -> RedoxFS" is
 /// something the machine checks rather than something the writer asserts about itself.
 ///
 /// It classifies rather than merely failing, in [`crash_verify`]'s shape: the second report word
