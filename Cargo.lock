@@ -468,6 +468,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdns_config"
+version = "0.1.0"
+dependencies = [
+ "mdns_proto",
+]
+
+[[package]]
 name = "mdns_proto"
 version = "0.1.0"
 

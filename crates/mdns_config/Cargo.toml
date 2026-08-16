@@ -1,0 +1,17 @@
+[package]
+name = "mdns_config"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The mDNS responder's configuration document: the text a person edits to say what this machine
+# advertises (its host label, the SMB port, the model string, and one line per Time Machine disk),
+# and the parser that turns it into an `mdns_proto::Advertisement`. Separate from `mdns_proto`
+# because that crate is the wire format and this is policy, and separate from the responder program
+# because a `no_std` binary is unreachable by host tests and by Kani (CLAUDE.md rule 7).
+
+[lints]
+workspace = true
+
+[dependencies]
+mdns_proto = { version = "0.1.0", path = "../mdns_proto" }
