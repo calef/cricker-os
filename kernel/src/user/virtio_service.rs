@@ -318,7 +318,7 @@ pub fn start_net_stack(
     };
 
     let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid, listen_grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
 
     // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
     // enters its serve loop (the client's first request blocks until it does). This also
@@ -329,22 +329,37 @@ pub fn start_net_stack(
     Some(cli_report)
 }
 
+/// Where the SMB adapter expects the page it shares with the FS server
+/// (`user/src/smb_server.rs`'s `FS_VA`). MUST match that program's source, like every VA here.
+const FS_VA_SMB: u64 = 0x0000_0000_00B0_0000;
+
 /// Spawn one client of a `Stack` endpoint: WRITE on the shared endpoint, its own untyped, a
 /// report endpoint, two extra stack pages, no heap. The shared body of [`start_net_stack`]'s
 /// socket-contract client and the SMB adapter below; `arg0`/`arg1` are the client's, and mean
 /// whatever its `_start` says they mean.
-fn spawn_stack_client(image: &'static [u8], arg0: u64, arg1: u64, stack: EpId) -> EpId {
+///
+/// `fs` is the SMB adapter's directory capability: the file-service endpoint and the physical
+/// frame of the page its clients share with the FS server, granted as slot 3 and mapped at
+/// [`FS_VA_SMB`]. `Some` also tells the program so (`arg2`, `smb_server`'s contract); `None` is
+/// every other stack client, and the fixture-serving adapter of a boot with no RedoxFS disk.
+fn spawn_stack_client(
+    image: &'static [u8],
+    arg0: u64,
+    arg1: u64,
+    stack: EpId,
+    fs: Option<(EpId, u64)>,
+) -> EpId {
     use crate::cap::untyped_cap;
 
     let cli_report = crate::sched::create_endpoint();
     let cli_budget =
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the net client");
-    let mut cli_stack = [Mapping {
+    let mut maps = [Mapping {
         va: 0,
         phys: 0,
         flags: Flags::user_data(),
-    }; 2];
-    for (k, m) in cli_stack.iter_mut().enumerate() {
+    }; 3];
+    for (k, m) in maps.iter_mut().take(2).enumerate() {
         let phys = crate::memory::alloc()
             .expect("no frame for the net client stack")
             .addr();
@@ -355,22 +370,42 @@ fn spawn_stack_client(image: &'static [u8], arg0: u64, arg1: u64, stack: EpId) -
         m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
         m.phys = phys;
     }
+    let n_maps = if let Some((_, file_shared)) = fs {
+        maps[2] = Mapping {
+            va: FS_VA_SMB,
+            phys: file_shared,
+            flags: Flags::user_data(),
+        };
+        3
+    } else {
+        2
+    };
 
     crate::sched::spawn(move || {
+        let mut grants = [
+            endpoint_cap(cli_report, Rights::WRITE), // slot 0: report the verdict
+            // slot 1: the stack endpoint, WRITE to send requests and to delegate the
+            // shared frame onto it (the frame it mints already carries GRANT).
+            endpoint_cap(stack, Rights::WRITE),
+            untyped_cap(cli_budget), // slot 2: mint and map the shared frame
+            // slot 3 (sliced away below unless `fs`): the directory capability. The array
+            // needs a fourth element either way; this placeholder is never granted.
+            endpoint_cap(cli_report, Rights::WRITE),
+        ];
+        let n_grants = if let Some((file_ep, _)) = fs {
+            grants[3] = endpoint_cap(file_ep, Rights::WRITE);
+            4
+        } else {
+            3
+        };
         run(
             image,
             Spawn {
                 arg0,
                 arg1,
-                arg2: 0,
-                grants: &[
-                    endpoint_cap(cli_report, Rights::WRITE), // slot 0: report the verdict
-                    // slot 1: the stack endpoint, WRITE to send requests and to delegate the
-                    // shared frame onto it (the frame it mints already carries GRANT).
-                    endpoint_cap(stack, Rights::WRITE),
-                    untyped_cap(cli_budget), // slot 2: mint and map the shared frame
-                ],
-                maps: &cli_stack,
+                arg2: fs.is_some() as u64,
+                grants: &grants[..n_grants],
+                maps: &maps[..n_maps],
             },
         )
     })
@@ -394,6 +429,10 @@ fn spawn_stack_client(image: &'static [u8], arg0: u64, arg1: u64, stack: EpId) -
 /// `smb_rounds` connections must be served by the adapter before it reports; the host side is
 /// xtask's SMB prober, the mirror of the inbound echo prober, driving a real
 /// negotiate-through-read exchange through the second `hostfwd`.
+///
+/// `fs` is the adapter's directory capability into the FS service (milestone 54's second act):
+/// [`spawn_stack_client`] documents its two halves. With `Some` the adapter serves the RedoxFS
+/// share the seeding client just wrote; with `None` it serves its baked-in fixture.
 pub fn start_net_stack_with_smb(
     image: &'static [u8],
     smb_image: &'static [u8],
@@ -401,6 +440,7 @@ pub fn start_net_stack_with_smb(
     echo_port: u16,
     smb_port: u16,
     smb_rounds: u64,
+    fs: Option<(EpId, u64)>,
 ) -> Option<(EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
@@ -408,8 +448,8 @@ pub fn start_net_stack_with_smb(
     };
     let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port));
     let (net_stack_report, stack) = wire_net_server(image, transport, dev.intid, None, grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack);
-    let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
+    let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs);
 
     // Drain the DHCP lease report, as in start_net_stack: both clients block on their first
     // request until the server enters its serve loop.
@@ -431,6 +471,7 @@ pub fn start_net_stack_with_smb(
 pub fn start_smb_serve(
     net_stack_image: &'static [u8],
     smb_image: &'static [u8],
+    fs: Option<(EpId, u64)>,
 ) -> Option<(EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
@@ -438,7 +479,7 @@ pub fn start_smb_serve(
     };
     let grant = socket_proto::listen_grant(445, 445);
     let (report, stack) = wire_net_server(net_stack_image, transport, dev.intid, None, grant);
-    let smb_report = spawn_stack_client(smb_image, 0, 445, stack);
+    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs);
     Some((report, smb_report))
 }
 
