@@ -124,10 +124,10 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 65 | DECIDED | [A refusal that is not passive cannot be used as a question](65-active-refusal.md) |
 | 66 | DECIDED | [A refusal is a non-zero status, and not the same one an error gets](66-refusal-status.md) |
 | 67 | DECIDED | [A program's second stream is a declaration, not a number](67-second-stream.md) |
-| 68 | PROPOSED | [`BootEndowment::unused` wants a truer name](68-boot-endowment-name.md) |
+| 68 | DECIDED | [`BootEndowment::unused` wants a truer name: it is `for_test_roles`](68-boot-endowment-name.md) |
 | 69 | DECIDED | [`Endow` is a verb, and names the same idea as `Endowment`: it is `ChildEndowment`](69-endow-versus-endowment.md) |
-| 70 | PROPOSED | [Is milestone 82 BUILT when its finding was "nothing to fix"?](70-built-when-nothing-to-fix.md) |
-| 71 | PROPOSED | [Does a recorded limitation ever become a `RECORDED` row?](71-recorded-limitations.md) |
+| 70 | DECIDED | [BUILT measures the end-state, and a false premise is rewritten in as the finding](70-built-when-nothing-to-fix.md) |
+| 71 | DECIDED | [A limitation is promoted when it stops being a fact and becomes a plan](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
 | 73 | DECIDED | [Milestone 44's ten admin minutes, which only calef can spend](73-repository-admin-steps.md) |
 | 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
@@ -143,6 +143,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 84 | DECIDED | [How we port: prefer software that has already dropped ambient authority](84-how-we-port.md) |
 | 85 | DECIDED | [What we port is evidence and must not be ours; what we ship is product and must be](85-evidence-and-product.md) |
 | 86 | PROPOSED | [Whether an NVMe driver can leave the kernel, and what capability would let it](86-el0-nvme-driver.md) |
+| 87 | DECIDED | [MIT OR Apache-2.0, and why the GPL's lesson does not transfer](87-permissive-license.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

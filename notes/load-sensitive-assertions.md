@@ -413,3 +413,15 @@ is not an obstacle. Recommended here, not built here.
 - notes/riscv-parity-scope.md (the shape named: a wait written against something wider than the
   property)
 - notes/benchmarks.md (the two instruments, and why icount cannot host cross-core tests)
+
+### `the_handler_keeps_up_when_no_lock_is_held` (aarch64): the taxonomy its comment promised
+
+Resolved 2026-08-15, the day merge-queue runner load made it urgent: the assertion broke three
+unrelated pull requests in one afternoon (#204, #210, #215), because parallel queue-group builds
+saturate the shared runners and a descheduled emulator misses deadlines the guest cannot tell
+from a slow handler. The comment above the assertion had already written the taxonomy: re-armed
+less than one interval late is a slow handler and our bug; a whole interval or more is the
+emulator descheduled and says nothing about this kernel. The assertion now applies it. The
+deschedule shape prints its numbers and passes, loudly labeled; the slow-handler shape still
+fails. The riscv64 tour has no direct twin of this assertion (checked when the scheduler smoke
+line was fixed the same day); if one grows, it takes the same taxonomy.

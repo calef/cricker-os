@@ -49,7 +49,7 @@ const GRANTS: BootEndowment = BootEndowment {
     fs_page: 5,
     // Nothing. Unlike aarch64's, this boot path is not shared with milestone 19d's test roles, so
     // the kernel grants exactly what the interactive system uses.
-    unused: &[],
+    for_test_roles: &[],
 };
 
 #[unsafe(no_mangle)]

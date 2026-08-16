@@ -394,7 +394,7 @@ fn init_boot(initrd_len: u64, fs_rights: u64) -> ! {
         clock_page: 5,
         fs_ep: 6,
         fs_page: 7,
-        unused: &[REPORT, TEST_IRQ],
+        for_test_roles: &[REPORT, TEST_IRQ],
     };
 
     system_initializer::boot(&GRANTS, initrd_len, fs_rights)

@@ -93,6 +93,13 @@ name = "calendar"
 version = "0.1.0"
 
 [[package]]
+name = "canary_gate"
+version = "0.1.0"
+dependencies = [
+ "loom",
+]
+
+[[package]]
 name = "capability"
 version = "0.1.0"
 
@@ -351,6 +358,7 @@ dependencies = [
  "bitfont",
  "block_roster",
  "calendar",
+ "canary_gate",
  "capability",
  "clock_proto",
  "compositor",
@@ -458,6 +466,10 @@ checksum = "7da5ac363534dce5fabf69949225e174fbf111a498bf0ff794c8ea1fba9f3dda"
 dependencies = [
  "digest",
 ]
+
+[[package]]
+name = "mdns_proto"
+version = "0.1.0"
 
 [[package]]
 name = "measured_boot"

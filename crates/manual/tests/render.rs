@@ -236,7 +236,12 @@ fn an_overlong_line_is_reported_rather_than_hidden() {
 /// from the inside.
 #[test]
 fn every_character_survives() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    // Runtime, not env!: the compile-time form bakes the absolute path into the binary, and a
+    // cached artifact built before a checkout moves (the 2026-08-15 cricker-os -> nife directory
+    // rename) then reads a directory that no longer exists and checks zero files. Cargo sets the
+    // variable at run time too, and that one is always the live path.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets this for tests");
+    let root = std::path::Path::new(&manifest)
         .parent()
         .unwrap()
         .parent()

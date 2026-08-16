@@ -54,7 +54,7 @@
 //!
 //! It also gives up the UART device capability and the UART interrupt as soon as the drivers that
 //! need them are built, the file service as soon as the shell holds it, and everything in
-//! [`BootEndowment::unused`] with them. The proof is a negative control taken from inside the process and
+//! [`BootEndowment::for_test_roles`] with them. The proof is a negative control taken from inside the process and
 //! printed at the prompt, exactly the shape `root_supervisor` uses: after the delete, `RETYPE` and
 //! `RETYPE_OBJ` on that slot must answer `NoSuchSlot` (there is nothing there) rather than
 //! `NotPermitted` (there is, and you may not).
@@ -162,7 +162,7 @@ use user_rt::{call, cap_delete, invoke, recv, recv_cap, send};
 /// The two orders come from `kernel::user::spawn_init` (aarch64) and `kernel::user::riscv_shell_boot`
 /// (riscv64). They differ because the aarch64 path is shared with milestone 19d's test roles, which
 /// were granted a report endpoint and a test interrupt this system has no use for; see
-/// [`unused`](BootEndowment::unused).
+/// [`for_test_roles`](BootEndowment::for_test_roles).
 pub struct BootEndowment {
     /// The construction budget, held `WRITE | GRANT`: everything this system is made of.
     pub untyped: u64,
@@ -200,7 +200,7 @@ pub struct BootEndowment {
     /// receives on the report here, and no interactive component waits on that interrupt. An init
     /// that kept them would be keeping delegable authority for no reason, which is the same kind of
     /// thing the construction budget is.
-    pub unused: &'static [u64],
+    pub for_test_roles: &'static [u64],
 }
 
 /// Where the kernel maps the initrd archive, read-only. Must match `kernel::user::INITRD_VA`.
@@ -489,7 +489,7 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     for c in [request, reply, con_shared, g.uart_dev, g.uart_irq] {
         cap_delete(c);
     }
-    for &c in g.unused {
+    for &c in g.for_test_roles {
         cap_delete(c);
     }
 

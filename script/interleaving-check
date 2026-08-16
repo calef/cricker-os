@@ -17,10 +17,12 @@
 #
 # **What it covers**: `crates/steal_request` (the work-steal handshake, the pilot and the kernel's
 # one lock-free cross-core protocol), `crates/clock_proto` (the cross-address-space seqlock, where
-# the survey's real bug was), and `crates/wake_handshake` (the scheduler's block/wake protocol,
+# the survey's real bug was), `crates/wake_handshake` (the scheduler's block/wake protocol,
 # extracted after the VisionFive 2's fourth bench stop; lock-based, so what loom searches there is
-# the interleaving of critical sections rather than memory orderings). The note carries the survey
-# and each model's honest limits.
+# the interleaving of critical sections rather than memory orderings), and `crates/canary_gate`
+# (the corruption canary's arm/check/disarm serialization, extracted after its two-flag spelling
+# raced; the only retrofit so far whose bug was in the protocol itself). The note carries the
+# survey and each model's honest limits.
 #
 # **Loom models C11, not ARM and not RISC-V.** It narrows the gap rather than closing it: a bug it
 # finds is real, and a clean run is not a proof about the silicon. Milestone 81's HVF leg is the
@@ -46,4 +48,4 @@ cd "$(dirname "$0")/.."
 # optimised one is seconds. Nothing here depends on debug assertions.
 echo "==> loom: the hand-rolled atomic protocols, every interleaving"
 RUSTFLAGS="--cfg loom -D warnings" cargo test --release \
-    -p steal_request -p clock_proto -p wake_handshake --lib "$@"
+    -p steal_request -p clock_proto -p wake_handshake -p canary_gate --lib "$@"
