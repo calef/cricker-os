@@ -184,10 +184,7 @@ fn a_shell_with_no_usable_clock_times_the_command_anyway() {
         let n = transcript(clock, &mut buf);
         let t = &buf[..n];
         let timed = core::str::from_utf8(answer(t, b"time worker 3")).unwrap();
-        assert!(
-            timed.contains("3*3 = 9"),
-            "the command must run: {timed:?}",
-        );
+        assert!(timed.contains("3*3 = 9"), "the command must run: {timed:?}",);
         let nanos = nanos_of(answer(t, b"time worker 3"));
         assert!(nanos > 0 && nanos < SANE, "duration out of range: {nanos}");
         // The two sentences §72 retired must be gone from the whole transcript, not merely from
