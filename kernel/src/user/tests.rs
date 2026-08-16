@@ -121,11 +121,17 @@ const NET_TEST_TCP_REOPEN: u64 = 3;
 const NET_TEST_UDP_TFTP: u64 = 4;
 #[cfg(target_arch = "aarch64")]
 const NET_TEST_TCP_ACCEPT: u64 = 5;
+#[cfg(target_arch = "aarch64")]
+const NET_TEST_UDP_MDNS: u64 = 6;
 /// The one port the inbound gate is granted (milestone 107). The runners forward a host port to
 /// exactly this one, and the client asks for 8080 as well to prove the grant refuses. Named here
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
 const NET_LISTEN_PORT: u16 = 7778;
+/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
+/// 5353. Named here for the same reason as the listen port: the spawn service grants it.
+#[cfg(target_arch = "aarch64")]
+const NET_MDNS_PORT: u16 = 5353;
 #[cfg(target_arch = "aarch64")]
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
@@ -1654,6 +1660,45 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
          0xE070 means nobody ever connected, which is the host side: is the runner adding a \
          hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
+    );
+}
+
+/// **The stack carries an mDNS-shaped exchange: a granted fixed port, and the joined group
+/// receives** (milestone 55's stack half). The three things a responder needs and nothing else in
+/// the suite touches: binding UDP 5353 is an *authority* (a port outside the spawn's
+/// `udp_bind_grant` is refused, the granted one binds and is exclusive, the accept test's grant
+/// half for UDP); a datagram addressed to 224.0.0.251, not to the guest's own address, is
+/// accepted because the stack joined the group (without smoltcp's `multicast` feature it dies in
+/// the IPv4 input path, unseen by UDP); and the querier's source endpoint rides back on RECV,
+/// which RFC 6762 §6.7's semantics turn on.
+///
+/// Slirp cannot carry any of the multicast half, so the host side is xtask's multicast prober on
+/// the frame-level hub the runner wires beside slirp: it takes the guest's own multicast send off
+/// the wire (which is what proves SENDTO to a group reaches it), injects the group-addressed
+/// query with a spoofed source nothing on the network holds, and requires the guest's composed
+/// answer. See notes/mdns.md for what this still does not prove (a real network's multicast).
+// RISC-V twin: `riscv_virtio_tests::the_stack_carries_an_mdns_shaped_exchange`.
+#[cfg(target_arch = "aarch64")]
+#[test_case]
+fn the_stack_carries_an_mdns_shaped_exchange() {
+    let Some(report) = virtio_service::start_net_stack(
+        net_stack_image(),
+        NET_TEST_UDP_MDNS,
+        false,
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+    let verdict = sched::ipc_recv(report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the mDNS-shaped exchange failed (client code {verdict:#x}). 0xE080 means a port outside \
+         the UDP bind grant was bound anyway, which is the capability failure; 0xE087 means \
+         nothing addressed to the joined group ever arrived, which is either the multicast RX \
+         acceptance this test exists to prove or the host side: is the runner attaching the \
+         injection hub (NIFE_MCAST_PORT) and is xtask's multicast prober running beside this \
+         suite? 0xE08A/0xE08B mean the datagram arrived without its source endpoint",
     );
 }
 
