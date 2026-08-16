@@ -172,6 +172,163 @@ entry and the test trips its own assertion, "a program read a frame that had bee
 under it, at 0x50010000, and was NOT stopped: the mapping outlived the capability". That was the
 state of the world for every driver in the tree the day before.
 
+## The frame budget: what a test boot spends, and what it gets back
+
+This section is the receipt for the failure that has misled three milestones, and it is written as a
+budget rather than as a story because the number is the point.
+
+### The symptom, and why it always accused the wrong test
+
+The aarch64 test boot failed as `Unmappable(OutOfFrames)` about **one run in three** (measured
+2026-08-16). It failed in whatever test happened to spawn last, which was never the test that spent
+the memory. It also failed in disguise: milestone 107 met it as `time_tests` reporting *"no swish
+program in the initrd archive, or no memory to wire one"*, which reads like a packaging bug and is
+not one. `notes/net.md` had recorded it eight separate times as "`virtio::MAX_DEVICES` has asked for
+reclamation again".
+
+**Two numbers, not one, and the second is the one that fails a boot.** Free frames and the longest
+*run* of free frames are different questions, and `alloc_contiguous` asks the second. Milestone 107
+measured **137 frames free and no run of 128** at the failing allocation and read it as exhaustion.
+Both readings now exist: `memory::free_frames()` and `memory::largest_free_run()`
+(`FrameAllocator::largest_free_run`, host-tested in `crates/frames/tests/allocator.rs`).
+
+### The instrument: the frame ledger
+
+`kernel/src/testing.rs` reads free frames **once per test, at the top**, so the readings *partition*
+the run: what a test is charged is the drop between its own reading and the next one. That shape is
+not fussiness. Reading before and after the test body instead charges only what the test spent while
+it was running, and a test that spawns a service and returns the moment it has its report leaves that
+service still mapping its heap: on the first measured boot, before-and-after attribution left
+**17362 of 29091 frames** landing nowhere at all.
+
+What a run prints:
+
+```text
+test kernel::user::dir_capability_tests::a_full_directory_capability_... ... ok
+    [that test kept 2284 frames]
+...
+frames: 29280 free before the first test, 15249 after the last (14031 never returned); longest free run 14080
+  the biggest single spender was kernel::user::dir_capability_tests::a_full_directory_... at 2284 frames
+```
+
+A charge under `FRAME_REPORT_MIN` (16 frames) is silent, so the transcript names the services and not
+the arithmetic.
+
+**Two ceilings fail the run, and the second is the one that names the bug.** `SUITE_FRAME_BUDGET`
+catches the total residue growing past what is accounted for below, which is how a
+new service-shaped test that forgets to hand its memory back is caught in the act. `SUITE_MIN_FREE_RUN`
+requires the boot to end with a free run of at least 1024 frames, and that is the real gate: loading a
+program calls `alloc_contiguous`, so what a boot runs out of is contiguity rather than memory. A suite
+can pass a residue ceiling and still be fragmented into uselessness, which is exactly the state this
+one was in.
+
+### What the boot spent, measured
+
+| | free before the first test | free after the last | never returned | longest free run |
+|---|---|---|---|---|
+| before | 29307 | **216** | 29091 | **117** |
+| after reclaiming init | 29306 | 12504 | 16802 | 12394 |
+| after reclaiming init and the net services | 29306 | **15307** | 13999 | **14080** |
+| the same, remeasured on the merged tree | 29280 | **15249** | 14031 | **14080** |
+
+216 free frames and no run longer than 117 is the whole failure. There was no headroom left for
+anything, so which test died was decided by scheduling.
+
+The fourth row is the same boot after merging `main` on 2026-08-16, and the 32 extra frames it keeps
+are milestone 54's second act: the SMB test now runs a seeding client through the FS service before
+it wires the adapter, and that client is one more process. The number that decides whether a boot
+lives is unchanged at 14080, because a client that runs and exits fragments nothing. Read the pair as
+the honest shape of this ledger: the residue moves a little every time a test grows a process, and
+the free run is what the gate is really about. riscv64 came out at 13787 kept and 13733 longest, from
+29692 free.
+
+The largest single causes, before:
+
+| frames | who | what it was |
+|---|---|---|
+| 12289 | the six `spawn_init` tests | 2048 frames of building budget each, reserved and never returned |
+| 2759 | the ten net tests | a `net_stack`'s 128-frame budget, its stack, and its client's, ten times |
+| 2284 | the FS service | one block server and one FS server with an 8 MiB heap budget |
+| 2146 | the two `authority_tests` | `root_supervisor`'s 1024-frame budget, twice |
+| 1656 | the credential store | a 6 MiB budget sized by Argon2id's scratch |
+| 1362 | the crash-recovery FS test | two more FS servers, deliberately killed and never reclaimed |
+
+### The fix, which is wiring and not mechanism
+
+Everything used here is DECISIONS §16 object revocation, already built and already proved. What was
+missing was a handle and an ordering.
+
+- **`user::holding::Holding`** (name provisional) remembers what the kernel handed a service: its
+  threads, the regions to reclaim while those threads still exist, and the regions that may only be
+  reclaimed once they are provably gone. `release` spends `sched::kill_thread` and
+  `sched::reclaim_region` on them in that order, retrying because the first `reclaim_region` is what
+  *arms* §16's kill on a resident. `release_or_fail` is the form tests use, because an instrument that
+  reports success either way is not one.
+
+- **The region's endpoints are now swept before the refusal, not after** (`sched::reap_region_objects`).
+  This is the load-bearing half. A blocked thread never reaches `schedule()`, so it never spends the
+  armed kill, so a region holding a server parked in `RECV` was refused **forever**:
+  `userspace_init_brings_up_the_console_server` builds exactly such a server out of init's budget, and
+  its 2048 frames were unreclaimable by construction. Sweeping first fixes it because the wake was
+  already there: removing an endpoint drains its wait queues, aborts each waiter's IPC and wakes it,
+  which is precisely the transition the doomed resident needs. A refused reclaim was already
+  destructive (it arms kills; see `reclaim_region`'s BUGS), so this is the same commitment one object
+  over.
+
+- **`spawn_init` carves init's building budget outside the spawned thread** and hands the caller a
+  holding over it. The region is unchanged; who can name it is not, and that is the whole difference
+  between 8 MiB spent and 8 MiB lent.
+
+- **A service's endpoints come out of a region of its own** (`net_stack`'s do), because that is the
+  handle the sweep above needs. From the kernel's shared endpoint chunks there is no such handle and
+  no way to end the process short of rebooting.
+
+- **Stack pages are retyped from a region instead of allocated**, and that region is reclaimed only
+  after every thread is gone. A `Spawn::maps` page is not a recorded mapping (see "Three ways a page
+  gets into an address space" above), so §13's revocation cannot pull it, and freeing a running
+  thread's stack is a use-after-free rather than a fault.
+
+### What is still held at the end of a boot, and why
+
+14031 frames on the merged tree (13999 before that merge; the table above says where the 32 went),
+and the difference is accounted rather than shrugged at:
+
+- **The FS service, ~2284.** Wired once (`fs_service::ensure`) and used by every later filesystem
+  test. It is a boot service, not a leak.
+- **The credential store, 1656.** Same shape: wired once behind a `DONE` flag and shared.
+- **`root_supervisor`'s two trees, 2146, and this one is a real limit rather than a choice.**
+  `root_supervisor` **`SPLIT`s** the spawner's budget out of its own, and `reclaim_region` refuses a
+  region with live children (freeing its whole run would double-free the child's pages). The child is
+  destroyed only by *its* owner, which is a process that has been torn down, so the parent can never
+  become childless. Reclaiming a split parent whose children's owners are gone is what a capability
+  derivation tree buys and this kernel deliberately does not have (notes/object-revocation.md). It
+  wants its own lane.
+- **The crash-recovery FS servers, 1362**, and the disk, sink, `c_seam` and shell services below them.
+  All are the same shape as the two above: reclaimable in principle by giving their spawn helper a
+  holding, and each is a small separate change rather than part of this one.
+- **One DMA page and one virtio shadow frame per net service, ~20 frames.** Deliberately *not*
+  reclaimed. The NIC keeps whatever receive buffers the dead driver posted, and returning those pages
+  to the allocator would let a live device write into memory handed to somebody else. Ending that
+  safely means resetting the device at teardown, which is a change to the transport seam and its own
+  piece of work. Twenty frames is not worth the hazard.
+- **A page per kernel endpoint**, carved into chunks by `sched::create_endpoint` and never freed by
+  design.
+
+### BUGS in the ledger itself
+
+- **A charge is attributed to the test that was running, not to the code that spent it.** A boot
+  service wired lazily by whichever test asks first is charged entirely to that test, which is why
+  `a_full_directory_capability_does_everything_inside_and_nothing_outside` appears as the biggest
+  spender in the tree while spending almost nothing of its own. Read a large charge as "the service
+  this test was first to need", not as an accusation.
+- **The two ceilings are set from one measurement each**, so they are as good as that boot was
+  representative. A run where the host resolver does not answer the non-gating DNS check spends a
+  little less; that variance is inside the headroom both numbers carry, but neither is a tight bound
+  and neither should be read as one.
+- **The ledger cannot see memory that never reaches the frame allocator.** A region reserved and
+  unspent costs exactly as much as one filled to its watermark, which is correct for this failure
+  (an untyped is a reservation) and means the ledger says nothing about waste *inside* a budget.
+
 ## BUGS
 
 - **A `Frame` names one page, and a DMA region is a run of them.** The virtio-gpu driver's region is
