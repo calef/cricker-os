@@ -216,4 +216,10 @@ script/audits --baseline
   true.
 - **The scheduled workflow does not report its own death.** Same limitation `notes/merge-queue.md`
   records for the merge drain: a workflow that is disabled, or whose schedule GitHub drops on an
-  inactive repository, goes quiet in exactly the way a green run does.
+  inactive repository, goes quiet in exactly the way a green run does. It also only runs from the
+  default branch, so it cannot be exercised on a pull request; run `script/audits --due` by hand, or
+  dispatch the workflow once it is on `main`.
+- **A due audit can be closed by editing this file.** Adding a row is all it takes, and nothing
+  anywhere checks that a report describes work somebody did. That is not fixable by a script and it
+  is worth saying out loud: the mechanism makes the audit *scheduled*, and only a person makes it
+  real.

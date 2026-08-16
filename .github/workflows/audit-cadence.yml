@@ -56,8 +56,17 @@ jobs:
 
       # No toolchain, no cache, no build. Every number script/audits reads is counted out of files
       # that are in the checkout, which is why this job takes seconds and can afford to run weekly.
+      # `set -o pipefail` is load-bearing and not decoration. The default shell here is `bash -e`
+      # WITHOUT pipefail, so a pipeline exits with `tee`'s status and `tee` always succeeds: without
+      # this line the step would be green no matter what script/audits said, and the whole mechanism
+      # would report the absence of a signal as the absence of a problem. `shell: bash` is what makes
+      # the option available. Same family of defect as script/fmt shipping for months while silently
+      # ignoring `--check`; a gate that fails open is worse than no gate.
       - name: script/audits --due
-        run: script/audits --due | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+        run: |
+          set -o pipefail
+          script/audits --due | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: What to do if this went red
         if: failure()
