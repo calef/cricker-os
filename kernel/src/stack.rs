@@ -81,6 +81,11 @@ pub enum GuardPage {
     /// from zero. Not a `Tid`, deliberately, because turning a slot back into a thread needs the
     /// scheduler lock and this runs in a handler that may not take one.
     Thread(u64),
+    /// Core `id`'s **interrupt** stack guard page (milestone 124): the stack a trap taken on kernel
+    /// code runs its handler on. A fault here means the handler chain itself ran off the bottom,
+    /// which is a different animal from a thread running out of room and sends a reader to
+    /// `script/stack-depth-check`'s interrupt-stack bound rather than to the thread one.
+    Interrupt(usize),
 }
 
 /// **Is `addr` inside a kernel stack guard page, and whose?**
@@ -114,6 +119,10 @@ pub fn guard_page_at(addr: u64) -> Option<GuardPage> {
         if (g..g + PAGE).contains(&addr) {
             return Some(GuardPage::Secondary(id));
         }
+    }
+
+    if let Some(id) = crate::interrupt_stack::guard_page_at(addr) {
+        return Some(GuardPage::Interrupt(id));
     }
 
     let (area, watermark) = crate::thread::stack_area_span();
@@ -180,9 +189,16 @@ pub(crate) fn thread_stack_site(addr: u64) -> Option<(u64, i64)> {
 ///     stack top as inclusive lands there rather than anywhere near `sp`.
 ///
 /// So it now prints `sp` beside the faulting address in the same units and leaves the comparison
-/// to the reader, rather than asserting the answer. `sp` is read here, in the handler, a few
-/// frames deeper than the faulting context but on the same stack, which is close enough to place
-/// it in a 20 KiB slot and not close enough to trust to the byte.
+/// to the reader, rather than asserting the answer.
+///
+/// **The `sp` it prints is the interrupted one, taken from the trap frame**, and that is milestone
+/// 124's correction to milestone 78's line. It used to read the live `sp` in the handler, "a few
+/// frames deeper than the faulting context but on the same stack", and the second half of that
+/// sentence stopped being true when a trap from kernel mode started running its handler on this
+/// core's interrupt stack: the live reading would name a stack that has nothing to do with the
+/// fault. Each ISA's fault path passes the value it already holds (aarch64 computes it from the
+/// frame's own address, RISC-V reads the frame's saved `x2`), so the number is now exact rather
+/// than close, which is a better report as well as a necessary one.
 ///
 /// **One reading of "slot N-1" is a trap, and the printed guidance names it.** aarch64 has no
 /// double fault: if the vector's own `SAVE_CONTEXT` store lands in a guard page it re-enters the
@@ -190,7 +206,7 @@ pub(crate) fn thread_stack_site(addr: u64) -> Option<(u64, i64)> {
 /// slot below and leaves `FAR_EL1` holding the *first* failing address. That produces exactly the
 /// "sp is one slot down" picture a store past a neighbour's top does. The fault PC separates them:
 /// inside the vector table means the walk, ordinary Rust means the store.
-pub fn warn_if_guard_page(addr: u64) {
+pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
     let Some(kind) = guard_page_at(addr) else {
         return;
     };
@@ -228,21 +244,37 @@ pub fn warn_if_guard_page(addr: u64) {
             );
             print_text_words(bottom, bottom + (crate::thread::STACK_PAGES * 4096) as u64);
         }
+        GuardPage::Interrupt(id) => {
+            let (bottom, top) = crate::interrupt_stack::span(id);
+            crate::println!("  {addr:#018x} is in core {id}'s INTERRUPT stack guard page.");
+            crate::println!(
+                "  bottom {bottom:#018x}, so the faulting address is {} bytes below it, on a \
+                 {}-byte stack.",
+                bottom.saturating_sub(addr),
+                crate::interrupt_stack::SIZE,
+            );
+            // The same conservative scan the thread arm gets, and for the same reason: this stack's
+            // pages are all mapped, so it cannot fault, and a handler chain deep enough to run off
+            // the bottom is exactly the thing whose callers nobody can name from the fault alone.
+            print_text_words(bottom, top);
+        }
     }
 
     // The line the report was missing. Everything above is about the faulting ADDRESS.
-    let sp = crate::arch::current_sp();
+    let sp = interrupted_sp;
     match thread_stack_site(sp) {
         Some((slot, above)) if above >= 0 => crate::println!(
-            "  live sp {sp:#018x} is in THREAD stack slot {slot}, {above} bytes above its bottom."
+            "  trapped sp {sp:#018x} is in THREAD stack slot {slot}, {above} bytes above its \
+             bottom."
         ),
         Some((slot, above)) => crate::println!(
-            "  live sp {sp:#018x} is in THREAD stack slot {slot}'s GUARD PAGE, {} bytes below \
+            "  trapped sp {sp:#018x} is in THREAD stack slot {slot}'s GUARD PAGE, {} bytes below \
              its bottom.",
             -above
         ),
         None => crate::println!(
-            "  live sp {sp:#018x} is not in the thread-stack area (a boot or secondary stack)."
+            "  trapped sp {sp:#018x} is not in the thread-stack area (a boot, secondary or \
+             interrupt stack)."
         ),
     }
     crate::println!(
@@ -266,9 +298,10 @@ pub fn warn_if_guard_page(addr: u64) {
 /// candidates for `llvm-addr2line`, not as a walked chain. Capped so a full stack cannot flood
 /// the serial log the dump itself needs.
 ///
-/// Thread stacks only, deliberately: their pages are all mapped (thread.rs maps every slot
-/// whole), so the scan cannot itself fault. The boot and secondary arms above could take the
-/// same scan but have never overflowed outside milestone 3's era; add them when one does.
+/// Thread and interrupt stacks only, deliberately: the pages of both are all mapped (thread.rs maps
+/// every slot whole, and `map_everything` maps every interrupt-stack slot above its guard), so the
+/// scan cannot itself fault. The boot and secondary arms above could take the same scan but have
+/// never overflowed outside milestone 3's era; add them when one does.
 fn print_text_words(bottom: u64, top: u64) {
     const CAP: usize = 40;
     let text = crate::arch::mmu::text_start()..crate::arch::mmu::text_end();
@@ -486,6 +519,24 @@ pub fn report_high_water() {
         );
     }
 
+    // The per-CPU interrupt stacks (milestone 124), every seat, because a slot is painted whether
+    // or not its core ever came online and an untouched one reads 0 rather than lying.
+    let mut max_interrupt = 0u64;
+    for id in 0..crate::cpu::MAX_CPUS {
+        let (b, t) = crate::interrupt_stack::span(id);
+        // SAFETY: a slot of the region `interrupt_stack::init` mapped and painted before any core
+        // could switch to one.
+        let used = unsafe { high_water(b, t) };
+        max_interrupt = max_interrupt.max(used);
+        if used > 0 {
+            crate::println!(
+                "stack high-water: irq{id}   {used}/{} bytes ({}%)",
+                t - b,
+                used * 100 / (t - b),
+            );
+        }
+    }
+
     // Live thread stacks last, so long-lived service threads (the FS server, the shape of the
     // motivating incident) are counted even though nothing ever reaps them.
     crate::sched::scan_live_thread_stacks();
@@ -530,6 +581,17 @@ pub fn report_high_water() {
         "a secondary stack's high-water {max_secondary} exceeded 16384, ~2x anything measured; \
          the guard page below it (smp.rs) would still catch a real overflow, but something is \
          running much deeper on an idle-and-traps stack than the suite has ever measured",
+    );
+    // The interrupt stacks, whose whole point is that this number is bounded rather than paid by
+    // whichever thread was unlucky. Half the 16 KiB slot: `script/stack-depth-check` puts the
+    // deepest chain reachable from the dispatcher at about 4 KiB on both ISAs, and the same
+    // measure-then-gate discipline as the rows above says the alarm belongs above what has been
+    // measured and far below the guard. A trip here means a handler chain grew, which is a real
+    // finding and not a stack to enlarge.
+    assert!(
+        max_interrupt <= 8192,
+        "an interrupt stack's high-water {max_interrupt} exceeded 8192, half its slot: a trap \
+         handler's chain has grown past anything measured (notes/stack.md, script/stack-depth-check)",
     );
     assert!(
         tmax <= 18432,

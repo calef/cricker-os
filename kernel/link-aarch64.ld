@@ -122,6 +122,23 @@ SECTIONS
         __secondary_stacks_end = .;
     }
 
+    /* THE PER-CPU INTERRUPT STACKS (milestone 124).
+     *
+     * One slot per core, guard page first, exactly like the secondary stacks above and for exactly
+     * the same reason: the layout lives in kernel/src/interrupt_stack.rs, and this script only
+     * anchors a page-aligned region so each slot's bottom page can be left out of the map.
+     *
+     * What they are for is different, though. A trap taken while a kernel thread is running builds
+     * its handler frames on whichever stack it interrupted, so a preemption arriving at a thread's
+     * deepest instant was billed to that thread. These stacks are where those frames go instead.
+     * See notes/stack.md. */
+    .interrupt_stacks (NOLOAD) : AT(ADDR(.interrupt_stacks) - KERNEL_VA_BASE) ALIGN(4096) {
+        __interrupt_stacks_start = .;
+        *(.interrupt_stacks)
+        . = ALIGN(4096);
+        __interrupt_stacks_end = .;
+    }
+
     /* `image_size` for the arm64 Image header.
      *
      * Runs all the way to __stack_top, not just to the end of .data. The flat binary stops

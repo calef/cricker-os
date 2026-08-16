@@ -87,6 +87,17 @@ SECTIONS
         __secondary_stacks_end = .;
     }
 
+    /* The per-CPU interrupt stacks (milestone 124), each over its own unmapped page, laid out by
+     * kernel/src/interrupt_stack.rs. A trap taken on a kernel thread's stack used to build its
+     * handler frames there; these are where they go instead, so a preemption is not charged to the
+     * thread it interrupted. Same shape as link-aarch64.ld; see notes/stack.md. */
+    .interrupt_stacks (NOLOAD) : AT(ADDR(.interrupt_stacks) - KERNEL_VA_BASE) ALIGN(4096) {
+        __interrupt_stacks_start = .;
+        *(.interrupt_stacks)
+        . = ALIGN(4096);
+        __interrupt_stacks_end = .;
+    }
+
     __image_end = .;
     __image_size = __image_end - __image_start;
 

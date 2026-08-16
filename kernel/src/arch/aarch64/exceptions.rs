@@ -281,8 +281,51 @@ const VECTOR_IRQ_CURRENT: u64 = 5;
 /// Vector slot 9: Lower EL, AArch64, IRQ. Userspace being interrupted. Milestone 7.
 const VECTOR_IRQ_LOWER: u64 = 9;
 
+unsafe extern "C" {
+    /// Switch to `top` (or stay put if it is 0), call [`exception_body`], come back.
+    /// Defined in vectors.s, because moving `sp` is assembly and policy is not.
+    fn dispatch_on_interrupt_stack(frame: &mut TrapFrame, index: u64, top: u64) -> bool;
+}
+
+/// **The outer half of the trap path, and the half that stays on the interrupted stack.**
+///
+/// It does exactly two things the inner half must not: it picks the stack the handler runs on, and
+/// it runs the deferred `schedule()` afterwards. The second is the reason the split exists.
+/// `schedule()` parks this thread's `sp` in its `Context` and resumes it there later, so it may only
+/// ever be called on a stack that belongs to the thread. Calling it from the interrupt stack would
+/// park a per-core address in a thread, and the thread would resume on bytes the next interrupt had
+/// already spent. See `kernel/src/interrupt_stack.rs`, which holds the whole rule and its
+/// mechanisms.
 #[unsafe(no_mangle)]
 extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
+    let top = crate::interrupt_stack::top_for_trap(from_lower_el(index));
+    let deferred_switch = if top == 0 {
+        // **The common case, and it must not pay for the uncommon one.** Every syscall arrives here
+        // (a trap from EL0 never switches), and routing it through the trampoline anyway cost 8.6
+        // instructions per `null_syscall` in the debug build the icount tripwire measures, for a
+        // stack move that does not happen. So the branch is taken in Rust and the assembly is
+        // reached only when there is something for it to do.
+        exception_body(frame, index)
+    } else {
+        // SAFETY: `top` is this core's own interrupt-stack top, from the module that owns the
+        // region; the trampoline calls `exception_body` with our own two arguments and restores
+        // `sp` before returning. The frame outlives the call: it is on the stack we are standing on.
+        unsafe { dispatch_on_interrupt_stack(frame, index, top) }
+    };
+
+    // Back on the interrupted thread's stack, whichever branch ran. Preemption happens HERE.
+    if deferred_switch {
+        crate::sched::preempt_if_needed();
+    }
+}
+
+/// The trap handler proper: everything that runs on the interrupt stack when there is one.
+///
+/// Returns whether the caller owes a deferred `schedule()`, which is true for an IRQ and false for
+/// everything else. It used to *be* the switch, at the bottom of `handle_irq`; what changed is that
+/// the decision travels out to a frame that is provably on the interrupted thread's own stack.
+#[unsafe(no_mangle)]
+extern "C" fn exception_body(frame: &mut TrapFrame, index: u64) -> bool {
     // IRQ is dispatched by SLOT, not by ESR.
     //
     // ESR_EL1 describes a *synchronous* exception: what instruction did what wrong. An IRQ is
@@ -291,7 +334,9 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
     // stale answer to a question nobody asked.
     if index == VECTOR_IRQ_CURRENT || index == VECTOR_IRQ_LOWER {
         handle_irq(frame);
-        return;
+        // The one arm that owes a reschedule check, and the caller runs it on the interrupted
+        // stack. `handle_irq` used to end with the check itself.
+        return true;
     }
 
     let esr = ESR_EL1.get();
@@ -346,6 +391,10 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
         // become page faults if we ever do demand paging.
         _ => fatal(frame, index, esr),
     }
+
+    // A synchronous exception has already done whatever it was going to do (stepped over a `brk`,
+    // run a syscall, killed a thread). Nothing is deferred, so nothing is owed.
+    false
 }
 
 /// Did this exception come from a lower exception level, i.e. from EL0?
@@ -353,8 +402,21 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
 /// Slots 8-11 are "Lower EL, AArch64" (see `VECTOR_NAMES`). The distinction carries enormous
 /// weight: the **same** exception class means "a bug in the kernel, halt the machine" when it
 /// arrives at slot 4, and "a bug in the user program, kill it" when it arrives at slot 8.
+///
+/// `#[inline(always)]` because a debug build inlines nothing and this is now asked once per trap
+/// before the dispatch as well as inside it: as a call it is a frame and a `RangeInclusive` for
+/// three instructions' worth of work, and the icount tripwire measures a debug build.
+#[inline(always)]
+// clippy wants `(8..=11).contains(&index)` here and it is right about the reading; the `allow` is a
+// measured exception rather than a preference, for the reason the body gives.
+#[allow(clippy::manual_range_contains)]
 fn from_lower_el(index: u64) -> bool {
-    (8..=11).contains(&index)
+    // Two comparisons, written out. `(8..=11).contains(&index)` is the same thing and reads better,
+    // and in a debug build it is a real call into `RangeInclusive::<u64>::contains::<u64>` on **every
+    // trap**, which the icount tripwire priced at about a tick per `null_syscall` iteration once
+    // milestone 124 started asking this question one more time per trap. The generic machinery is
+    // free at `-O` and is not free in the build the gate measures.
+    index >= 8 && index <= 11
 }
 
 /// How many `svc` instructions we have caught from EL0.
@@ -535,26 +597,19 @@ fn handle_irq(_frame: &mut TrapFrame) {
     // priority. Forget it and the timer fires exactly once and then never again.
     gic::end_of_interrupt(intid);
 
-    // --- and here is preemption ---
+    // --- and preemption used to be here ---
     //
-    // We are still on the interrupted thread's kernel stack, with its full TrapFrame sitting
-    // below us (vectors.s saved it). `schedule()` may now switch to another thread entirely.
+    // It is now four frames out, in `exception_dispatch`, and the move is milestone 124's
+    // structural fix rather than tidying. This function may be running on **this core's interrupt
+    // stack**, and `schedule()` parks the running `sp` in the outgoing thread's `Context`: park a
+    // per-core address there and the thread resumes on bytes the next interrupt has spent. So the
+    // handler returns first, back onto the interrupted thread's own stack, and the caller runs
+    // `sched::preempt_if_needed` there. See kernel/src/interrupt_stack.rs.
     //
-    // When it does, this call does not return. It returns *in some other thread*, wherever
-    // that thread last called `switch_to`. We come back here only when somebody schedules us
-    // again, and then `exception_restore` pops the TrapFrame and `eret` resumes the
-    // instruction we interrupted, which never knew any of this happened.
-    //
-    // **That is the whole of preemption**, and it is four lines, because milestone 2 already
-    // built the hard part for a completely different reason.
-    //
-    // The EOI above must come first: switching away with the interrupt unacknowledged would
-    // leave the GIC refusing to deliver anything of equal or lower priority to the thread we
-    // switch *to*.
-    if crate::sched::take_need_resched() && crate::sched::is_running() {
-        crate::sched::count_preemption();
-        crate::sched::schedule();
-    }
+    // The EOI above still has to come first, for the reason it always did: switching away with the
+    // interrupt unacknowledged would leave the GIC refusing to deliver anything of equal or lower
+    // priority to the thread we switch *to*. Returning from here does not change that ordering,
+    // because nothing between here and the deferred switch touches the GIC.
 }
 
 /// Interrupts the GIC raised and then withdrew. Not an error; worth counting.
@@ -608,7 +663,12 @@ fn fatal(frame: &TrapFrame, index: u64, esr: u64) -> ! {
         // And say whether that address is a guard page, which decides what everything below means.
         // Only here: for a class where FAR is stale garbage the classifier would be reading a
         // previous fault's address and could name a stack at random. See the riscv64 twin.
-        crate::stack::warn_if_guard_page(FAR_EL1.get());
+        // The interrupted `SP_EL1`, computed rather than read: `SAVE_CONTEXT` built this frame at
+        // the live `sp` minus its own size, so the frame's own address plus that size IS the `sp`
+        // the trap interrupted. Reading the live one here would name the interrupt stack this
+        // handler is standing on (milestone 124), which has nothing to do with the fault.
+        let trapped_sp = frame as *const TrapFrame as u64 + size_of::<TrapFrame>() as u64;
+        crate::stack::warn_if_guard_page(FAR_EL1.get(), trapped_sp);
     } else {
         println!("  FAR_EL1   (not meaningful for this exception class)");
     }
