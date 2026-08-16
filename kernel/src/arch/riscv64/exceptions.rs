@@ -350,10 +350,17 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
     // and the syscall it is probably taking may block, which an interrupt stack may not do.
     let from_user = frame.sstatus & SPP == 0;
     let top = crate::interrupt_stack::top_for_trap(from_user);
-    // SAFETY: `top` is either 0 or this hart's own interrupt-stack top, from the module that owns
-    // the region; the trampoline calls `riscv_trap_body` with our own argument and restores `sp`
-    // before returning. The frame outlives the call: it is on the stack we are standing on.
-    let deferred_switch = unsafe { dispatch_on_interrupt_stack(frame, top) };
+    let deferred_switch = if top == 0 {
+        // The common case, and it must not pay for the uncommon one: see the aarch64 twin, where
+        // routing every `ecall` through the trampoline for a stack move that does not happen cost
+        // 8.6 instructions per `null_syscall`.
+        riscv_trap_body(frame)
+    } else {
+        // SAFETY: `top` is this hart's own interrupt-stack top, from the module that owns the
+        // region; the trampoline calls `riscv_trap_body` with our own argument and restores `sp`
+        // before returning. The frame outlives the call: it is on the stack we are standing on.
+        unsafe { dispatch_on_interrupt_stack(frame, top) }
+    };
 
     // Back on the interrupted thread's stack, whichever branch ran. Preemption happens HERE.
     if deferred_switch {

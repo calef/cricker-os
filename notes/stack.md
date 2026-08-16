@@ -857,6 +857,28 @@ whether or not a core ever fills the seat, exactly like the secondary stacks bes
 `(NOLOAD)` region, so the flat image does not grow; `__image_size` does, which is what tells the
 bootloader the memory is ours.
 
+**And instructions per trap, which the icount tripwire caught and which is the more interesting
+half.** The first version failed `script/bench --check` on three benchmarks at once: `ctx_switch`
++49.7%, `ipc_rtt_el0` +26.5%, `sink_throughput` +17.5%. None of those is a trap-heavy benchmark in
+the way `null_syscall` is, and that pattern was the clue: **all three are scheduler-heavy**, and the
+cost was the `debug_assert!` in `schedule()`. It asked each of eight slots in turn through two
+non-inlined helpers, which is the obvious way to write "is this address in one of these ranges" and
+costs about 145 ticks per context switch in the debug build the tripwire measures. Rewritten as one
+subtraction against the contiguous region, all three returned inside the band.
+
+Two smaller ones followed from asking a question one more time per trap, and both are worth knowing
+because they are properties of the *debug* build rather than of the code:
+
+- `interrupt_stack::top_for_trap` and `contains` are `#[inline(always)]`, for a measured reason. A
+  debug build inlines nothing, so a policy function that answers on its first branch still costs a
+  frame, a prologue and a return on every trap.
+- `from_lower_el` was `(8..=11).contains(&index)`, which compiles to a **real call into
+  `RangeInclusive::<u64>::contains::<u64>`** at `-O0`, on every trap, three times over. Written as
+  two comparisons it is free, and that alone more than paid for this milestone's extra dispatcher
+  frame: `null_syscall` ended **11.7% faster than its old baseline on aarch64** while riscv64, which
+  had no equivalent generic call to lose, paid the split at +10.1%. Both baselines were re-recorded
+  in their own commit; nothing else moved by more than 1.9%, so nothing else was touched.
+
 ## BUGS
 
 - **An overflow whose first fault is the vector's own frame store still cascades.** The vector saves

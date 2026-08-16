@@ -156,26 +156,40 @@ pub fn init() {
 ///   - **already on an interrupt stack**, which is the nesting case. A fault taken inside a handler
 ///     re-enters the dispatcher, and resetting `sp` to the top here would drop it straight through
 ///     the frames of the handler that faulted.
+/// The cheap tests come first on purpose: this runs on every trap, and `cpu::id()` is a division by
+/// `size_of::<PerCpu>()`, which a debug build performs for real. The nesting test asks about the
+/// whole region rather than this core's slot, which is the same question (a core can only ever be
+/// standing on its own) and one subtraction instead of an index.
+///
+/// **`#[inline(always)]` for a measured reason**, which is the only kind this tree accepts. A debug
+/// build inlines nothing on its own, and the icount tripwire measures a debug build: as an ordinary
+/// call, this cost `null_syscall` a frame, a prologue and a return on **every EL0 syscall**, for a
+/// question whose answer on that path is the first branch. Inlined, the syscall path pays one test.
+/// The two callers are the two architectures' dispatchers, so nothing is duplicated in one binary.
+#[inline(always)]
 pub fn top_for_trap(from_user: bool) -> u64 {
     if from_user || !ARMED.load(Ordering::Acquire) {
         return 0;
     }
-    let id = crate::cpu::id();
-    let (bottom, top) = span(id);
-    let sp = crate::arch::current_sp();
-    if (bottom..top).contains(&sp) {
+    if contains(crate::arch::current_sp()) {
         return 0; // nesting: this core is already running on it
     }
-    top
+    span(crate::cpu::id()).1
 }
 
-/// Is `addr` on some core's interrupt stack (not its guard page)? The question `sched::schedule`
-/// asks about its own `sp`, and the one the depth gate's assertion rests on.
+/// Is `addr` anywhere in the interrupt-stack region? The question `sched::schedule` asks about its
+/// own `sp`, on the hottest path in the kernel.
+///
+/// **One subtraction and one comparison, and the shape is the point.** The region is contiguous, so
+/// this does not need to know which slot: an `sp` in some slot's guard page would already have
+/// faulted, and an `sp` anywhere in here at all is the bug. The first version asked each slot in
+/// turn through `span`, which is the obvious way to write it and cost **1.45 million instructions on
+/// the `ctx_switch` icount benchmark, +49.7%**: eight iterations of a closure over two
+/// non-inlined helpers, per context switch, in the debug build the tripwire measures. A debug build
+/// inlines nothing, so "cheap enough" has to be counted in operations rather than in lines.
+#[inline(always)]
 pub fn contains(addr: u64) -> bool {
-    (0..MAX_CPUS).any(|id| {
-        let (bottom, top) = span(id);
-        (bottom..top).contains(&addr)
-    })
+    addr.wrapping_sub(STACKS.0.get() as u64) < (MAX_CPUS * SLOT) as u64
 }
 
 /// Which core's interrupt-stack guard page `addr` falls in, if any. Used by `stack::guard_page_at`

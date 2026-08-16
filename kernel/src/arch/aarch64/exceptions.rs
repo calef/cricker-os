@@ -299,10 +299,19 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
     let top = crate::interrupt_stack::top_for_trap(from_lower_el(index));
-    // SAFETY: `top` is either 0 or this core's own interrupt-stack top, from the module that owns
-    // the region; the trampoline calls `exception_body` with our own two arguments and restores
-    // `sp` before returning. The frame outlives the call: it is on the stack we are standing on.
-    let deferred_switch = unsafe { dispatch_on_interrupt_stack(frame, index, top) };
+    let deferred_switch = if top == 0 {
+        // **The common case, and it must not pay for the uncommon one.** Every syscall arrives here
+        // (a trap from EL0 never switches), and routing it through the trampoline anyway cost 8.6
+        // instructions per `null_syscall` in the debug build the icount tripwire measures, for a
+        // stack move that does not happen. So the branch is taken in Rust and the assembly is
+        // reached only when there is something for it to do.
+        exception_body(frame, index)
+    } else {
+        // SAFETY: `top` is this core's own interrupt-stack top, from the module that owns the
+        // region; the trampoline calls `exception_body` with our own two arguments and restores
+        // `sp` before returning. The frame outlives the call: it is on the stack we are standing on.
+        unsafe { dispatch_on_interrupt_stack(frame, index, top) }
+    };
 
     // Back on the interrupted thread's stack, whichever branch ran. Preemption happens HERE.
     if deferred_switch {
@@ -393,8 +402,18 @@ extern "C" fn exception_body(frame: &mut TrapFrame, index: u64) -> bool {
 /// Slots 8-11 are "Lower EL, AArch64" (see `VECTOR_NAMES`). The distinction carries enormous
 /// weight: the **same** exception class means "a bug in the kernel, halt the machine" when it
 /// arrives at slot 4, and "a bug in the user program, kill it" when it arrives at slot 8.
+///
+/// `#[inline(always)]` because a debug build inlines nothing and this is now asked once per trap
+/// before the dispatch as well as inside it: as a call it is a frame and a `RangeInclusive` for
+/// three instructions' worth of work, and the icount tripwire measures a debug build.
+#[inline(always)]
 fn from_lower_el(index: u64) -> bool {
-    (8..=11).contains(&index)
+    // Two comparisons, written out. `(8..=11).contains(&index)` is the same thing and reads better,
+    // and in a debug build it is a real call into `RangeInclusive::<u64>::contains::<u64>` on **every
+    // trap**, which the icount tripwire priced at about a tick per `null_syscall` iteration once
+    // milestone 124 started asking this question one more time per trap. The generic machinery is
+    // free at `-O` and is not free in the build the gate measures.
+    index >= 8 && index <= 11
 }
 
 /// How many `svc` instructions we have caught from EL0.
