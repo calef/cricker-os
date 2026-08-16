@@ -25,7 +25,7 @@ Four pieces, all built:
   answers queries with `respond()` until it has served its rounds. **One authority and nothing
   else**: it holds no share, no file, no TCP port, so the process that tells a Mac a backup target
   exists cannot serve a byte of it, and the process that serves the bytes (`smb_server`) cannot be
-  found. On the reference implementation those are one daemon with one configuration file.
+  found. On the reference implementation both are one process with one configuration file.
 
 ## The measured reference, captured 2026-08-15
 

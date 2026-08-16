@@ -72,8 +72,8 @@
 //!   `Advertisement` carries no IPv6 address yet.
 //!
 //! Name: unrecorded, and explicitly **provisional**, minted by milestone 55's responder lane on
-//! 2026-08-16. `mdns_responder` is the name macOS's own daemon carries, which is the argument for
-//! it (a reader knows what it does before reading a word) and the argument against it (it is
+//! 2026-08-16. `mdns_responder` is what macOS calls its own service (`mDNSResponder`), which is
+//! the argument for it (a reader knows what it does before reading a word) and against it (it is
 //! somebody else's product name, and this tree's `net_stack` deliberately does not spell itself
 //! `netd`). Not put to calef.
 

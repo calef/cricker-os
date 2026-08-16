@@ -432,7 +432,7 @@ fn spawn_stack_client(
 /// The responder is the third client and the last spawned, because it takes the DHCP lease as an
 /// argument (see below). It holds socket id 4, one fixed UDP port, and nothing else: milestone 55's
 /// two halves are two processes with two authorities, which is the whole demonstration. Samba's
-/// reference wiring has one daemon and one config file serving both.
+/// reference wiring has one process and one configuration file serving both.
 ///
 /// One spawn serves three milestones for the same reason milestone 107's grant checks ride in its
 /// accept exchange: **a second `net_stack` does not fit the test boot.** Its 192-page untyped
