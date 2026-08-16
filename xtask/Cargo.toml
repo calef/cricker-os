@@ -28,6 +28,12 @@ measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 # against the same pattern the guest painted, from the same definition, so the two cannot drift.
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 smb_proto = { version = "0.1.0", path = "../crates/smb_proto" }
+# The mDNS responder's configuration document (milestone 55). The gate's expectations are DERIVED
+# from the same file the guest ships, so editing what this machine advertises moves the assertion
+# with it and the two cannot drift. The wire-format side is deliberately NOT shared: the prober
+# decodes the guest's answers with its own parser below, or the gate would be checking mdns_proto
+# against itself.
+mdns_config = { version = "0.1.0", path = "../crates/mdns_config" }
 # The compositor contract (milestone 33): the same scanout check also verifies the screen the
 # compositor composed, against the same scene and the same per-pixel definition the guest used. A
 # compositor's output is the thing a guest-side digest cannot confirm on its own.

@@ -952,6 +952,7 @@ dependencies = [
  "gfx_proto",
  "gpt",
  "manual",
+ "mdns_config",
  "measured_boot",
  "nifefs",
  "smb_proto",
