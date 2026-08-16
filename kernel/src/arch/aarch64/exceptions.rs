@@ -407,6 +407,9 @@ extern "C" fn exception_body(frame: &mut TrapFrame, index: u64) -> bool {
 /// before the dispatch as well as inside it: as a call it is a frame and a `RangeInclusive` for
 /// three instructions' worth of work, and the icount tripwire measures a debug build.
 #[inline(always)]
+// clippy wants `(8..=11).contains(&index)` here and it is right about the reading; the `allow` is a
+// measured exception rather than a preference, for the reason the body gives.
+#[allow(clippy::manual_range_contains)]
 fn from_lower_el(index: u64) -> bool {
     // Two comparisons, written out. `(8..=11).contains(&index)` is the same thing and reads better,
     // and in a debug build it is a real call into `RangeInclusive::<u64>::contains::<u64>` on **every

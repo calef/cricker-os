@@ -156,6 +156,7 @@ pub fn init() {
 ///   - **already on an interrupt stack**, which is the nesting case. A fault taken inside a handler
 ///     re-enters the dispatcher, and resetting `sp` to the top here would drop it straight through
 ///     the frames of the handler that faulted.
+///
 /// The cheap tests come first on purpose: this runs on every trap, and `cpu::id()` is a division by
 /// `size_of::<PerCpu>()`, which a debug build performs for real. The nesting test asks about the
 /// whole region rather than this core's slot, which is the same question (a core can only ever be
