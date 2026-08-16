@@ -822,8 +822,9 @@ pub fn smb_serve_boot() {
     // The share: the real filesystem when a RedoxFS disk is attached (`cargo xtask smb-serve`
     // builds and attaches one), the baked-in fixture otherwise. Wired before the adapter exists,
     // like every service-before-client here.
-    let fs = program("fs_server")
-        .and_then(|fs_server| fs_service::root_directory(fs_service::blk_server_image(), fs_server));
+    let fs = program("fs_server").and_then(|fs_server| {
+        fs_service::root_directory(fs_service::blk_server_image(), fs_server)
+    });
     if fs.is_none() {
         println!("smb-serve: no RedoxFS disk; serving the baked-in fixture share");
     }
