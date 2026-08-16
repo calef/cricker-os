@@ -110,10 +110,15 @@ const CONFIG: &str = include_str!("../mdns_responder.conf");
 /// the IP and UDP headers; smoltcp does not fragment, so a larger datagram is not sent at all.
 const RESPONSE_MAX: usize = 548;
 
-/// How many times to re-announce while waiting for a first query. Each `RECV` already waits out the
-/// net server's full bounded wait, so this is a small number by necessity: the announcement is
-/// unsolicited, and a responder that shouted more often would still be answering nobody.
+/// How many times to re-announce while waiting for a query. Each empty `RECV` has already waited
+/// out the net server's full bounded wait, so this is a small number by necessity: the announcement
+/// is unsolicited, and a responder that shouted more often would still be answering nobody.
 const ANNOUNCE_TRIES: u32 = 3;
+
+/// How many datagrams one round will look at before giving up. Datagrams that want no answer are
+/// free (they do not spend an announce try) but they are not unbounded: a segment full of other
+/// responders' chatter would otherwise keep a one-shot responder receiving forever.
+const RECEIVES_MAX: u32 = 12;
 
 /// The success word, the same one every other client of this stack reports.
 const OK: u64 = 1;
@@ -230,15 +235,30 @@ fn announce(adv: &mdns_proto::Advertisement<'_>) {
     }
 }
 
-/// Receive one query and answer it, if it is one we are authoritative for. Returns true when a
-/// response went out, false when the datagram deserved silence (which is mDNS's own rule: a
-/// responder says nothing about names it does not own) or nothing arrived.
-fn serve_one(adv: &mdns_proto::Advertisement<'_>) -> bool {
+/// What one receive amounted to. The three cases call for different things, and collapsing the
+/// last two is what makes a responder on a busy segment announce itself into the ground: **a
+/// datagram that deserved silence is not a timeout.** Most of what arrives on 5353 belongs to
+/// other machines, and mDNS's own rule is to say nothing about names you do not own.
+enum Received {
+    /// A query we are authoritative for; the response is on its way.
+    Answered,
+    /// Something arrived and wanted no answer: another responder's announcement, a query about
+    /// somebody else's name, or a datagram this responder could not parse.
+    Silence,
+    /// Nothing arrived before the receive gave up.
+    Nothing,
+}
+
+/// Receive one datagram and answer it if it is a query we are authoritative for.
+fn serve_one(adv: &mdns_proto::Advertisement<'_>) -> Received {
     let (len, _) = call(STACK, req(OP_RECV, SID), 0);
-    if len == REP_ERR || len == 0 || len as usize > RESPONSE_MAX {
+    if len == REP_ERR || len == 0 {
+        return Received::Nothing;
+    }
+    if len as usize > RESPONSE_MAX {
         // A datagram too large to be a query this transport could have carried is not read: the
         // parser needs the whole message, and half of one parses as a different message.
-        return false;
+        return Received::Silence;
     }
     let (src_ip, src_port) = recv_source();
 
@@ -260,7 +280,7 @@ fn serve_one(adv: &mdns_proto::Advertisement<'_>) -> bool {
     let Ok(Some(n)) = respond(adv, &query[..len as usize], &mut out, src) else {
         // Either nothing to say, or the answer would not fit a datagram; both are silence. See
         // this program's BUGS for why the second is not the TC bit yet.
-        return false;
+        return Received::Silence;
     };
     let (ip, port) = match src {
         QuerySource::Multicast => (GROUP_V4, PORT),
@@ -269,7 +289,7 @@ fn serve_one(adv: &mdns_proto::Advertisement<'_>) -> bool {
     if !send_to(&out[..n], ip, port) {
         done(E_ANSWER_SEND);
     }
-    true
+    Received::Answered
 }
 
 /// `rounds` queries to answer (0 = forever), and the address the DHCP lease gave this machine.
@@ -303,10 +323,10 @@ pub extern "C" fn _start(rounds: u64, ipv4: u64, _a2: u64) -> ! {
 
     if rounds == 0 {
         // The serve-forever wiring: say the advertisement is up, then answer until the machine
-        // stops. Re-announcing on every idle stretch is deliberate here, since nothing else will.
+        // stops. Re-announcing after an idle stretch is deliberate here, since nothing else will.
         send(REPORT, OK, 0, 0);
         loop {
-            if !serve_one(&adv) {
+            if matches!(serve_one(&adv), Received::Nothing) {
                 announce(&adv);
             }
         }
@@ -315,14 +335,28 @@ pub extern "C" fn _start(rounds: u64, ipv4: u64, _a2: u64) -> ! {
     let mut left = rounds;
     while left > 0 {
         let mut answered = false;
-        for _ in 0..ANNOUNCE_TRIES {
-            if serve_one(&adv) {
-                answered = true;
-                break;
+        let mut idle = 0;
+        // Bounded either way: a round ends when it is answered, when nothing has arrived
+        // `ANNOUNCE_TRIES` times, or when this many datagrams have gone by without one of ours
+        // among them. The last bound is what keeps a busy segment from holding a one-shot
+        // responder open forever.
+        for _ in 0..RECEIVES_MAX {
+            match serve_one(&adv) {
+                Received::Answered => {
+                    answered = true;
+                    break;
+                }
+                Received::Silence => {}
+                Received::Nothing => {
+                    idle += 1;
+                    if idle >= ANNOUNCE_TRIES {
+                        break;
+                    }
+                    // A querier that missed the announcement is the likeliest reason nothing has
+                    // arrived, so say it again.
+                    announce(&adv);
+                }
             }
-            // Nothing arrived within the server's bounded wait (or what arrived was not ours).
-            // Announce again: a querier that missed the first one is the likeliest reason.
-            announce(&adv);
         }
         if !answered {
             done(E_NO_QUERY);

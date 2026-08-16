@@ -999,18 +999,22 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         }
     };
 
+    // **The suite's verdict is collected, not returned early.** An early return here skipped every
+    // prober's report exactly when a guest-side assertion had failed, which is the run where their
+    // findings matter most: milestone 55's responder lane spent two five-minute suites learning
+    // nothing, because the guest said "nobody ever asked me anything" and the host side, which
+    // knew precisely why it had stopped asking, was never given the chance to say so.
+    let mut child_ok = false;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    return false;
-                }
+                child_ok = status.success();
                 break;
             }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("waiting for the test child failed: {e}");
-                return false;
+                break;
             }
         }
         referee.poll();
@@ -1022,7 +1026,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let inbound = prober.report();
     let multicast = mcast.report();
     let smb = smb_prober.report();
-    scanout && inbound && multicast && smb
+    child_ok && scanout && inbound && multicast && smb
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1568,8 +1572,12 @@ fn probe_multicast(
     let config = mdns_config::Config::parse(RESPONDER_CONFIG)
         .map_err(|e| format!("the responder's own configuration document does not parse: {e:?}"))?;
     let adv = config.advertisement(None);
-    let instance = format!("{}.{MDNS_BROWSE}", adv.host);
-    let hostname = format!("{}.local", adv.host);
+    // Lower-cased, because `dns_name` normalises what it decodes: DNS names compare
+    // case-insensitively (RFC 6762 §9.2 keeps that for mDNS), and the configuration's `GL-BE9300`
+    // is the same name as the wire's `gl-be9300`. Comparing the two forms directly is a gate that
+    // fails on a difference the protocol says is not one.
+    let instance = format!("{}.{MDNS_BROWSE}", adv.host).to_lowercase();
+    let hostname = format!("{}.local", adv.host).to_lowercase();
     let mut txt_entries: Vec<String> = adv
         .disks
         .iter()
@@ -1596,6 +1604,14 @@ fn probe_multicast(
     // Short, so the loop can notice `stop`; not a deadline for anything.
     let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
     let _ = s.set_nodelay(true);
+
+    // Tracing, off unless `NIFE_MCAST_DEBUG` is set. This exchange happens inside a boot, on a
+    // hub, between two programs that cannot print, and its failure mode is silence; the first
+    // debugging session without this spent a five-minute suite run learning nothing.
+    let debug = std::env::var_os("NIFE_MCAST_DEBUG").is_some();
+    if debug {
+        eprintln!("multicast prober: attached to the hub on 127.0.0.1:{port}");
+    }
 
     let mut stage = MdnsStage::Announced;
     let mut guest_ip: Option<[u8; 4]> = None;
@@ -1665,9 +1681,55 @@ fn probe_multicast(
             if dg.dst_port != MDNS_PORT && dg.dst_port != MDNS_LEGACY_PORT {
                 continue;
             }
-            let Ok(msg) = parse_dns(&dg.payload) else {
-                continue; // not a DNS message, or one this parser cannot read
+            if debug {
+                eprintln!(
+                    "multicast prober: {} bytes of UDP {:?} -> {:?}:{}",
+                    dg.payload.len(),
+                    dg.src_ip,
+                    dg.dst_ip,
+                    dg.dst_port
+                );
+            }
+            // **Only the guest's answers count**, and this filter is not defensive tidiness: it was
+            // measured. Slirp is on the same hub, and it forwards a group-addressed datagram out to
+            // the host's real network, where the developer's own machine runs an mDNS responder
+            // that answers it; slirp then NATs that answer back onto the virtual network as a
+            // unicast to the spoofed source. So an injected query provokes TWO responses, one of
+            // them from macOS, and a gate that checked whichever arrived first could go green on a
+            // stranger's records with the guest saying nothing at all.
+            if let Some(guest) = guest_ip
+                && dg.src_ip != guest
+            {
+                if debug {
+                    eprintln!("multicast prober: ignoring an answer from {:?}", dg.src_ip);
+                }
+                continue;
+            }
+            let msg = match parse_dns(&dg.payload) {
+                Ok(m) => m,
+                Err(e) => {
+                    if debug {
+                        eprintln!("multicast prober: not a DNS message ({e})");
+                    }
+                    continue; // not a DNS message, or one this parser cannot read
+                }
             };
+            if debug {
+                eprintln!(
+                    "multicast prober: dns id {:#x} flags {:#x} qd {:?} an {:?} ar {:?}",
+                    msg.id,
+                    msg.flags,
+                    msg.questions,
+                    msg.answers
+                        .iter()
+                        .map(|r| (r.name.clone(), r.rrtype, r.ttl))
+                        .collect::<Vec<_>>(),
+                    msg.additionals
+                        .iter()
+                        .map(|r| (r.name.clone(), r.rrtype, r.ttl))
+                        .collect::<Vec<_>>(),
+                );
+            }
             if msg.flags & 0x8000 == 0 {
                 continue; // a query; the guest sends none, and nothing else here should
             }
@@ -1684,6 +1746,15 @@ fn probe_multicast(
                         .iter()
                         .find(|r| r.rrtype == RR_A && r.rdata.len() == 4)
                         .map(|r| [r.rdata[0], r.rdata[1], r.rdata[2], r.rdata[3]]);
+                }
+                if let Some(ip) = guest_ip
+                    && ip != dg.src_ip
+                {
+                    return Err(format!(
+                        "the guest announces an A record of {ip:?} and is speaking from {:?}; a Mac \
+                         that resolved the name would then connect to the wrong address",
+                        dg.src_ip
+                    ));
                 }
                 let Some(ip) = guest_ip else {
                     return Err(
@@ -1705,6 +1776,9 @@ fn probe_multicast(
                 // read as the announcement that provoked it.
                 if stage == MdnsStage::Announced {
                     stage = MdnsStage::Browse;
+                }
+                if debug {
+                    eprintln!("multicast prober: announcement seen; injecting the stage's query");
                 }
                 inject(&mut s, mdns_query_frame(stage_port(stage), stage_id(stage)))?;
                 continue;
@@ -2066,6 +2140,7 @@ fn check_legacy_answer(
 
 /// A UDP datagram taken off the raw wire.
 struct Datagram {
+    src_ip: [u8; 4],
     dst_ip: [u8; 4],
     dst_port: u16,
     payload: Vec<u8>,
@@ -2082,12 +2157,15 @@ fn udp_datagram(frame: &[u8]) -> Option<Datagram> {
     if *ip.get(9)? != 17 {
         return None;
     }
+    let mut src_ip = [0u8; 4];
+    src_ip.copy_from_slice(ip.get(12..16)?);
     let mut dst_ip = [0u8; 4];
     dst_ip.copy_from_slice(ip.get(16..20)?);
     let udp = ip.get(ihl..)?;
     let dst_port = u16::from_be_bytes([*udp.get(2)?, *udp.get(3)?]);
     let udp_len = u16::from_be_bytes([*udp.get(4)?, *udp.get(5)?]) as usize;
     Some(Datagram {
+        src_ip,
         dst_ip,
         dst_port,
         payload: udp.get(8..udp_len)?.to_vec(),
