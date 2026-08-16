@@ -132,7 +132,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 71 | DECIDED | [A limitation is promoted when it stops being a fact and becomes a plan](71-recorded-limitations.md) |
 | 72 | DECIDED | [`time` needs no clock: duration is ambient, wall-clock identity is authority](72-time-command-clock.md) |
 | 73 | DECIDED | [Milestone 44's ten admin minutes, which only calef can spend](73-repository-admin-steps.md) |
-| 74 | PROPOSED | [What cadence do the audits run on?](74-audit-cadence.md) |
+| 74 | DECIDED | [Audits run on change, not on the calendar: events first, then a count](74-audit-cadence.md) |
 | 75 | DECIDED | [Directories under `design/` and `notes/` carry provenance in their own README](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 | 77 | DECIDED | [The branch-prefix list now describes the tree](77-branch-prefixes.md) |
