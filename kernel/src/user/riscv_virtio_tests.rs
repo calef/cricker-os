@@ -543,8 +543,40 @@ fn smb_server_image() -> &'static [u8] {
 /// client serving a real SMB2 exchange to xtask's SMB prober through a second `hostfwd`, both
 /// verdicts gating. See the aarch64 twin for the shape, for why all of it shares one exchange (a
 /// net server's spawn is frames nothing reclaims), and for what the stage codes mean.
+///
+/// **The share is the real filesystem here too**: the FS service is wired first, the seed role
+/// writes `fs_proto::fixture::SMB_SEED` through it, and the adapter gets the directory
+/// capability, so the parity gate covers the fs_proto-backed share and not only the wire. The
+/// aarch64 twin documents the shape, the fallback, and the free-frame print.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
+    let fs = fs_service::start(
+        blk_image(),
+        program("fs_server").expect("no fs_server program in the initrd archive"),
+        program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
+        7, // ROLE_SMB_SEED: write fixture::SMB_SEED at fixture::SMB_SEED_NAME, report, exit
+    )
+    .map(|(readiness, seed_report)| {
+        assert_fs_service_ready(readiness);
+        let status = sched::ipc_recv(seed_report)[0];
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the seeding client could not put the SMB gate's file on the filesystem",
+        );
+        fs_service::root_directory(
+            blk_image(),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
+        )
+        .expect("the FS service was wired a moment ago")
+    });
+    if fs.is_none() {
+        crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
+    }
+    crate::println!(
+        "    (combined boot wired: {} frames free before the net + SMB spawn)",
+        crate::memory::free_frames()
+    );
     let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -552,6 +584,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         NET_LISTEN_PORT,
         NET_LISTEN_PORT + 1,
         2,
+        fs,
         socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
