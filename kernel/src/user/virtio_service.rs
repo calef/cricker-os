@@ -441,6 +441,11 @@ fn spawn_stack_client(
 /// halves living in one word is exactly what the composed packing has to be exercised on: this is
 /// the only spawn in the tree that hands out both at once, so it is the only place the machine
 /// checks that the listen grant and the UDP grant do not leak into each other.
+// Eight parameters, and clippy's limit is seven. Three milestones ride this one spawn because a
+// second net server does not fit the boot, so the parameter list is the price of the memory
+// constraint above: every argument is a different milestone's, and a struct bundling them would
+// group things that have nothing to do with each other.
+#[allow(clippy::too_many_arguments)]
 pub fn start_net_stack_with_smb(
     image: &'static [u8],
     smb_image: &'static [u8],
