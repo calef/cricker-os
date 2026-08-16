@@ -166,6 +166,7 @@ xtask/                 build orchestration (build, run, test, bench, gdb, objdum
 notes/                 a concept glossary, written as questions came up
 design/                the roadmap and worked designs
 design/decisions/      what we chose, what we rejected, and why
+design/audit-reports/  every audit, its lens, and when the next one is due
 ```
 
 ## The notes are the point
