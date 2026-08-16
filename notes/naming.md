@@ -453,7 +453,11 @@ people learn to skip.
   `design/decisions/35-scanner-findings.md` already uses that phrase for a chronological record of
   dismissals and it is also what an operating system means by it (`auditd`), and bare `audits` was
   passed over because every file in the directory is a report. Recorded here rather than stretched
-  into a schema that does not fit it.
+  into a schema that does not fit it. **Closed for directories on 2026-08-16 by §75**: a directory
+  under `design/` or `notes/` now carries its provenance in its own `README.md`, applied that day
+  to `design/decisions/`, `design/roadmap/` and `notes/`, with `design/audit-reports/`'s line owed
+  by the milestone-92 commit that creates it. The other surfaces in this list (types, `scripts/`
+  helpers, `kernel`, `xtask`, `fs_server`, `tools/redoxfs_host`) are still uncovered.
 
   **That blind spot has a live casualty, found while triaging.** `disk_partitioner`'s introducing
   commit (2026-08-03) named two provisional things: itself, and `fs_maker`. The first is on a
