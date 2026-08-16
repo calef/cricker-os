@@ -677,6 +677,15 @@ increasingly what stands between this suite and the next network milestone.
 - **Only the mmio transport carries the inbound gate.** A PCIe twin would need a second host port,
   and the transport is orthogonal to the accept path, which the outbound gates already prove over
   both buses. This is the same reasoning that retired the PCIe DNS variant.
-- **No inbound UDP.** A UDP socket already binds a local port, but it binds an *ephemeral* one from
-  the allocator, so nothing can address it from outside. A server-side UDP bind is a third use of the
-  listen grant and is not built.
+- **Inbound UDP is now built, and it is a grant of its own** (milestone 55's mDNS stack half; this
+  bullet used to say "not built"). `BIND_UDP` claims a fixed UDP port the way `LISTEN` claims a TCP
+  one, checked against a **UDP bind grant** the spawn site packs into the high half of the same
+  spawn word the listen grant rides in (`socket_proto::udp_bind_grant`; the halves are independent
+  authorities, and the zero word still grants nothing anywhere). It answers with `LISTEN`'s own
+  vocabulary because the three outcomes are properties of claiming a port, not of TCP. In the same
+  change, a UDP `RECV` reply now carries the datagram's **source endpoint** in the frame's dst
+  fields (dead space on a reply), because a responder must see who asked and RFC 6762 §6.7 turns on
+  the querier's source port; the TFTP gate consumes it by ACKing to the DATA packet's reported
+  source, which is what TFTP's TID scheme wanted all along. The stack also joins 224.0.0.251 at
+  startup (smoltcp's `multicast` feature, switched on in the same milestone). The whole story,
+  including what QEMU can and cannot prove about multicast, is notes/mdns.md's.
