@@ -327,6 +327,21 @@ pub fn free_frames() -> usize {
     ALLOCATOR.lock().as_ref().map_or(0, |a| a.stats().free())
 }
 
+/// **The longest run of free frames**, in frames: what `alloc_contiguous` could still satisfy.
+///
+/// The companion to [`free_frames`], and the one the test boot actually runs out of. A boot can hold
+/// a comfortable free total and still refuse a 128-page request because the free frames are in
+/// pieces, which is exactly what milestone 107 measured (137 free, no run of 128) and read as
+/// exhaustion. The frame ledger prints both, so the next person meets the distinction rather than
+/// deducing it. See notes/frames.md.
+#[cfg_attr(not(test), allow(dead_code))] // the frame ledger in testing.rs is the caller
+pub fn largest_free_run() -> usize {
+    ALLOCATOR
+        .lock()
+        .as_ref()
+        .map_or(0, |a| a.largest_free_run())
+}
+
 /// Is this address inside the kernel image?
 #[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn is_in_kernel_image(addr: u64) -> bool {
@@ -565,11 +580,13 @@ mod tests {
 
         let s = crate::memory::stats().expect("allocator not initialized");
 
-        // QEMU virt gives us 128 MiB by default. If this ever reads zero, or something
-        // absurd, we have misparsed `reg` (which is big-endian, and whose cell width is
-        // declared by the *parent* node, both of which are easy to get wrong).
+        // The runners pass -m 256M (raised from QEMU's 128 MiB default on 2026-08-15 alongside
+        // the 24 KiB thread stacks; scripts/qemu-runner-aarch64.sh records why). If this reads
+        // zero, or something absurd, we have misparsed `reg` (which is big-endian, and whose
+        // cell width is declared by the *parent* node, both of which are easy to get wrong); if
+        // it reads 128 MiB again, a runner lost its -m flag.
         let total_bytes = s.total as u64 * FRAME_SIZE;
-        assert_eq!(total_bytes, 128 * 1024 * 1024, "unexpected RAM size");
+        assert_eq!(total_bytes, 256 * 1024 * 1024, "unexpected RAM size");
 
         // Some memory must already be spoken for: at minimum the kernel image, the
         // bitmap, and the device tree. A zero here means we reserved nothing, which

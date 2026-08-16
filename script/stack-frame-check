@@ -44,7 +44,7 @@
 #     lower bound on trouble and pairs with the watermark; neither is sufficient alone. A call-graph
 #     walker would close the gap and nothing in this tree does that today.
 #   - **The ceiling is one number for stacks of three different sizes.** Boot is 64 KiB, secondaries
-#     64 KiB, kernel thread stacks 16 KiB, and this gates everything against the smallest, because a
+#     64 KiB, kernel thread stacks 24 KiB, and this gates everything against the smallest, because a
 #     function does not carry a label saying which stack it will run on. That is deliberately
 #     pessimistic and it is why the exception table below is not empty.
 #   - **The exception table is maintained by hand**, so a function that moves from the boot stack to

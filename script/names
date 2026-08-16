@@ -202,7 +202,7 @@ def refused_in(text):
 
 def parse(text):
     """(status, date, [refused names]). Form only: this cannot judge a reason."""
-    m = re.match(r"(ratified|recorded|unrecorded)\b", text)
+    m = re.match(r"(ratified|recorded|unrecorded|provisional)\b", text)
     status = m.group(1) if m else None
     date = None
     if status == "ratified":
@@ -228,8 +228,8 @@ for kind, name, path, prefix in items():
         continue
     status, date, refused = parse(text)
     if status is None:
-        problems.append(f"{kind} {name}: the block must start `ratified <date>` or `unrecorded` "
-                        f"(found {text[:48]!r})")
+        problems.append(f"{kind} {name}: the block must start `ratified <date>`, `recorded (where)`, "
+                        f"`provisional` or `unrecorded` (found {text[:48]!r})")
         continue
     if status == "ratified" and date is None:
         problems.append(f"{kind} {name}: `ratified` must carry a date (ratified 2026-08-04), "
@@ -249,6 +249,13 @@ for r in records:
 ratified = [r for r in records if r["status"] == "ratified"]
 recorded = [r for r in records if r["status"] == "recorded"]
 unrecorded = [r for r in records if r["status"] == "unrecorded"]
+# `provisional` is a claim about INTENT (whoever chose this expects it to change), where the other
+# three are claims about the RECORD. §89 added it on 2026-08-16, after milestone 117's second
+# stranger run wrote the word AGENTS.md tells a lane to write and got a red gate for it: the file
+# said `provisional` in four places and the gate knew three other words. The states are orthogonal
+# in principle (a name can be recorded and still provisional) and this spends one word on the
+# common case rather than modelling the cross product, which nothing has needed.
+provisional = [r for r in records if r["status"] == "provisional"]
 refusals = [(bad, r) for r in records for bad in r["refused"]]
 
 # The worklist's order, and it is exposure rather than alphabet or count, because exposure is what
@@ -264,7 +271,9 @@ refusals = [(bad, r) for r in records for bad in r["refused"]]
 # classification anybody could get wrong.
 EXPOSURE = {"program": 0, "crate": 1, "script": 2}
 # Within a tier, a name nobody can justify outranks one whose reasoning merely lacks a signature.
-URGENCY = {"unrecorded": 0, "recorded": 1}
+# `provisional` outranks both: its author has SAID it is wrong, so it is the shortest
+# conversation calef can have.
+URGENCY = {"provisional": 0, "unrecorded": 1, "recorded": 2}
 
 # A refused name that something in the tree still USES is a contradiction worth seeing: either the
 # refusal was reversed and nobody said so, or a name came back. Reported, never fatal, because a
@@ -312,6 +321,14 @@ if mode == "--refused":
     print("\nscript/names <name> prints the reason.")
     sys.exit(0)
 
+if mode == "--provisional":
+    print(f"PROVISIONAL ({len(provisional)} of {len(records)}): the author expects these to change\n")
+    for r in sorted(provisional, key=lambda r: (EXPOSURE[r["kind"]], r["name"])):
+        print(f"  {r['kind']:<8} {r['name']:<28} {r['path']}")
+    print(f"\n{len(provisional)} names their own author called wrong. The shortest conversation on "
+          f"the worklist, which is why they sort first in --unratified.")
+    sys.exit(0)
+
 if mode == "--unrecorded":
     print(f"UNRECORDED ({len(unrecorded)} of {len(records)}): nothing outside the block says why\n")
     for r in sorted(unrecorded, key=lambda r: (r["kind"], r["name"])):
@@ -321,7 +338,7 @@ if mode == "--unrecorded":
     sys.exit(0)
 
 if mode == "--unratified":
-    todo = sorted(recorded + unrecorded,
+    todo = sorted(provisional + recorded + unrecorded,
                   key=lambda r: (EXPOSURE[r["kind"]], URGENCY[r["status"]], r["name"]))
     if not todo:
         print("every name in the tree is ratified")
@@ -356,7 +373,7 @@ if mode and not mode.startswith("-"):
     sys.exit(0)
 
 if mode:
-    print(f"names: unknown argument {mode!r} (no argument, --unratified, --refused, --unrecorded, "
+    print(f"names: unknown argument {mode!r} (no argument, --unratified, --provisional, --refused, --unrecorded, "
           f"--check, or a name)", file=sys.stderr)
     sys.exit(2)
 
@@ -373,7 +390,7 @@ for kind in ["crate", "program", "script"]:
 
 print(f"\ntotal: {len(records)} names, {len(ratified)} ratified, {len(recorded)} recorded, "
       f"{len(unrecorded)} unrecorded, {len(refusals)} refusals")
-print(f"{len(recorded) + len(unrecorded)} still want calef: script/names --unratified")
+print(f"{len(provisional) + len(recorded) + len(unrecorded)} still want calef: script/names --unratified")
 if contradictions:
     print(f"refused but live: {', '.join(contradictions)}")
 for p in sorted(set(problems)):

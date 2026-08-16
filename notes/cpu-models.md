@@ -175,6 +175,23 @@ through SBI, so it works on both.
   canary had disarmed 21 seconds earlier). That is one real, separate bug, seen on both ISAs on
   slow hosts; it wants its own lane.
 
+- **The 2026-08-15 attempt-1 deaths on loaded runners were a real kernel thread-stack overflow,
+  since diagnosed and fixed** (aarch64 run 31907966383 and c906 run 31910308865, both during
+  `supervision_tests::a_faulting_child_reports_to_its_supervisor_and_is_reaped_then_respawned`,
+  both a store into a THREAD stack guard page with `sp` 4096 bytes past the bottom of a 16 KiB
+  stack). Symbolized against bit-identical rebuilds of CI's binaries: no frame outran the guard;
+  the sum of a deep standing path, a blocked thread's residue, and a preemption landing at the
+  deepest instant simply exceeded 16 KiB, and a loaded host multiplies preemptions until one
+  lands there. Fixed 2026-08-15: thread stacks are 24 KiB, the tick path's disarmed canary check
+  no longer bills a 592-byte frame, the thread high-water tripwire is sized against worst-case
+  stacking, and a thread-guard fault now prints the dead stack's `.text`-pointing words so the
+  next such report symbolizes itself. The full analysis is in notes/stack.md; the load-legibility
+  rule stands, but this failure was never a false one.
+
+  One c906-specific residue: the c906 report's `sepc` named an `auipc`, an instruction that
+  cannot raise a store fault, while `stval` told the truth. On this model treat `sepc` in this
+  failure class as approximate; the aarch64 twin of the same fault carried exact state.
+
 - **The ASID probe does not vary across models, so the one test written *for the board* is still
   untested.** Every model above printed `satp.ASID: 16 bits implemented`, including `sifive-u54`.
   QEMU does not model a reduced `satp.ASID` width per CPU. `satp.ASID` is WARL and RISC-V permits an

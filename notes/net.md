@@ -172,6 +172,11 @@ is deliberately deferred**, with the recorded trigger being a socket that must b
 process. The rest of the shape below stands as the contract Piece 3 implements. Recommendation first,
 then the questions (question 1 now answered).
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04): a deferral that already names what would
+end it, which is the shape a limitation is supposed to have, so an audit may pass over it. The
+trigger is the promotion rule §71 later wrote down, arrived at here first. See
+notes/untracked-work-sweep.md.
+
 **Recommended shape.** A process holds one capability to the stack: a `Stack` endpoint. Everything
 is a `CALL` on it or on a per-connection reply channel, control in the three-word message, bytes in
 a per-connection shared frame delegated at open time.
@@ -665,6 +670,66 @@ The fix is the same one `virtio::MAX_DEVICES` has now asked for eight times: rec
 finished service held. It is one piece of work that would relieve both ceilings, and it is
 increasingly what stands between this suite and the next network milestone.
 
+**And the margin is now thin enough to fail about one run in three, measured.** When milestones 54
+and 55 were merged together (the SMB adapter and the mDNS half now ride the same spawn as milestone
+107's accept test, which is why neither cost a net server of its own), the aarch64 leg was run three
+times on the merged tree: **one of the three died**, and it died exactly the way this section and
+notes/swish-language.md both predict. `time_tests::a_shell_with_no_usable_clock_refuses_rather_than_running_it_unmeasured`
+printed `refused to load a user program: Unmappable(OutOfFrames)` and the lost-wakeup watchdog fired
+sixty seconds later; the other two runs passed all 261 tests with every prober green. Two things
+follow, and the second is the one that costs time. **A red aarch64 leg on a branch that touches the
+net tests is not evidence the branch is wrong**, so re-run before you debug. And **the failure names
+a test that has nothing to do with the change**, because the boot's last spawn is the one that pays,
+which is what makes this so expensive to diagnose from the failure alone. That is the third distinct
+milestone to be misled by it, and it is the argument for reclaim being a milestone rather than a
+cleanup.
+
+**Postscript, 2026-08-16: that one-in-three did not reproduce on the lane that fixed this**, and the
+honest reading of that is worth more than a tidier one. Twelve aarch64 runs at the pre-fix commit
+under TCG and eight on the physical core (`--hvf`) were all green on one developer's machine. What
+*did* reproduce, on every single run, is the margin the paragraph above is really about: **216 free
+frames of 29307 and no free run longer than 117**. With that little headroom, which test dies is
+decided by scheduling, so a rate measured on one machine on one day is a property of the machine as
+much as of the tree. Reproduce the margin, not the failure.
+
+### The reclamation landed, 2026-08-16, and here is what it cost and returned
+
+The prediction above was right about the cause and wrong about the size of it: **the net services
+were the second biggest spender, not the first.** Measured across a whole aarch64 boot with the frame
+ledger (notes/frames.md), the ten net tests held **2759 frames**; the six `spawn_init` tests held
+**12289**. Both are fixed, and the note is corrected rather than quietly updated, because "we knew
+which one it was" is exactly the kind of claim this file exists to keep honest.
+
+What a net test now does at the end: `net.release_or_fail("a net test's net_stack")`, which is
+`kill_thread` on the server and its clients, then `reclaim_region` on each region, retried. No new
+verb, no syscall change.
+
+**The one thing that had to change in the kernel, and it is worth understanding here rather than
+only in `sched.rs`:** `net_stack` blocks in `recv_cap(STACK)` forever, and DECISIONS §16's armed kill
+is spent by `schedule()`, which a `Blocked` thread never reaches. Killing it did nothing. What ends
+it is that reclaiming a region **removes the endpoints inside it and aborts whoever is blocked on
+them** (§32's endpoint reap), and that sweep now runs *before* the live-thread refusal instead of
+after it. So the server's three endpoints come out of a four-page region of their own, and reclaiming
+that region is what wakes it up to die. From `create_endpoint`'s shared kernel chunks there is no such
+handle, and there was no way to end a `net_stack` short of rebooting the machine.
+
+The measured result for the boot as a whole: **216 free frames at the end became 15307, and the
+longest free run went from 117 to 14080.** (15249 on the merged tree, which runs one more process in
+the SMB test; notes/frames.md carries the remeasurement. The free run, which is the number that
+decides whether a boot lives, is 14080 either way.)
+
+Two things this does **not** fix, both recorded rather than papered over:
+
+- **`virtio::MAX_DEVICES` is untouched.** `virtio::register` bumps a counter and never reuses a slot,
+  so the ninth receipt in that constant's comment still stands: the boot's ceiling is still "how many
+  devices has this boot ever wired". Reusing a slot safely needs a generational name on the device
+  table, because a stale `Object::Virtio` capability must not alias a fresh device, and that is a
+  capability-semantics change rather than a counter change. Its own lane.
+- **The DMA page and the shadow ring are deliberately not returned**, ~2 frames per net service. The
+  NIC still holds whatever receive buffers the dead driver posted, and handing those pages back to the
+  allocator would let a live device write into somebody else's memory. Ending that safely means
+  resetting the device at teardown, through the transport seam. Also its own lane.
+
 ### What is still not proven, and what is deliberately out of scope
 
 - **`std::net::TcpListener` is still `Unsupported`.** The block asked whether the PAL binding lands
@@ -677,6 +742,15 @@ increasingly what stands between this suite and the next network milestone.
 - **Only the mmio transport carries the inbound gate.** A PCIe twin would need a second host port,
   and the transport is orthogonal to the accept path, which the outbound gates already prove over
   both buses. This is the same reasoning that retired the PCIe DNS variant.
-- **No inbound UDP.** A UDP socket already binds a local port, but it binds an *ephemeral* one from
-  the allocator, so nothing can address it from outside. A server-side UDP bind is a third use of the
-  listen grant and is not built.
+- **Inbound UDP is now built, and it is a grant of its own** (milestone 55's mDNS stack half; this
+  bullet used to say "not built"). `BIND_UDP` claims a fixed UDP port the way `LISTEN` claims a TCP
+  one, checked against a **UDP bind grant** the spawn site packs into the high half of the same
+  spawn word the listen grant rides in (`socket_proto::udp_bind_grant`; the halves are independent
+  authorities, and the zero word still grants nothing anywhere). It answers with `LISTEN`'s own
+  vocabulary because the three outcomes are properties of claiming a port, not of TCP. In the same
+  change, a UDP `RECV` reply now carries the datagram's **source endpoint** in the frame's dst
+  fields (dead space on a reply), because a responder must see who asked and RFC 6762 §6.7 turns on
+  the querier's source port; the TFTP gate consumes it by ACKing to the DATA packet's reported
+  source, which is what TFTP's TID scheme wanted all along. The stack also joins 224.0.0.251 at
+  startup (smoltcp's `multicast` feature, switched on in the same milestone). The whole story,
+  including what QEMU can and cannot prove about multicast, is notes/mdns.md's.

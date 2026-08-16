@@ -215,6 +215,11 @@ record of why.
 
 ## What is deliberately deferred
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04). Both items below are deferrals with a
+recorded trigger rather than work waiting for someone to notice it, so an audit may pass over them.
+See notes/untracked-work-sweep.md for the inventory, and §71 for what would promote either one to a
+roadmap row.
+
 - **A BootInfo / self-describing environment.** A structured block the loader hands the program that
   lists its initial capabilities, their rights, and its arguments, so a program can *discover* its
   world instead of assuming a layout. This is what a generic loader needs when it starts programs it

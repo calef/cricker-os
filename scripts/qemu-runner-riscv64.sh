@@ -141,9 +141,20 @@ if [ -n "$NIFE_SMB_HOSTFWD_PORT" ]; then
     HOSTFWD="$HOSTFWD,hostfwd=tcp:127.0.0.1:$NIFE_SMB_HOSTFWD_PORT-10.0.2.15:${NIFE_SMB_GUEST_PORT:-7779}"
 fi
 
+# The multicast injection hub (milestone 55's mDNS stack half), the twin of the aarch64 runner's
+# block: when xtask names a port, the mmio NIC attaches to a QEMU hub carrying slirp (unchanged)
+# and a socket backend xtask's multicast prober speaks raw ethernet frames over, because slirp
+# cannot carry multicast in either direction. See the aarch64 runner for the full reasoning.
+NET0_ATTACH="net0"
+MCAST=""
+if [ -n "$NIFE_MCAST_PORT" ]; then
+    NET0_ATTACH="hubnic0"
+    MCAST="-netdev socket,id=mcast0,listen=127.0.0.1:$NIFE_MCAST_PORT -netdev hubport,id=hubslirp0,hubid=0,netdev=net0 -netdev hubport,id=hubmcast0,hubid=0,netdev=mcast0 -netdev hubport,id=hubnic0,hubid=0"
+fi
+
 NET=""
 if [ -n "$NIFE_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD $MCAST -device virtio-net-device,netdev=$NET0_ATTACH -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-gpu when NIFE_GPU is set (milestone 29), the twin of the aarch64 runner's block. PCIe
@@ -229,7 +240,7 @@ exec qemu-system-riscv64 \
     -machine virt \
     -cpu "$CPU" \
     -smp "$SMP" \
-    -m 128M \
+    -m 256M \
     -bios default \
     -display none \
     -serial stdio \

@@ -126,6 +126,10 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
 const NET_LISTEN_PORT: u16 = 7778;
+/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
+/// 5353. Named here for the same reason as the listen port: the spawn service grants it.
+#[cfg(target_arch = "aarch64")]
+const NET_MDNS_PORT: u16 = 5353;
 /// The port the SMB adapter is granted in the same boot (milestone 54): the echo port's
 /// neighbour, so the two-port grant `[7778, 7779]` still refuses the client's 8080 probe. The
 /// runners forward a second host port (`NIFE_SMB_HOSTFWD_PORT`) to this one. Guest-side the
@@ -1419,7 +1423,7 @@ fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-    let Some(report) = virtio_service::start_net_server(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server(net_stack_image()) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1429,6 +1433,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The net server over the PCIe transport, behind the IOMMU (milestone 30, §20): smoltcp drives
@@ -1440,7 +1445,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-    let Some(report) = virtio_service::start_net_server_pci(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server_pci(net_stack_image()) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -1450,6 +1455,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The socket contract, UDP end to end** (milestone 30, piece 3 phase B; DECISIONS §25). A
@@ -1471,7 +1477,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         false,
@@ -1485,6 +1491,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip against slirp's TFTP server failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The same UDP round trip over the PCIe transport, behind the IOMMU.
@@ -1495,7 +1502,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         true,
@@ -1509,6 +1516,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **Real DNS resolution, deliberately non-gating.** The query goes to 10.0.2.3, which libslirp
@@ -1525,7 +1533,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_DNS,
         false,
@@ -1546,6 +1554,7 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         "a DNS response came back but was not a valid reply to our query (client code \
          {verdict:#x}): a socket-contract defect, not a network problem",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The socket contract, TCP end to end** (milestone 30, piece 3 phase B). A client opens a TCP
@@ -1560,7 +1569,7 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         false,
@@ -1574,6 +1583,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip through the socket contract failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The same TCP echo round trip over the PCIe transport, behind the IOMMU.
@@ -1584,7 +1594,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         true,
@@ -1598,6 +1608,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
@@ -1612,7 +1623,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_reopened_socket_id_connects_again_over_tcp() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_REOPEN,
         false,
@@ -1627,6 +1638,7 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
         "reopening a socket id and connecting again failed (client code {verdict:#x}): the \
          ephemeral local port is not independent of the socket id",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The guest is connected TO, on a port it was granted** (milestone 107). Every network exchange
@@ -1649,28 +1661,87 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// name in a shared namespace, so it is authority, and the **spawn service** decides the range.
 /// Note that no frame is attached until after all of it, because a listener carries no bytes.
 ///
-/// It is one test rather than two because two net servers do not fit: the second costs a 192-page
-/// untyped region nothing reclaims, and the boot has no such run left (see `virtio::MAX_DEVICES`).
-/// The stage codes stand in for the names the second test would have had.
+/// It is one test rather than two because, when it was written, two net servers did not fit: the
+/// second cost an untyped region nothing reclaimed, and the boot had no such run left (see
+/// `virtio::MAX_DEVICES`). **That constraint was lifted on 2026-08-16**, when a net service became
+/// reclaimable (notes/frames.md); the tests stay merged because splitting them is its own change
+/// with its own argument. The stage codes stand in for the names the second test would have had.
+///
+/// **The mDNS-shaped exchange rides in this same spawn too** (milestone 55's stack half), for the
+/// same memory reason, re-measured by the lane that built it: a twelfth net server died as
+/// `Unmappable(OutOfFrames)` in an unrelated later test. After the accept rounds, the client
+/// proves the three things a responder needs and nothing else touches: binding UDP 5353 is an
+/// authority (a port outside the spawn's `udp_bind_grant` is refused, the granted one binds and
+/// is exclusive; and since this spawn's word carries both grants, the composed packing is what
+/// the machine exercises); a datagram addressed to 224.0.0.251, not to the guest, is accepted
+/// because the stack joined the group (without smoltcp's `multicast` feature it dies in the IPv4
+/// input path, unseen by UDP); and the querier's source endpoint rides back on RECV, which RFC
+/// 6762 §6.7's semantics turn on. Slirp cannot carry multicast, so the host side is xtask's
+/// multicast prober on the frame-level hub the runner wires beside slirp: it takes the guest's
+/// own multicast send off the wire (which is what proves SENDTO to a group reaches it), injects
+/// the group-addressed query with a spoofed source nothing on the network holds, and requires
+/// the guest's composed answer. See notes/mdns.md for what QEMU still cannot prove.
 ///
 /// **Milestone 54 rides the same spawn, for the same reason.** The SMB adapter (`smb_server`) is
 /// a second client of this stack, granted the neighbouring port, and xtask's SMB prober drives a
-/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, read of a fixture
-/// file whose bytes the prober asserts, twice over two connections) through a second `hostfwd`
-/// while the echo exchange runs. Two verdicts come back and both gate. See
+/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, and a read whose
+/// bytes the prober asserts, twice over two connections) through a second `hostfwd` while the
+/// echo exchange runs. Two verdicts come back and both gate. See
 /// `virtio_service::start_net_stack_with_smb` for why they share a NIC, and notes/smb.md for the
 /// protocol's scope.
+///
+/// **And the share is the real filesystem** (the milestone's second act): this test first wires
+/// the FS service and runs `fs_test_client`'s seed role, which writes
+/// `fs_proto::fixture::SMB_SEED` through the FS server, and then hands the adapter the directory
+/// capability. What the prober reads back is therefore bytes that crossed
+/// RedoxFS -> `fs_proto` -> the `Share` seam -> SMB2 -> TCP, seeded by a different process than
+/// the one serving them. This is the first boot that holds the block server, the FS server,
+/// `net_stack`, and the SMB adapter at once, which is why it prints the free-frame count: the
+/// number is the headroom claim, measured rather than argued. With a NIC but no RedoxFS disk the
+/// adapter falls back to its fixture, and the prober (whose expectation is the seeded file)
+/// fails the run; under `script/test` both devices are always attached.
 // RISC-V twin: `riscv_virtio_tests::a_host_process_connects_to_the_guest_and_is_answered`.
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
-    let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
+    // Seed the share through the FS service before the adapter exists: the file must be on the
+    // filesystem before the prober's first session can open it.
+    let fs = fs_service::start(
+        init_image(),
+        program("fs_server").expect("no fs_server program in the initrd archive"),
+        program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
+        7, // ROLE_SMB_SEED: write fixture::SMB_SEED at fixture::SMB_SEED_NAME, report, exit
+    )
+    .map(|(readiness, seed_report)| {
+        assert_fs_service_ready(readiness);
+        let status = sched::ipc_recv(seed_report)[0];
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the seeding client could not put the SMB gate's file on the filesystem",
+        );
+        fs_service::root_directory(
+            init_image(),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
+        )
+        .expect("the FS service was wired a moment ago")
+    });
+    if fs.is_none() {
+        crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
+    }
+    crate::println!(
+        "    (combined boot wired: {} frames free before the net + SMB spawn)",
+        crate::memory::free_frames()
+    );
+    let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
         NET_TEST_TCP_ACCEPT,
         NET_LISTEN_PORT,
         SMB_LISTEN_PORT,
         SMB_ROUNDS,
+        fs,
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -1678,10 +1749,13 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}). 0xE050 means a \
-         port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
-         0xE070 means nobody ever connected, which is the host side: is the runner adding a \
-         hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
+        "the guest did not serve the inbound exchange (client code {verdict:#x}). 0xE050 or \
+         0xE080 mean a port outside a grant was bound anyway, which is the capability failure; \
+         0xE060 or 0xE070 means nobody ever connected, which is the host side: is the runner \
+         adding a hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this \
+         suite? 0xE087 means nothing addressed to the joined multicast group arrived: either RX \
+         acceptance, or the host side (NIFE_MCAST_PORT and xtask's multicast prober); \
+         0xE08A/0xE08B mean the datagram arrived without its source endpoint",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(
@@ -1691,6 +1765,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          NIFE_SMB_HOSTFWD_PORT hostfwd, and is xtask's SMB prober running?), 0xE121 means a \
          connection arrived but no SMB message was answered on it",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The `std_exerciser` std program's ELF bytes. The same binary the offline std test spawns; given
@@ -1719,13 +1794,15 @@ const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn std_net_runs_over_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
+    let Some((report, net)) =
+        virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
     else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
 
     assert_std_transcript(report, STD_NET_EXPECTED, "std net");
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
@@ -2190,7 +2267,7 @@ fn userspace_init_delegates_an_interrupt_to_a_child() {
     const INIT_IRQ_ROLE: u64 = 25;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_IRQ_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_IRQ_ROLE, report);
 
     // Raise the test interrupt. The endpoint counts it if the child is not waiting yet (it is
     // still being built), and the child's WAIT drains that pending signal, so there is no race.
@@ -2201,6 +2278,7 @@ fn userspace_init_delegates_an_interrupt_to_a_child() {
         word, IRQ_WORD,
         "the interrupt never reached the init-built child through the delegated Irq cap",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d.2b: userspace init brings up the real console server.** Past 19d.2a's
@@ -2218,13 +2296,14 @@ fn userspace_init_brings_up_the_console_server() {
     const INIT_CONSOLE_ROLE: u64 = 24;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_CONSOLE_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_CONSOLE_ROLE, report);
 
     let acked = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         acked, MSG_LEN,
         "the init-built console server did not print-and-ack: {acked} bytes, expected {MSG_LEN}",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d.2: userspace init builds a device driver and hands it the hardware.**
@@ -2250,13 +2329,14 @@ fn userspace_init_builds_a_driver_that_reads_real_hardware() {
     const INIT_DEV_ROLE: u64 = 23;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_DEV_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_DEV_ROLE, report);
 
     let id = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         id, PL011_PRIMECELL_ID,
         "the init-built driver did not read the PL011's id: device delegation or the              device-typed mapping is broken",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d: userspace init parses a real ELF and builds a running process from it.**
@@ -2273,13 +2353,14 @@ fn userspace_init_parses_an_elf_and_builds_a_running_child() {
     const INIT_ROLE: u64 = 20;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_ROLE, report);
 
     let word = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         word, CHILD_WORD,
         "init did not build a running child from the ELF it parsed in userspace",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19e: init builds a worker, passes it an argument, and gets the answer back.**
@@ -2294,7 +2375,7 @@ fn init_builds_a_worker_and_passes_it_an_argument() {
     const WORKER_INPUT: u64 = 7;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_WORKER_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_WORKER_ROLE, report);
 
     let answer = crate::sched::ipc_recv(report)[0];
     assert_eq!(
@@ -2302,6 +2383,7 @@ fn init_builds_a_worker_and_passes_it_an_argument() {
         WORKER_INPUT * WORKER_INPUT,
         "the worker did not receive its START argument: expected n*n back",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19e: init runs a real compute workload and it comes out right.** The worker's
@@ -2316,7 +2398,7 @@ fn init_runs_the_coremark_workload_and_it_checks_out() {
     const INIT_COREMARK_ROLE: u64 = 29;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
 
     let [crc, ticks, freq, _, _] = crate::sched::ipc_recv(report);
     assert_eq!(
@@ -2332,6 +2414,7 @@ fn init_runs_the_coremark_workload_and_it_checks_out() {
         "the workload's self-timing read a frozen counter"
     );
     assert!(freq > 0, "CNTFRQ_EL0 read as zero at EL0");
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**

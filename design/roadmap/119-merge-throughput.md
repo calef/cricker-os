@@ -1,10 +1,26 @@
 # 119. The merge queue is the bottleneck, and the long pole is one prover
 
-**Status: PARTIAL** 2026-08-14. Minted 2026-08-05 by calef, after an evening in which the constraint
-stopped being how fast lanes produce and became how fast one queue can land.
+**Status: BUILT** 2026-08-16. The after-median exists, which is this block's own definition of
+done, measured over eighteen queued landings rather than one sample: "land this" to merged fell
+from a **17.0-minute** median (n=29, before the queue) to **12.3** (n=17), merges per elapsed hour
+rose from 0.97 to 1.76, and red runs on `main` went from 2 of 120 to 0 of 30. The sharpest single
+observation: five pull requests enqueued within six seconds landed together 20.6 minutes later,
+against roughly 85 serialized at the old median before counting the staling each merge used to
+cause. Caveats travel with the numbers in notes/merge-queue.md, including the storm hour, the
+small samples, and the eleven re-enqueues (several operator error) the timeline cannot separate
+from evictions.
 
-**Gate: NONE.** The measurement and the sharding need nothing. The two structural options at the end
-are calef's, and the block says which, but neither blocks a start.
+**And it corrected the block's own thesis.** This milestone's title says the prover is the long
+pole; measured, it is not. `CI` runs a median 10.7 minutes against `verify`'s 0.6, because
+`--affected-since` scopes twelve of nineteen builds out of proving entirely. What remains is a
+tail of six builds where proofs ran, holding the merge a median 5.6 minutes past a green `CI`,
+and that tail is nearly all false positives from three blind spots in the scope predicate
+(`scripts/` is not `script/`, a `Cargo.lock` touch proves everything, binary files count). Fixing
+those beats more shards, since one crate's proofs are atomic at half the suite's time. Each is
+its own small lane.
+
+**Originally PARTIAL** 2026-08-14. Minted 2026-08-05 by calef, after an evening in which the constraint
+stopped being how fast lanes produce and became how fast one queue can land.
 
 **Built:** the per-crate cost measurement, `script/verify --shard k/n` balanced by measured time,
 and two concurrent shards in `verify.yml` behind an aggregate job that preserves the required

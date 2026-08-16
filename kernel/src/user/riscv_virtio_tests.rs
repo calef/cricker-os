@@ -31,6 +31,9 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
 /// other and never hold it at once.
 const NET_LISTEN_PORT: u16 = 7778;
+/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
+/// 5353.
+const NET_MDNS_PORT: u16 = 5353;
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
@@ -370,7 +373,7 @@ fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
 /// (milestone 30, piece 3). A reused userspace TCP/IP stack, driving a kernel-confined device.
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-    let Some(report) = virtio_service::start_net_server(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server(net_stack_image()) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -380,12 +383,13 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The riscv net server over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-    let Some(report) = virtio_service::start_net_server_pci(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server_pci(net_stack_image()) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -395,6 +399,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The socket contract, UDP end to end on the second ISA (milestone 30, piece 3 phase B): a
@@ -403,7 +408,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
 /// the aarch64 twin for why the old DNS-based version was environment-dependent.
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         false,
@@ -417,12 +422,13 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip against slirp's TFTP server failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The riscv UDP round trip over PCIe, behind the RISC-V IOMMU.
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         true,
@@ -436,13 +442,14 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// Real DNS resolution on the second ISA, non-gating for the same reason as the aarch64 twin: the
 /// upstream is the host's resolver, so a non-answer is skipped and only a malformed reply fails.
 #[test_case]
 fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_DNS,
         false,
@@ -463,13 +470,14 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         "a DNS response came back but was not a valid reply to our query (client code \
          {verdict:#x}): a socket-contract defect, not a network problem",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The socket contract, TCP end to end on the second ISA: connect to slirp's guestfwd echo peer,
 /// send, receive the echo, close, the full round trip through the confined NIC.
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         false,
@@ -483,12 +491,13 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip through the socket contract failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The riscv TCP echo round trip over PCIe, behind the RISC-V IOMMU.
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         true,
@@ -502,13 +511,14 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// Regression on the second ISA: reopening a socket id and connecting again completes (the
 /// ephemeral-port fix). See the aarch64 twin for the finding.
 #[test_case]
 fn a_reopened_socket_id_connects_again_over_tcp() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_REOPEN,
         false,
@@ -522,6 +532,7 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
         verdict, NET_CLIENT_OK,
         "reopening a socket id and connecting again failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The `smb_server` program's ELF bytes (milestone 54): the SMB adapter, spawned as a second
@@ -533,19 +544,56 @@ fn smb_server_image() -> &'static [u8] {
 /// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
 /// outside the stack's grant is refused as a matter of authority, the granted one binds and is
 /// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
-/// while the guest accepts, reads and answers each. **Milestone 54's SMB adapter rides the same
-/// spawn on this ISA too**: a second stack client serving a real SMB2 exchange to xtask's SMB
-/// prober through a second `hostfwd`, both verdicts gating. See the aarch64 twin for the shape,
-/// for why the claims share one exchange, and for what the stage codes mean.
+/// while the guest accepts, reads and answers each. **The mDNS-shaped exchange then rides in the
+/// same spawn** (milestone 55's stack half): the UDP bind grant refuses and admits, the joined
+/// group receives xtask's injected datagram with its spoofed source intact, and the guest answers
+/// the group. **Milestone 54's SMB adapter rides the same spawn on this ISA too**: a second stack
+/// client serving a real SMB2 exchange to xtask's SMB prober through a second `hostfwd`, both
+/// verdicts gating. See the aarch64 twin for the shape, for why all of it shares one exchange (a
+/// net server's spawn is frames nothing reclaims), and for what the stage codes mean.
+///
+/// **The share is the real filesystem here too**: the FS service is wired first, the seed role
+/// writes `fs_proto::fixture::SMB_SEED` through it, and the adapter gets the directory
+/// capability, so the parity gate covers the fs_proto-backed share and not only the wire. The
+/// aarch64 twin documents the shape, the fallback, and the free-frame print.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
-    let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
+    let fs = fs_service::start(
+        blk_image(),
+        program("fs_server").expect("no fs_server program in the initrd archive"),
+        program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
+        7, // ROLE_SMB_SEED: write fixture::SMB_SEED at fixture::SMB_SEED_NAME, report, exit
+    )
+    .map(|(readiness, seed_report)| {
+        assert_fs_service_ready(readiness);
+        let status = sched::ipc_recv(seed_report)[0];
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the seeding client could not put the SMB gate's file on the filesystem",
+        );
+        fs_service::root_directory(
+            blk_image(),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
+        )
+        .expect("the FS service was wired a moment ago")
+    });
+    if fs.is_none() {
+        crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
+    }
+    crate::println!(
+        "    (combined boot wired: {} frames free before the net + SMB spawn)",
+        crate::memory::free_frames()
+    );
+    let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
         NET_TEST_TCP_ACCEPT,
         NET_LISTEN_PORT,
         NET_LISTEN_PORT + 1,
         2,
+        fs,
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -553,9 +601,11 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
-         port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
-         which is the host side",
+        "the guest did not serve the inbound exchange (client code {verdict:#x}); 0xE050/0xE080 \
+         mean a port outside a grant was bound anyway, 0xE060 or 0xE070 means nobody ever \
+         connected (the host side), 0xE087 means nothing addressed to the joined multicast group \
+         arrived (RX acceptance, or NIFE_MCAST_PORT and xtask's multicast prober), 0xE08A/0xE08B \
+         mean the source endpoint was lost",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(
@@ -564,6 +614,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          listen grant, 0xE120 means no SMB connection arrived (the runner's \
          NIFE_SMB_HOSTFWD_PORT hostfwd, or the prober), 0xE121 a connection with no SMB on it",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The `std_exerciser` std program's ELF bytes from the riscv initrd. Given the network here, its
@@ -582,13 +633,15 @@ const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
 #[test_case]
 fn std_net_runs_over_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
+    let Some((report, net)) =
+        virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
     else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
 
     assert_std_transcript(report, STD_NET_EXPECTED, "std net");
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The DMA confinement holds on riscv: a descriptor aimed at kernel memory is refused and

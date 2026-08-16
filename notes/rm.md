@@ -94,6 +94,15 @@ the names this run has already taken away.
 
 ## BUGS
 
+- **`rm` cannot be run from the interactive prompt yet**, which is where most readers will meet it,
+  so it is named here rather than only where the wiring lives. Everything above is real and is proven
+  on both ISAs from the kernel's test boot, where the harness builds the caretaker; at the prompt the
+  shell holds a directory but no way to *hand one on* (its file-service endpoint carries no `GRANT`),
+  and init deletes the endpoint it would build a caretaker from. So `rm gate.txt` is a refusal at the
+  prompt with nothing spawned, which is deliberate: an `rm` started holding nothing would be a
+  program told to destroy something, holding nothing, saying nothing. `script/shell-check` reads that
+  refusal, so the day it changes the gate changes with it. What building the delivery costs is
+  measured in notes/grant-expression.md, "What 'init builds the caretaker per grant' actually costs".
 - **A verdict word must not look like a byte count.** The report channel carries text frames (first
   word = a byte count, at most 16) and one verdict. The receiver reads "the first message is the
   verdict" as "the run printed nothing", which is what makes `rm(1)`'s silence-on-success checkable.

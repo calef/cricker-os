@@ -120,6 +120,36 @@ registry, its generational name going stale. The woken thread's blocking `ipc_re
 an **error** (the endpoint is gone), not a message it never received, so a waiter blocked forever
 cannot pin a region forever, and the reclaim always makes progress.
 
+### The sweep runs before the refusal, and that ordering is the whole of milestone-scale bug
+
+Changed 2026-08-16. The sweep used to sit *after* the live-thread refusal, which quietly meant it
+never ran when it was most needed. A `Blocked` thread never reaches `schedule()`, so it never spends
+the kill the refusal arms, so a region holding a server parked in `RECV` was refused on every pass
+forever, and its memory was gone until the machine stopped. `DESTROY`'s documented contract ("the
+owner retries and reclaims") was simply false for that case, and it is the ordinary case: a server is
+a thing that blocks.
+
+The aarch64 test boot is what made it visible. `userspace_init_brings_up_the_console_server` builds a
+console server out of init's 2048-frame budget, and that server blocks in its serve loop, so those
+2048 frames were unreclaimable **by construction**. Six such tests, and the boot finished with 216
+free frames of 29307 and no free run longer than 117, failing as `Unmappable(OutOfFrames)` in
+whichever unlucky later test asked for a long run. notes/frames.md is the full receipt.
+
+Sweeping first fixes it with no new mechanism, because the wake was already written: removing an
+endpoint aborts and wakes its waiters, which is exactly the transition a doomed resident needs before
+it can die. What changes is when: the region's endpoints now go on **every** pass, refusal or not.
+
+The objection worth answering is that this makes a *refused* reclaim destructive. It already was, and
+`reclaim_region`'s BUGS section says so: a refusal arms §16's kill on every live resident. Ending the
+region's endpoints in the same pass is the same commitment one object over, and the caller has by then
+said the region is going away. What it must not be is a surprise, which is why it is here and in a
+long comment at the sweep itself.
+
+**The honest remaining limit:** a service blocked on an endpoint that is *not* in any region being
+reclaimed still cannot be woken, and so still cannot be reclaimed. `user::holding::Holding` reports
+that as a failed release rather than hiding it, and the practical answer is to give a service's
+endpoints a region of its own, which is what the net wiring now does.
+
 The delicate part was the IPC core, the block-and-wake path where the lost-wakeup hang once lived. Two
 things made it safe without regressing the hot path. First, `endpoint_of` became **fallible**: a stale
 `Endpoint` capability (its endpoint reclaimed out from under a holder) used to reach a name that always
@@ -139,8 +169,10 @@ is the honest witness that memory came back rather than leaked:
 - a started, run, and exited child's regions reclaim, and reclaim is *refused* while it is still live;
 - `SPLIT` carves reclaimable children and commits the parent;
 - 320 create+destroy cycles (past the old 256 cap) all succeed, proving slot reuse;
-- an idle endpoint's region reclaims, and a region whose endpoint has a blocked waiter refuses until
-  the waiter is gone.
+- an idle endpoint's region reclaims, and a region whose endpoint has a **blocked waiter** reclaims
+  too, waking that waiter with its IPC aborted rather than refusing
+  (`a_blocked_waiter_wakes_with_an_error_when_its_endpoint_is_revoked`). An earlier draft of this line said it
+  "refuses until the waiter is gone", which the test beside it has contradicted for some time.
 
 ## The surface, and what remains
 

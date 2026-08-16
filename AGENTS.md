@@ -255,6 +255,21 @@ are new.
   notification" while your own gate is running is the failure mode, not patience (calef,
   2026-08-14, after five lanes in one day stopped mid-gate and each needed a manual resume). The
   report comes after the gate, and nothing about a gate is finished until you have read its exit.
+- **Every pull request and comment an agent writes opens by saying so.** One line, first thing
+  in the body: `**Lane:** <branch or milestone>, written by an agent; calef's account is the
+  author GitHub shows.` Until milestone 128 gives the automation a real identity, every artifact
+  in this repository carries calef's name whether he wrote it or not, and a reader cannot tell
+  the architect's voice from a lane's. This is rung four and it is honest about being rung four:
+  the mechanism is 128's App, and this is what the record says in the meantime. (calef, 2026-08-16:
+  *"it looks like I'm talking to myself a lot and the record would be nice to clarify who is
+  talking."*)
+- **A lane's first act is a draft pull request** (§90, 2026-08-16). Cut the branch, push it, open
+  the pull request as a **draft**, before any work. That is the claim, and it is why two lanes
+  cannot silently take the same milestone: the board is `gh pr list --draft`, it costs one
+  command, and a draft cannot be stuck in the merge queue because a draft cannot be merged. The
+  claim and the deliverable are one object, so nothing has to be closed by hand, and a lane that
+  dies leaves a visible stale draft instead of an invisible gap. **Check that board before
+  briefing**, alongside `git ls-remote --heads`.
 - **A developer works in a lane**, and the lane is the isolation rather than the person: its own
   worktree, its own branch, one milestone, no visibility into the others. Two developers in one lane
   is the merge problem this vocabulary exists to prevent.
@@ -317,22 +332,42 @@ not later, because the failure this prevents is the maintainer forgetting it is 
   eventually his**, so a naming backlog does not get tangled with a merge decision; milestone 115's
   gate takes `unrecorded` as a truthful answer precisely so that provisional names never block.
 
-**Lane count is set against merge-queue depth, not against how much work exists** (calef delegated
-this on 2026-08-04, after the queue reached ten and the oldest pull request starved). A finished lane
-does not produce value; a *merged* lane does, and under the require-branches-up-to-date rule the
-queue lands **one thing at a time**. So lanes past that rate manufacture merge debt rather than
-progress:
+**Lane count is set against the collision surface, not against queue depth** (calef, 2026-08-16,
+overturning his own 2026-08-04 delegation on measured evidence). The reason survives its own rule:
+**throughput is measured in merged work.** What changed is what bounds it.
 
-| open pull requests | concurrent lanes |
-|---|---|
-| 0 to 3 | 4 |
-| 4 to 6 | 2 |
-| 7 or more | 1 |
+The old rule counted open pull requests, and was right when it was written: under
+require-branches-up-to-date a serial drain landed **one thing at a time**, every merge staled
+every other branch, and lanes past that rate manufactured merge debt. GitHub's merge queue
+(milestone 119, enabled 2026-08-15) retired both facts. It lands **groups of up to five in one
+CI run** and rebases the group itself, so a deep queue is a batch rather than a backlog, and
+depth stopped predicting anything.
 
-The numbers are a starting point rather than arithmetic, and the rule that matters is the reason:
-**throughput is measured in merged work.** When the queue is deep the bottleneck is CI wall-clock and
-the honest move is fewer lanes, said out loud as a decision rather than by quietly not launching any,
-which is how it failed three times that evening.
+**The measurement that overturned it.** In the twenty hours after the queue went live: 28 merges
+through 8 group builds, with four to five lanes running against a queue that sat six to twelve
+deep for most of it. The old table would have prescribed **one** lane for nearly all of that
+night. Of the four things that actually stalled the queue, three do not scale with lane count at
+all: a lint that rejected GitHub's own synthetic branch names and so failed every group build
+(one bug, fixed), evictions that GitHub does not auto-retry (queue behaviour, and the operator
+must re-enqueue), and seven per-pull-request `rustfmt` failures (now caught by the pre-push
+hook). Only the fourth scales, and it scales through **files rather than numbers**: four merge
+conflicts, every one of them in the same small hotspot where every lane wires its test
+(`kernel/src/user/tests.rs`, the QEMU runners, `xtask/src/main.rs`). Lanes in disjoint
+subsystems collided zero times.
+
+So the question to ask before launching is not "how deep is the queue" but **"what files will
+this lane touch, and who else is in them"**. Concretely:
+
+- **Disjoint subsystems: launch freely.** Four is a reasonable working number, not a ceiling.
+- **Two lanes in the test-wiring hotspot: expect to resolve a conflict by hand**, and brief the
+  second one to fold into the first's shape rather than inventing a third. It is often cheaper
+  to sequence those two than to merge them.
+- **The real ceilings are elsewhere**, and they are worth naming so they are decided rather than
+  discovered: the attention to read reports and resolve conflicts, the token budget, and runner
+  concurrency, since group builds and per-branch CI compete for the same machines.
+
+**The prover is the queue's long pole**, not the queue itself: a group's CI goes green while
+`verify` is still running, every time. Milestone 119's remaining half is measuring exactly that.
 
 **Prune a lane's worktree the moment its pull request merges**, in the same breath as deleting the
 branch and relinking `nife-dev`. Eight finished worktrees had accumulated by the time anyone

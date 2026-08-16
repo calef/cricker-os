@@ -661,6 +661,13 @@ mod canary {
     /// the timer tick (IRQ context, interrupts masked) and from the test. Single-flight, so a
     /// slow check on one core and the next tick on another cannot interleave shadow updates.
     ///
+    /// Split in two so the disarmed tick costs no stack. A debug-build prologue reserves the
+    /// WHOLE frame before the first instruction of the body runs, early return included, and the
+    /// one-piece spelling of this function carried a 592-byte frame onto the interrupted thread's
+    /// stack on every tick of every thread, disarmed or not. That frame was one of the middle
+    /// frames of the 2026-08-15 thread-stack overflow (thread.rs, `STACK_PAGES`); the tick path
+    /// pays ~16 bytes now, and only an armed pass pays for the real work.
+    ///
     /// Returns whether a full pass RAN. `false` means disarmed, mid-arm, or another core's pass
     /// holds the slot. The tick ignores the answer (a sampling instrument may skip a beat); a
     /// caller that must observe a completed pass loops until it gets `true`. Returning the
@@ -671,6 +678,13 @@ mod canary {
         if !GATE.armed_hint() {
             return false; // one relaxed load: every unarmed tick's whole cost
         }
+        check_armed()
+    }
+
+    /// The armed pass, outlined. `#[inline(never)]` is what keeps [`check`]'s frame from
+    /// swallowing this one's; without it the split is cosmetic.
+    #[inline(never)]
+    fn check_armed() -> bool {
         let Some(guard) = GATE.try_check() else {
             return false;
         };
@@ -2307,6 +2321,11 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
 /// `Finished` threads are removed here (dropped, and their generational names killed, so every
 /// outstanding `Tcb` capability to them goes stale on its next use).
 ///
+/// **The region's endpoints go first, on every pass, refusal or not**, and that ordering is
+/// load-bearing rather than tidy: it is what wakes a resident blocked in `RECV` so the armed kill
+/// can actually land on it. The long comment at the sweep says why, and notes/frames.md carries the
+/// boot it fixed.
+///
 /// Takes `SCHED`, so it must run **outside** any teardown `Drop`: this is the caller-driven half of
 /// revocation, and `untyped::destroy` is the `SCHED`-free half (which is why the reaper's
 /// `Drop` -> `destroy` path cannot deadlock against it). See `untyped::unpin`.
@@ -2319,7 +2338,67 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // translated back. That is the whole test for "this object lives in the region".
     let page_of = |t: &Thread| crate::arch::mmu::virt_to_phys(t as *const Thread as u64);
 
-    // --- Refuse phase: change nothing until every object in the region can be torn down. ---
+    // --- Endpoint phase: the region's endpoints go FIRST, refusal or not. ---
+    //
+    // **This ordering is what lets `DESTROY` reclaim a region full of blocked servers**, and until
+    // 2026-08-16 it could not. The sweep used to sit after the refusal below, so a region holding a
+    // process parked in `RECV` was refused forever: the refusal armed §16's kill, the kill is spent
+    // by `schedule()`, and a `Blocked` thread never reaches `schedule()`. The owner retried until it
+    // gave up, and the memory stayed spoken for until the machine stopped. That is the whole reason
+    // the aarch64 test boot ran out of frames: `userspace_init_brings_up_the_console_server` builds a
+    // console server out of init's budget and that server blocks in its serve loop, so init's
+    // 2048-frame region was unreclaimable by construction. See notes/frames.md.
+    //
+    // Sweeping first fixes it because **the wake is already here**: removing an endpoint drains its
+    // wait queues, marks each waiter's IPC aborted and wakes it, which is precisely the transition a
+    // blocked resident needs to become schedulable and so to spend the kill the refusal arms one
+    // paragraph below. A server whose endpoints came out of the region being destroyed dies; one
+    // blocked on somebody else's endpoint still does not, and `reclaim_region`'s caller is told so by
+    // the refusal rather than by a hang (see `user::holding::Holding`'s BUGS).
+    //
+    // **A refused reclaim was already destructive** and says so in `reclaim_region`'s BUGS: it arms
+    // kills on every live resident. This makes the same pass also end the region's endpoints, which
+    // is the same commitment one object over: the caller has said this region is going away. What it
+    // must not do is *surprise* anyone, which is why it is written here rather than assumed.
+    //
+    // **Rescan for one at a time rather than listing them all first.** The obvious shape is to walk
+    // the table into a `[u64; MAX_ENDPOINTS]` and then walk that, because `remove` mutates the table
+    // and you cannot remove while iterating it. That array is **4096 bytes of a 24 KiB kernel thread
+    // stack** (`thread::STACK_PAGES`), and this function is already the deepest frame in the kernel;
+    // measured with `-Z emit-stack-sizes` it was 6816 bytes, of which 6144 was three such scratch
+    // arrays, against a measured thread-stack high-water of 11672 bytes: this one frame wanted 2104
+    // bytes MORE than all the headroom there was. See notes/stack-high-water.md.
+    //
+    // Rescanning costs O(live endpoints) per removal instead of O(1). That is the right trade here
+    // and nowhere near a hot path: this runs when a region is torn down, the table is 512 slots, and
+    // a real teardown removes a handful. Stack is the scarce resource, not these comparisons.
+    loop {
+        let doomed = sched
+            .endpoints
+            .iter()
+            .find(|&(_, &phys)| base <= phys && phys < end)
+            .map(|(name, _)| name);
+        let Some(name) = doomed else { break };
+
+        // Drain the endpoint's waiters. `endpoint_of` returns a `'static` reference, so it does not
+        // hold the `sched` borrow across the wakes below.
+        let mut waiters = [0u64; MAX_THREADS];
+        let mut nw = 0;
+        if let Some(endpoint) = endpoint_of(sched, name) {
+            endpoint.drain_waiters(|w| {
+                // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
+                waiters[nw] = unsafe { (*w.as_ptr()).id };
+                nw += 1;
+            });
+        }
+        for &tid in &waiters[..nw] {
+            set_ipc_aborted(sched, tid);
+            wake(sched, tid); // the link is free (drained), so wake queues it onto a run queue
+        }
+        sched.endpoints.remove(name);
+    }
+
+    // --- Refuse phase: no thread in the region may still be able to run. ---
 
     // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack,
     // or the running address space, out from under a thread that can still be scheduled. We may not
@@ -2356,9 +2435,6 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     if live {
         return Err(());
     }
-    // Endpoints do not refuse: a thread blocked on an endpoint in the region is woken with an error
-    // (its IPC aborts, its cap now stale) rather than stranding the reclaim, in the removal phase.
-
     // --- Removal phase: every object in the region is reapable. ---
 
     // Threads: collect before removing (`remove` mutates the table). Both Embryo and Finished go.
@@ -2375,7 +2451,7 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         // **Unlink a corpse from its supervision endpoint first.** A supervised thread that died
         // with nobody in `RECV` is parked on that endpoint's *sender* queue holding its death
         // message (DECISIONS §26 implementation note 2), and that endpoint is the supervisor's, so
-        // it is not in this region and the endpoint sweep below will not touch it. Freeing the TCB
+        // it is not in this region and the endpoint sweep above did not touch it. Freeing the TCB
         // while it is still linked there would leave a dangling pointer that the supervisor's next
         // `RECV` would follow into a recycled page. §16's `DESTROY` could already reach this (reap
         // before receiving); §32's endpoint reap makes it easy to reach, because a supervisor can be
@@ -2394,49 +2470,6 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
             }
         }
         sched.threads.remove(tid);
-    }
-
-    // Endpoints: every endpoint in the region. Before removing one, wake any thread blocked on it
-    // with an error: drain its wait queues (which frees each waiter's intrusive link), mark each
-    // aborted, and wake it, so its blocked IPC returns an error rather than dangling on a freed page.
-    // Removing the name then bumps its generation, so every Endpoint capability to it fails to
-    // resolve, and the page is freed by the enclosing destroy.
-    //
-    // **Rescan for one at a time rather than listing them all first.** The obvious shape is to walk
-    // the table into a `[u64; MAX_ENDPOINTS]` and then walk that, because `remove` mutates the table
-    // and you cannot remove while iterating it. That array is **4096 bytes of a 16 KiB kernel thread
-    // stack** (`thread::STACK_PAGES`), and this function is already the deepest frame in the kernel;
-    // measured with `-Z emit-stack-sizes` it was 6816 bytes, of which 6144 was three such scratch
-    // arrays, against a measured thread-stack high-water of 11672 bytes: this one frame wanted 2104
-    // bytes MORE than all the headroom there was. See notes/stack-high-water.md.
-    //
-    // Rescanning costs O(live endpoints) per removal instead of O(1). That is the right trade here
-    // and nowhere near a hot path: this runs when a region is torn down, the table is 512 slots, and
-    // a real teardown removes a handful. Stack is the scarce resource, not these comparisons.
-    loop {
-        let doomed = sched
-            .endpoints
-            .iter()
-            .find(|&(_, &phys)| base <= phys && phys < end)
-            .map(|(name, _)| name);
-        let Some(name) = doomed else { break };
-
-        // Drain the endpoint's waiters. `endpoint_of` returns a `'static` reference, so it does not
-        // hold the `sched` borrow across the wakes below.
-        let mut waiters = [0u64; MAX_THREADS];
-        let mut nw = 0;
-        if let Some(endpoint) = endpoint_of(sched, name) {
-            endpoint.drain_waiters(|w| {
-                // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                waiters[nw] = unsafe { (*w.as_ptr()).id };
-                nw += 1;
-            });
-        }
-        for &tid in &waiters[..nw] {
-            set_ipc_aborted(sched, tid);
-            wake(sched, tid); // the link is free (drained), so wake queues it onto a run queue
-        }
-        sched.endpoints.remove(name);
     }
 
     Ok(())
@@ -3237,14 +3270,21 @@ mod tests {
     #[test_case]
     fn reclaim_frees_an_embryo_tcbs_region() {
         let frames_before = crate::memory::free_frames();
-        let threads_before = crate::sched::thread_count();
 
         let region = crate::untyped::create(2).expect("a fresh 2-page region");
-        let _tid = crate::sched::create_tcb(region).expect("retype a TCB from the region");
+        let tid = crate::sched::create_tcb(region).expect("retype a TCB from the region");
 
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before + 1,
+        // The embryo is named, not counted. This pair used to bracket `thread_count()` against a
+        // baseline taken above (`threads_before + 1`, then `threads_before`), which is the reaper
+        // count's defect in a different test: the headcount is the size of the whole table, so a
+        // neighbouring thread exiting between the two reads lands the count BELOW what the
+        // assertion demands and blames this embryo for it. `thread_present` on the Tid this test
+        // created is immune by construction, and it is strictly the stronger claim: the old
+        // "the TCB's table slot must be freed" could pass with the embryo still in the table, as
+        // long as somebody else's thread left in the same window. Fourth appearance of this fix;
+        // see notes/load-sensitive-assertions.md and `thread_present`'s own doc comment.
+        assert!(
+            crate::sched::thread_present(tid),
             "the embryo should be in the table before reclaim"
         );
         assert!(
@@ -3255,9 +3295,8 @@ mod tests {
         crate::sched::reclaim_region(region)
             .expect("reclaim a region whose only object is an unstarted TCB");
 
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before,
+        assert!(
+            !crate::sched::thread_present(tid),
             "the TCB's table slot must be freed by reclaim"
         );
         assert_eq!(
@@ -3839,7 +3878,7 @@ mod tests {
 
     /// Every thread stack has a guard page.
     ///
-    /// A thread stack is 16 KiB (an eighth of the boot stack's), and threads are where deep
+    /// A thread stack is 24 KiB (under half the boot stack's), and threads are where deep
     /// recursion actually happens. Milestone 3's stack overflow hung the machine for 150
     /// seconds; a guard page turns the same bug into an instant fault naming the exact byte.
     #[test_case]
@@ -4124,30 +4163,44 @@ mod tests {
     /// the time this test runs the region exists and steady state is flat.
     #[test_case]
     fn kernel_stacks_do_not_touch_the_frame_allocator_in_steady_state() {
-        use core::sync::atomic::{AtomicU64, Ordering};
-        static REAPED: AtomicU64 = AtomicU64::new(0);
+        // Each spawn is followed to its own reap by name. This used to take `thread_count()` as a
+        // baseline and spin `while thread_count() > baseline { yield_now() }`, which is the whole
+        // family in three lines: the headcount is moved by every other test's teardown, so the
+        // loop could exit at once (a neighbour reaping first) and leave this batch's stacks in
+        // flight, or never exit at all (a neighbour's thread outliving the batch) with no clock to
+        // stop it, spinning until the harness's 90 s ceiling with a message about kernel stacks.
+        // `thread_present` on the Tid each spawn returned asks the narrow question, and `wait_for`
+        // supplies the bound the yield loop never had.
+        let settle = |tid| {
+            assert!(
+                wait_for(|| !crate::sched::thread_present(tid)),
+                "a spawned thread was never reaped, so the frame count below would be read \
+                 mid-teardown"
+            );
+        };
 
-        let baseline = super::thread_count();
         // Warm up: reach steady state (first spawn after boot may still be settling VAs).
         for _ in 0..2 {
-            super::spawn(|| {}).expect("warmup spawn");
-            while super::thread_count() > baseline {
-                super::yield_now();
-            }
+            settle(super::spawn(|| {}).expect("warmup spawn"));
         }
 
         let free_before = crate::memory::stats().unwrap().free();
-        REAPED.store(0, Ordering::SeqCst);
         for _ in 0..6 {
-            super::spawn(|| {}).expect("spawn failed");
-            while super::thread_count() > baseline {
-                super::yield_now();
-            }
+            settle(super::spawn(|| {}).expect("spawn failed"));
         }
-        assert_eq!(
-            crate::memory::stats().unwrap().free(),
-            free_before,
-            "six threads came and went and the frame allocator's count moved: a kernel stack              is still drawing from the allocator instead of the kernel budget",
+
+        // `>=`, not `==`, and the direction is the argument, the same one the reaper test's frame
+        // half carries. The defect this guards spends allocator frames on kernel stacks, which
+        // drives `free` DOWN and keeps it there, so the wait times out and fails exactly as
+        // before. A neighbour's late teardown landing in this window can only FREE frames, pushing
+        // `free` ABOVE the baseline, and equality additionally demanded that the rest of the
+        // machine hold still for the duration, which is not a property this test is responsible
+        // for. See notes/load-sensitive-assertions.md.
+        assert!(
+            wait_for(|| crate::memory::stats().unwrap().free() >= free_before),
+            "six threads came and went and the frame allocator lost {} frames: a kernel stack is \
+             still drawing from the allocator instead of the kernel budget",
+            free_before.saturating_sub(crate::memory::stats().unwrap().free()),
         );
     }
 

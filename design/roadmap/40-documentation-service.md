@@ -1,10 +1,21 @@
 # 40. Documentation as a system service: searchable, rendered, and installed by packages
 
-**Status: NOT-STARTED.**
+**Status: PARTIAL.** Phase 1 is built and the status said NOT-STARTED until calef noticed the tree
+had moved past it (2026-08-16, the week's fifth §76-shaped misrecording). What exists:
+`crates/manual` (a streaming markdown renderer, the byte layout of a search index, and the query
+that reads one, all pure and host-tested in `tests/render.rs`), and `user/src/doc.rs`, the viewer
+program, which the shell can spawn as `Prog::Doc`. The renderer was written against
+`line_editor`'s contract rather than `pulldown-cmark`, which the block's own text anticipated as
+the alternative and which the crate's header records.
 
-**Gate: NONE.** Its one stated prerequisite, milestone 31's phase 2 per-file grants, is built, so
-phase 1 (the terminal viewer and pager over `pulldown-cmark`) is unblocked. Phases 2 and 3 follow
-it inside the block.
+**Gate: NONE.** Its one stated prerequisite, milestone 31's phase 2 per-file grants, is built.
+
+**What remains, and phase 1 is not wholly done either.** There is **no pager**, and `doc.rs`'s
+header records why in terms this project cares about: paging needs a keypress, so it needs input
+authority the viewer deliberately does not hold. That is a design point rather than a gap to
+close carelessly. Phase 2's host-built per-package index shards are partly present as a format
+(`crates/manual/src/index.rs`) with no builder shipping them, and phase 3, the graphical viewer,
+waits on the display ladder as the block says below.
 
 **In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
