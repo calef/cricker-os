@@ -3840,6 +3840,11 @@ mod tests {
     /// to discover that the address was the base of a thread stack's guard page. `guard_page_at` is
     /// that arithmetic, in the kernel, so the machine says it instead.
     ///
+    /// **That `stval` is one of only two addresses this project's guard-page faults have ever
+    /// used**, and the other is aarch64's `0xffff0010001b3000`. Six faults across five days landed
+    /// on those two, unmoved by two fixes that changed thousands of bytes of frames between them.
+    /// A depth-driven overflow does not repeat an address. See notes/stack.md.
+    ///
     /// The three kinds are allocated three different ways (a linker symbol, a `.bss` array, a slot
     /// in the virtual area 64 GiB up), so this checks one of each rather than trusting one to stand
     /// for the others. It also checks the *negatives*, because a classifier that answered

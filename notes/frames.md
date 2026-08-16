@@ -242,6 +242,16 @@ state of the world for every driver in the tree the day before.
   It faulted while the supervision and reap tests were running (the console interleaves, so which
   test owns it is not established, and this note should not pretend otherwise).
 
+  **That last sentence about the stack running out is wrong, and the register above it says so**
+  (2026-08-16). A stack 1392 bytes below its top has used 8% of itself, not all of it, and the two
+  claims sit in the same paragraph. This exact `FAR` came back twice more, byte for byte, after
+  #157 shrank `reap_region_objects` and after milestone 124 rebuilt the spawn path, which no
+  depth-driven overflow could do; and `script/stack-depth-check` now says the deepest chain a thread
+  stack can carry is 13712 bytes against the 20480 this address would need. See notes/stack.md, "The
+  guard-page faults of 2026-08-16, which were not overflows". **The rest of this entry stands**: the
+  fault is real, it is not this milestone's, and the binary really was byte-identical between a red
+  run and a green one.
+
   **A correction worth keeping, because the wrong reading was reasonable and cost an hour.** The
   first pass at this decoded `FAR` through `phys_to_virt` (which is `pa | KERNEL_VA_BASE`), read the
   result as physical `0x1b3000` with a stray bit 36, and concluded the pointer was corrupted. Bit 36

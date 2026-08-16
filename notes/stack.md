@@ -404,19 +404,35 @@ bottom 0xffffffd0001ff000, so sp went 4088 bytes past it, on a 16384-byte stack.
 scause=0xf (code 15)                                        (riscv64, PR #213's cpu matrix, rv64)
 ```
 
-## The fact that settles it, and it was sitting in this file the whole time
+## The fact that settles it, and the tree was already holding every piece of it
 
-**Both addresses are byte-identical to the 2026-08-14 pair recorded above.** Read them side by
-side:
+**There are two addresses, not six faults.** Every recorded guard-page fault on this project lands
+on one of exactly two, and they were written down in three different files over five days without
+anyone putting them side by side:
 
-| | 2026-08-14 | 2026-08-16 |
-|---|---|---|
-| aarch64 | `FAR_EL1 0xffff0010001b3000`, slot 87 | `FAR_EL1 0xffff0010001b3000`, slot 87 |
-| riscv64 | `0xffffffd0001fe008`, slot 102 | `0xffffffd0001fe008`, slot 102 |
+| when | where recorded | address | slot |
+|---|---|---|---|
+| 2026-08-11ish, two `cpu matrix` runs | `sched.rs`, `guard_page_at`'s doc | `0xffffffd0001fe000` | riscv64 slot 102 |
+| 2026-08-13, one run in five | notes/frames.md, milestone 108's BUGS | `0xffff0010001b3000` | aarch64 slot 87 |
+| 2026-08-14 | this file, "the overflows of 2026-08-14" | `0xffffffd0001fe008` | riscv64 slot 102 |
+| 2026-08-16, merge queue | above | `0xffff0010001b3000` | aarch64 slot 87 |
+| 2026-08-16, PR #213 `cpu matrix` | above | `0xffffffd0001fe008` | riscv64 slot 102 |
 
-Same slot, same offset into it, same test family, on both architectures, four days and one milestone
-apart. Milestone 124 restructured the entire spawn path in between (the worst `spawn_on`
-instantiation went from 4592 bytes to 1040) and the addresses did not move by one byte.
+Same slot per architecture, every time, over five days, across milestone 124's restructuring of the
+entire spawn path (the worst `spawn_on` instantiation went from 4592 bytes to 1040) and across
+#157's fix to `reap_region_objects`. The addresses did not move by one byte.
+
+**A depth-driven overflow cannot do that.** Depth is a property of which calls ran and when an
+interrupt landed, which this note says in its own words two sections up ("the same kernel image
+overflows on one run and not the next"). An overflow's faulting address wanders with the chain that
+produced it. These do not wander at all. That is a fixed computation landing on a fixed address, and
+the intermittency is in whether the path runs, not in where it ends up.
+
+**And one register in the 2026-08-13 dump argues the same thing, directly under the sentence that
+concluded the opposite.** notes/frames.md records `x8 = 0xffff0010001b7a90` and reads it correctly
+as slot 87's own stack, "1392 bytes below its top", and then concludes "a 16 KiB kernel stack ran
+out". A stack with 1392 bytes used has not run out; it has used 8% of itself. The two sentences are
+adjacent and only one of them can be true.
 
 **A depth-driven overflow cannot do that.** Depth is a property of which calls ran and when an
 interrupt landed; the note above says so in its own words ("the same kernel image overflows on one
