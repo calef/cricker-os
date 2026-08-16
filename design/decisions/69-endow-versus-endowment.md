@@ -1,6 +1,13 @@
-# 69. `Endow` is a verb, and names the same idea as `Endowment`
+# 69. `Endow` is a verb, and names the same idea as `Endowment`: it is `ChildEndowment`
 
-**Status: PROPOSED.** (raised 2026-08-04; waiting on calef, who names things.)
+**Status: DECIDED.** calef, 2026-08-15: **`ChildEndowment`**. The family now reads as a system:
+`BootEndowment` is what boot hands the first process, `ChildEndowment` is what a parent hands a
+child, and `grant_plan::Endowment` is the plan either delivers on; same noun, distinguished by
+recipient, the possessive-absolute principle §68 settled the same day. Refused `Construction`
+(says when rather than whose, and loses the family resemblance both directions). Also refused:
+this entry's own recommendation to defer into milestone 98, because eleven days later 98 had not
+moved and the reference count had grown from 61 to 64, which is the growth clause below doing
+exactly what it warned. Renamed the same day.
 
 **What.** `supervision_proto::Endow` (what a child is handed at construction) and
 `grant_plan::Endowment` (what the shell computed a child should receive) name one idea a

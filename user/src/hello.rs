@@ -30,7 +30,7 @@ use abi::{Error, endpoint};
 /// The endowment a child is born holding, for the one loader this tree has (milestone 96). The
 /// interactive boot's own use of it is in `crates/system_initializer`; what is left here is milestone
 /// 19d's test roles, which build a child out of one budget and hand it two or three capabilities.
-use supervision_proto::Endow;
+use supervision_proto::ChildEndowment;
 use user_rt::{call, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
 
 /// Roles, as passed in `x0` by the kernel.
@@ -674,11 +674,11 @@ fn build_child(
         untyped,
         untyped,
         elf,
-        &Endow {
+        &ChildEndowment {
             caps,
             maps,
             stack_pages: system_initializer::CHILD_STACK_PAGES,
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     )
 }

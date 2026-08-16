@@ -125,7 +125,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 66 | DECIDED | [A refusal is a non-zero status, and not the same one an error gets](66-refusal-status.md) |
 | 67 | DECIDED | [A program's second stream is a declaration, not a number](67-second-stream.md) |
 | 68 | DECIDED | [`BootEndowment::unused` wants a truer name: it is `for_test_roles`](68-boot-endowment-name.md) |
-| 69 | PROPOSED | [`Endow` is a verb, and names the same idea as `Endowment`](69-endow-versus-endowment.md) |
+| 69 | DECIDED | [`Endow` is a verb, and names the same idea as `Endowment`: it is `ChildEndowment`](69-endow-versus-endowment.md) |
 | 70 | DECIDED | [BUILT measures the end-state, and a false premise is rewritten in as the finding](70-built-when-nothing-to-fix.md) |
 | 71 | DECIDED | [A limitation is promoted when it stops being a fact and becomes a plan](71-recorded-limitations.md) |
 | 72 | PROPOSED | [Whose clock does `time` need? (the design the lane argued against)](72-time-command-clock.md) |
