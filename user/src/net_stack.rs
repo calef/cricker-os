@@ -73,6 +73,14 @@ static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 /// Our MAC. Locally administered; slirp routes DHCP regardless.
 const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
+/// The mDNS group, RFC 6762's 224.0.0.251. The stack joins it at startup (milestone 55's mDNS
+/// stack half): joining is what makes smoltcp's IPv4 input path accept datagrams addressed to the
+/// group, and an mDNS responder cannot exist without that. Unconditional rather than
+/// client-requested because membership is interface state, not socket state, and this stack has
+/// exactly one interface; what IS granted per client is the right to bind port 5353
+/// (`socket_proto::udp_bind_grant`). See notes/mdns.md.
+const MDNS_GROUP: Ipv4Address = Ipv4Address::new(224, 0, 0, 251);
+
 /// Where a client's shared frame for socket `sid` is mapped in `net_stack`'s address space. Above the DMA
 /// page (`0x90_0000`) and well below the heap (1 GiB).
 fn socket_va(sid: usize) -> u64 {
@@ -202,6 +210,14 @@ fn server(dma_phys: u64, listen_grant: u64) -> ! {
         // than deadlocking on an interrupt that will not come.
         wait_for_nic(&mut iface, &mut dev, &mut sockets);
     }
+
+    // Join the mDNS group, after DHCP so the IGMP membership report carries a real source address.
+    // `join_multicast_group` only queues the join; the poll is what emits the report and flips the
+    // group to joined, and from then on datagrams to 224.0.0.251 pass the IPv4 accept filter. The
+    // error arm is unreachable for a well-formed multicast address unless the group table is full,
+    // and this stack joins exactly one group.
+    let _ = iface.join_multicast_group(MDNS_GROUP);
+    iface.poll(instant(), &mut dev, &mut sockets);
 
     // --- Serve the socket contract. One synchronous exchange per request. ---
     let mut socks: [Option<Sock>; MAX_SOCKETS] = [None; MAX_SOCKETS];

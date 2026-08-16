@@ -524,6 +524,12 @@ video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 smoltcp = { version = "0.13.1", default-features = false, features = [
     "alloc",
     "medium-ethernet",
+    # Multicast group membership (milestone 55's mDNS stack half): join_multicast_group, IGMP, and,
+    # the part that matters, RX acceptance of datagrams addressed to a joined group. Without this
+    # feature the IPv4 input path accepts multicast only to 224.0.0.1 (all-systems, hardcoded), so
+    # a datagram to mDNS's 224.0.0.251 is dropped before UDP ever sees it. In smoltcp's own default
+    # feature set; `default-features = false` had discarded it. See notes/mdns.md.
+    "multicast",
     "proto-ipv4",
     "proto-dhcpv4",
     "socket-udp",
