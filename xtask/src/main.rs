@@ -4394,18 +4394,18 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
-    ("echo hello world | wc", Some("1 2 12")),
-    ("echo hello world > gate.txt", None),
-    ("wc < gate.txt", Some("1 2 12")),
-    ("echo hello world >> gate.txt", None),
-    ("wc < gate.txt", Some("2 4 24")),
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 40] = [
+    ("echo hello world | wc", &["1 2 12"]),
+    ("echo hello world > gate.txt", &[]),
+    ("wc < gate.txt", &["1 2 12"]),
+    ("echo hello world >> gate.txt", &[]),
+    ("wc < gate.txt", &["2 4 24"]),
     // **Milestone 31's headline, at the one interface a human touches**: naming a resource in a
     // command IS granting it. The answer has to be the same as the `<` above it, because it is the
     // same designation with the operator left out, and the pair is what makes that a claim rather
     // than an assertion: one line reaches the file through an operator and one through a name, so
     // if they disagree, one of them opened something else.
-    ("wc gate.txt", Some("2 4 24")),
+    ("wc gate.txt", &["2 4 24"]),
     // **And the same name at the head of a pipeline**, which is the line that answered nothing at
     // all until milestone 50's draining lane. An input operand is resolved by the planner, and the
     // shell used to wire a pipeline's head off the `Line` (which has no `<` on it), so the planned
@@ -4416,15 +4416,15 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // `2 4 24` plus a newline is seven bytes and three words on one line, so the answer is the
     // answer above it counted. Spelled out rather than derived for this file's reason: it is a boot
     // gate, and deriving one number from another would hide the case where both are wrong.
-    ("wc gate.txt | wc", Some("1 3 7")),
+    ("wc gate.txt | wc", &["1 3 7"]),
     // The negative control the pair would be weaker without. `wc` alone is refused **at the
     // prompt**, before anything is spawned, because its manifest declares that it reads a stream;
     // on Unix the same command is a shell that appears to hang. So the line above granted
     // something, rather than falling back on a default.
-    ("wc", Some("name a file")),
+    ("wc", &["name a file"]),
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
-    ("caps wc gate.txt", Some("input    gate.txt")),
+    ("caps wc gate.txt", &["input    gate.txt"]),
     // **Milestone 40 at the same interface, and only this much of it.** `doc` is in the image, is
     // spawnable, and declares that it reads a stream, so bare `doc` is refused at the prompt before
     // anything is spawned, exactly as `wc` is and for the same reason: a viewer that could open the
@@ -4438,19 +4438,19 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // for a second reason: neither `doc gate.txt | wc` nor `doc gate.txt > page.txt` delivers the
     // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
     // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
-    ("doc", Some("name a file")),
+    ("doc", &["name a file"]),
     // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
     // the check is the one word that separates a real time from both ways of not having one:
     // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
     // has no clock it believes" / "this process holds no clock capability") contain no `UTC` at
     // all. So this fails if the clock service did not run, if the kernel granted init no page, if
     // init did not endow `date`, or if `date` was handed a page nobody published to.
-    ("date", Some("UTC")),
+    ("date", &["UTC"]),
     // And the visibility surface agrees with the wiring. `caps` is the only thing in this system
     // that claims to print a process's whole authority, so a clock endowed and not printed would
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
-    ("caps date", Some("cap 1  frame     clock")),
+    ("caps date", &["cap 1  frame     clock"]),
     // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
     // whole of the decision, and only this gate runs them through the real init: the guest tests
     // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a
@@ -4460,15 +4460,15 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // the assertion is that its second stream exists, is separate, and is **empty**: `2> err.txt`
     // creates the file, `date` closes the stream with nothing on it, and `wc` counts zero of
     // everything. A shell that had merged the two streams would put a timestamp in there.
-    ("date 2> err.txt", Some("UTC")),
-    ("wc < err.txt", Some("0 0 0")),
+    ("date 2> err.txt", &["UTC"]),
+    ("wc < err.txt", &["0 0 0"]),
     // And the visibility surface names the second destination, which is what stops `caps date >
     // when.txt` being a half-truth: two destinations on one line, and a reader can see that the
     // complaint is not going into the file.
-    ("caps date 2> err.txt", Some("diags    err.txt")),
+    ("caps date 2> err.txt", &["diags    err.txt"]),
     // The refusal, which is the other half of "a declaration, not a number". `wc` writes one stream
     // and its diagnostics ride it, so `2>` names nothing and the line does not run.
-    ("wc gate.txt 2> err.txt", Some("declares no second output")),
+    ("wc gate.txt 2> err.txt", &["declares no second output"]),
     // **`time`, at the one interface a human touches** (milestone 86). Only this gate runs the real
     // inits, and the clock the shell times with is granted by them: the guest tests wire it from the
     // kernel, so a boot where init never handed the shell a clock would pass every one of those and
@@ -4478,18 +4478,49 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // milestone rests on: the tail runs exactly as typed and timing it changes nothing about it. A
     // `time` that re-tokenized its tail, or spawned a differently endowed child, would answer
     // something else here and the duration would still look fine.
-    ("time wc gate.txt", Some("2 4 24")),
+    ("time wc gate.txt", &["2 4 24"]),
     // And the duration itself, checked for its shape rather than its value: the number is a real
     // measurement and cannot be a constant, but `real` and a unit are what a stopwatch prints.
-    ("time date", Some("time: real")),
+    ("time date", &["time: real"]),
     // The visibility surface agrees with the wiring, the same pairing `caps date` makes for the
     // child's clock. This one is about the shell's own: `caps` is the only thing in this system that
     // claims to print a process's whole authority, and a clock the boot really grants would make
     // that claim false if it went unprinted. The rights half is the load-bearing word: READ without
     // GRANT is why nothing typed here can hand a clock to a child.
+    //
+    // **The second wanted phrase is milestone 31 phase 3's**, and it is the machine-checked form of "flip
+    // `holdings()`": the shell's `holdings().dir` is true exactly when init granted it a directory,
+    // and this row is the only place a person can read that at the real prompt. Every other test
+    // that runs the shell has the kernel play init, so a boot that stopped granting it would fail
+    // nothing; `wc gate.txt` above would keep working, because the shell opens that file itself.
     (
         "caps",
-        Some("frame     clock      READ only, NOT delegable"),
+        &[
+            "frame     clock      READ only, NOT delegable",
+            "endpoint  directory",
+        ],
+    ),
+    // **Milestone 31 phase 3's one remaining item, gated as the gap it is.** The line above proves
+    // the shell holds a directory; these two prove what it can and cannot do with one, so the day
+    // init builds a caretaker per grant, both of these change and the gate says so.
+    //
+    // A directory grant is delivered by a `fs_subtree_caretaker`, and init is the only process that
+    // can build one (the shell's file-service endpoint carries no `GRANT`, so it holds nothing it
+    // could hand a caretaker). init deletes that endpoint during the boot, so the answer is a
+    // refusal at the prompt with **nothing spawned**, which is the one outcome this model must
+    // never trade away: a program told to destroy something, holding nothing, saying nothing.
+    // Neither line costs a job, so the pool arithmetic at the end of this script is unchanged.
+    ("rm gate.txt", &["needs init to build the caretaker"]),
+    // And the preview says exactly what the missing delivery would move, which is why the refusal
+    // is a gap rather than a hole: `caps` can name the grant before anything exists to carry it.
+    // The root is the interesting half. `caps rm globmany/m-*.txt` below designates a directory one
+    // component down, which is the only depth every wiring in this tree can build a caretaker for
+    // (`fs_service::narrow_dir` descends one name from the image root); a name typed at the top
+    // prompt designates the root itself, which has no name to descend into. See
+    // notes/grant-expression.md.
+    (
+        "caps rm gate.txt",
+        &["dir      /  (the directory holding gate.txt)"],
     ),
     // **`xargs`, at the one interface a human touches** (milestone 109). `globmany` holds eleven
     // names one pattern matches, which is more than the eight a single grant can carry.
@@ -4501,7 +4532,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // printed grant a lie.
     (
         "echo globmany/m-*.txt",
-        Some("matched more names than one grant can carry"),
+        &["matched more names than one grant can carry"],
     ),
     // And batched, the same pattern is swept. **Asserting the second batch is what pins the resume
     // rule**: `m-08.txt` first means batch one ended at `m-07.txt` and the watermark carried, so
@@ -4509,7 +4540,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // and a batch that took the first eight the directory happened to yield.
     (
         "xargs echo globmany/m-*.txt",
-        Some("batch 2: m-08.txt m-09.txt m-10.txt"),
+        &["batch 2: m-08.txt m-09.txt m-10.txt"],
     ),
     // **And the authority per batch is exactly that batch**, which is the claim the milestone rests
     // on and the one only `caps` can make before the delegation chain exists. The preview prints
@@ -4517,7 +4548,7 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // remaining names: not the eleven the pattern matched, and not the directory they live in.
     (
         "xargs caps rm globmany/m-*.txt",
-        Some("the directory holding m-08.txt m-09.txt m-10.txt"),
+        &["the directory holding m-08.txt m-09.txt m-10.txt"],
     ),
     // **Quoting, at the one interface a human touches** (milestone 67). The gap it closes is an
     // authority one: a file called `my notes.txt` could not be *named* before this, so it could not
@@ -4528,23 +4559,23 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // notes.txt"` is the same designation with the operator left out, so if the two disagree, one of
     // them opened something else. That is `gate.txt`'s trio above, asked of a name with a space in
     // it.
-    ("echo hello world > \"my notes.txt\"", None),
-    ("wc < \"my notes.txt\"", Some("1 2 12")),
-    ("wc \"my notes.txt\"", Some("1 2 12")),
+    ("echo hello world > \"my notes.txt\"", &[]),
+    ("wc < \"my notes.txt\"", &["1 2 12"]),
+    ("wc \"my notes.txt\"", &["1 2 12"]),
     // **And the one thing quoting does to authority**: it suppresses expansion, so the same four
     // characters are one name quoted and a set unquoted. `echo` prints what a grant would move, so
     // this line is the narrowing made visible before anything moves. Unquoted, the same pattern is
     // the refusal five lines up.
-    ("echo \"*.txt\"", Some("*.txt")),
+    ("echo \"*.txt\"", &["*.txt"]),
     // And the preview names it, which is the pairing `caps` exists for: what the line designates is
     // on the screen before anything moves, and a name with a space in it is now something that
     // sentence can be about.
-    ("caps wc \"my notes.txt\"", Some("input    my notes.txt")),
+    ("caps wc \"my notes.txt\"", &["input    my notes.txt"]),
     // **Sequencing and the status** (milestone 67). `worker 3` runs and `worker` alone is refused at
     // the prompt for the integer its manifest requires, so these three lines cover both arms of the
     // condition table with real commands rather than with a branch written for a gate.
-    ("worker 3 && echo yes", Some("yes")),
-    ("worker || echo no", Some("no")),
+    ("worker 3 && echo yes", &["yes"]),
+    ("worker || echo no", &["no"]),
     // **The decision this milestone settled, read at a prompt.** `worker` alone is refused, and a
     // refusal is not an error: nothing was spawned, nothing was opened, and the status says so with
     // its own number. Unix cannot draw this line, because there `127` and a program's own `exit(1)`
@@ -4554,8 +4585,8 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // `worker || echo no` and got `0`, which was the shell being right: the last thing that ran was
     // the `echo`. `$?` is the previous **command**, not the previous line, and that is bash's rule
     // and this shell's.
-    ("worker", Some("needs an integer argument")),
-    ("echo $?", Some("2")),
+    ("worker", &["needs an integer argument"]),
+    ("echo $?", &["2"]),
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
@@ -4567,13 +4598,13 @@ const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 38] = [
     // from any one lane.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
-    ("worker 3", Some("3*3 = 9")),
-    ("worker 4", Some("4*4 = 16")),
-    ("worker 5", Some("5*5 = 25")),
-    ("worker 6", Some("6*6 = 36")),
-    ("worker 7", Some("7*7 = 49")),
-    ("worker 8", Some("8*8 = 64")),
-    ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
+    ("worker 3", &["3*3 = 9"]),
+    ("worker 4", &["4*4 = 16"]),
+    ("worker 5", &["5*5 = 25"]),
+    ("worker 6", &["6*6 = 36"]),
+    ("worker 7", &["7*7 = 49"]),
+    ("worker 8", &["8*8 = 64"]),
+    ("echo shell-boot-gate-done", &["shell-boot-gate-done"]),
 ];
 
 /// How long to wait for the banner, for one line's echo, and for the whole transcript. Generous:
@@ -4798,13 +4829,18 @@ fn shell_check_leg(riscv: bool) -> bool {
             match shell_check_answer(&transcript, cursor, line) {
                 Some((answer, next)) => {
                     cursor = next;
-                    if let Some(want) = want
-                        && !answer.contains(want)
-                    {
-                        failed.push(format!(
-                            "`{line}` answered {:?}, wanted {want:?}",
-                            answer.trim()
-                        ));
+                    // **Every wanted phrase, not the first**, because one answer can carry several
+                    // independent claims and checking one of them makes the rest decoration. `caps`
+                    // is the case that forced it: it prints the shell's whole endowment, and a gate
+                    // that read only the clock row would pass a boot that had stopped granting the
+                    // shell a directory, which is the wiring milestone 31's headline rests on.
+                    for want in want {
+                        if !answer.contains(want) {
+                            failed.push(format!(
+                                "`{line}` answered {:?}, wanted {want:?}",
+                                answer.trim()
+                            ));
+                        }
                     }
                 }
                 None => failed.push(format!("`{line}` produced no answer at all")),
@@ -4820,11 +4856,12 @@ fn shell_check_leg(riscv: bool) -> bool {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
              file to a reader, read the clock, timed a command with a clock of its own, kept \
-             a declared second stream off the redirection, swept a match too large to hand \
-             over in batches whose authority is exactly what each was designated, named a file \
-             whose name has a space in it, ran a && past a command that succeeded and not past \
-             one it refused, and ran eighteen jobs through init's six-job pool after init gave \
-             its construction budget away"
+             a declared second stream off the redirection, printed a directory among the \
+             capabilities it holds and refused the one grant it cannot yet deliver, swept a \
+             match too large to hand over in batches whose authority is exactly what each was \
+             designated, named a file whose name has a space in it, ran a && past a command \
+             that succeeded and not past one it refused, and ran eighteen jobs through init's \
+             six-job pool after init gave its construction budget away"
         );
         return true;
     }
