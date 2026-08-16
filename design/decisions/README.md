@@ -143,6 +143,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 84 | DECIDED | [How we port: prefer software that has already dropped ambient authority](84-how-we-port.md) |
 | 85 | DECIDED | [What we port is evidence and must not be ours; what we ship is product and must be](85-evidence-and-product.md) |
 | 86 | PROPOSED | [Whether an NVMe driver can leave the kernel, and what capability would let it](86-el0-nvme-driver.md) |
+| 87 | DECIDED | [MIT OR Apache-2.0, and why the GPL's lesson does not transfer](87-permissive-license.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
