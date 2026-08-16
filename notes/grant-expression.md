@@ -479,6 +479,13 @@ means the set of processes that can read the time is decided by declarations rat
 Making it delegable would mean init keeping a copy for the shell, a `Holdings` field, and a clock
 position on the wire after all. There is no program asking for it, so it is recorded and not built.
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04). "No program is asking" is the whole
+argument and it is a good one: building the wire position first would be a mechanism without a
+requirement. Milestone 86 then narrowed it rather than opening it, giving the shell a clock it holds
+with `READ` and no `GRANT`, and notes/time-command.md rejects clock delegation for `time`
+specifically rather than deferring it. An audit may pass over this. See
+notes/untracked-work-sweep.md.
+
 ## What phase 1 deliberately does not do
 
 - **No live cspace introspection.** `caps` prints the shell's own endowment (which it knows by the

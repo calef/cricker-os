@@ -44,6 +44,13 @@ required. The table is therefore the first step of the capability-only path, not
 the intrusive-list work (D1) removes the lookups one structure at a time, and what remains of
 the table at the end is exactly this validity check.
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04): "we deferred the CDT" reads like an
+unpaid debt and is not one. A derivation tree and generational names are two answers to the same
+safety question, and this tree took the second, on purpose, for the reason in the paragraph above.
+notes/live-replacement.md still says the real tree is wanted; that is the same object, blessed here
+rather than twice. notes/security.md carries the other half (no revocation, and what it costs). An
+audit may pass over it; §71 says what would promote it. See notes/untracked-work-sweep.md.
+
 ## The details that matter
 
 - **The boot thread is tid 0 by construction**: a fresh table's first insert mints slot 0,

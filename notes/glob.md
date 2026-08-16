@@ -111,6 +111,11 @@ The reason is not scope discipline. A qualifier needs type, mtime and size **per
 *(.)`, which reads like a display, an operation requiring strictly more authority than listing the
 directory. In a capability system that is a change to what the command *is*, not a feature flag.
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04): "not built" here is the outcome of a
+decision the roadmap asked for and got, not a gap. The authority argument is the reason, and it
+survives whether or not anybody wants the feature. An audit may pass over it. See
+notes/untracked-work-sweep.md.
+
 If qualifiers ever arrive, they arrive as a separate, visible step over an already-enumerated set,
 with the extra right named at the point it is taken, and the matcher stays a function of two byte
 strings.

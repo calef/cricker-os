@@ -28,10 +28,10 @@ kernel or escape its own confinement. What was missing was earlier than that:
 B.1 is the first of those. Phase B.2 is the second.
 
 **Why it is not theatre.** A check on bytes in RAM is worthless if something can rewrite them between
-the check and the use. Milestone 16b (the IOMMU, DECISIONS §20) closed exactly that window: a device
-can no longer DMA over the initrd behind the kernel's back. So the sequence "hash the bytes, then
-parse and enter the same bytes" is now a real ordering, not a hopeful one. Measured boot arrived
-after DMA confinement on purpose.
+the check and the use. The IOMMU work of milestone 16b (DECISIONS §20) closed exactly that window: a
+device can no longer DMA over the initrd behind the kernel's back. So the sequence "hash the bytes,
+then parse and enter the same bytes" is now a real ordering, not a hopeful one. Measured boot
+arrived after DMA confinement on purpose.
 
 ## What the kernel does
 
@@ -166,6 +166,14 @@ one) that a hash does not ask. The peer project Atom ships Ed25519-signed execut
 real and reachable option, just a bigger TCB. It becomes worth its cost when init is delivered
 independently of the kernel, which is not true today: they are built by the same command, in the same
 tree, in one sequence.
+
+**Recorded-accepted by milestone 94's sweep** (2026-08-04), with one thing owed. The sweep's
+judgement stands: the hash is the decision, the signature is the alternative, and the condition that
+would make it worth its cost is stated, so an audit may pass over it. What is owed is the promotion.
+§71 (a limitation is promoted when it becomes a plan) names this entry as the shape of its second
+trigger, a design fork calef must rule on before any lane could start, and that is the one case that
+lands as a `RECORDED` roadmap row. No such row exists yet. Minting one is the integrator's act and
+not a lane's, so this paragraph is the flag rather than the fix. See notes/untracked-work-sweep.md.
 
 ## Phase B.2: shrinking what a broken init can do
 
