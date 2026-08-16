@@ -183,6 +183,13 @@ pub(crate) fn thread_stack_site(addr: u64) -> Option<(u64, i64)> {
 /// to the reader, rather than asserting the answer. `sp` is read here, in the handler, a few
 /// frames deeper than the faulting context but on the same stack, which is close enough to place
 /// it in a 20 KiB slot and not close enough to trust to the byte.
+///
+/// **One reading of "slot N-1" is a trap, and the printed guidance names it.** aarch64 has no
+/// double fault: if the vector's own `SAVE_CONTEXT` store lands in a guard page it re-enters the
+/// same vector with `sp` another 272 lower, repeatedly, until the frame fits, which puts it in the
+/// slot below and leaves `FAR_EL1` holding the *first* failing address. That produces exactly the
+/// "sp is one slot down" picture a store past a neighbour's top does. The fault PC separates them:
+/// inside the vector table means the walk, ordinary Rust means the store.
 pub fn warn_if_guard_page(addr: u64) {
     let Some(kind) = guard_page_at(addr) else {
         return;
@@ -237,9 +244,14 @@ pub fn warn_if_guard_page(addr: u64) {
             "  live sp {sp:#018x} is not in the thread-stack area (a boot or secondary stack)."
         ),
     }
-    crate::println!("  Compare the two lines. Same slot: that stack overflowed. Slot N-1: a store");
-    crate::println!("  just past THAT stack's top, since slot N's guard page begins where slot");
-    crate::println!("  N-1's stack ends. Anywhere else: a stray pointer, not a stack at all.");
+    crate::println!(
+        "  Compare the two lines. Same slot: that stack overflowed. Slot N-1: EITHER a"
+    );
+    crate::println!("  store just past THAT stack's top (slot N's guard page begins where slot");
+    crate::println!("  N-1's stack ends), OR the vector faulted building its own frame and walked");
+    crate::println!("  sp down until it fit, which lands there too. Check whether the reported");
+    crate::println!("  fault PC is inside the vector table to tell those apart. Any other slot,");
+    crate::println!("  or none: a stray pointer, not a stack at all.");
     crate::println!("  The guard page is ONE page. A frame larger than that can step over it");
     crate::println!("  into the slot below without faulting; see notes/stack.md.");
 }
