@@ -1,4 +1,4 @@
-# 128. The automation gets its own identity: a GitHub App token replaces the personal one
+# 128. The automation gets its own identity, and the agents get their own voice
 
 **Status: NOT-STARTED.** Minted 2026-08-15 at calef's request, the same day he set
 `TOOLCHAIN_BUMP_PAT` on the transferred repository and asked what other developers would need
@@ -18,6 +18,37 @@ automation breaks the day that account leaves the organization. A **GitHub App**
 run (nothing stored expires), and the identity belongs to the organization rather than to a
 person. This is the `needs-architect` principle applied to credentials: name the role, not the
 person.
+
+## The second deliverable: attribution, added 2026-08-16
+
+calef, reading a repository whose every pull request, comment and review carries his name:
+**"it looks like I'm talking to myself a lot and the record would be nice to clarify who is
+talking."** That is a documentation defect as much as a vanity one. This project's whole claim is
+that a system of this size can be built by one architect and many agents; a timeline in which the
+architect appears to write, review and merge his own work in a single voice is evidence *against*
+the claim it should be evidence for. The provenance tenet applies to authorship the same way it
+applies to names: the record should say who did a thing where a reader meets it.
+
+**Same App, so the setup is shared.** An installation token authors as `<app-name>[bot]` with its
+own avatar and badge, so a lane's pull request is visibly not the architect's. What exists today
+is half a mechanism: commits carry `Co-Authored-By: Claude ...` and pull request bodies carry the
+Claude Code footer, but the *author* of every pull request and comment is calef's account, and
+that is the half a reader actually sees.
+
+**The alternatives, recorded so the choice is one:**
+
+- **A separate machine account** (`nife-agent` or similar) works today with no App and reads
+  unambiguously. Cost: a second identity to secure, an org seat, and the same
+  `GITHUB_TOKEN`-cannot-trigger-CI trap the App was minted to escape.
+- **Convention only**, a `**Lane:**` line in the body naming the agent and its milestone. Free,
+  cosmetic, and adopted immediately (2026-08-16) as an interim rather than as the answer, because
+  a line of prose is rung four and an identity is rung two.
+
+**What it does not fix, and should say so plainly:** an App cannot make the *commits* authored by
+the agent, only the pull request and its comments; commit authorship stays with whoever holds the
+git identity. `Co-Authored-By` remains the record there, and that split is honest rather than
+awkward: the human owns the change, the agent is named as its co-author, and the conversation
+around it is visibly the agent's.
 
 ## The work, which is small
 
