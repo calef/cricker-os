@@ -148,9 +148,22 @@ fn a_command_is_timed_by_the_shells_clock_and_holds_none_itself() {
 /// wording. `time` is a request to measure; running the line unmeasured and saying nothing would be
 /// DECISIONS §42's silent degradation with a stopwatch on it, and running it while complaining would
 /// leave a person unable to tell which half happened. So the transcript must contain no `3*3 = 9`
-/// under the timed line at all, while the untimed control above it still ran.
+/// **A shell with no usable clock times the command anyway** (§72, 2026-08-16), which is the
+/// inversion of what this test asserted when it was written.
+///
+/// It used to prove the opposite: that `time` refused on a machine whose wall clock was absent or
+/// unbelieved, rather than running the line unmeasured, on §42's anti-silent-degradation grounds.
+/// That reasoning was right and its premise was wrong. A duration is two reads of the monotonic
+/// counter, which the kernel opened to EL0, so the offset a clock page carries cancels and `time`
+/// can always measure. The refusal was not protecting anyone; it was a capability check that
+/// gated nothing.
+///
+/// So both old causes are exercised here as *non*-causes: a zeroed clock page (UNKNOWN to
+/// `clock_proto`) and no clock capability at all. In each, the timed line must both answer and
+/// carry a duration, and neither of the two retired sentences may appear anywhere in the
+/// transcript.
 #[test_case]
-fn a_shell_with_no_usable_clock_refuses_rather_than_running_it_unmeasured() {
+fn a_shell_with_no_usable_clock_times_the_command_anyway() {
     let mut buf = [0u8; 2048];
 
     // A frame nobody has published to, which is what a reader on a machine with no believable RTC
@@ -162,32 +175,25 @@ fn a_shell_with_no_usable_clock_refuses_rather_than_running_it_unmeasured() {
     unsafe {
         core::ptr::write_bytes(mmu::phys_to_virt(blank) as *mut u8, 0, FRAME_SIZE as usize);
     };
-    let n = transcript(Some(blank), &mut buf);
-    let said = core::str::from_utf8(answer(&buf[..n], b"time worker 3")).unwrap();
-    assert_eq!(
-        said.trim(),
-        "time: the time is unknown: the machine has no clock it believes",
-        "an unknown clock must be said, not measured around",
-    );
-    // The control ran, so what stopped the timed line was the clock and not the wiring.
-    assert!(
-        core::str::from_utf8(answer(&buf[..n], b"worker 3"))
-            .unwrap()
-            .contains("3*3 = 9"),
-    );
 
-    // The other cause: no capability in the slot, so no mapping either, and the shell has to answer
-    // without touching the address a clock would have been at. A shell that probed by reading would
-    // fault here instead of printing a sentence.
-    let n = transcript(None, &mut buf);
-    let said = core::str::from_utf8(answer(&buf[..n], b"time worker 3")).unwrap();
-    assert_eq!(
-        said.trim(),
-        "time: the time is unknown: this shell holds no clock capability",
-    );
-    assert!(
-        core::str::from_utf8(answer(&buf[..n], b"worker 3"))
-            .unwrap()
-            .contains("3*3 = 9"),
-    );
+    // Ten seconds, the sibling test's bound and for its reason: this proves a stopwatch exists,
+    // it does not benchmark one.
+    const SANE: u64 = 10_000_000_000;
+
+    for clock in [Some(blank), None] {
+        let n = transcript(clock, &mut buf);
+        let t = &buf[..n];
+        let timed = core::str::from_utf8(answer(t, b"time worker 3")).unwrap();
+        assert!(
+            timed.contains("3*3 = 9"),
+            "the command must run: {timed:?}",
+        );
+        let nanos = nanos_of(answer(t, b"time worker 3"));
+        assert!(nanos > 0 && nanos < SANE, "duration out of range: {nanos}");
+        // The two sentences §72 retired must be gone from the whole transcript, not merely from
+        // this line: a shell that printed them anywhere would still be claiming the old boundary.
+        let whole = core::str::from_utf8(t).unwrap();
+        assert!(!whole.contains("holds no clock capability"), "{whole:?}");
+        assert!(!whole.contains("no clock it believes"), "{whole:?}");
+    }
 }
