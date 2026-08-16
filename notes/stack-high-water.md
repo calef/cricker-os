@@ -49,7 +49,7 @@ stack upward from the bottom for the first word that is no longer the pattern. B
 and the top are the stack's high-water mark. The scan is an iterative loop with no locals of size,
 so it needs no meaningful depth itself.
 
-Test builds only, deliberately. Painting 16 KiB on every thread spawn would perturb the spawn
+Test builds only, deliberately. Painting 24 KiB on every thread spawn would perturb the spawn
 benchmark, and the report goes through the test output channel anyway. The code is in
 `kernel/src/stack.rs` (paint, scan, report), with call sites in `kernel_main` (boot stack),
 `smp::bring_up_secondaries` (secondary stacks), and `thread::KernelStack` (thread stacks, painted
@@ -63,7 +63,7 @@ already existed for the canary.
 |---|---|---|---|---|
 | Boot stack (boot core) | `link-aarch64.ld` / `link-riscv64.ld`, `__stack_bottom`..`__stack_top` | 64 KiB | guard page below | at `stack::init` time, canary to a margin below live `sp` |
 | Secondary stacks (per core) | `SECONDARY_STACKS` in `kernel/src/smp.rs`, `.secondary_stacks` | 64 KiB x MAX_CPUS | guard page below (milestone 90) | whole stack, before `CPU_ON` |
-| Kernel thread stacks | `KernelStack` in `kernel/src/thread.rs` | 16 KiB (4 pages) | guard page below | whole stack, at allocation |
+| Kernel thread stacks | `KernelStack` in `kernel/src/thread.rs` | 24 KiB (6 pages; 16 KiB until 2026-08-15) | guard page below | whole stack, at allocation |
 
 The secondary row said `.bss` and **no guard page** when this note was written, and that asymmetry
 is what milestone 90 closed; the section below records how, and the numbers it did not change.
@@ -236,13 +236,25 @@ limits on both ISAs, per the parity gate:
 |---|---|---|---|
 | boot | 61440 | +7224 (13%) | the suite's deepest chain grew ~7 KiB; one page left before the guard |
 | secondary | 16384 | ~2x | something new is running deep on an idle-and-traps stack |
-| thread | 14336 | +2664 | some kernel thread is 2 KiB from its guard; the FS-server incident's class |
+| thread | 18432 (14336 until 2026-08-15) | +6760 over observed; ~+3 KiB over worst-case stacking | some kernel thread is 6 KiB from its (24 KiB stack's) guard |
 
 The margins are deliberately margins over *observed* depth, not fractions of the stack: the
 observed spread is a few hundred bytes, so a few thousand bytes of allowance absorbs toolchain
 drift while still failing long before the guard page would. If a nightly bump trips one of these
 with an honest, reviewed growth, raise the limit with the new measurement in hand; that is the
 gate working, not failing.
+
+**The thread limit is the one that has to be sized against stacking, not against the observed
+number, and the 2026-08-15 CI overflows are why** (the full story is in notes/stack.md). The
+observed high-water is what the suite's runs happened to catch; the honest worst case is the
+deepest standing path (~11.7 KiB) plus a blocked thread's resident residue (`ipc_recv` +
+`SCHED.lock` + `schedule` + the switch, ~1.4 KiB) plus one preemption landing at the deepest
+instant (~2.3 KiB), about 15.5 KiB, which is why two CI runs overflowed a 16 KiB stack that a
+green high-water report said was 71% used. A loaded host does not change any depth; it multiplies
+timer interrupts per guest instruction until one lands on the worst-case alignment. The instrument
+measures truly; it just only measures the alignments that occurred. This is the same lesson as the
+reap-frame incident one section down, one level up: there a single frame outran the margin, here
+the *sum of independent layers* did, and neither is visible in a single row of this table.
 
 The secondary row's original entry read "an idle-and-traps stack that has **no guard page**", and
 said in the same breath that this assertion was the only tripwire there. Milestone 90 made that

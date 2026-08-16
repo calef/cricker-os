@@ -18,8 +18,8 @@
 //! the machine for 150 seconds with no output. Milestone 4 gave the *boot* stack a guard page,
 //! and the same bug became an instant, precise fault naming the exact byte that went too far.
 //!
-//! Thread stacks get one too, and it is not decoration: **a thread stack is 16 KiB**, an eighth
-//! of the boot stack's, and threads are where deep recursion actually happens. This is the
+//! Thread stacks get one too, and it is not decoration: **a thread stack is 24 KiB**, well under
+//! half the boot stack's, and threads are where deep recursion actually happens. This is the
 //! first non-test user of `mmu::map_page` / `mmu::unmap_page`, which we built at milestone 4
 //! ahead of any caller precisely so the discipline (break-before-make, an un-ignorable TLB
 //! flush) would be right the first time.
@@ -34,12 +34,30 @@ use crate::sync::{IrqSafeMutex, rank};
 
 pub type Tid = u64;
 
-/// 16 KiB. Four pages.
+/// 24 KiB. Six pages.
 ///
-/// Linux uses 16 KiB per kernel thread on arm64, for the same reason: you have thousands of
-/// them and each one costs real memory. If that sounds tight, remember the guard page below
-/// it turns "too small" from a silent corruption into a legible fault.
-pub const STACK_PAGES: usize = 4;
+/// This was 16 KiB (Linux's arm64 number) until 2026-08-15, when CI overflowed it on both ISAs
+/// (aarch64 run 31907966383, riscv64 thead-c906 run 31910308865, both attempt 1, both on loaded
+/// 2-core hosts). Linux's 16 KiB is sized for optimized code; this suite runs the kernel at debug
+/// codegen, where frames are severalfold larger, and the measured arithmetic no longer fit:
+///
+///   - deepest standing path the suite reaches on a thread stack: ~11.7 KiB
+///     (the high-water report, notes/stack-high-water.md)
+///   - residue of blocking from that depth (`ipc_recv` 656 + `SCHED.lock` 256 + `schedule` 448
+///     + the switch): ~1.4 KiB, resident for as long as the thread stays blocked
+///   - one preemption landing at the deepest point (trap frame 272 + dispatch + GIC/PLIC claim
+///     + `canary::check` + `schedule` + a contended `SCHED.lock` spin): ~2.3 KiB
+///
+/// Total ~15.5 KiB against a 16 KiB stack, and the CI evidence is the sum coming out past 16 KiB:
+/// the guard page caught an exception-entry push at `sp` = bottom - 4096, mid-cascade, with the
+/// interrupted context spinning in `SCHED.lock` (the symbolized fault sites are in
+/// notes/stack-high-water.md). The overflow is load-correlated because a loaded host multiplies
+/// timer preemptions per guest instruction, so one eventually lands on the deepest frame of the
+/// deepest thread. Six pages leave ~8 KiB above the measured worst case; the cost is at most
+/// 2 more frames per live thread. The guard page below still turns "too small" into a legible
+/// fault rather than silent corruption, and the high-water gate (stack.rs) still alarms well
+/// before the guard.
+pub const STACK_PAGES: usize = 6;
 
 /// Where kernel thread stacks live, virtually.
 ///
@@ -555,7 +573,7 @@ impl Thread {
     ) -> bool {
         // Bounds at compile time, per monomorphization: a capture that does not comfortably fit
         // the stack is refused at build, not at runtime. 1 KiB is generous (captures here are a
-        // few words) while leaving the 16 KiB stack its headroom.
+        // few words) while leaving the 24 KiB stack its headroom.
         const {
             assert!(
                 size_of::<F>() <= 1024,
