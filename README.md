@@ -123,6 +123,21 @@ script/console             # boot straight to the interactive shell
 `script/server` boots the kernel on QEMU's `virt` machine and wires the emulated UART to your
 terminal. Ctrl-A then X quits QEMU.
 
+**On Linux, `script/setup` will stop at the QEMU check and tell you to run `script/ci-qemu` first.**
+That is expected rather than broken: no Ubuntu release ships a QEMU with `riscv-iommu-pci`, and the
+project refuses to drop the device, because a confinement test that quietly stops testing is worse
+than a red build. Build the pinned QEMU (about twelve minutes), then run `script/setup` again.
+
+```bash
+script/catch-up            # what changed since you last looked
+```
+
+**`script/catch-up` is the one to run second**, and it is worth knowing about before you need it: it
+recomputes what moved (milestone status, decisions landed, what is waiting on calef, what is ready to
+start) from the roadmap, the decision files and git, rather than from a hand-written status page that
+would rot. Milestone 117's second stranger run called it the best onboarding command here and noted
+that nothing pointed at it, which this paragraph is fixing.
+
 The `script/*` commands are the normalized entry points (the [Scripts to Rule Them
 All](https://github.com/github/scripts-to-rule-them-all) pattern, one interface across every
 repo). They are thin wrappers over `cargo xtask`, which still does the work and exposes the rest:

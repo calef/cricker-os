@@ -144,6 +144,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 85 | DECIDED | [What we port is evidence and must not be ours; what we ship is product and must be](85-evidence-and-product.md) |
 | 86 | PROPOSED | [Whether an NVMe driver can leave the kernel, and what capability would let it](86-el0-nvme-driver.md) |
 | 88 | PROPOSED | [`needs-architect` as a required check, rather than as a script's restraint](88-needs-architect-as-a-check.md) |
+| 89 | PROPOSED | [Two words for an unratified name: `provisional` and `unrecorded`](89-provisional-versus-unrecorded.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

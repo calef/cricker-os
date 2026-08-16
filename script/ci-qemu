@@ -1,5 +1,12 @@
 #!/bin/sh
-# script/ci-qemu: build the QEMU this project needs, into a cacheable prefix. CI only.
+# script/ci-qemu: build the QEMU this project needs, into a cacheable prefix.
+#
+# **Not CI only, though the name says CI and this line used to as well.** Every Ubuntu release ships
+# a QEMU without `riscv-iommu-pci`, so a Linux developer needs this exactly as much as the runner
+# does: `script/setup` cannot complete on a stock Linux box until it has run. Milestone 117's second
+# stranger run hit that from cold, was told by `script/qemu-check` to run this script, read "CI only"
+# here, and ran it anyway because the machine said so. The name is what it is (renaming it is a
+# naming decision, not a drive-by); the claim was wrong and is fixed.
 #
 # **Why this exists.** Ubuntu 24.04 ships QEMU 8.2, and `-device riscv-iommu-pci` (milestone 16b, the
 # ratified RISC-V IOMMU, DECISIONS §20) arrived later, so the riscv leg cannot run on the runner's

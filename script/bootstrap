@@ -126,7 +126,32 @@ fi
 # so it can be re-run any time (a `brew upgrade` months from now is exactly when it matters), and it
 # fails only on a MISSING DEVICE; a version that merely differs from the pin is a loud warning, since
 # Homebrew cannot install an arbitrary older QEMU and an unfollowable rule is worse than none.
-script/qemu-check
+#
+# **On Linux this is where `script/setup` used to die with no way forward**, found by milestone 117's
+# second stranger run on a stock Ubuntu box. Every Ubuntu release ships a QEMU without
+# `riscv-iommu-pci`, so this check hard-fails by design; `set -e` then ended bootstrap here, before
+# the clang step, and the remedy it named (`script/ci-qemu`) described itself as "CI only". So the
+# reader was told to run a script that told them not to. Nothing was wrong except that nobody had
+# started from cold on Linux in weeks.
+#
+# The fix is to say the whole sequence rather than to reorder: the check must stay ahead of the rest,
+# because a bootstrap that installs a compiler and then tells you the emulator is unusable has wasted
+# your time in the other direction.
+if ! script/qemu-check; then
+    if [ "$os" = linux ]; then
+        echo >&2
+        echo "bootstrap: this is expected on Linux, and it is not the end of the road." >&2
+        echo "  No Ubuntu release ships a QEMU new enough for -device riscv-iommu-pci." >&2
+        echo "  Build the pinned one, then start over:" >&2
+        echo >&2
+        echo "      script/ci-qemu     # ~12 minutes, builds and installs the pinned QEMU" >&2
+        echo "      script/setup       # picks up where this stopped" >&2
+        echo >&2
+        echo "  script/ci-qemu is named for CI and is not only for CI; a Linux developer needs" >&2
+        echo "  it too, for exactly the reason above." >&2
+    fi
+    exit 1
+fi
 
 # --- A bare-metal C compiler ----------------------------------------------------------------
 # Milestone 36 links a C component into the `c_shim` userspace program (user/c/c_seam.c, DECISIONS
