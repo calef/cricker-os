@@ -164,6 +164,10 @@ const ROLE_DIR_ATTACKER: u64 = 5;
 /// Milestone 61: the attribute witness behind a **name-set** grant, the third caretaker. Told
 /// nothing; it tries a name the set carries and a name it does not, and reports what got through.
 const ROLE_SET_ATTRS: u64 = 6;
+/// Milestone 54: seed the file the SMB gate reads ([`fixture::SMB_SEED_NAME`]), so the bytes the
+/// host's SMB prober asserts were put on the filesystem through `fs_proto` by a different process
+/// than the one that serves them.
+const ROLE_SMB_SEED: u64 = 7;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
@@ -174,9 +178,39 @@ pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
         ROLE_CRASH_VERIFY => crash_verify(),
         ROLE_DIR_ATTACKER => dir_attacker(a1),
         ROLE_SET_ATTRS => set_attrs(),
+        ROLE_SMB_SEED => smb_seed(),
         ROLE_PROOF => proof(),
         _ => proof(),
     }
+}
+
+/// **Seed the SMB gate's file** (milestone 54): put [`fixture::SMB_SEED`] at
+/// [`fixture::SMB_SEED_NAME`] under the granted directory, whole and exact, then report.
+///
+/// CREATE first, and on any refusal fall back to OPEN + TRUNCATE: create is create, not
+/// create-or-open (`fs_proto::fs::CREATE`), and this role must be idempotent because the HVF leg
+/// reboots the suite on the same disk image the first run already seeded. The truncate is what
+/// makes the fallback equal to the create: without it a shorter payload would leave the old tail
+/// behind, which is exactly the half-working write §27 warns about.
+fn smb_seed() -> ! {
+    let name = fixture::SMB_SEED_NAME;
+    put_page(name.as_bytes());
+    let (r0, _) = call(FILE, fs::req(fs::CREATE, 0, name.len() as u64), 0);
+    let h = if (r0 as i64) >= 0 {
+        r0
+    } else {
+        let h = open(name);
+        let (t, _) = call(FILE, fs::req(fs::TRUNCATE, h, 0), 0);
+        check((t as i64) >= 0);
+        h
+    };
+    write(h, 0, fixture::SMB_SEED);
+    let (size, _) = call(FILE, fs::req(fs::FSTAT, h, 0), 0);
+    check(size as usize == fixture::SMB_SEED.len());
+    let (c, _) = call(FILE, fs::req(fs::CLOSE, h, 0), 0);
+    check((c as i64) >= 0);
+    send(REPORT, fixture::SUCCESS, 0, 0);
+    exit();
 }
 
 /// **The crash driver** (milestone 37): write one payload and get an acknowledgement, then write the

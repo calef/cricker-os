@@ -108,13 +108,33 @@ const ROLE_REDIRECT: u64 = 4;
 const FS_VA: u64 = 0x0000_0000_0060_0000;
 
 fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>, clock: Option<u64>) -> Option<Wiring> {
-    let image = program("swish")?;
+    let Some(image) = program("swish") else {
+        crate::println!("start_with: no swish in the archive");
+        return None;
+    };
     let term = crate::sched::create_endpoint();
     let spawn_ep = crate::sched::create_endpoint();
     let result = crate::sched::create_endpoint();
-    let budget = crate::untyped::create(SH_BUDGET_PAGES)?;
-    let out_phys = crate::memory::alloc()?.addr();
-    let line_phys = crate::memory::alloc()?.addr();
+    let Some(budget) = crate::untyped::create(SH_BUDGET_PAGES) else {
+        crate::println!("start_with: untyped::create({SH_BUDGET_PAGES}) refused");
+        return None;
+    };
+    let out_phys = match crate::memory::alloc() {
+        Some(f) => f,
+        None => {
+            crate::println!("start_with: memory::alloc (out) refused");
+            return None;
+        }
+    }
+    .addr();
+    let line_phys = match crate::memory::alloc() {
+        Some(f) => f,
+        None => {
+            crate::println!("start_with: memory::alloc (line) refused");
+            return None;
+        }
+    }
+    .addr();
     // SAFETY: two freshly allocated frames, named through the direct map, owned by nobody yet.
     unsafe {
         core::ptr::write_bytes(
@@ -132,7 +152,10 @@ fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>, clock: Option<u64>)
 
     // init first, so a shell that spawns before the service is listening merely blocks in a
     // rendezvous rather than failing.
-    crate::sched::spawn(move || init_service(spawn_ep, result))?;
+    if crate::sched::spawn(move || init_service(spawn_ep, result)).is_none() {
+        crate::println!("start_with: spawn(init_service) refused");
+        return None;
+    }
 
     crate::sched::spawn(move || {
         // The extra stack goes in as ordinary mappings below the one `run` maps, which is the

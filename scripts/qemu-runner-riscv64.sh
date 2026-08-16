@@ -240,7 +240,7 @@ exec qemu-system-riscv64 \
     -machine virt \
     -cpu "$CPU" \
     -smp "$SMP" \
-    -m 128M \
+    -m 256M \
     -bios default \
     -display none \
     -serial stdio \

@@ -661,6 +661,13 @@ mod canary {
     /// the timer tick (IRQ context, interrupts masked) and from the test. Single-flight, so a
     /// slow check on one core and the next tick on another cannot interleave shadow updates.
     ///
+    /// Split in two so the disarmed tick costs no stack. A debug-build prologue reserves the
+    /// WHOLE frame before the first instruction of the body runs, early return included, and the
+    /// one-piece spelling of this function carried a 592-byte frame onto the interrupted thread's
+    /// stack on every tick of every thread, disarmed or not. That frame was one of the middle
+    /// frames of the 2026-08-15 thread-stack overflow (thread.rs, `STACK_PAGES`); the tick path
+    /// pays ~16 bytes now, and only an armed pass pays for the real work.
+    ///
     /// Returns whether a full pass RAN. `false` means disarmed, mid-arm, or another core's pass
     /// holds the slot. The tick ignores the answer (a sampling instrument may skip a beat); a
     /// caller that must observe a completed pass loops until it gets `true`. Returning the
@@ -671,6 +678,13 @@ mod canary {
         if !GATE.armed_hint() {
             return false; // one relaxed load: every unarmed tick's whole cost
         }
+        check_armed()
+    }
+
+    /// The armed pass, outlined. `#[inline(never)]` is what keeps [`check`]'s frame from
+    /// swallowing this one's; without it the split is cosmetic.
+    #[inline(never)]
+    fn check_armed() -> bool {
         let Some(guard) = GATE.try_check() else {
             return false;
         };
@@ -2404,7 +2418,7 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     //
     // **Rescan for one at a time rather than listing them all first.** The obvious shape is to walk
     // the table into a `[u64; MAX_ENDPOINTS]` and then walk that, because `remove` mutates the table
-    // and you cannot remove while iterating it. That array is **4096 bytes of a 16 KiB kernel thread
+    // and you cannot remove while iterating it. That array is **4096 bytes of a 24 KiB kernel thread
     // stack** (`thread::STACK_PAGES`), and this function is already the deepest frame in the kernel;
     // measured with `-Z emit-stack-sizes` it was 6816 bytes, of which 6144 was three such scratch
     // arrays, against a measured thread-stack high-water of 11672 bytes: this one frame wanted 2104
@@ -3237,14 +3251,21 @@ mod tests {
     #[test_case]
     fn reclaim_frees_an_embryo_tcbs_region() {
         let frames_before = crate::memory::free_frames();
-        let threads_before = crate::sched::thread_count();
 
         let region = crate::untyped::create(2).expect("a fresh 2-page region");
-        let _tid = crate::sched::create_tcb(region).expect("retype a TCB from the region");
+        let tid = crate::sched::create_tcb(region).expect("retype a TCB from the region");
 
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before + 1,
+        // The embryo is named, not counted. This pair used to bracket `thread_count()` against a
+        // baseline taken above (`threads_before + 1`, then `threads_before`), which is the reaper
+        // count's defect in a different test: the headcount is the size of the whole table, so a
+        // neighbouring thread exiting between the two reads lands the count BELOW what the
+        // assertion demands and blames this embryo for it. `thread_present` on the Tid this test
+        // created is immune by construction, and it is strictly the stronger claim: the old
+        // "the TCB's table slot must be freed" could pass with the embryo still in the table, as
+        // long as somebody else's thread left in the same window. Fourth appearance of this fix;
+        // see notes/load-sensitive-assertions.md and `thread_present`'s own doc comment.
+        assert!(
+            crate::sched::thread_present(tid),
             "the embryo should be in the table before reclaim"
         );
         assert!(
@@ -3255,9 +3276,8 @@ mod tests {
         crate::sched::reclaim_region(region)
             .expect("reclaim a region whose only object is an unstarted TCB");
 
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before,
+        assert!(
+            !crate::sched::thread_present(tid),
             "the TCB's table slot must be freed by reclaim"
         );
         assert_eq!(
@@ -3839,7 +3859,7 @@ mod tests {
 
     /// Every thread stack has a guard page.
     ///
-    /// A thread stack is 16 KiB (an eighth of the boot stack's), and threads are where deep
+    /// A thread stack is 24 KiB (under half the boot stack's), and threads are where deep
     /// recursion actually happens. Milestone 3's stack overflow hung the machine for 150
     /// seconds; a guard page turns the same bug into an instant fault naming the exact byte.
     #[test_case]
@@ -4124,30 +4144,44 @@ mod tests {
     /// the time this test runs the region exists and steady state is flat.
     #[test_case]
     fn kernel_stacks_do_not_touch_the_frame_allocator_in_steady_state() {
-        use core::sync::atomic::{AtomicU64, Ordering};
-        static REAPED: AtomicU64 = AtomicU64::new(0);
+        // Each spawn is followed to its own reap by name. This used to take `thread_count()` as a
+        // baseline and spin `while thread_count() > baseline { yield_now() }`, which is the whole
+        // family in three lines: the headcount is moved by every other test's teardown, so the
+        // loop could exit at once (a neighbour reaping first) and leave this batch's stacks in
+        // flight, or never exit at all (a neighbour's thread outliving the batch) with no clock to
+        // stop it, spinning until the harness's 90 s ceiling with a message about kernel stacks.
+        // `thread_present` on the Tid each spawn returned asks the narrow question, and `wait_for`
+        // supplies the bound the yield loop never had.
+        let settle = |tid| {
+            assert!(
+                wait_for(|| !crate::sched::thread_present(tid)),
+                "a spawned thread was never reaped, so the frame count below would be read \
+                 mid-teardown"
+            );
+        };
 
-        let baseline = super::thread_count();
         // Warm up: reach steady state (first spawn after boot may still be settling VAs).
         for _ in 0..2 {
-            super::spawn(|| {}).expect("warmup spawn");
-            while super::thread_count() > baseline {
-                super::yield_now();
-            }
+            settle(super::spawn(|| {}).expect("warmup spawn"));
         }
 
         let free_before = crate::memory::stats().unwrap().free();
-        REAPED.store(0, Ordering::SeqCst);
         for _ in 0..6 {
-            super::spawn(|| {}).expect("spawn failed");
-            while super::thread_count() > baseline {
-                super::yield_now();
-            }
+            settle(super::spawn(|| {}).expect("spawn failed"));
         }
-        assert_eq!(
-            crate::memory::stats().unwrap().free(),
-            free_before,
-            "six threads came and went and the frame allocator's count moved: a kernel stack              is still drawing from the allocator instead of the kernel budget",
+
+        // `>=`, not `==`, and the direction is the argument, the same one the reaper test's frame
+        // half carries. The defect this guards spends allocator frames on kernel stacks, which
+        // drives `free` DOWN and keeps it there, so the wait times out and fails exactly as
+        // before. A neighbour's late teardown landing in this window can only FREE frames, pushing
+        // `free` ABOVE the baseline, and equality additionally demanded that the rest of the
+        // machine hold still for the duration, which is not a property this test is responsible
+        // for. See notes/load-sensitive-assertions.md.
+        assert!(
+            wait_for(|| crate::memory::stats().unwrap().free() >= free_before),
+            "six threads came and went and the frame allocator lost {} frames: a kernel stack is \
+             still drawing from the allocator instead of the kernel budget",
+            free_before.saturating_sub(crate::memory::stats().unwrap().free()),
         );
     }
 

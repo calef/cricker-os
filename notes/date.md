@@ -134,7 +134,10 @@ Named here rather than in a tracker, next to the feature.
   manifest, so typing `date` at the shell runs it (`Human`, UTC, no provenance line). The three
   register selectors are not reachable from there: `ArgSpec` is `Required`/`Forbidden` with no
   position or arity, and growing it is deferred until a program wants both an argument and a file.
-  See notes/program-manifest.md.
+  See notes/program-manifest.md. **Recorded-accepted by milestone 94's sweep** (2026-08-04): the
+  deferral carries its own trigger, and a manifest grammar grown ahead of a program that needs it
+  would be a mechanism with no requirement. An audit may pass over it; see
+  notes/untracked-work-sweep.md.
 - **The clock is init's to endow, and the shell cannot hand one on.** The interactive boot starts the
   clock service and hands *init* the page read-only, so `date` at the prompt prints a real time; but
   the grant comes from `Prog::Date`'s manifest rather than from the command line, because there is no

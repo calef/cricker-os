@@ -42,6 +42,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   which four of these conventions `script/lint` checks. The jargon half cannot be checked:
   `linedisc` would have passed every rule.
 
+- [The untracked-work sweep, and what each finding became](untracked-work-sweep.md): milestone 94's
+  one-time read of the tree for work somebody had identified and never given a home, and the state
+  each finding ended in. Twelve became milestones 100 through 111, three folded into blocks that
+  already owned them, ten were already tracked, and nine are recorded-accepted and blessed where
+  they sit. Also why `git grep -w TODO` is 82% false positives here, which is what shaped the lint,
+  and an honest BUGS entry about the record that had to be re-derived because it lived in a pull
+  request body.
+
 - [Handing a session over](session-handoff.md): what a fresh context needs to pick this up:
   the standing autonomy grant, the merge and lane discipline, which gates are cheap and which
   are slow, and the traps that have cost real time more than once (leaked QEMU, fixed-iteration

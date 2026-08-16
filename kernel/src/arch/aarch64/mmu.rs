@@ -1309,7 +1309,7 @@ mod tests {
         const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
 
         // A high-half address well away from the direct map: physical 0xff00_0000 is not RAM
-        // (RAM is 0x4000_0000..0x4800_0000), so nothing is mapped here.
+        // (RAM is 0x4000_0000..0x5000_0000), so nothing is mapped here.
         let test_va = mmu::KERNEL_VA_BASE | 0xff00_0000;
         assert_eq!(
             mmu::translate(test_va),

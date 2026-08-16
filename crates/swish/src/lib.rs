@@ -556,13 +556,12 @@ pub fn write_num(mut v: u64, out: &mut dyn FnMut(&[u8])) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Untimed {
     /// `time` with nothing after it. There is no command to run, so there is nothing to time.
+    ///
+    /// The only variant, and it is a usage error rather than a capability one. `NoClock` and
+    /// `UnknownClock` lived here until §72: they refused to measure on a machine whose wall clock
+    /// was absent or unbelieved, which turned out to gate nothing, because a duration is two reads
+    /// of an ambient counter. A `time` that cannot be refused has no other refusals to name.
     NothingToTime,
-    /// This shell was granted no clock page, so it cannot read a time at all. Init decides that, and
-    /// a shell in a wiring with no clock service is the ordinary case rather than a fault.
-    NoClock,
-    /// This shell holds a clock and the machine has never published a time it believes
-    /// (`clock_proto::state::UNKNOWN`). The clock is there; what it says is "I do not know".
-    UnknownClock,
 }
 
 /// Write why a line was not timed. The two clock sentences are `date`'s with the program name
@@ -571,12 +570,6 @@ pub enum Untimed {
 pub fn write_untimed(r: Untimed, out: &mut dyn FnMut(&[u8])) {
     out(match r {
         Untimed::NothingToTime => b"  time: name a command to time: time <command>\n".as_slice(),
-        Untimed::NoClock => {
-            b"  time: the time is unknown: this shell holds no clock capability\n".as_slice()
-        }
-        Untimed::UnknownClock => {
-            b"  time: the time is unknown: the machine has no clock it believes\n".as_slice()
-        }
     });
 }
 
@@ -639,19 +632,15 @@ pub fn write_duration(nanos: u64, out: &mut dyn FnMut(&[u8])) {
 /// consumed. That is a scheduler fact and it is unqueried today; if it arrives it is another row
 /// here, not another command.
 ///
-/// `stepped` is true when the clock's generation changed while the command ran, which means the
-/// number is a difference of two wall-clock readings that are not on the same clock. Saying so is
-/// the whole reason the shell reads `clock_proto`'s generation rather than just the offset: without
-/// it, a clock corrected mid-command would silently move the answer, and a stopwatch that is
-/// sometimes wrong and never says so is worse than no stopwatch.
-pub fn write_timing(nanos: u64, stepped: bool, out: &mut dyn FnMut(&[u8])) {
+/// The number is a difference of two reads of the monotonic counter (§72), so there is nothing to
+/// disclaim: the old signature took a `stepped` flag because a wall clock corrected mid-command
+/// made the answer a difference of readings on two different clocks, and a stopwatch that is
+/// sometimes wrong and never says so is worse than no stopwatch. A monotonic counter cannot be
+/// stepped, so that whole failure mode, and the flag that reported it, are gone.
+pub fn write_timing(nanos: u64, out: &mut dyn FnMut(&[u8])) {
     out(b"  time: real ");
     write_duration(nanos, out);
     out(b"\n");
-    if stepped {
-        out(b"  time: the wall clock was stepped while that ran, so this is what the clock\n");
-        out(b"        says elapsed rather than what did\n");
-    }
 }
 
 /// Write what a builtin had to say. Every line is a statement about a name or a capability, never
@@ -1912,40 +1901,34 @@ mod tests {
         assert_eq!(shown_ns(7), "0.007 us");
     }
 
-    /// **A stepped clock is said out loud**, which is why the shell reads the generation and not just
-    /// the offset.
+    /// **A timing line is one line and says `real`**, and after §72 there is no second line it can
+    /// grow: the stepped-clock disclaimer went with the clock, because a monotonic counter cannot
+    /// be stepped.
     #[test]
-    fn a_timing_line_says_when_the_clock_moved_under_it() {
-        let steady = shown(|o| write_timing(4_213_000, false, o));
-        assert_eq!(steady, "  time: real 4.213 ms\n");
+    fn a_timing_line_reports_the_duration_and_nothing_else() {
+        let line = shown(|o| write_timing(4_213_000, o));
+        assert_eq!(line, "  time: real 4.213 ms\n");
         // `real` is Unix's word, and the absence of `user` and `sys` is the honest part: nothing in
         // this kernel is asked what a thread spent.
-        assert!(!steady.contains("user"));
-        assert!(!steady.contains("sys"));
-
-        let stepped = shown(|o| write_timing(4_213_000, true, o));
-        assert!(stepped.starts_with(&steady), "{stepped}");
-        assert!(stepped.contains("stepped while that ran"), "{stepped}");
+        assert!(!line.contains("user"));
+        assert!(!line.contains("sys"));
+        // The failure mode this used to disclaim is now unreachable rather than tolerated.
+        assert!(!line.contains("stepped"));
     }
 
-    /// **The two clock refusals are `date`'s sentences**, and that is deliberate rather than a
-    /// coincidence to be tidied: they are the same two causes and they call for the same two fixes,
-    /// so a person who has met one has met the other.
+    /// **The one refusal left is a usage error**, not a capability one. `time` reads an ambient
+    /// counter (§72), so there is no machine on which it must decline to measure.
     #[test]
-    fn an_untimed_line_says_which_of_the_three_reasons_it_was() {
+    fn an_untimed_line_says_the_one_reason_it_can_be() {
         let said = |r| shown(|o| write_untimed(r, o));
-        assert!(said(Untimed::NoClock).contains("holds no clock capability"));
-        assert!(said(Untimed::UnknownClock).contains("no clock it believes"));
         assert!(said(Untimed::NothingToTime).contains("name a command to time"));
-        // Every one of them is attributed, because a bare sentence at a prompt reads as the
-        // command's complaint rather than the shell's.
-        for r in [
-            Untimed::NoClock,
-            Untimed::UnknownClock,
-            Untimed::NothingToTime,
-        ] {
-            assert!(said(r).starts_with("  time: "), "{:?}", said(r));
-        }
+        // Attributed, because a bare sentence at a prompt reads as the command's complaint rather
+        // than the shell's.
+        assert!(
+            said(Untimed::NothingToTime).starts_with("  time: "),
+            "{:?}",
+            said(Untimed::NothingToTime)
+        );
     }
 
     // ---- help ----
