@@ -183,6 +183,17 @@ holding a granted port cannot demonstrate about itself: 4444 is outside the gran
    This is also the end-to-end proof that a datagram's source endpoint survives the socket contract,
    which is why that leg replaced the stack half's hand-rolled assertion of the same thing.
 
+**The finding worth telling somebody about, because it is the one that could have produced a false
+green.** Slirp is on the same hub, and it forwards a group-addressed datagram out to the *host's
+real network*. On 2026-08-16 the gate's injected browse for `_adisk._tcp.local` therefore left the
+laptop, and **the reference router answered it**: a 212-byte response from 192.168.8.1, NATed back
+onto the virtual network by slirp as a unicast to the spoofed source, carrying the five records
+notes/mdns.md's capture describes. Those are the records this gate expects, because the expectations
+were captured from that router. A prober that checked whichever answer arrived first would have
+passed on the GL-BE9300's own bytes while the guest said nothing at all, on the developer's network
+and nowhere else. So the prober takes only datagrams whose source is the guest, and the guest's
+announcement must speak from the address its own A record advertises.
+
 **The finding that cost the most to learn**: smoltcp fills its neighbour cache **only from an ARP
 packet whose target is an address the interface holds** (`process_arp` returns early otherwise, in
 0.13.1), and `dispatch` **drops** the datagram that triggers a neighbour resolution rather than

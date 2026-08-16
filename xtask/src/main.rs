@@ -1690,13 +1690,16 @@ fn probe_multicast(
                     dg.dst_port
                 );
             }
-            // **Only the guest's answers count**, and this filter is not defensive tidiness: it was
-            // measured. Slirp is on the same hub, and it forwards a group-addressed datagram out to
-            // the host's real network, where the developer's own machine runs an mDNS responder
-            // that answers it; slirp then NATs that answer back onto the virtual network as a
-            // unicast to the spoofed source. So an injected query provokes TWO responses, one of
-            // them from macOS, and a gate that checked whichever arrived first could go green on a
-            // stranger's records with the guest saying nothing at all.
+            // **Only the guest's answers count**, and this filter is not defensive tidiness: it
+            // was measured, and by the funniest possible packet. Slirp is on the same hub, and it
+            // forwards a group-addressed datagram out to the host's REAL network; the injected
+            // browse for `_adisk._tcp.local` therefore reached the developer's own segment, where
+            // **the reference router answered it** (192.168.8.1, the GL-BE9300 this whole
+            // milestone is measured against), and slirp NATed that answer back onto the virtual
+            // network as a unicast to the spoofed source. So one injected query provokes two
+            // responses, and the wrong one carries *exactly the records this gate expects*,
+            // because the expectations were captured from that very router. Without this filter
+            // the gate could go green on the router's answer while the guest said nothing at all.
             if let Some(guest) = guest_ip
                 && dg.src_ip != guest
             {
