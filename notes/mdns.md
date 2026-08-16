@@ -107,8 +107,14 @@ speaking QEMU's frame protocol (4-byte big-endian length, then the raw ethernet 
 is the multicast twin of milestone 107's inbound prober: constructed before the child so the
 runner inherits `NIFE_MCAST_PORT`, passive for the whole boot, reported after the suite.
 
-The exchange, driven by the `TEST_UDP_MDNS` client (`user/src/socket_test_client.rs`) against a
-stack spawned with `udp_bind_grant(5353, 5353)`:
+The exchange rides **inside milestone 107's accept test**
+(`a_host_process_connects_to_the_guest_and_is_answered`, both ISAs), after its TCP rounds, rather
+than in a spawn of its own: a net server's spawn is ~154 frames nothing ever reclaims, and a
+twelfth one died as `Unmappable(OutOfFrames)` in an unrelated later test, the exact failure
+notes/net.md's memory receipt predicted. The fold has a side benefit: that spawn's grant word
+carries `listen_grant(7778, 7778) | udp_bind_grant(5353, 5353)`, so the *composed* packing is what
+the machine exercises, not one half alone. The mDNS half
+(`udp_mdns_half` in `user/src/socket_test_client.rs`):
 
 1. The client asks to bind a port outside the grant: refused as **authority** (`LISTEN_DENIED`).
    5353 binds; a second bind of 5353 collides (`LISTEN_IN_USE`).

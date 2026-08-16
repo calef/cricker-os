@@ -22,13 +22,16 @@
 //!     not the guest as a client. A port outside the stack's listen grant is refused as a matter of
 //!     authority, the granted one binds and is exclusive, and then a *host* process connects to it
 //!     through QEMU's `hostfwd` twice, which proves the listener re-arms.
-//!   - `TEST_UDP_MDNS`: **the mDNS-shaped exchange** (milestone 55's stack half). The UDP twin of
-//!     the accept test's grant half (a fixed port outside the UDP bind grant is refused, 5353
-//!     binds, and is exclusive), then the multicast round trip slirp cannot carry on its own: the
-//!     guest sends to 224.0.0.251 (the trigger), xtask's multicast prober injects a datagram to
-//!     the group through the hub the runner wires beside slirp, and the guest proves the joined
-//!     group receives, that the source endpoint arrived with it, and that it can answer the group
-//!     with bytes it composed.
+//!     The same spawn then carries **the mDNS-shaped exchange** (milestone 55's stack half),
+//!     because a second net server does not fit the aarch64 boot (the memory receipt in
+//!     notes/net.md; this lane re-measured it: an eleventh spawn died as
+//!     `Unmappable(OutOfFrames)` in an unrelated later test). The UDP twin of the grant half (a
+//!     fixed port outside the UDP bind grant is refused, 5353 binds, and is exclusive, which
+//!     incidentally proves the two grant halves compose in one word on the machine), then the
+//!     multicast round trip slirp cannot carry on its own: the guest sends to 224.0.0.251 (the
+//!     trigger), xtask's multicast prober injects a datagram to the group through the hub the
+//!     runner wires beside slirp, and the guest proves the joined group receives, that the source
+//!     endpoint arrived with it, and that it can answer the group with bytes it composed.
 //!
 //! On success it reports `OK`; any failure reports a stage code, so the kernel test fails loudly
 //! with a hint rather than hanging.
@@ -60,7 +63,6 @@ pub const TEST_TCP_ECHO: u64 = 2;
 pub const TEST_TCP_REOPEN: u64 = 3;
 pub const TEST_UDP_TFTP: u64 = 4;
 pub const TEST_TCP_ACCEPT: u64 = 5;
-pub const TEST_UDP_MDNS: u64 = 6;
 const OK: u64 = 1;
 /// Reported when an exchange could not be completed **for an environmental reason** rather than a
 /// defect in our stack: today only the real-DNS check, whose upstream is the host's resolver. The
@@ -492,6 +494,13 @@ fn tcp_accept_inbound() -> ! {
     serve_one_inbound(0xE070);
 
     let _ = call(STACK, req(OP_CLOSE, LISTEN_SID), 0);
+
+    // The mDNS half rides in this same spawn (milestone 55's stack half), because a second net
+    // server does not fit the aarch64 boot: the spawn is ~154 frames nothing ever reclaims, and
+    // this lane measured the eleventh one dying as `Unmappable(OutOfFrames)` in an unrelated later
+    // test, the exact failure notes/net.md's memory receipt predicted. Milestone 107 folded its
+    // grant half for the same reason; the stage codes stand in for the separate test's name.
+    udp_mdns_half();
     done(OK);
 }
 
@@ -525,13 +534,14 @@ fn serve_one_inbound(base: u64) {
     }
 }
 
-/// **The mDNS-shaped gate: a granted fixed port, and the joined group receives** (milestone 55's
-/// stack half). What it proves, in order, is exactly the list notes/mdns.md said the responder was
-/// missing:
+/// **The mDNS-shaped half: a granted fixed port, and the joined group receives** (milestone 55's
+/// stack half; runs inside the accept test's spawn, see `tcp_accept_inbound`). What it proves, in
+/// order, is exactly the list notes/mdns.md said the responder was missing:
 ///
 /// - **The UDP bind grant is an authority.** A port outside it is `LISTEN_DENIED` (no retry helps),
 ///   5353 binds because the spawn granted it, and a second bind on the same port collides. The
-///   accept test's grant half, for UDP.
+///   grant half's shape, for UDP, and since this spawn's word also carries the TCP listen grant
+///   the accept half just spent, the machine is exercising the composed word, not one half alone.
 /// - **Multicast SENDTO reaches the wire.** The trigger datagram to 224.0.0.251 is only useful
 ///   because the host-side prober *receives* it off the hub, so its arrival is the measurement the
 ///   note asked for rather than an unobserved `REP_OK`.
@@ -545,23 +555,25 @@ fn serve_one_inbound(base: u64) {
 /// them, closing the loop from outside. Retried once: every hop is a lossless local pipe, so the
 /// only miss worth covering is the prober attaching late, and each attempt already waits out the
 /// server's full 15 s bounded RECV.
-fn udp_mdns() -> ! {
-    // The authority half, before any frame exists: a refused bind needs no bytes.
-    match call(STACK, req(OP_BIND_UDP, 0), MDNS_DENIED_PORT).0 {
+///
+/// The bound socket lives at `CONN_SID`, whose frame the accept half already attached (a closed
+/// socket id keeps its frame; that is the reopen test's contract). `LISTEN_SID` is the spare the
+/// refusal checks use, which need no frame because they fail before any byte crosses.
+fn udp_mdns_half() {
+    match call(STACK, req(OP_BIND_UDP, LISTEN_SID), MDNS_DENIED_PORT).0 {
         LISTEN_DENIED => {}
         LISTEN_GRANTED => done(0xE080), // bound a port nothing granted: the whole point, lost
         _ => done(0xE081),
     }
 
-    attach_frame(0);
-    match call(STACK, req(OP_BIND_UDP, 0), MDNS_PORT as u64).0 {
+    match call(STACK, req(OP_BIND_UDP, CONN_SID), MDNS_PORT as u64).0 {
         LISTEN_GRANTED => {}
         LISTEN_DENIED => done(0xE082), // the spawn granted the wrong range
         _ => done(0xE083),
     }
 
     // Exclusive, the property that makes a fixed port grantable rather than merely a number.
-    match call(STACK, req(OP_BIND_UDP, 1), MDNS_PORT as u64).0 {
+    match call(STACK, req(OP_BIND_UDP, LISTEN_SID), MDNS_PORT as u64).0 {
         LISTEN_IN_USE => {}
         LISTEN_GRANTED => done(0xE084), // two sockets on one fixed port
         _ => done(0xE085),
@@ -574,10 +586,10 @@ fn udp_mdns() -> ! {
             w8(FRAME_VA + OFF_PAYLOAD + i as u64, b);
         }
         set_dst(MDNS_IP, MDNS_PORT);
-        if call(STACK, req(OP_SENDTO, 0), MDNS_TRIGGER.len() as u64).0 != REP_OK {
+        if call(STACK, req(OP_SENDTO, CONN_SID), MDNS_TRIGGER.len() as u64).0 != REP_OK {
             done(0xE086); // the multicast send itself failed inside the stack
         }
-        let (rlen, _) = call(STACK, req(OP_RECV, 0), 0);
+        let (rlen, _) = call(STACK, req(OP_RECV, CONN_SID), 0);
         if rlen != REP_ERR && rlen != 0 {
             got = rlen;
             break;
@@ -614,12 +626,11 @@ fn udp_mdns() -> ! {
         w8(FRAME_VA + OFF_PAYLOAD + i as u64, b);
     }
     set_dst(MDNS_IP, MDNS_PORT);
-    if call(STACK, req(OP_SENDTO, 0), MDNS_ANSWER.len() as u64).0 != REP_OK {
+    if call(STACK, req(OP_SENDTO, CONN_SID), MDNS_ANSWER.len() as u64).0 != REP_OK {
         done(0xE08C);
     }
 
-    let _ = call(STACK, req(OP_CLOSE, 0), 0);
-    done(OK);
+    let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);
 }
 
 /// Run the selected client exchange. Entered from `net_stack`'s `_start` when the entry role is nonzero.
@@ -630,7 +641,6 @@ pub fn run(test: u64) -> ! {
         TEST_TCP_ECHO => tcp_echo(),
         TEST_TCP_REOPEN => tcp_reopen(),
         TEST_TCP_ACCEPT => tcp_accept_inbound(),
-        TEST_UDP_MDNS => udp_mdns(),
         _ => done(0xE0FF),
     }
 }

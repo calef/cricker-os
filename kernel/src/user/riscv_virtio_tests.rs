@@ -27,7 +27,6 @@ const NET_TEST_TCP_ECHO: u64 = 2;
 const NET_TEST_TCP_REOPEN: u64 = 3;
 const NET_TEST_UDP_TFTP: u64 = 4;
 const NET_TEST_TCP_ACCEPT: u64 = 5;
-const NET_TEST_UDP_MDNS: u64 = 6;
 /// The one port the inbound gate is granted (milestone 107); the runners forward a host port to
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
 /// other and never hold it at once.
@@ -531,15 +530,19 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
 /// outside the stack's grant is refused as a matter of authority, the granted one binds and is
 /// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
-/// while the guest accepts, reads and answers each. See the aarch64 twin for the shape, for why
-/// both claims share one exchange, and for what the stage codes mean.
+/// while the guest accepts, reads and answers each. **The mDNS-shaped exchange then rides in the
+/// same spawn** (milestone 55's stack half): the UDP bind grant refuses and admits, the joined
+/// group receives xtask's injected datagram with its spoofed source intact, and the guest answers
+/// the group. See the aarch64 twin for the shape, for why all of it shares one exchange (a net
+/// server's spawn is frames nothing reclaims), and for what the stage codes mean.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
     let Some(report) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ACCEPT,
         false,
-        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT)
+            | socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -547,36 +550,11 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
-        "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
-         port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
-         which is the host side",
-    );
-}
-
-/// **The mDNS-shaped exchange on the second ISA** (milestone 55's stack half): a fixed UDP port
-/// outside the spawn's `udp_bind_grant` is refused as a matter of authority, 5353 binds and is
-/// exclusive, a datagram xtask's multicast prober injects to 224.0.0.251 through the runner's hub
-/// is accepted because the stack joined the group, its spoofed source endpoint rides back on
-/// RECV, and the guest's composed answer reaches the prober. See the aarch64 twin for the shape
-/// and for what the stage codes mean.
-#[test_case]
-fn the_stack_carries_an_mdns_shaped_exchange() {
-    let Some(report) = virtio_service::start_net_stack(
-        net_stack_image(),
-        NET_TEST_UDP_MDNS,
-        false,
-        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
-    ) else {
-        crate::println!("    (no virtio-net device attached; skipping)");
-        return;
-    };
-    let verdict = sched::ipc_recv(report)[0];
-    assert_eq!(
-        verdict, NET_CLIENT_OK,
-        "the mDNS-shaped exchange failed (client code {verdict:#x}); 0xE080 means a port outside \
-         the UDP bind grant was bound anyway, 0xE087 means nothing addressed to the joined group \
-         arrived (multicast RX acceptance, or the host side: NIFE_MCAST_PORT and xtask's \
-         multicast prober), 0xE08A/0xE08B mean the source endpoint was lost",
+        "the guest did not serve the inbound exchange (client code {verdict:#x}); 0xE050/0xE080 \
+         mean a port outside a grant was bound anyway, 0xE060 or 0xE070 means nobody ever \
+         connected (the host side), 0xE087 means nothing addressed to the joined multicast group \
+         arrived (RX acceptance, or NIFE_MCAST_PORT and xtask's multicast prober), 0xE08A/0xE08B \
+         mean the source endpoint was lost",
     );
 }
 
