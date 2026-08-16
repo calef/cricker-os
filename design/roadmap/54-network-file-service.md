@@ -1,6 +1,12 @@
 # 54. A network file service a Mac can actually mount
 
-**Status: NOT-STARTED.**
+**Status: PARTIAL.** The finish line's first half fell 2026-08-15 (pull request #210): a real Mac's
+own mount_smbfs mounted a share served by nife's userspace SMB adapter over its own TCP stack,
+read files byte-correct, and remounted; `crates/smb_proto` carries the wire format host-tested,
+and the one correction worth reading is the SMB1 wildcard negotiate a real macOS opens with,
+captured and pinned as a test. What remains: the share is a fixture behind a `Share` trait (the
+fs_proto-backed share is in a lane), read-only, guest-auth SMB 2.1 with no signing. The wire
+decisions are listed in the PR for review, being the expensive category.
 
 **Gate: NONE.** The protocol question is settled (SMB, because calef's router already serves
 Time Machine over it) and what is left is an adapter holding one directory capability and one
