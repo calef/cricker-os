@@ -468,6 +468,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdns_config"
+version = "0.1.0"
+dependencies = [
+ "mdns_proto",
+]
+
+[[package]]
 name = "mdns_proto"
 version = "0.1.0"
 
@@ -846,6 +853,8 @@ dependencies = [
  "grant_plan",
  "line_editor",
  "manual",
+ "mdns_config",
+ "mdns_proto",
  "nifefs",
  "ntp_proto",
  "sink_proto",
@@ -943,6 +952,7 @@ dependencies = [
  "gfx_proto",
  "gpt",
  "manual",
+ "mdns_config",
  "measured_boot",
  "nifefs",
  "smb_proto",

@@ -31,9 +31,14 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
 /// other and never hold it at once.
 const NET_LISTEN_PORT: u16 = 7778;
-/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
-/// 5353.
+/// The fixed UDP ports the mDNS gate is granted (milestone 55): RFC 6762's 5353, which
+/// `mdns_responder` holds for the whole run, and its neighbour, which `socket_test_client` uses to
+/// prove that a granted port binds and is exclusive. See the aarch64 twin for why they are two.
 const NET_MDNS_PORT: u16 = 5353;
+const NET_MDNS_GRANT_TOP: u16 = 5354;
+/// Queries the responder must answer before reporting OK, matching xtask's multicast prober: one
+/// multicast browse and one legacy-unicast query.
+const MDNS_QUERIES: u64 = 2;
 const NET_CLIENT_OK: u64 = 1;
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
@@ -541,6 +546,12 @@ fn smb_server_image() -> &'static [u8] {
     program("smb_server").expect("no smb_server program in the initrd archive")
 }
 
+/// The `mdns_responder` program's ELF bytes (milestone 55): the discovery half, a third client of
+/// the same stack. See the aarch64 twin.
+fn mdns_responder_image() -> &'static [u8] {
+    program("mdns_responder").expect("no mdns_responder program in the initrd archive")
+}
+
 /// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
 /// outside the stack's grant is refused as a matter of authority, the granted one binds and is
 /// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
@@ -591,15 +602,17 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // Taken before `fs` is handed to the spawn below: the write verifier needs to know whether
     // there was a filesystem at all, and the spawn consumes the capability.
     let had_fs = fs.is_some();
-    let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
+    let Some((report, smb_report, mdns_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
+        mdns_responder_image(),
         NET_TEST_TCP_ACCEPT,
         NET_LISTEN_PORT,
         NET_LISTEN_PORT + 1,
         2,
+        MDNS_QUERIES,
         fs,
-        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_GRANT_TOP),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -609,9 +622,8 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         verdict, NET_CLIENT_OK,
         "the guest did not serve the inbound exchange (client code {verdict:#x}); 0xE050/0xE080 \
          mean a port outside a grant was bound anyway, 0xE060 or 0xE070 means nobody ever \
-         connected (the host side), 0xE087 means nothing addressed to the joined multicast group \
-         arrived (RX acceptance, or NIFE_MCAST_PORT and xtask's multicast prober), 0xE08A/0xE08B \
-         mean the source endpoint was lost",
+         connected (the host side), 0xE082/0xE084 mean the UDP bind grant admitted or refused the \
+         wrong port",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(
@@ -620,6 +632,14 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          listen grant, 0xE120 means no SMB connection arrived (the runner's \
          NIFE_SMB_HOSTFWD_PORT hostfwd, or the prober), 0xE121 a connection with no SMB on it, \
          0xE130 an arg2 share mode nobody defined",
+    );
+    let verdict = sched::ipc_recv(mdns_report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the mDNS responder did not answer the injected queries (code {verdict:#x}); 0xE20L is a \
+         configuration document wrong at line L, 0xE220 no UDP bind grant, 0xE221 the port already \
+         held, 0xE240 nothing ever asked (RX acceptance, or NIFE_MCAST_PORT and the prober). See \
+         the aarch64 twin",
     );
     // Before the release: the verifier spawns a fresh FS client, and reclaiming the net
     // service's regions is the last thing this test should do.

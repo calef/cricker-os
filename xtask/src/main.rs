@@ -999,18 +999,22 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         }
     };
 
+    // **The suite's verdict is collected, not returned early.** An early return here skipped every
+    // prober's report exactly when a guest-side assertion had failed, which is the run where their
+    // findings matter most: milestone 55's responder lane spent two five-minute suites learning
+    // nothing, because the guest said "nobody ever asked me anything" and the host side, which
+    // knew precisely why it had stopped asking, was never given the chance to say so.
+    let mut child_ok = false;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    return false;
-                }
+                child_ok = status.success();
                 break;
             }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("waiting for the test child failed: {e}");
-                return false;
+                break;
             }
         }
         referee.poll();
@@ -1022,7 +1026,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let inbound = prober.report();
     let multicast = mcast.report();
     let smb = smb_prober.report();
-    scanout && inbound && multicast && smb
+    child_ok && scanout && inbound && multicast && smb
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1406,40 +1410,58 @@ fn probe_inbound(
     }
 }
 
-/// The multicast exchange's three payloads, which must match `user/src/socket_test_client.rs`
-/// (`MDNS_TRIGGER`/`MDNS_QUERY`/`MDNS_ANSWER` there). The trigger is what the guest multicasts
-/// first; its arrival HERE, off the raw wire, is the proof that a multicast SENDTO leaves the
-/// guest at all. The query is what this prober injects to the group, and the answer is what the
-/// guest composes back, a different string for the inbound gate's reason: an echo would pass even
-/// if the guest were reflecting bytes.
-const MDNS_TRIGGER: &[u8] = b"nife-mdns?";
-const MDNS_QUERY: &[u8] = b"nife-mdns-in";
-const MDNS_ANSWER: &[u8] = b"nife-mdns-out";
-/// RFC 6762's group and port, and the ethernet address IPv4 multicast maps onto (01:00:5e plus
-/// the group's low 23 bits).
+/// **The mDNS gate's constants.** RFC 6762's group and port, the ethernet address IPv4 multicast
+/// maps onto (01:00:5e plus the group's low 23 bits), and the spoofed source this prober injects
+/// from. The address is on slirp's subnet and held by nothing, so a datagram the guest sends back
+/// to it can only be a reply to what arrived; the MAC is locally administered and never claimed.
 const MDNS_GROUP: [u8; 4] = [224, 0, 0, 251];
 const MDNS_PORT: u16 = 5353;
 const MDNS_GROUP_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb];
-/// The injected frame's spoofed source. The address is on slirp's subnet but held by nothing, so
-/// when the guest asserts it back from its RECV header the value can only have come from the
-/// datagram; the source port is 5353 because that is the RFC 6762 §6.7 case whose semantics the
-/// eventual responder will branch on. The MAC is locally administered and never claimed by ARP.
 const MDNS_PROBER_IP: [u8; 4] = [10, 0, 2, 99];
 const MDNS_PROBER_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x99, 0x99, 0x99];
+/// The source port and transaction id of the **legacy** query. Not 5353, which is the whole point:
+/// RFC 6762 §6.7 makes a querier whose source port is something else a one-shot resolver that
+/// cannot receive multicast, so the response must come back **unicast to this port** with the id
+/// echoed, the question repeated and every TTL capped at 10. A responder that ignored the source
+/// endpoint would answer the group and this leg would time out.
+const MDNS_LEGACY_PORT: u16 = 5399;
+const MDNS_LEGACY_ID: u16 = 0x4321;
+/// The service type the gate browses. `_adisk._tcp` is the one that matters: its TXT record is what
+/// puts a server in a Mac's backup-disk list, and it is the record with content worth asserting.
+const MDNS_BROWSE: &str = "_adisk._tcp.local";
 
-/// **The host side of the mDNS gate** (milestone 55's stack half): the peer on the frame-level
-/// hub the runner wires beside slirp when `NIFE_MCAST_PORT` is set.
+/// **The guest's own configuration document**, so the gate's expectations and the responder's
+/// behaviour have one source. Editing `user/mdns_responder.conf` moves both; a value asserted here
+/// as a literal would be a second copy of a measurement.
+const RESPONDER_CONFIG: &str = include_str!("../../user/mdns_responder.conf");
+
+/// **The host side of the mDNS gate** (milestone 55): the peer on the frame-level hub the runner
+/// wires beside slirp when `NIFE_MCAST_PORT` is set.
 ///
 /// It exists because slirp cannot carry multicast in either direction, so no exchange through it
-/// can prove the one thing the `multicast` feature was enabled for: that a datagram addressed to
-/// a *group*, not to the guest, is accepted once the guest has joined. This prober speaks QEMU's
+/// can prove the thing the `multicast` feature was enabled for: that a datagram addressed to a
+/// *group*, not to the guest, is accepted once the guest has joined. This prober speaks QEMU's
 /// socket-netdev protocol (each ethernet frame prefixed with a 4-byte big-endian length, over one
 /// TCP connection) and therefore sees and injects raw frames, below every slirp limitation.
 ///
+/// **What it proves, which is more than carriage** (milestone 55's responder lane; the stack half
+/// traded marker payloads and proved protocol nowhere). It waits for the responder's unsolicited
+/// announcement, asks it a **real DNS question** twice, and decodes both answers with a parser of
+/// its own:
+///
+/// 1. A multicast browse for `_adisk._tcp.local` must come back to the group with the PTR in the
+///    answer section, the instance's SRV, TXT and the host's A riding as additionals (RFC 6763
+///    §12.1), cache-flush set on the three this responder owns and never on the shared PTR.
+/// 2. A **legacy** query from an ephemeral source port must come back **unicast to that port**,
+///    with the id echoed, the question repeated, everything in the answer section and every TTL
+///    capped at 10 (RFC 6762 §6.7).
+///
+/// And the record contents are checked against `user/mdns_responder.conf`, so what is asserted is
+/// that the machine advertises what it was configured to advertise.
+///
 /// Same shape and lifecycle as [`InboundProber`]: constructed before the child so the runner
 /// inherits the port, running for the whole boot because nothing here knows when the mDNS test
-/// starts, stopped and reported after the suite. It is passive until the guest's trigger arrives,
-/// so the other net tests never see it.
+/// starts, stopped and reported after the suite. It is passive until the guest announces itself.
 struct MulticastProber {
     arch: String,
     port: Option<u16>,
@@ -1477,10 +1499,10 @@ impl MulticastProber {
         }
     }
 
-    /// Stop listening, and say whether the whole exchange happened: the guest's own multicast
-    /// send seen raw on the wire, the injected group-addressed query, and the guest's composed
-    /// answer back to the group. The guest's assertion covers what it received; this covers what
-    /// actually crossed the wire.
+    /// Stop listening, and say whether the whole exchange happened: the guest's announcement seen
+    /// raw on the wire, both injected queries answered, and both answers carrying the records
+    /// `user/mdns_responder.conf` describes. The guest's own verdict covers that it answered
+    /// something; this covers what it said.
     fn report(mut self) -> bool {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let arch = &self.arch;
@@ -1491,9 +1513,10 @@ impl MulticastProber {
         match thread.join() {
             Ok(Ok(())) => {
                 eprintln!(
-                    "multicast check ({arch}): the guest's send to {}.{}.{}.{} reached the wire, \
-                     the injected group-addressed query was accepted, and the guest answered the \
-                     group with its own bytes.",
+                    "multicast check ({arch}): the guest announced itself on {}.{}.{}.{}, answered \
+                     a multicast browse for {MDNS_BROWSE} to the group, and answered a legacy \
+                     query unicast to the port it came from. Both carried the PTR, SRV, TXT and A \
+                     records user/mdns_responder.conf describes.",
                     MDNS_GROUP[0], MDNS_GROUP[1], MDNS_GROUP[2], MDNS_GROUP[3],
                 );
                 true
@@ -1517,21 +1540,51 @@ impl MulticastProber {
     }
 }
 
-/// One prober thread: connect to the hub's socket backend, wait for the guest's trigger, inject
-/// the group-addressed query, and require the guest's composed answer, all as raw frames.
+/// How far the exchange has got. The prober injects the query for the stage it is in, and advances
+/// only when it has *verified* the answer, so a lost datagram is retried rather than skipped: the
+/// responder re-announces whenever a receive times out, and every announcement re-triggers the
+/// current stage's injection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MdnsStage {
+    /// Nothing yet. Waiting for the responder's unsolicited announcement, which is also where the
+    /// guest's own address is learned.
+    Announced,
+    /// The multicast browse is out; waiting for the group-addressed answer.
+    Browse,
+    /// The legacy query is out; waiting for the unicast answer.
+    Legacy,
+}
+
+/// One prober thread: connect to the hub's socket backend, wait for the guest to announce itself,
+/// then ask it two real questions and check both answers.
 ///
-/// Passive until spoken to, deliberately: the hub floods every frame of the whole boot here
-/// (DHCP for every net test, TFTP, the TCP exchanges), and this thread must never answer any of
-/// it, so it filters for exactly the two group-addressed payloads it knows. Re-injects on every
-/// trigger rather than once, because the guest retries when the first round was lost to this
-/// prober connecting late, and a duplicate injection is at worst a duplicate datagram the guest's
-/// single RECV never sees.
+/// Passive until spoken to, deliberately: the hub floods every frame of the whole boot here (DHCP
+/// for every net test, TFTP, the TCP exchanges, the SMB session), and this thread answers only
+/// two things, an ARP request for the address it spoofs and an mDNS message on the group.
 fn probe_multicast(
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     use std::io::{ErrorKind, Read, Write};
     use std::sync::atomic::Ordering;
+
+    // The expectations, derived from the document the guest ships rather than written out again.
+    let config = mdns_config::Config::parse(RESPONDER_CONFIG)
+        .map_err(|e| format!("the responder's own configuration document does not parse: {e:?}"))?;
+    let adv = config.advertisement(None);
+    // Lower-cased, because `dns_name` normalises what it decodes: DNS names compare
+    // case-insensitively (RFC 6762 §9.2 keeps that for mDNS), and the configuration's `GL-BE9300`
+    // is the same name as the wire's `gl-be9300`. Comparing the two forms directly is a gate that
+    // fails on a difference the protocol says is not one.
+    let instance = format!("{}.{MDNS_BROWSE}", adv.host).to_lowercase();
+    let hostname = format!("{}.local", adv.host).to_lowercase();
+    let mut txt_entries: Vec<String> = adv
+        .disks
+        .iter()
+        .enumerate()
+        .map(|(i, d)| format!("dk{i}=adVN={},adVF={}", d.volume, d.flags))
+        .collect();
+    txt_entries.push(format!("sys=adVF={}", adv.sys_flags));
 
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
 
@@ -1552,20 +1605,44 @@ fn probe_multicast(
     let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
     let _ = s.set_nodelay(true);
 
-    let mut triggered = false;
+    // Tracing, off unless `NIFE_MCAST_DEBUG` is set. This exchange happens inside a boot, on a
+    // hub, between two programs that cannot print, and its failure mode is silence; the first
+    // debugging session without this spent a five-minute suite run learning nothing.
+    let debug = std::env::var_os("NIFE_MCAST_DEBUG").is_some();
+    if debug {
+        eprintln!("multicast prober: attached to the hub on 127.0.0.1:{port}");
+    }
+
+    let mut stage = MdnsStage::Announced;
+    let mut guest_ip: Option<[u8; 4]> = None;
     let mut acc: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
+    let inject = |s: &mut std::net::TcpStream, frame: Vec<u8>| -> Result<(), String> {
+        let mut msg = (frame.len() as u32).to_be_bytes().to_vec();
+        msg.extend_from_slice(&frame);
+        s.write_all(&msg)
+            .map_err(|e| format!("injecting a frame failed: {e}"))
+    };
     loop {
         if stop.load(Ordering::Relaxed) {
-            return Err(if triggered {
-                "the guest's trigger arrived and the query was injected, but the guest never \
-                 answered the group: the injected datagram was most likely dropped by the IPv4 \
-                 accept filter, which is exactly what an unjoined group looks like"
-                    .to_string()
-            } else {
-                "the guest never sent its trigger to the group: either the mDNS test did not run, \
-                 or multicast SENDTO never reached the wire"
-                    .to_string()
+            return Err(match stage {
+                MdnsStage::Announced => {
+                    "the guest never announced itself on the group: either the responder did not \
+                     run, or a multicast SENDTO never reached the wire"
+                        .to_string()
+                }
+                MdnsStage::Browse => {
+                    "the guest was announced and asked a multicast browse, and never answered it: \
+                     the injected datagram was most likely dropped by the IPv4 accept filter, \
+                     which is exactly what an unjoined group looks like"
+                        .to_string()
+                }
+                MdnsStage::Legacy => format!(
+                    "the multicast browse was answered, but the legacy query from port \
+                     {MDNS_LEGACY_PORT} was never answered unicast: the responder either ignored \
+                     the datagram's source endpoint or could not reach {}.{}.{}.{}",
+                    MDNS_PROBER_IP[0], MDNS_PROBER_IP[1], MDNS_PROBER_IP[2], MDNS_PROBER_IP[3],
+                ),
             });
         }
         match s.read(&mut buf) {
@@ -1587,48 +1664,587 @@ fn probe_multicast(
             if acc.len() < 4 + flen {
                 break;
             }
-            let payload = group_udp_payload(&acc[4..4 + flen]).map(<[u8]>::to_vec);
+            let frame = acc[4..4 + flen].to_vec();
             acc.drain(..4 + flen);
-            if payload.as_deref() == Some(MDNS_TRIGGER) {
-                triggered = true;
-                let frame = mdns_query_frame();
-                let mut msg = (frame.len() as u32).to_be_bytes().to_vec();
-                msg.extend_from_slice(&frame);
-                if let Err(e) = s.write_all(&msg) {
-                    return Err(format!("injecting the query frame failed: {e}"));
+
+            // Answer an ARP request for the address we spoof. Without this the guest cannot
+            // resolve a MAC for it, and the legacy unicast answer is dropped inside its own stack
+            // before it reaches the wire.
+            if let Some(reply) = arp_reply(&frame) {
+                inject(&mut s, reply)?;
+                continue;
+            }
+
+            let Some(dg) = udp_datagram(&frame) else {
+                continue;
+            };
+            if dg.dst_port != MDNS_PORT && dg.dst_port != MDNS_LEGACY_PORT {
+                continue;
+            }
+            if debug {
+                eprintln!(
+                    "multicast prober: {} bytes of UDP {:?} -> {:?}:{}",
+                    dg.payload.len(),
+                    dg.src_ip,
+                    dg.dst_ip,
+                    dg.dst_port
+                );
+            }
+            // **Only the guest's answers count**, and this filter is not defensive tidiness: it
+            // was measured, and by the funniest possible packet. Slirp is on the same hub, and it
+            // forwards a group-addressed datagram out to the host's REAL network; the injected
+            // browse for `_adisk._tcp.local` therefore reached the developer's own segment, where
+            // **the reference router answered it** (192.168.8.1, the GL-BE9300 this whole
+            // milestone is measured against), and slirp NATed that answer back onto the virtual
+            // network as a unicast to the spoofed source. So one injected query provokes two
+            // responses, and the wrong one carries *exactly the records this gate expects*,
+            // because the expectations were captured from that very router. Without this filter
+            // the gate could go green on the router's answer while the guest said nothing at all.
+            if let Some(guest) = guest_ip
+                && dg.src_ip != guest
+            {
+                if debug {
+                    eprintln!("multicast prober: ignoring an answer from {:?}", dg.src_ip);
                 }
-            } else if payload.as_deref() == Some(MDNS_ANSWER) {
-                return Ok(());
+                continue;
+            }
+            let msg = match parse_dns(&dg.payload) {
+                Ok(m) => m,
+                Err(e) => {
+                    if debug {
+                        eprintln!("multicast prober: not a DNS message ({e})");
+                    }
+                    continue; // not a DNS message, or one this parser cannot read
+                }
+            };
+            if debug {
+                eprintln!(
+                    "multicast prober: dns id {:#x} flags {:#x} qd {:?} an {:?} ar {:?}",
+                    msg.id,
+                    msg.flags,
+                    msg.questions,
+                    msg.answers
+                        .iter()
+                        .map(|r| (r.name.clone(), r.rrtype, r.ttl))
+                        .collect::<Vec<_>>(),
+                    msg.additionals
+                        .iter()
+                        .map(|r| (r.name.clone(), r.rrtype, r.ttl))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if msg.flags & 0x8000 == 0 {
+                continue; // a query; the guest sends none, and nothing else here should
+            }
+
+            if dg.dst_ip == MDNS_GROUP && msg.questions.is_empty() && msg.additionals.is_empty() {
+                // An unsolicited announcement (RFC 6762 §8.3): no question, and nothing riding in
+                // additionals, which is what separates it from the answer to a browse.
+                if !msg.answers.iter().any(|r| r.name == MDNS_BROWSE) {
+                    continue; // one of the other two service types' announcements
+                }
+                if guest_ip.is_none() {
+                    guest_ip = msg
+                        .answers
+                        .iter()
+                        .find(|r| r.rrtype == RR_A && r.rdata.len() == 4)
+                        .map(|r| [r.rdata[0], r.rdata[1], r.rdata[2], r.rdata[3]]);
+                }
+                if let Some(ip) = guest_ip
+                    && ip != dg.src_ip
+                {
+                    return Err(format!(
+                        "the guest announces an A record of {ip:?} and is speaking from {:?}; a Mac \
+                         that resolved the name would then connect to the wrong address",
+                        dg.src_ip
+                    ));
+                }
+                let Some(ip) = guest_ip else {
+                    return Err(
+                        "the announcement carried no A record, so a Mac would discover a name it \
+                         cannot resolve. The responder announces one when its spawn hands it the \
+                         DHCP lease; is the lease reaching it?"
+                            .to_string(),
+                    );
+                };
+                // Ask the guest for its OWN address, which is what fills its neighbour cache with
+                // ours: smoltcp fills only from an ARP packet whose target is an address it holds
+                // (`process_arp`), so a gratuitous announcement of our address would be discarded,
+                // and smoltcp drops the datagram that triggers a neighbour resolution rather than
+                // queueing it. Without this the legacy leg loses its first answer.
+                inject(&mut s, arp_request_frame(ip))?;
+                // An announcement means the responder's last receive timed out, so re-inject the
+                // query for the stage we are in: whatever we sent before did not arrive. The stage
+                // advances here rather than after the batch, because the answer can be in the same
+                // read as the announcement that provoked it.
+                if stage == MdnsStage::Announced {
+                    stage = MdnsStage::Browse;
+                }
+                if debug {
+                    eprintln!("multicast prober: announcement seen; injecting the stage's query");
+                }
+                inject(&mut s, mdns_query_frame(stage_port(stage), stage_id(stage)))?;
+                continue;
+            }
+
+            match stage {
+                MdnsStage::Announced => {} // nothing has been asked yet
+                MdnsStage::Browse if dg.dst_ip == MDNS_GROUP => {
+                    check_browse_answer(&msg, &instance, &hostname, &txt_entries, guest_ip)?;
+                    stage = MdnsStage::Legacy;
+                    inject(&mut s, mdns_query_frame(MDNS_LEGACY_PORT, MDNS_LEGACY_ID))?;
+                }
+                MdnsStage::Legacy
+                    if dg.dst_ip == MDNS_PROBER_IP && dg.dst_port == MDNS_LEGACY_PORT =>
+                {
+                    check_legacy_answer(&msg, &instance, &hostname, &txt_entries, guest_ip)?;
+                    return Ok(());
+                }
+                _ => {}
             }
         }
     }
 }
 
-/// The UDP payload of `frame`, if it is an IPv4 datagram addressed to the mDNS group and port;
-/// `None` for everything else on the hub (ARP, DHCP, TCP, unicast UDP), which this prober must
-/// ignore.
-fn group_udp_payload(frame: &[u8]) -> Option<&[u8]> {
+/// Which source port and id the query for `stage` carries. The browse comes from 5353 (a full mDNS
+/// querier) and the legacy one does not, which is the whole distinction RFC 6762 §6.7 draws.
+fn stage_port(stage: MdnsStage) -> u16 {
+    match stage {
+        MdnsStage::Legacy => MDNS_LEGACY_PORT,
+        _ => MDNS_PORT,
+    }
+}
+fn stage_id(stage: MdnsStage) -> u16 {
+    match stage {
+        MdnsStage::Legacy => MDNS_LEGACY_ID,
+        _ => 0,
+    }
+}
+
+// DNS record types, by their IANA numbers. Spelled here rather than imported from `mdns_proto`
+// deliberately: this prober is the independent half of the gate, and a check that shared its
+// vocabulary with the code under test could agree with it about a number that was wrong.
+const RR_A: u16 = 1;
+const RR_PTR: u16 = 12;
+const RR_TXT: u16 = 16;
+const RR_SRV: u16 = 33;
+/// The top bit of a record's class: "cache flush" in a response (RFC 6762 §10.2).
+const CACHE_FLUSH: u16 = 0x8000;
+/// The cap RFC 6762 §6.7 puts on every TTL in a legacy unicast response.
+const LEGACY_TTL_CAP: u32 = 10;
+
+/// One decoded record. `name` and any name inside `rdata` are decoded to lower-case dotted form,
+/// following compression pointers, so an assertion never depends on how the sender chose to encode.
+struct DnsRecord {
+    name: String,
+    rrtype: u16,
+    class: u16,
+    ttl: u32,
+    rdata: Vec<u8>,
+    /// Where the rdata starts in the whole message, so a name inside it can be decompressed.
+    rdata_at: usize,
+}
+
+struct DnsMessage {
+    id: u16,
+    flags: u16,
+    questions: Vec<(String, u16)>,
+    answers: Vec<DnsRecord>,
+    additionals: Vec<DnsRecord>,
+    raw: Vec<u8>,
+}
+
+/// Decode a DNS name at `at`, following compression pointers. Returns the name in lower-case
+/// dotted form and the offset just past the name **in the section being read** (a pointer ends the
+/// name in two bytes however far it points).
+fn dns_name(msg: &[u8], at: usize) -> Result<(String, usize), String> {
+    let mut name = String::new();
+    let mut here = at;
+    let mut after = None;
+    // Bounded: every pointer must go strictly backwards in a well-formed message, and a message is
+    // at most 65535 bytes, so this cannot loop forever even on a malicious one.
+    for _ in 0..256 {
+        let len = *msg
+            .get(here)
+            .ok_or("a name ran off the end of the message")? as usize;
+        match len & 0xc0 {
+            0 => {
+                here += 1;
+                if len == 0 {
+                    return Ok((name, after.unwrap_or(here)));
+                }
+                let end = here + len;
+                let label = msg
+                    .get(here..end)
+                    .ok_or("a label ran off the end of the message")?;
+                if !name.is_empty() {
+                    name.push('.');
+                }
+                name.push_str(&String::from_utf8_lossy(label).to_lowercase());
+                here = end;
+            }
+            0xc0 => {
+                let lo = *msg.get(here + 1).ok_or("a truncated compression pointer")? as usize;
+                let target = ((len & 0x3f) << 8) | lo;
+                after.get_or_insert(here + 2);
+                if target >= here {
+                    return Err("a compression pointer that does not go backwards".to_string());
+                }
+                here = target;
+            }
+            _ => return Err("a reserved label length".to_string()),
+        }
+    }
+    Err("a name with too many labels or pointers".to_string())
+}
+
+/// Decode a whole DNS message. Deliberately a second implementation, not `mdns_proto`'s: a gate
+/// that decoded the guest's bytes with the guest's own parser would pass on any bug the two share.
+fn parse_dns(msg: &[u8]) -> Result<DnsMessage, String> {
+    if msg.len() < 12 {
+        return Err("shorter than a DNS header".to_string());
+    }
+    let u16at = |i: usize| u16::from_be_bytes([msg[i], msg[i + 1]]);
+    let (id, flags) = (u16at(0), u16at(2));
+    let (qd, an, ns, ar) = (u16at(4), u16at(6), u16at(8), u16at(10));
+    let mut at = 12;
+    let mut questions = Vec::new();
+    for _ in 0..qd {
+        let (name, next) = dns_name(msg, at)?;
+        at = next + 4;
+        if at > msg.len() {
+            return Err("a question ran off the end".to_string());
+        }
+        questions.push((name, u16::from_be_bytes([msg[next], msg[next + 1]])));
+    }
+    let mut records = Vec::new();
+    for _ in 0..(an as usize + ns as usize + ar as usize) {
+        let (name, next) = dns_name(msg, at)?;
+        if next + 10 > msg.len() {
+            return Err("a record header ran off the end".to_string());
+        }
+        let rrtype = u16::from_be_bytes([msg[next], msg[next + 1]]);
+        let class = u16::from_be_bytes([msg[next + 2], msg[next + 3]]);
+        let ttl = u32::from_be_bytes([msg[next + 4], msg[next + 5], msg[next + 6], msg[next + 7]]);
+        let rdlen = u16::from_be_bytes([msg[next + 8], msg[next + 9]]) as usize;
+        let rdata_at = next + 10;
+        let rdata = msg
+            .get(rdata_at..rdata_at + rdlen)
+            .ok_or("rdata ran off the end")?
+            .to_vec();
+        at = rdata_at + rdlen;
+        records.push(DnsRecord {
+            name,
+            rrtype,
+            class,
+            ttl,
+            rdata,
+            rdata_at,
+        });
+    }
+    let mut it = records.into_iter();
+    let answers: Vec<DnsRecord> = it.by_ref().take(an as usize).collect();
+    let rest: Vec<DnsRecord> = it.collect();
+    let additionals = rest.into_iter().skip(ns as usize).collect();
+    Ok(DnsMessage {
+        id,
+        flags,
+        questions,
+        answers,
+        additionals,
+        raw: msg.to_vec(),
+    })
+}
+
+/// Find one record by name and type across the sections the caller hands over.
+fn dns_find<'a>(rs: &[&'a [DnsRecord]], name: &str, rrtype: u16) -> Option<&'a DnsRecord> {
+    rs.iter()
+        .flat_map(|s| s.iter())
+        .find(|r| r.rrtype == rrtype && r.name == name)
+}
+
+/// The records both answers must carry, whatever section they are in: the service PTR pointing at
+/// the instance, the instance's SRV and TXT, and the host's A. **Every value comes from
+/// `user/mdns_responder.conf`**, so this asserts that the machine advertises what it was
+/// configured to advertise rather than what somebody typed here twice.
+fn check_records(
+    msg: &DnsMessage,
+    sections: &[&[DnsRecord]],
+    instance: &str,
+    hostname: &str,
+    txt_entries: &[String],
+    guest_ip: Option<[u8; 4]>,
+) -> Result<(), String> {
+    let ptr = dns_find(sections, MDNS_BROWSE, RR_PTR)
+        .ok_or_else(|| format!("no PTR for {MDNS_BROWSE} in the response"))?;
+    let (target, _) = dns_name(&msg.raw, ptr.rdata_at)?;
+    if target != instance {
+        return Err(format!("the PTR points at {target}, wanted {instance}"));
+    }
+    if ptr.class & CACHE_FLUSH != 0 {
+        return Err(
+            "the shared service PTR carries the cache-flush bit, which tells every cache on the \
+             segment to discard other responders' answers for this service type"
+                .to_string(),
+        );
+    }
+
+    let srv = dns_find(sections, instance, RR_SRV)
+        .ok_or_else(|| format!("no SRV for {instance} in the response"))?;
+    if srv.rdata.len() < 7 {
+        return Err("the SRV rdata is too short to hold a port and a target".to_string());
+    }
+    let port = u16::from_be_bytes([srv.rdata[4], srv.rdata[5]]);
+    if port != 0 {
+        return Err(format!(
+            "the _adisk SRV advertises port {port}; the measured reference advertises 0, because \
+             the instance carries flags and not a connectable service"
+        ));
+    }
+    let (srv_target, _) = dns_name(&msg.raw, srv.rdata_at + 6)?;
+    if srv_target != hostname {
+        return Err(format!("the SRV target is {srv_target}, wanted {hostname}"));
+    }
+
+    let txt = dns_find(sections, instance, RR_TXT)
+        .ok_or_else(|| format!("no TXT for {instance} in the response"))?;
+    let mut got: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < txt.rdata.len() {
+        let len = txt.rdata[at] as usize;
+        let end = at + 1 + len;
+        if end > txt.rdata.len() {
+            return Err("a TXT string ran past the end of its rdata".to_string());
+        }
+        got.push(String::from_utf8_lossy(&txt.rdata[at + 1..end]).into_owned());
+        at = end;
+    }
+    if got != txt_entries {
+        return Err(format!(
+            "the _adisk TXT record says {got:?}, and user/mdns_responder.conf says {txt_entries:?}"
+        ));
+    }
+
+    if let Some(ip) = guest_ip {
+        let a = dns_find(sections, hostname, RR_A)
+            .ok_or_else(|| format!("no A record for {hostname} in the response"))?;
+        if a.rdata != ip {
+            return Err(format!(
+                "the A record says {:?} and the announcement said {ip:?}",
+                a.rdata
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The multicast browse's answer (RFC 6763 §12.1): the PTR answers the question, and the instance's
+/// records ride as **additionals**. The unique ones flush; the shared PTR does not.
+fn check_browse_answer(
+    msg: &DnsMessage,
+    instance: &str,
+    hostname: &str,
+    txt_entries: &[String],
+    guest_ip: Option<[u8; 4]>,
+) -> Result<(), String> {
+    if msg.id != 0 {
+        return Err(format!(
+            "a multicast response carried transaction id {:#x}; it must be 0",
+            msg.id
+        ));
+    }
+    if msg.flags & 0x0400 == 0 {
+        return Err("the response is not authoritative (the AA bit is clear)".to_string());
+    }
+    if !msg.answers.iter().any(|r| r.name == MDNS_BROWSE) {
+        return Err("the answer section does not answer the question that was asked".to_string());
+    }
+    if msg.additionals.is_empty() {
+        return Err(
+            "a browse answer with no additionals: the instance's SRV, TXT and A must ride along, \
+             or a Mac discovers a share it then has to ask about again"
+                .to_string(),
+        );
+    }
+    check_records(
+        msg,
+        &[&msg.answers, &msg.additionals],
+        instance,
+        hostname,
+        txt_entries,
+        guest_ip,
+    )?;
+    for r in msg.additionals.iter() {
+        if r.class & CACHE_FLUSH == 0 {
+            return Err(format!(
+                "the record of type {} is this responder's own and does not set cache-flush",
+                r.rrtype
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The legacy unicast answer, RFC 6762 §6.7 in full: the id echoed, the question repeated, every
+/// record in the **answer** section (a one-shot resolver reads no further), no cache-flush bits,
+/// and every TTL capped at 10 so a resolver that cannot hear our updates forgets quickly.
+fn check_legacy_answer(
+    msg: &DnsMessage,
+    instance: &str,
+    hostname: &str,
+    txt_entries: &[String],
+    guest_ip: Option<[u8; 4]>,
+) -> Result<(), String> {
+    if msg.id != MDNS_LEGACY_ID {
+        return Err(format!(
+            "the legacy response carries id {:#x}, not the {MDNS_LEGACY_ID:#x} that was asked; a \
+             one-shot resolver matches on it and would discard this",
+            msg.id
+        ));
+    }
+    if msg.questions.len() != 1 || msg.questions[0].0 != MDNS_BROWSE {
+        return Err(format!(
+            "the legacy response does not repeat the question it answers (questions: {:?})",
+            msg.questions
+        ));
+    }
+    if !msg.additionals.is_empty() {
+        return Err(
+            "the legacy response puts records in additionals; a one-shot resolver reads the \
+             answer section"
+                .to_string(),
+        );
+    }
+    check_records(
+        msg,
+        &[&msg.answers],
+        instance,
+        hostname,
+        txt_entries,
+        guest_ip,
+    )?;
+    for r in msg.answers.iter() {
+        if r.class & CACHE_FLUSH != 0 {
+            return Err(format!(
+                "the legacy response sets cache-flush on the record of type {}; that bit is for \
+                 multicast responses only",
+                r.rrtype
+            ));
+        }
+        if r.ttl > LEGACY_TTL_CAP {
+            return Err(format!(
+                "a legacy response's TTL is {} and the cap is {LEGACY_TTL_CAP}",
+                r.ttl
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A UDP datagram taken off the raw wire.
+struct Datagram {
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    dst_port: u16,
+    payload: Vec<u8>,
+}
+
+/// The UDP datagram inside `frame`, if it is one. `None` for everything else on the hub (ARP,
+/// TCP, IPv6), which is most of it.
+fn udp_datagram(frame: &[u8]) -> Option<Datagram> {
     let ip = frame.get(14..)?;
     if frame[12..14] != [0x08, 0x00] || ip.first()? >> 4 != 4 {
         return None;
     }
     let ihl = ((ip[0] & 0xf) as usize) * 4;
-    if *ip.get(9)? != 17 || ip.get(16..20)? != MDNS_GROUP {
+    if *ip.get(9)? != 17 {
         return None;
     }
+    let mut src_ip = [0u8; 4];
+    src_ip.copy_from_slice(ip.get(12..16)?);
+    let mut dst_ip = [0u8; 4];
+    dst_ip.copy_from_slice(ip.get(16..20)?);
     let udp = ip.get(ihl..)?;
-    if u16::from_be_bytes([*udp.get(2)?, *udp.get(3)?]) != MDNS_PORT {
+    let dst_port = u16::from_be_bytes([*udp.get(2)?, *udp.get(3)?]);
+    let udp_len = u16::from_be_bytes([*udp.get(4)?, *udp.get(5)?]) as usize;
+    Some(Datagram {
+        src_ip,
+        dst_ip,
+        dst_port,
+        payload: udp.get(8..udp_len)?.to_vec(),
+    })
+}
+
+/// An ARP reply for [`MDNS_PROBER_IP`], if `frame` is a request asking for it. The guest asks this
+/// when it has a unicast datagram for the address we spoof and no MAC for it yet.
+fn arp_reply(frame: &[u8]) -> Option<Vec<u8>> {
+    let arp = frame.get(14..14 + 28)?;
+    if frame[12..14] != [0x08, 0x06] {
         return None;
     }
-    let udp_len = u16::from_be_bytes([udp[4], udp[5]]) as usize;
-    udp.get(8..udp_len)
+    // Ethernet over IPv4, opcode 1 (request), asking for the address we hold.
+    if arp[0..2] != [0, 1] || arp[2..4] != [0x08, 0x00] || arp[4] != 6 || arp[5] != 4 {
+        return None;
+    }
+    if arp[6..8] != [0, 1] || arp[24..28] != MDNS_PROBER_IP {
+        return None;
+    }
+    let sender_mac: [u8; 6] = arp[8..14].try_into().ok()?;
+    let sender_ip: [u8; 4] = arp[14..18].try_into().ok()?;
+    let mut f = Vec::with_capacity(42);
+    f.extend_from_slice(&sender_mac);
+    f.extend_from_slice(&MDNS_PROBER_MAC);
+    f.extend_from_slice(&[0x08, 0x06]);
+    f.extend_from_slice(&[0, 1, 0x08, 0x00, 6, 4, 0, 2]); // reply
+    f.extend_from_slice(&MDNS_PROBER_MAC);
+    f.extend_from_slice(&MDNS_PROBER_IP);
+    f.extend_from_slice(&sender_mac);
+    f.extend_from_slice(&sender_ip);
+    Some(f)
+}
+
+/// An ARP request for the guest's own address, from the address this prober spoofs.
+///
+/// **This is what makes the unicast leg work**, and it is not politeness. smoltcp fills its
+/// neighbour cache only from an ARP packet whose *target* is an address it holds
+/// (`process_arp` in smoltcp 0.13.1 returns early otherwise), so a gratuitous announcement of our
+/// own address would be discarded, the guest would have to resolve us when it answered the legacy
+/// query, and smoltcp drops the datagram that triggers a resolution rather than queueing it. Asking
+/// the guest for its address fills the cache in the same breath.
+fn arp_request_frame(guest_ip: [u8; 4]) -> Vec<u8> {
+    let mut f = Vec::with_capacity(42);
+    f.extend_from_slice(&[0xff; 6]);
+    f.extend_from_slice(&MDNS_PROBER_MAC);
+    f.extend_from_slice(&[0x08, 0x06]);
+    f.extend_from_slice(&[0, 1, 0x08, 0x00, 6, 4, 0, 1]); // request
+    f.extend_from_slice(&MDNS_PROBER_MAC);
+    f.extend_from_slice(&MDNS_PROBER_IP);
+    f.extend_from_slice(&[0; 6]);
+    f.extend_from_slice(&guest_ip);
+    f
 }
 
 /// The frame this prober injects: ethernet to the group's multicast MAC, IPv4 from the spoofed
-/// source to the group with TTL 255 (RFC 6762 §11), UDP 5353 to 5353 carrying [`MDNS_QUERY`],
-/// checksums real so nothing in the guest's stack has a reason to drop it.
-fn mdns_query_frame() -> Vec<u8> {
-    let udp_len = 8 + MDNS_QUERY.len();
+/// source to the group with TTL 255 (RFC 6762 §11), UDP from `src_port` to 5353 carrying a **real
+/// DNS query**, a PTR question for [`MDNS_BROWSE`] with transaction id `id`. Checksums real, so
+/// nothing in the guest's stack has a reason to drop it.
+fn mdns_query_frame(src_port: u16, id: u16) -> Vec<u8> {
+    // The query, encoded by hand: header, then the name as length-prefixed labels, then QTYPE PTR
+    // and QCLASS IN. No compression, nothing optional.
+    let mut query = Vec::new();
+    query.extend_from_slice(&id.to_be_bytes());
+    query.extend_from_slice(&[0, 0]); // flags: a query, opcode 0
+    query.extend_from_slice(&[0, 1]); // one question
+    query.extend_from_slice(&[0, 0, 0, 0, 0, 0]); // no answers, authorities or additionals
+    for label in MDNS_BROWSE.split('.') {
+        query.push(label.len() as u8);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0);
+    query.extend_from_slice(&RR_PTR.to_be_bytes());
+    query.extend_from_slice(&[0, 1]); // class IN, QU bit clear
+
+    let udp_len = 8 + query.len();
     let ip_len = 20 + udp_len;
 
     let mut ip = vec![
@@ -1652,8 +2268,8 @@ fn mdns_query_frame() -> Vec<u8> {
     ip[11] = c as u8;
 
     let mut udp = vec![
-        (MDNS_PORT >> 8) as u8,
-        MDNS_PORT as u8,
+        (src_port >> 8) as u8,
+        src_port as u8,
         (MDNS_PORT >> 8) as u8,
         MDNS_PORT as u8,
         (udp_len >> 8) as u8,
@@ -1661,7 +2277,7 @@ fn mdns_query_frame() -> Vec<u8> {
         0,
         0,
     ];
-    udp.extend_from_slice(MDNS_QUERY);
+    udp.extend_from_slice(&query);
     // The UDP checksum runs over a pseudo-header of the addresses, the protocol, and the length.
     let mut pseudo = 0u32;
     for chunk in MDNS_PROBER_IP.chunks(2).chain(MDNS_GROUP.chunks(2)) {
@@ -2174,6 +2790,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "smb_server",
             "--bin",
+            "mdns_responder",
+            "--bin",
             "budgeter",
             "--bin",
             "fs_test_client",
@@ -2290,6 +2908,9 @@ fn initrd_riscv() -> bool {
         ("allocator_exerciser", "allocator_exerciser"),
         ("net_stack", "net_stack"),
         ("smb_server", "smb_server"),
+        // The mDNS responder (milestone 55): the discovery half of the Time Machine target.
+        // Portable, so both archives carry it and both ISAs answer the same injected query.
+        ("mdns_responder", "mdns_responder"),
         ("budgeter", "budgeter"),
         ("fs_test_client", "fs_test_client"),
         ("fs_file_caretaker", "fs_file_caretaker"),
@@ -2547,6 +3168,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let mdns_responder = match read_stripped(&bin_elf("mdns_responder")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("mdns_responder"));
+            return false;
+        }
+    };
     let budgeter = match read_stripped(&bin_elf("budgeter")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -2688,6 +3316,7 @@ fn mkinitrd() -> bool {
         ("allocator_exerciser", &allocator_exerciser),
         ("net_stack", &net_stack),
         ("smb_server", &smb_server),
+        ("mdns_responder", &mdns_responder),
         ("budgeter", &budgeter),
         ("fs_test_client", &fs_test_client),
         ("fs_file_caretaker", &fs_file_caretaker),

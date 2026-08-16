@@ -52,15 +52,20 @@
 use crate::sched;
 use crate::thread::Tid;
 
-/// The most threads one holding covers. Three is the widest service this boot builds (a `net_stack`
-/// with its socket client and the SMB adapter beside it); a fourth is a design change rather than a
-/// bigger number, so this fails the build instead of silently dropping one.
+/// The most threads one holding covers. **Four is the widest service this boot builds**, and as of
+/// milestone 55's responder lane it builds exactly four: a `net_stack`, its socket client, the SMB
+/// adapter, and the mDNS responder. So the margin this number used to carry is spent, and a fifth
+/// client panics here rather than being silently dropped, which is the intended behaviour and worth
+/// knowing before adding one: raise this and [`MAX_REGIONS`] together, since each client costs one
+/// thread, one region and two after it.
 const MAX_THREADS: usize = 4;
 
 /// The most untyped regions one holding covers, in **each** phase. The widest service this boot
-/// builds is `net_stack` with two clients, which is three endpoint regions before death and six
-/// budget-and-stack regions after it; eight leaves a little room and fails the build rather than
-/// dropping one silently.
+/// builds is `net_stack` with **three** clients (milestone 55's mDNS responder joined the socket
+/// client and the SMB adapter), which is four endpoint regions before death and **eight**
+/// budget-and-stack regions after it. That is exactly this number: the room the comment here used
+/// to claim is gone, and the next client added must raise it alongside [`MAX_THREADS`]. Failing the
+/// build is the point; dropping one silently would leak memory that looks reclaimed.
 const MAX_REGIONS: usize = 8;
 
 /// How long [`Holding::release`] waits for a teardown to land, in seconds of wall clock.

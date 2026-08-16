@@ -264,6 +264,16 @@ path = "src/net_stack.rs"
 test = false
 bench = false
 
+# The mDNS responder (milestone 55): what makes this machine appear in a Mac's Time Machine list.
+# A client of the socket contract holding one fixed UDP port and nothing else; every decision it
+# makes is `mdns_proto`'s and everything it says is the document in `user/mdns_responder.conf`.
+# Provisional name.
+[[bin]]
+name = "mdns_responder"
+path = "src/mdns_responder.rs"
+test = false
+bench = false
+
 # The SMB adapter (milestone 54): the network file service a Mac can mount. A client of the
 # socket contract (listen/accept, milestone 107) serving `smb_proto` over direct TCP; the share
 # is the fixture baked into `smb_proto` until the fs_proto-backed share lands (notes/smb.md).
@@ -503,6 +513,8 @@ swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
 smb_proto = { version = "0.1.0", path = "../crates/smb_proto" }
+mdns_proto = { version = "0.1.0", path = "../crates/mdns_proto" }
+mdns_config = { version = "0.1.0", path = "../crates/mdns_config" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 block_roster = { version = "0.1.0", path = "../crates/block_roster" }
 gpt = { version = "0.1.0", path = "../crates/gpt" }

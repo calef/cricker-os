@@ -40,6 +40,7 @@
 //!   &[u8] ──Reader──► Header, Question*, Record*        (decodes compressed names)
 //!   Builder ──question/answer/additional──► &[u8]       (emits uncompressed names only)
 //!   Advertisement ──respond(query)──► Option<response>  (the responder's whole decision)
+//!   Advertisement ──announcement(svc)──► response       (unsolicited, RFC 6762 §8.3)
 //! ```
 //!
 //! [`respond`] is the function the eventual responder program wraps in a socket loop: it takes one
@@ -60,9 +61,13 @@
 //!   for a SRV/TXT/A record is ignored and the record re-sent, which is chatty, not wrong.
 //! - **[`respond`] handles one advertisement.** Three shares is one advertisement (measured, above);
 //!   a second *server identity* on one responder is out of scope.
-//! - **Probing is the query and the comparison, not the state machine.** [`probe_query`],
-//!   [`conflicts`] and [`tiebreak`] are the wire-format halves of RFC 6762 §8; the 250 ms timing,
-//!   the three-probe count and the rate limiting live with whoever owns a clock.
+//! - **Probing and announcing are the bytes, not the state machine.** [`probe_query`],
+//!   [`conflicts`], [`tiebreak`] and [`announcement`] are the wire-format halves of RFC 6762 §8;
+//!   the 250 ms probe timing, the three-probe count, the two-to-eight repeats of an announcement
+//!   at doubling intervals, and the rate limiting all live with whoever owns a clock.
+//! - **[`announcement`] emits one service type per call**, because this tree's 576-byte MTU cannot
+//!   carry all three in one datagram. Legal (a responder may announce in as many messages as it
+//!   likes) and slightly chattier than a fatter transport would need.
 //! - **TC-bit handling is absent.** A query with the truncation bit set asks the responder to delay
 //!   for more known answers; this crate answers it immediately. Harmless (an extra response), and
 //!   recorded so nobody mistakes the omission for a decision.
@@ -1185,6 +1190,92 @@ pub fn respond(
     }
 
     Ok(Some(b.finish()))
+}
+
+/// One of the three service types an [`Advertisement`] carries, as a selector for
+/// [`announcement`]. Not a general service registry: these three are what Time Machine discovery
+/// uses, and a fourth would be a different feature rather than another enum variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    /// `_smb._tcp`, the file service and its port.
+    Smb,
+    /// `_adisk._tcp`, the Time Machine flags that populate the backup-disk list.
+    Adisk,
+    /// `_device-info._tcp`, the model string that picks the icon.
+    DeviceInfo,
+}
+
+/// **Announce one service type**, RFC 6762 §8.3: an unsolicited multicast response carrying this
+/// advertisement's records for `svc`, sent when a responder starts up (and, in a full
+/// implementation, two to eight times at increasing intervals once probing has claimed the name).
+///
+/// Two things differ from what [`respond`] builds for a browse of the same type, and both are the
+/// section's own rules. **Every record goes in the answer section**, additionals included, because
+/// an announcement is not answering a question and has nothing to imply. And the records are the
+/// full set for the type: the PTR, the instance's SRV and TXT, and the host's A when the responder
+/// knows its address.
+///
+/// **One service type per call, because of the MTU rather than the RFC.** RFC 6762 permits every
+/// record in one message, and a responder on an ordinary ethernet can do that; this tree's virtio
+/// transport carries a 576-byte MTU (`user/src/net_transport.rs`, a single-page DMA region), so all
+/// three types in one datagram would not fit and would be dropped rather than fragmented. Three
+/// calls and three datagrams is the same announcement, and a caller with a real MTU loses nothing
+/// by sending them separately.
+pub fn announcement(adv: &Advertisement<'_>, svc: Service, out: &mut [u8]) -> Result<usize> {
+    let (service, port) = match svc {
+        Service::Smb => (SERVICE_SMB, adv.smb_port),
+        // Measured, not chosen: the reference advertises port 0 on both of these, because they
+        // carry flags and a model string rather than a connectable service.
+        Service::Adisk => (SERVICE_ADISK, 0),
+        Service::DeviceInfo => (SERVICE_DEVICE_INFO, 0),
+    };
+    let service = name_from_dotted(service)?;
+    let local = name_from_dotted("local")?;
+    let hostname = name_under(adv.host.as_bytes(), &local)?;
+    let instance = name_under(adv.host.as_bytes(), &service)?;
+
+    let mut b = Builder::response(out)?;
+    let mut rdata = [0u8; MAX_TXT_RDATA];
+
+    // The PTR is a SHARED record (several responders may offer the same service type), so it never
+    // carries the cache-flush bit; the three below are this responder's alone and do.
+    b.answer(
+        service.as_bytes(),
+        rrtype::PTR,
+        CLASS_IN,
+        TTL_SERVICE,
+        instance.as_bytes(),
+    )?;
+    let n = srv_rdata(0, 0, port, &hostname, &mut rdata)?;
+    b.answer(
+        instance.as_bytes(),
+        rrtype::SRV,
+        CLASS_IN | CACHE_FLUSH,
+        TTL_SERVICE,
+        &rdata[..n],
+    )?;
+    let n = match svc {
+        Service::Smb => txt_rdata(&[], &mut rdata)?,
+        Service::Adisk => adisk_txt_rdata(adv, &mut rdata)?,
+        Service::DeviceInfo => device_info_txt_rdata(adv, &mut rdata)?,
+    };
+    b.answer(
+        instance.as_bytes(),
+        rrtype::TXT,
+        CLASS_IN | CACHE_FLUSH,
+        TTL_SERVICE,
+        &rdata[..n],
+    )?;
+    if let Some(ip) = adv.ipv4 {
+        b.answer(
+            hostname.as_bytes(),
+            rrtype::A,
+            CLASS_IN | CACHE_FLUSH,
+            TTL_HOST,
+            &ip,
+        )?;
+    }
+    Ok(b.finish())
 }
 
 /// How many questions a legacy response can echo back. More arrive intact (they are read and

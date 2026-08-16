@@ -848,13 +848,18 @@ pub fn smb_serve_boot() {
     if fs.is_none() {
         println!("smb-serve: no RedoxFS disk; serving the baked-in fixture share");
     }
-    let Some((lease, smb)) = virtio_service::start_smb_serve(net_stack, smb_server, fs) else {
+    let Some(mdns_responder) = program("mdns_responder") else {
+        println!("smb-serve: no mdns_responder program in the initrd");
+        return;
+    };
+    let Some((ip, smb, mdns)) =
+        virtio_service::start_smb_serve(net_stack, smb_server, mdns_responder, fs)
+    else {
         println!(
             "smb-serve: no virtio-net device to serve on (the runner attaches one when NIFE_NET is set)"
         );
         return;
     };
-    let ip = crate::sched::ipc_recv(lease)[0];
     println!();
     println!(
         "smb-serve: DHCP lease {}.{}.{}.{}",
@@ -881,6 +886,22 @@ pub fn smb_serve_boot() {
         );
     } else {
         println!("smb-serve: the adapter failed to bind its port (code {word:#x})");
+    }
+    // The discovery half (milestone 55). A separate process holding a separate authority: this one
+    // has the UDP port and no share, the adapter has the share and no port a browser can find.
+    let word = crate::sched::ipc_recv(mdns)[0];
+    if word == 1 {
+        println!(
+            "smb-serve: the mDNS responder is advertising _smb._tcp, _adisk._tcp and \
+             _device-info._tcp on 5353."
+        );
+        println!(
+            "smb-serve:   on a Mac on the SAME SEGMENT: dns-sd -B _adisk._tcp   (QEMU's user-mode \
+             networking does not carry multicast, so this needs real hardware; see notes/mdns.md)"
+        );
+        println!("smb-serve:   what it advertises is user/mdns_responder.conf, not compiled-in.");
+    } else {
+        println!("smb-serve: the mDNS responder failed to start (code {word:#x})");
     }
 }
 
