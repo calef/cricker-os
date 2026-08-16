@@ -362,11 +362,20 @@ mod tests {
     #[test]
     fn a_udp_bind_grant_admits_its_range_and_refuses_everything_outside_it() {
         let g = udp_bind_grant(5353, 5355);
-        assert!(!udp_grant_allows(g, 5352), "one below the range was allowed");
+        assert!(
+            !udp_grant_allows(g, 5352),
+            "one below the range was allowed"
+        );
         for p in 5353..=5355 {
-            assert!(udp_grant_allows(g, p), "port {p} inside the range was refused");
+            assert!(
+                udp_grant_allows(g, p),
+                "port {p} inside the range was refused"
+            );
         }
-        assert!(!udp_grant_allows(g, 5356), "one above the range was allowed");
+        assert!(
+            !udp_grant_allows(g, 5356),
+            "one above the range was allowed"
+        );
 
         // The single-port grant is the one milestone 55 actually spawns (mDNS's 5353).
         let one = udp_bind_grant(5353, 5353);
@@ -377,7 +386,10 @@ mod tests {
         assert_eq!(udp_bind_grant(0, 65535), NO_LISTEN_GRANT);
         assert_eq!(udp_bind_grant(5355, 5353), NO_LISTEN_GRANT);
         for p in [0u16, 1, 5353, 65535] {
-            assert!(!udp_grant_allows(NO_LISTEN_GRANT, p), "port {p} allowed with no grant");
+            assert!(
+                !udp_grant_allows(NO_LISTEN_GRANT, p),
+                "port {p} allowed with no grant"
+            );
         }
     }
 
@@ -390,17 +402,29 @@ mod tests {
     fn the_listen_and_udp_bind_grants_compose_without_leaking() {
         let listen_only = listen_grant(7778, 7778);
         assert!(grant_allows(listen_only, 7778));
-        assert!(!udp_grant_allows(listen_only, 7778), "a listen grant granted a UDP bind");
+        assert!(
+            !udp_grant_allows(listen_only, 7778),
+            "a listen grant granted a UDP bind"
+        );
 
         let udp_only = udp_bind_grant(5353, 5353);
         assert!(udp_grant_allows(udp_only, 5353));
-        assert!(!grant_allows(udp_only, 5353), "a UDP bind grant granted a TCP listen");
+        assert!(
+            !grant_allows(udp_only, 5353),
+            "a UDP bind grant granted a TCP listen"
+        );
 
         let both = listen_grant(7778, 7778) | udp_bind_grant(5353, 5353);
         assert!(grant_allows(both, 7778));
         assert!(udp_grant_allows(both, 5353));
-        assert!(!grant_allows(both, 5353), "the UDP half answered a listen question");
-        assert!(!udp_grant_allows(both, 7778), "the listen half answered a UDP question");
+        assert!(
+            !grant_allows(both, 5353),
+            "the UDP half answered a listen question"
+        );
+        assert!(
+            !udp_grant_allows(both, 7778),
+            "the listen half answered a UDP question"
+        );
 
         // The top of the port space survives the high half's packing.
         let top = udp_bind_grant(65535, 65535);
