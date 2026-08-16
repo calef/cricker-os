@@ -24,6 +24,10 @@ bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 # kernel computes straight from the clock page. Same discipline as bitfont/vt above: the test
 # predicts from the shared definition rather than keeping a second copy of it.
 calendar = { version = "0.1.0", path = "../crates/calendar" }
+# The corruption canary's arm/check/disarm serialization (2026-08-15), lifted out of `sched.rs`
+# after its hand-written two-flag protocol raced: the kernel calls the loom-searched gate rather
+# than keeping a copy of it, the third retrofit of steal_request's move. See notes/interleaving.md.
+canary_gate = { version = "0.1.0", path = "../crates/canary_gate" }
 capability = { version = "0.1.0", path = "../crates/capability" }
 # The shell's grant-expression logic (milestone 47's `rm -r`). The kernel plans nothing; its `rm`
 # test **starts the program the way the shell would**, so the option bits it packs come from the
@@ -121,6 +125,9 @@ bench = []
 initboot = []
 # Boot straight to the interactive shell, skipping the milestone tour. Used by cargo xtask shell.
 shell = []
+# The SMB serve boot (milestone 54): wire the net server and the SMB adapter serving forever, so a
+# Mac can attempt a real mount through QEMU's hostfwd. Used by cargo xtask smb-serve; notes/smb.md.
+smb_serve = []
 # Adds a test that deliberately livelocks while making IPC progress, to prove the per-test wall-clock
 # ceiling catches what the no-progress heartbeat cannot see (testing.rs). It is EXPECTED TO FAIL the
 # run, so it is not part of the normal suite; see notes/scheduler.md for the command that runs it.

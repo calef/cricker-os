@@ -134,6 +134,13 @@ if [ -n "$NIFE_HOSTFWD_PORT" ]; then
     HOSTFWD=",hostfwd=tcp:127.0.0.1:$NIFE_HOSTFWD_PORT-10.0.2.15:7778"
 fi
 
+# The SMB adapter's forward (milestone 54), the same mechanism one port over: xtask's SMB prober
+# (and a Mac attempting a real mount, notes/smb.md) reaches the guest's SMB listener through it.
+# The guest port defaults to the test's 7779; the serve boot overrides it to SMB's own 445.
+if [ -n "$NIFE_SMB_HOSTFWD_PORT" ]; then
+    HOSTFWD="$HOSTFWD,hostfwd=tcp:127.0.0.1:$NIFE_SMB_HOSTFWD_PORT-10.0.2.15:${NIFE_SMB_GUEST_PORT:-7779}"
+fi
+
 NET=""
 if [ -n "$NIFE_NET" ]; then
     NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR$HOSTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"

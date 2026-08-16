@@ -93,6 +93,13 @@ name = "calendar"
 version = "0.1.0"
 
 [[package]]
+name = "canary_gate"
+version = "0.1.0"
+dependencies = [
+ "loom",
+]
+
+[[package]]
 name = "capability"
 version = "0.1.0"
 
@@ -351,6 +358,7 @@ dependencies = [
  "bitfont",
  "block_roster",
  "calendar",
+ "canary_gate",
  "capability",
  "clock_proto",
  "compositor",
@@ -611,6 +619,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
+name = "smb_proto"
+version = "0.1.0"
+
+[[package]]
 name = "smoltcp"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -837,6 +849,7 @@ dependencies = [
  "nifefs",
  "ntp_proto",
  "sink_proto",
+ "smb_proto",
  "smoltcp",
  "socket_proto",
  "supervision_proto",
@@ -932,6 +945,7 @@ dependencies = [
  "manual",
  "measured_boot",
  "nifefs",
+ "smb_proto",
  "video_terminal",
 ]
 

@@ -47,7 +47,7 @@
 
 // Two shared modules: the swap system's protocol and the supervision tree's loader. Each binary
 // uses a different slice of both, so the unused halves are expected (§38).
-use supervision_proto::Endow;
+use supervision_proto::ChildEndowment;
 use swap_proto::log_checks as lc;
 use user_rt::{cap_delete, invoke, recv, recv_fault, send};
 
@@ -148,12 +148,12 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
 
     start_child(
         &v1,
-        &Endow {
+        &ChildEndowment {
             caps: &instance_caps,
             maps: &with_device,
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [1, 0, 0], // a device, and log entries from 0
         11,
@@ -177,12 +177,12 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
         ROOT_UT,
         b_region,
         &v2,
-        &Endow {
+        &ChildEndowment {
             caps: &instance_caps,
             maps: &without_device,
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ) else {
         bail(21)
@@ -203,12 +203,12 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
 
     start_child(
         &client_img,
-        &Endow {
+        &ChildEndowment {
             caps: &client_caps,
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [swap_proto::ROLE_CLIENT, 0, 0],
         14,
@@ -299,12 +299,12 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
 
     start_child(
         &client_img,
-        &Endow {
+        &ChildEndowment {
             caps: &client_caps,
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [swap_proto::ROLE_USURPER, 0, 0],
         30,
@@ -368,36 +368,36 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // device story into the queue story would make it unclear which mechanism carried which claim.
     start_child(
         &v1,
-        &Endow {
+        &ChildEndowment {
             caps: &backend_caps,
             maps: &logmap,
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [0, base, 0],
         42,
     );
     start_child(
         &broker_img,
-        &Endow {
+        &ChildEndowment {
             caps: &broker_caps,
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [0, 0, 0],
         43,
     );
     start_child(
         &client_img,
-        &Endow {
+        &ChildEndowment {
             caps: &producer_caps,
             maps: &[],
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [swap_proto::ROLE_PRODUCER, 0, 0],
         44,
@@ -430,12 +430,12 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // The replacement, in a different language, on the same back endpoint.
     start_child(
         &v2,
-        &Endow {
+        &ChildEndowment {
             caps: &backend_caps,
             maps: &logmap,
             blobs: &[],
             fault: Some(w.faultep),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
         [0, base, 0],
         48,
@@ -480,7 +480,7 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
 /// Split a region, build a child in it, start it, and drop both capabilities. Neither is the thing
 /// itself: a TCB capability is not the thread (dropping it leaves the thread running), and since
 /// DECISIONS §32 the region capability is not the reap either.
-fn start_child(elf: &elf::Elf, endow: &Endow, args: [u64; 3], stage: u64) {
+fn start_child(elf: &elf::Elf, endow: &ChildEndowment, args: [u64; 3], stage: u64) {
     let Ok(region) = supervision_proto::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
         bail(stage)
     };

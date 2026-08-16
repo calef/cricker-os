@@ -47,10 +47,10 @@
 // so the unused halves are expected. This is the one shape where a blanket allow is the honest one:
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
 
-// The loader, shared with the milestone-22 supervision tree. `Endow.maps` and `Endow.fault` are the
+// The loader, shared with the milestone-22 supervision tree. `ChildEndowment.maps` and `ChildEndowment.fault` are the
 // two parts this milestone leans on: a child born with shared pages and born supervised.
 use c_seam::checks;
-use supervision_proto::Endow;
+use supervision_proto::ChildEndowment;
 use user_rt::{cap_delete, invoke, recv_fault, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
@@ -129,7 +129,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             ROOT_UT,
             region,
             &shim,
-            &Endow {
+            &ChildEndowment {
                 // The shell's whole authority: say what happened, and spend the region it lives in
                 // (which is what pays for `malloc`). No GRANT on either, so it can neither lend the
                 // report endpoint on nor hand its budget to anyone.
@@ -143,7 +143,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
                 ],
                 blobs: &[],
                 fault: Some(faultep),
-                ..Endow::new()
+                ..ChildEndowment::new()
             },
         ) else {
             bail(11)

@@ -65,7 +65,7 @@
 //! designates by typing a name, and this crate's work starts after that, so all three put it in a
 //! role it does not hold); and the grant synonyms `endow`, `award`, `confer`, `bestow`, `allot` and
 //! `furnish` (grant is already this tree's word and a synonym is a decoder ring, and `endow` is
-//! additionally taken by `supervision_proto::Endow`). Deliberately not named for `swish`: seven
+//! additionally taken by `supervision_proto::ChildEndowment`). Deliberately not named for `swish`: seven
 //! things use it, so naming it for one consumer would repeat `dwarden`'s defect.
 
 #![no_std]

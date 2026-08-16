@@ -232,7 +232,18 @@ Named 2026-08-04, after a night in which eleven agents shipped and the queue sti
 because nobody's job was noticing. The roles were already real; only their names and the top-up rule
 are new.
 
-- **Maintainer.** One per session, the session itself. Briefs developers, gates and merges their
+- **Maintainer.** One per session, the session itself, **and sessions are plural** (2026-08-15,
+  the day two sessions' lanes met in one file). Three rules make plural maintainers safe, and two
+  of them are machinery that already exists. The **merge queue is the single merge authority**:
+  no session coordinates a landing with another, both enqueue, and the group build arbitrates.
+  **Anything minted stays provisional until the queue lands it**: §-numbers, milestone numbers,
+  and names can collide between sessions that cannot see each other, and the decisions and
+  roadmap gates in every group build are what catch it, which is the old integrator-mints rule
+  with the queue as the integrator of last resort. And the one new duty: **a lane's branch is
+  pushed the moment it is cut, and every session lists remote branches before briefing a lane**
+  (`git ls-remote --heads`), because the pushed branch is the only lane ledger another session
+  can see. Machine-global state keeps its existing owner: whoever merges relinks the toolchain
+  from the main checkout and prunes what they merged. Briefs developers, gates and merges their
   work, mints anything global to the tree (`DECISIONS.md` sections, milestone numbers, names calef
   has ratified), and keeps hygiene: prune the worktree, delete the branch, relink `nife-dev`,
   leave no QEMU. Holds merge authority when calef grants it. **Maintainer, not project manager**,

@@ -37,7 +37,7 @@
 
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-use supervision_proto::{Endow, REPORT_FAILED, REPORT_INIT_DROPPED, REPORT_SUP_SAW_DEATH};
+use supervision_proto::{ChildEndowment, REPORT_FAILED, REPORT_INIT_DROPPED, REPORT_SUP_SAW_DEATH};
 use user_rt::{cap_delete, invoke, recv, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
@@ -103,7 +103,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
         ROOT_UT,
         ROOT_UT,
         &spawner,
-        &Endow {
+        &ChildEndowment {
             caps: &[
                 (req, abi::rights::READ),
                 (rep, abi::rights::WRITE),
@@ -114,7 +114,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             maps: &[],
             blobs: &[(SPAWNER_IMAGE_VA, flaky)],
             fault: Some(rootfault),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ) else {
         bail(10)
@@ -131,7 +131,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
         ROOT_UT,
         ROOT_UT,
         &sub_server_supervisor,
-        &Endow {
+        &ChildEndowment {
             caps: &[
                 (req, abi::rights::WRITE),
                 (rep, abi::rights::READ),
@@ -141,7 +141,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             maps: &[],
             blobs: &[],
             fault: Some(rootfault),
-            ..Endow::new()
+            ..ChildEndowment::new()
         },
     ) else {
         bail(12)
