@@ -560,9 +560,16 @@ addresses support:
   (`paint`/`high_water` over `[bottom, top)`, `spawn_into`'s closure slot and `Context`,
   `arm_for_start`, `enter_frame`'s `top - 272`, `user_pc`), so if this is the shape, the pointer is
   not one of those or it is being used after its stack died.
-- **A stray store through a corrupted pointer** that happens to name a slot base. Four faults across
-  four days landing on two addresses argues against a random one, and argues for a computation with
+- **A stray store through a corrupted pointer** that happens to name a slot base. Six faults across
+  five days landing on two addresses argues against a random one, and argues for a computation with
   a fixed input.
+
+**And the search space is small, which is the encouraging part.** Only three places in the kernel
+can name a slot *base* at all: `KernelStack::new` (which holds it as `base` and `guard`), its `Drop`
+(which pushes `self.guard` back to `FREE_STACK_VAS`), and the arithmetic in `stack.rs` that turns an
+address into a slot. `grep` for `STACK_AREA`, `STACK_SLOT_SPAN`, `NEXT_STACK_VA` and
+`FREE_STACK_VAS` finds nothing else outside tests. Whatever stores there either derives the address
+from one of those, or does not know it is a stack address at all.
 
 **The two slot numbers are themselves a clue nobody has spent.** Why 87 on aarch64 and 102 on
 riscv64, every time? A slot index is `(va - STACK_AREA) / 0x5000`, so a repeatable index means a
@@ -571,10 +578,14 @@ address is reached at the same point in the same suite on each run, which is ano
 this is deterministic in the sequence of allocations and not in the timing. The intermittency then
 has to come from something else deciding whether that path runs at all, not from where it lands.
 
-**It did not reproduce here.** Full-suite aarch64 runs under host load on a 4-CPU Linux box with
-`-smp 4` under TCG, all green, with the thread watermark reading 9536 every single time; the riscv64
-leg is green too, at 9344. The reproduction cost is the honest blocker: CI hit it perhaps two runs
-in six on a runner this machine does not resemble.
+**It did not reproduce here, and that is a result rather than a gap in the effort.** Full-suite
+aarch64 runs under host load on a 4-CPU Linux box, `-smp 4` under TCG, every one green. The thread
+watermark read **9536 bytes in fourteen runs out of fifteen and 9640 in the other**, which is worth
+recording on its own: the 104-byte spread is the interrupt-timing jitter milestone 84 predicted, and
+the depth is otherwise a constant. The reproduction cost is the honest blocker: CI hit it perhaps
+two runs in six, on a runner this machine does not resemble. A hunt harness that restores the
+fixture images and stands in for xtask's two host actors got the cycle to about 32 seconds, and 32
+seconds times zero failures is still zero information about the cause.
 
 **The next occurrence should be legible without another investigation**, which is what the `sp` line
 buys. If it prints a slot *below* the faulting address, the store-past-the-top reading is confirmed
