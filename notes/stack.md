@@ -460,10 +460,11 @@ chain, or grow the budget:
   alarms ~3 KiB past the measured worst-case stacking and 6 KiB before the guard. The old limit
   could pass a run whose true worst case was already past the stack, which these two CI runs
   proved by example.
-- **Not yet bounded**: the structural fix is a per-CPU interrupt stack, so a preemption stops
-  billing the interrupted thread ~2.3 KiB at its deepest instant. That is trap-entry surgery on
-  both ISAs and wants a lane of its own; until then the preemption cost is part of every thread's
-  budget, and the high-water margin has to carry it.
+- **Bounded, on 2026-08-16**: the structural fix is a per-CPU interrupt stack, so a preemption
+  stops billing the interrupted thread ~2.3 KiB at its deepest instant. This bullet said "not yet
+  bounded" and named it as wanting a lane of its own; it got one the next day, on both ISAs, and
+  the last section of this note has the numbers and the honest account of how much they moved.
+  What is still billed to the interrupted thread is the trap frame and the deferred `schedule()`.
 
 **What the enlargement cost elsewhere, which took three suite runs to find.** Thread stacks come
 from the kmem carve, not the frame allocator, and 6 pages x `MAX_THREADS` is 768 pages, the whole

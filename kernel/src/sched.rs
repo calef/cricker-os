@@ -3179,7 +3179,7 @@ mod tests {
     // RISC-V has nothing of the kind. `sip.SEIP` is read-only to S-mode (only the PLIC, driven by a
     // real wire, sets it), the PLIC's pending block is read-only by specification, and the one
     // interrupt S-mode can raise on itself is the SBI's IPI, which arrives as a *software* interrupt
-    // (`scause` = 1) down a different arm of `riscv_trap_dispatch` than a device's, touching neither
+    // (`scause` = 1) down a different arm of `riscv_trap_body` than a device's, touching neither
     // `irq_route` nor `irq_notify`. Using it would have looked like parity and proved nothing.
     //
     // So RISC-V uses the smallest real interrupt line it can assert by hand: the console UART's own
