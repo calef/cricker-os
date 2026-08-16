@@ -1,10 +1,24 @@
-# 89. Two words for an unratified name: `provisional` and `unrecorded`
+# 89. `provisional` becomes the fourth provenance state
 
-**Status: PROPOSED.** (raised 2026-08-16 by milestone 117's second stranger run, which wrote the
-word the rules told it to write and got a red gate for it.)
+**Status: DECIDED.** calef, 2026-08-16: **option 1**, a fourth state. `script/names` accepts
+`provisional`, `script/names --provisional` lists them, and they sort first in `--unratified`
+because a name its own author has called wrong is the shortest conversation available.
 
-**Number is provisional**: §87 was in flight in an unmerged pull request when this was written, so
-the integrator may renumber at merge.
+The reason option 1 beat the cheaper ones is milestone 115's own: **a backlog a machine can list
+is a backlog that gets worked**, and the alternatives put intent back into prose or into a lane's
+report, which is where naming decisions were dying before that milestone existed. `provisional`
+is also the word AGENTS.md already uses in four places, and a mechanism that spells its rule
+differently from the person who wrote the rule is a mechanism people get wrong, which is exactly
+how this defect was found: a newcomer wrote what the file told them to and the gate refused it.
+
+**The cost, accepted with eyes open** and worth restating because the entry named it: a lane can
+now write `provisional` forever and never confront that nothing recorded its reasoning. What
+answers that is the sort order rather than a rule: `provisional` is first in the worklist, so it
+is the state most likely to be resolved rather than the state easiest to hide in.
+
+**The states remain orthogonal in principle** (a name can be recorded and still provisional) and
+this deliberately does not model the cross product, because nothing in the tree has needed it.
+`script/names`'s own comment says so where the list is built.
 
 **What happened, verbatim.** A newcomer added a program, read AGENTS.md's repeated instruction that
 a lane "ships a **provisional** name and says so", wrote exactly that in the program's provenance

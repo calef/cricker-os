@@ -2338,6 +2338,11 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
 /// `Finished` threads are removed here (dropped, and their generational names killed, so every
 /// outstanding `Tcb` capability to them goes stale on its next use).
 ///
+/// **The region's endpoints go first, on every pass, refusal or not**, and that ordering is
+/// load-bearing rather than tidy: it is what wakes a resident blocked in `RECV` so the armed kill
+/// can actually land on it. The long comment at the sweep says why, and notes/frames.md carries the
+/// boot it fixed.
+///
 /// Takes `SCHED`, so it must run **outside** any teardown `Drop`: this is the caller-driven half of
 /// revocation, and `untyped::destroy` is the `SCHED`-free half (which is why the reaper's
 /// `Drop` -> `destroy` path cannot deadlock against it). See `untyped::unpin`.
@@ -2350,88 +2355,28 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // translated back. That is the whole test for "this object lives in the region".
     let page_of = |t: &Thread| crate::arch::mmu::virt_to_phys(t as *const Thread as u64);
 
-    // --- Refuse phase: change nothing until every object in the region can be torn down. ---
-
-    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack,
-    // or the running address space, out from under a thread that can still be scheduled. We may not
-    // reclaim under it this pass, but the forcible tier of `^C` (DECISIONS §24) needs `DESTROY` to
-    // *tear a runaway down*, not merely refuse it. So arm the kill (§16 amendment): mark every live
-    // resident thread `killed` and refuse. A killed thread never runs again; the scheduler converts
-    // it to a corpse at its next preemption, with no queue surgery here and no core stopping another
-    // (each core reaps its own on the timer). The region's owner retries `DESTROY` (the shell's
-    // escalation loop already does), and once the runaway has torn down this pass finds it gone and
-    // reclaims. A thread that only ever blocks, never scheduled to hit that preemption, is the
-    // cooperative tier's job (send it its interrupt endpoint), not this one.
-    let mut live = false;
+    // --- Endpoint phase: the region's endpoints go FIRST, refusal or not. ---
     //
-    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
-    // the running address space, out from under a thread that can still be scheduled. A `Dead`
-    // corpse (milestone 22) is *not* live: it never runs again, so it is reapable here exactly like
-    // an `Embryo` or a `Finished` thread, which is precisely what "reaped with §16 revocation"
-    // (DECISIONS §26) means. Its page's region stays pinned through this reap, so dropping its bound
-    // address space below refuses early in `untyped::destroy` (before that call's SCHED-taking
-    // sweep), the same property a configured embryo already relies on.
-    for t in sched.threads.iter_mut() {
-        let phys = page_of(t);
-        if base <= phys
-            && phys < end
-            && matches!(
-                t.handshake.state,
-                State::Ready | State::Running | State::Blocked
-            )
-        {
-            t.killed = true;
-            live = true;
-        }
-    }
-    if live {
-        return Err(());
-    }
-    // Endpoints do not refuse: a thread blocked on an endpoint in the region is woken with an error
-    // (its IPC aborts, its cap now stale) rather than stranding the reclaim, in the removal phase.
-
-    // --- Removal phase: every object in the region is reapable. ---
-
-    // Threads: collect before removing (`remove` mutates the table). Both Embryo and Finished go.
-    let mut doomed = [0u64; MAX_THREADS];
-    let mut n = 0;
-    for t in sched.threads.iter_mut() {
-        let phys = page_of(t);
-        if base <= phys && phys < end {
-            doomed[n] = t.id;
-            n += 1;
-        }
-    }
-    for &tid in &doomed[..n] {
-        // **Unlink a corpse from its supervision endpoint first.** A supervised thread that died
-        // with nobody in `RECV` is parked on that endpoint's *sender* queue holding its death
-        // message (DECISIONS §26 implementation note 2), and that endpoint is the supervisor's, so
-        // it is not in this region and the endpoint sweep below will not touch it. Freeing the TCB
-        // while it is still linked there would leave a dangling pointer that the supervisor's next
-        // `RECV` would follow into a recycled page. §16's `DESTROY` could already reach this (reap
-        // before receiving); §32's endpoint reap makes it easy to reach, because a supervisor can be
-        // told a tid by its builder and never collect the message at all.
-        let parked = sched
-            .threads
-            .get(tid)
-            .filter(|t| t.handshake.state == State::Dead)
-            .and_then(|t| t.fault_ep);
-        if let Some(ep) = parked {
-            let ptr = tcb_ptr(sched, tid);
-            if let Some(endpoint) = endpoint_of(sched, ep) {
-                // SAFETY: `ptr` is compared by pointer, never dereferenced; the other queued
-                // senders are re-pushed and are all still live (blocked threads or corpses).
-                unsafe { endpoint.remove_sender(ptr) };
-            }
-        }
-        sched.threads.remove(tid);
-    }
-
-    // Endpoints: every endpoint in the region. Before removing one, wake any thread blocked on it
-    // with an error: drain its wait queues (which frees each waiter's intrusive link), mark each
-    // aborted, and wake it, so its blocked IPC returns an error rather than dangling on a freed page.
-    // Removing the name then bumps its generation, so every Endpoint capability to it fails to
-    // resolve, and the page is freed by the enclosing destroy.
+    // **This ordering is what lets `DESTROY` reclaim a region full of blocked servers**, and until
+    // 2026-08-16 it could not. The sweep used to sit after the refusal below, so a region holding a
+    // process parked in `RECV` was refused forever: the refusal armed §16's kill, the kill is spent
+    // by `schedule()`, and a `Blocked` thread never reaches `schedule()`. The owner retried until it
+    // gave up, and the memory stayed spoken for until the machine stopped. That is the whole reason
+    // the aarch64 test boot ran out of frames: `userspace_init_brings_up_the_console_server` builds a
+    // console server out of init's budget and that server blocks in its serve loop, so init's
+    // 2048-frame region was unreclaimable by construction. See notes/frames.md.
+    //
+    // Sweeping first fixes it because **the wake is already here**: removing an endpoint drains its
+    // wait queues, marks each waiter's IPC aborted and wakes it, which is precisely the transition a
+    // blocked resident needs to become schedulable and so to spend the kill the refusal arms one
+    // paragraph below. A server whose endpoints came out of the region being destroyed dies; one
+    // blocked on somebody else's endpoint still does not, and `reclaim_region`'s caller is told so by
+    // the refusal rather than by a hang (see `user::holding::Holding`'s BUGS).
+    //
+    // **A refused reclaim was already destructive** and says so in `reclaim_region`'s BUGS: it arms
+    // kills on every live resident. This makes the same pass also end the region's endpoints, which
+    // is the same commitment one object over: the caller has said this region is going away. What it
+    // must not do is *surprise* anyone, which is why it is written here rather than assumed.
     //
     // **Rescan for one at a time rather than listing them all first.** The obvious shape is to walk
     // the table into a `[u64; MAX_ENDPOINTS]` and then walk that, because `remove` mutates the table
@@ -2468,6 +2413,80 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
             wake(sched, tid); // the link is free (drained), so wake queues it onto a run queue
         }
         sched.endpoints.remove(name);
+    }
+
+    // --- Refuse phase: no thread in the region may still be able to run. ---
+
+    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack,
+    // or the running address space, out from under a thread that can still be scheduled. We may not
+    // reclaim under it this pass, but the forcible tier of `^C` (DECISIONS §24) needs `DESTROY` to
+    // *tear a runaway down*, not merely refuse it. So arm the kill (§16 amendment): mark every live
+    // resident thread `killed` and refuse. A killed thread never runs again; the scheduler converts
+    // it to a corpse at its next preemption, with no queue surgery here and no core stopping another
+    // (each core reaps its own on the timer). The region's owner retries `DESTROY` (the shell's
+    // escalation loop already does), and once the runaway has torn down this pass finds it gone and
+    // reclaims. A thread that only ever blocks, never scheduled to hit that preemption, is the
+    // cooperative tier's job (send it its interrupt endpoint), not this one.
+    let mut live = false;
+    //
+    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
+    // the running address space, out from under a thread that can still be scheduled. A `Dead`
+    // corpse (milestone 22) is *not* live: it never runs again, so it is reapable here exactly like
+    // an `Embryo` or a `Finished` thread, which is precisely what "reaped with §16 revocation"
+    // (DECISIONS §26) means. Its page's region stays pinned through this reap, so dropping its bound
+    // address space below refuses early in `untyped::destroy` (before that call's SCHED-taking
+    // sweep), the same property a configured embryo already relies on.
+    for t in sched.threads.iter_mut() {
+        let phys = page_of(t);
+        if base <= phys
+            && phys < end
+            && matches!(
+                t.handshake.state,
+                State::Ready | State::Running | State::Blocked
+            )
+        {
+            t.killed = true;
+            live = true;
+        }
+    }
+    if live {
+        return Err(());
+    }
+    // --- Removal phase: every object in the region is reapable. ---
+
+    // Threads: collect before removing (`remove` mutates the table). Both Embryo and Finished go.
+    let mut doomed = [0u64; MAX_THREADS];
+    let mut n = 0;
+    for t in sched.threads.iter_mut() {
+        let phys = page_of(t);
+        if base <= phys && phys < end {
+            doomed[n] = t.id;
+            n += 1;
+        }
+    }
+    for &tid in &doomed[..n] {
+        // **Unlink a corpse from its supervision endpoint first.** A supervised thread that died
+        // with nobody in `RECV` is parked on that endpoint's *sender* queue holding its death
+        // message (DECISIONS §26 implementation note 2), and that endpoint is the supervisor's, so
+        // it is not in this region and the endpoint sweep above did not touch it. Freeing the TCB
+        // while it is still linked there would leave a dangling pointer that the supervisor's next
+        // `RECV` would follow into a recycled page. §16's `DESTROY` could already reach this (reap
+        // before receiving); §32's endpoint reap makes it easy to reach, because a supervisor can be
+        // told a tid by its builder and never collect the message at all.
+        let parked = sched
+            .threads
+            .get(tid)
+            .filter(|t| t.handshake.state == State::Dead)
+            .and_then(|t| t.fault_ep);
+        if let Some(ep) = parked {
+            let ptr = tcb_ptr(sched, tid);
+            if let Some(endpoint) = endpoint_of(sched, ep) {
+                // SAFETY: `ptr` is compared by pointer, never dereferenced; the other queued
+                // senders are re-pushed and are all still live (blocked threads or corpses).
+                unsafe { endpoint.remove_sender(ptr) };
+            }
+        }
+        sched.threads.remove(tid);
     }
 
     Ok(())

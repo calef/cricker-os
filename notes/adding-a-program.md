@@ -27,18 +27,24 @@ citation), `unrecorded` (nothing outside this block says why). **The gate checks
 **The name is calef's** (AGENTS.md, "calef names the crates, the programs, and the shared modules").
 Ship a provisional one, say so in your report, expect it to change.
 
-**Do not write `provisional` in the block, even though that is AGENTS.md's word for it.** The gate
-takes exactly `ratified <date>`, `recorded` or `unrecorded`, and rejects anything else:
+**Write `provisional` when you expect the name to change**, which is AGENTS.md's word and, since
+§89 (2026-08-16), the gate's too. Four states:
 
 ```
-names: program doubler: the block must start `ratified <date>` or `unrecorded`
-       (found '**provisional**. Introduced 2026-08-16 while wal')
+Name: ratified 2026-08-04 (calef, milestone 63). Refused `x` (why).
+Name: recorded (milestone 46). <what the tree already argues, and where>
+Name: provisional. <what you called it and why you expect it to change>
+Name: unrecorded. <what the history does and does not say>
 ```
 
-A provisional name **is** `unrecorded` (nothing outside the block says why it is called that), so
-write `unrecorded` and add the word after it if it matters: `unrecorded, and explicitly
-**provisional**`, which two programs in the tree already do. The clash between the rule's vocabulary
-and the gate's is real, cost run 2 a red gate, and is §89's question rather than this page's.
+`provisional` is a claim about **intent** (you expect this to change); the other three are claims
+about the **record**. A settled name can be `unrecorded` (nobody wrote down why `hello` is called
+`hello`, and nobody needs to), so the two are not the same word for the same thing.
+
+`script/names --provisional` lists them and they sort first in `--unratified`, because a name its
+own author called wrong is the shortest conversation calef can have. This page told newcomers the
+opposite until §89: run 2 of the stranger test wrote the word AGENTS.md asked for and got a red
+gate, which is what raised the decision.
 
 ### 3. A `[[bin]]` block in `user/Cargo.toml`
 

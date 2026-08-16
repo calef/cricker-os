@@ -255,6 +255,14 @@ are new.
   notification" while your own gate is running is the failure mode, not patience (calef,
   2026-08-14, after five lanes in one day stopped mid-gate and each needed a manual resume). The
   report comes after the gate, and nothing about a gate is finished until you have read its exit.
+- **Every pull request and comment an agent writes opens by saying so.** One line, first thing
+  in the body: `**Lane:** <branch or milestone>, written by an agent; calef's account is the
+  author GitHub shows.` Until milestone 128 gives the automation a real identity, every artifact
+  in this repository carries calef's name whether he wrote it or not, and a reader cannot tell
+  the architect's voice from a lane's. This is rung four and it is honest about being rung four:
+  the mechanism is 128's App, and this is what the record says in the meantime. (calef, 2026-08-16:
+  *"it looks like I'm talking to myself a lot and the record would be nice to clarify who is
+  talking."*)
 - **A lane's first act is a draft pull request** (§90, 2026-08-16). Cut the branch, push it, open
   the pull request as a **draft**, before any work. That is the claim, and it is why two lanes
   cannot silently take the same milestone: the board is `gh pr list --draft`, it costs one

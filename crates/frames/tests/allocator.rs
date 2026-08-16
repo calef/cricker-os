@@ -262,3 +262,32 @@ fn a_frame_past_the_last_one_is_not_ours() {
     );
     assert_eq!(a.is_used(Frame::from_addr(BASE + 60 * FRAME_SIZE)), None);
 }
+
+/// **Free frames and the longest free run are different numbers, and it is the second that fails a
+/// boot.** Milestone 107 measured 137 frames free and no run of 128 at the allocation that failed;
+/// a total-free reading alone cannot tell "out of memory" from "out of contiguity", and reading it
+/// as the former sent three milestones looking in the wrong place. See notes/frames.md.
+#[test]
+fn the_longest_free_run_is_not_the_free_count() {
+    let mut bits = [0u8; 8];
+    let mut a = allocator(&mut bits);
+
+    // Whole and untouched: one run of everything.
+    assert_eq!(a.largest_free_run(), 64);
+    assert_eq!(a.stats().free(), 64);
+
+    // Punch a used frame into the middle. Free drops by one; the longest run halves.
+    a.mark_used(BASE + 32 * FRAME_SIZE, FRAME_SIZE);
+    assert_eq!(a.stats().free(), 63);
+    assert_eq!(a.largest_free_run(), 32);
+    assert!(
+        a.alloc_contiguous(33).is_none(),
+        "63 frames are free and the longest run is 32: a 33-frame request must fail"
+    );
+    assert!(a.alloc_contiguous(32).is_some(), "a 32-frame run is there");
+
+    // Nothing free at all: a run of zero, and never a panic on an empty bitmap.
+    let mut bits = [0u8; 8];
+    let a = FrameAllocator::new(BASE, 64, &mut bits);
+    assert_eq!(a.largest_free_run(), 0);
+}

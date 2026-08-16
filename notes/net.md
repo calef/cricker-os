@@ -684,6 +684,52 @@ which is what makes this so expensive to diagnose from the failure alone. That i
 milestone to be misled by it, and it is the argument for reclaim being a milestone rather than a
 cleanup.
 
+**Postscript, 2026-08-16: that one-in-three did not reproduce on the lane that fixed this**, and the
+honest reading of that is worth more than a tidier one. Twelve aarch64 runs at the pre-fix commit
+under TCG and eight on the physical core (`--hvf`) were all green on one developer's machine. What
+*did* reproduce, on every single run, is the margin the paragraph above is really about: **216 free
+frames of 29307 and no free run longer than 117**. With that little headroom, which test dies is
+decided by scheduling, so a rate measured on one machine on one day is a property of the machine as
+much as of the tree. Reproduce the margin, not the failure.
+
+### The reclamation landed, 2026-08-16, and here is what it cost and returned
+
+The prediction above was right about the cause and wrong about the size of it: **the net services
+were the second biggest spender, not the first.** Measured across a whole aarch64 boot with the frame
+ledger (notes/frames.md), the ten net tests held **2759 frames**; the six `spawn_init` tests held
+**12289**. Both are fixed, and the note is corrected rather than quietly updated, because "we knew
+which one it was" is exactly the kind of claim this file exists to keep honest.
+
+What a net test now does at the end: `net.release_or_fail("a net test's net_stack")`, which is
+`kill_thread` on the server and its clients, then `reclaim_region` on each region, retried. No new
+verb, no syscall change.
+
+**The one thing that had to change in the kernel, and it is worth understanding here rather than
+only in `sched.rs`:** `net_stack` blocks in `recv_cap(STACK)` forever, and DECISIONS §16's armed kill
+is spent by `schedule()`, which a `Blocked` thread never reaches. Killing it did nothing. What ends
+it is that reclaiming a region **removes the endpoints inside it and aborts whoever is blocked on
+them** (§32's endpoint reap), and that sweep now runs *before* the live-thread refusal instead of
+after it. So the server's three endpoints come out of a four-page region of their own, and reclaiming
+that region is what wakes it up to die. From `create_endpoint`'s shared kernel chunks there is no such
+handle, and there was no way to end a `net_stack` short of rebooting the machine.
+
+The measured result for the boot as a whole: **216 free frames at the end became 15307, and the
+longest free run went from 117 to 14080.** (15249 on the merged tree, which runs one more process in
+the SMB test; notes/frames.md carries the remeasurement. The free run, which is the number that
+decides whether a boot lives, is 14080 either way.)
+
+Two things this does **not** fix, both recorded rather than papered over:
+
+- **`virtio::MAX_DEVICES` is untouched.** `virtio::register` bumps a counter and never reuses a slot,
+  so the ninth receipt in that constant's comment still stands: the boot's ceiling is still "how many
+  devices has this boot ever wired". Reusing a slot safely needs a generational name on the device
+  table, because a stale `Object::Virtio` capability must not alias a fresh device, and that is a
+  capability-semantics change rather than a counter change. Its own lane.
+- **The DMA page and the shadow ring are deliberately not returned**, ~2 frames per net service. The
+  NIC still holds whatever receive buffers the dead driver posted, and handing those pages back to the
+  allocator would let a live device write into somebody else's memory. Ending that safely means
+  resetting the device at teardown, through the transport seam. Also its own lane.
+
 ### What is still not proven, and what is deliberately out of scope
 
 - **`std::net::TcpListener` is still `Unsupported`.** The block asked whether the PAL binding lands
