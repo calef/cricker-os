@@ -273,8 +273,9 @@ fn print_text_words(bottom: u64, top: u64) {
     const CAP: usize = 40;
     let text = crate::arch::mmu::text_start()..crate::arch::mmu::text_end();
     crate::println!(
-        "  Words on the dead stack that point into .text ({:#x}..{:#x}), deepest first,"
-        , text.start, text.end
+        "  Words on the dead stack that point into .text ({:#x}..{:#x}), deepest first,",
+        text.start,
+        text.end
     );
     crate::println!("  as `bottom+offset: word` (candidate return addresses; no frame pointers):");
     let mut printed = 0usize;
