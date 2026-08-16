@@ -4,7 +4,10 @@
 both ISAs**. Minted the same day by calef, out of the riscv64 stack overflow milestone 108 was held
 on. The hold turned out to be the wrong suspect twice over, and this is what was underneath.
 
-**Gate: NONE.** A lane is on it; what it needs is measurement, not a decision.
+**Gate: NONE.** **Nobody is on it**, which is what `PARTIAL` means and what this line said the
+opposite of for two hours after the lane finished. What it needs is a reproduction rather than a
+decision: 45 full-suite runs under deliberate host load did not produce the fault, and CI remains the
+only machine that has ever seen it.
 
 ## Reopened: the guard page is being stepped over again (2026-08-16)
 
