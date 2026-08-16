@@ -24,6 +24,10 @@ bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 # kernel computes straight from the clock page. Same discipline as bitfont/vt above: the test
 # predicts from the shared definition rather than keeping a second copy of it.
 calendar = { version = "0.1.0", path = "../crates/calendar" }
+# The corruption canary's arm/check/disarm serialization (2026-08-15), lifted out of `sched.rs`
+# after its hand-written two-flag protocol raced: the kernel calls the loom-searched gate rather
+# than keeping a copy of it, the third retrofit of steal_request's move. See notes/interleaving.md.
+canary_gate = { version = "0.1.0", path = "../crates/canary_gate" }
 capability = { version = "0.1.0", path = "../crates/capability" }
 # The shell's grant-expression logic (milestone 47's `rm -r`). The kernel plans nothing; its `rm`
 # test **starts the program the way the shell would**, so the option bits it packs come from the
