@@ -168,6 +168,11 @@ const ROLE_SET_ATTRS: u64 = 6;
 /// host's SMB prober asserts were put on the filesystem through `fs_proto` by a different process
 /// than the one that serves them.
 const ROLE_SMB_SEED: u64 = 7;
+/// Milestone 54's write path: read back, through the FS server, the file the **host's** SMB
+/// prober wrote over the wire ([`fixture::SMB_WROTE_NAME`]). The seed role's mirror, and the leg
+/// that makes the write gate a gate: without it the only witness to a write is the client that
+/// performed it, which is the thing a protocol test must never be allowed to be.
+const ROLE_SMB_VERIFY: u64 = 8;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
@@ -179,9 +184,52 @@ pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
         ROLE_DIR_ATTACKER => dir_attacker(a1),
         ROLE_SET_ATTRS => set_attrs(),
         ROLE_SMB_SEED => smb_seed(),
+        ROLE_SMB_VERIFY => smb_verify(),
         ROLE_PROOF => proof(),
         _ => proof(),
     }
+}
+
+/// **Read back what came in over SMB** (milestone 54's write path): open
+/// [`fixture::SMB_WROTE_NAME`] through the FS server and check it holds exactly
+/// [`fixture::SMB_WROTE`].
+///
+/// This runs *after* the SMB adapter has finished serving, in a process that holds a directory
+/// capability and nothing that names the network. That separation is the whole point: the bytes
+/// were put there by a host process over TCP, and are read here by a different process through
+/// `fs_proto`, so "the write crossed SMB2 -> the `Share` seam -> fs_proto -> RedoxFS" is
+/// something the machine checks rather than something the writer asserts about itself.
+///
+/// It classifies rather than merely failing, in [`crash_verify`]'s shape: the second report word
+/// says what was found, because "the file is not there at all" and "the file is there and wrong"
+/// are different bugs and a bare failure would not say which.
+fn smb_verify() -> ! {
+    let name = fixture::SMB_WROTE_NAME;
+    put_page(name.as_bytes());
+    let (h, _) = call(FILE, fs::req(fs::OPEN, 0, name.len() as u64), 0);
+    if (h as i64) < 0 {
+        send(REPORT, fixture::SUCCESS, fixture::smb_wrote::ABSENT, 0);
+        exit();
+    }
+    let (size, _) = call(FILE, fs::req(fs::FSTAT, h, 0), 0);
+    let mut buf = [0u8; 256];
+    let want = fixture::SMB_WROTE;
+    let n = read(h, 0, want.len().min(buf.len()));
+    get_page(n, &mut buf);
+    let verdict = if size as usize != want.len() {
+        // A size mismatch is the truncate leg failing, which is worth its own word: the prober
+        // writes a long payload and then shortens it with SET_INFO, so a file of the wrong
+        // length means the shortening never reached the filesystem.
+        fixture::smb_wrote::WRONG_SIZE
+    } else if &buf[..n] != want {
+        fixture::smb_wrote::WRONG_BYTES
+    } else {
+        fixture::smb_wrote::EXACT
+    };
+    let (c, _) = call(FILE, fs::req(fs::CLOSE, h, 0), 0);
+    check((c as i64) >= 0);
+    send(REPORT, fixture::SUCCESS, verdict, 0);
+    exit();
 }
 
 /// **Seed the SMB gate's file** (milestone 54): put [`fixture::SMB_SEED`] at

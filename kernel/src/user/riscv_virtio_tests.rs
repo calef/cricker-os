@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
 use super::std_tests::{
     assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
-    assert_std_transcript, std_fs_expected,
+    assert_smb_write_landed, assert_std_transcript, std_fs_expected,
 };
 use super::*;
 use crate::sched;
@@ -564,11 +564,14 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
             fs_proto::fixture::SUCCESS,
             "the seeding client could not put the SMB gate's file on the filesystem",
         );
-        fs_service::root_directory(
+        let (ep, shared) = fs_service::root_directory(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
         )
-        .expect("the FS service was wired a moment ago")
+        .expect("the FS service was wired a moment ago");
+        // Read-write, as on the aarch64 twin: the write half of the gate needs the adapter to
+        // accept a write, and the read-only refusals are `smb_proto`'s host tests.
+        (ep, shared, virtio_service::SMB_SHARE_FS_READ_WRITE)
     });
     if fs.is_none() {
         crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
@@ -577,6 +580,9 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "    (combined boot wired: {} frames free before the net + SMB spawn)",
         crate::memory::free_frames()
     );
+    // Taken before `fs` is handed to the spawn below: the write verifier needs to know whether
+    // there was a filesystem at all, and the spawn consumes the capability.
+    let had_fs = fs.is_some();
     let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -604,8 +610,10 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         verdict, NET_CLIENT_OK,
         "the SMB adapter did not serve a mount-shaped exchange (code {verdict:#x}); 0xE11x is the \
          listen grant, 0xE120 means no SMB connection arrived (the runner's \
-         NIFE_SMB_HOSTFWD_PORT hostfwd, or the prober), 0xE121 a connection with no SMB on it",
+         NIFE_SMB_HOSTFWD_PORT hostfwd, or the prober), 0xE121 a connection with no SMB on it, \
+         0xE130 an arg2 share mode nobody defined",
     );
+    assert_smb_write_landed(had_fs);
 }
 
 /// The `std_exerciser` std program's ELF bytes from the riscv initrd. Given the network here, its

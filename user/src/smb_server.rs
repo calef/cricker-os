@@ -17,6 +17,7 @@
 //! - **The fixture** (`smb_proto::share::FIXTURE`), files baked into this binary: the no-disk
 //!   fallback, kept because it lets the whole protocol path run and gate with no FS service in
 //!   the boot, and because a wire bug is easier to hunt against a share that cannot be wrong.
+//!   Read-only, and it is `Share`'s worked example of a backing that says so.
 //!
 //! All protocol code is indifferent to which one it is serving; see notes/smb.md.
 //!
@@ -30,7 +31,10 @@
 //! - arg0: connections to serve before reporting OK; 0 means serve forever (the demo boot)
 //! - arg1: the TCP port to listen on (445 in the demo boot; the test grants a neighbour of the
 //!   echo gate's port instead, see the kernel test)
-//! - arg2: 0 serves the fixture, nonzero serves the fs_proto-backed share
+//! - arg2: which share, and in which direction. 0 is the fixture, 1 the fs_proto-backed share
+//!   read-only, 2 the fs_proto-backed share read-write ([`SHARE_FIXTURE`] and its two
+//!   neighbours). The write path split this from a flag, because a **read-only view of the real
+//!   filesystem** is a thing a boot should be able to wire and a boolean could not say.
 //!
 //! # Socket ids
 //!
@@ -41,17 +45,23 @@
 //!
 //! # BUGS
 //!
-//! - **The fs share is stateless per request, and pays for it in IPC.** Every `Share` call
-//!   re-walks the directory listing (`READDIR` from cursor 0) and every read re-opens the file,
-//!   so one 64 KiB SMB READ costs a listing walk, an OPEN, sixteen page-sized `fs::READ`s and a
-//!   CLOSE. Correct first; a handle cache is the write path's problem (milestone 55), which will
-//!   need per-connection state anyway.
-//! - **An FS error degrades to absence.** A refused OPEN reads as "no such file", a failed READ
-//!   as EOF: the `Share` trait carries no error channel, so the wire cannot distinguish
-//!   "the FS server said no" from "not there". Read-only serving makes that tolerable; widening
-//!   the trait is recorded against the write path.
+//! - **A listing still costs a walk.** `QUERY_DIRECTORY` re-walks `READDIR` from cursor 0 for
+//!   each entry and pays an OPEN + FSTAT + CLOSE to learn its size, because `fs_proto`'s dirent
+//!   records carry name and kind only. Reads and writes no longer pay it: the write path made
+//!   the `Share` id the FS server's own handle, so a 64 KiB transfer is sixteen page-sized
+//!   `fs::READ`s and nothing else.
+//! - **A handle is never reclaimed if a client vanishes mid-connection.** The FS server's handle
+//!   table is per server, and this adapter closes what it opened only on CLOSE or when the
+//!   `Connection` is dropped at end of connection; a connection torn down between a CREATE and
+//!   its CLOSE leaks one FS handle for the life of the FS server. Bounded by `MAX_HANDLES` per
+//!   connection, unbounded across connections, and the fix is the `Connection` telling the share
+//!   what to release, which is a seam change rather than a line.
+//! - **Free space is nominal**, and Time Machine will care: see `smb_proto`'s BUGS and
+//!   `smb_proto::share::NOMINAL_VOLUME_BYTES`. `fs_proto` has no `statfs` verb.
 //! - **Subdirectories are listed but not enterable**: the share model is flat (`share.rs`), so a
-//!   directory shows in a listing with the directory attribute and answers `NOT_FOUND` when opened.
+//!   directory shows in a listing with the directory attribute and answers `NOT_FOUND` when
+//!   opened. Writing therefore cannot create one either: `MKDIR` is a verb this share does not
+//!   offer at any disposition.
 //! - **Upper-case FS names are unreachable.** The wire folds names to lower-case ASCII before
 //!   lookup, and the FS is case-sensitive, so only lower-case names on disk can be opened.
 //! - **One connection at a time.** A second client connecting while one is served is refused by
@@ -71,9 +81,9 @@
 #![no_main]
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
-use fs_proto::{dirent, fs};
+use fs_proto::{dir, dirent, fs, xattr};
 use smb_proto::server::Connection;
-use smb_proto::share::{Entry, FIXTURE, Node, Share};
+use smb_proto::share::{Entry, Error, FIXTURE, FileId, Share};
 use smb_proto::{MAX_MESSAGE, XPORT_LEN, xport_parse, xport_write};
 use socket_proto::{
     DATA_MAX, LISTEN_DENIED, LISTEN_GRANTED, LISTEN_IN_USE, OFF_LEN, OFF_PAYLOAD, OP_ACCEPT,
@@ -91,6 +101,14 @@ const FS: u64 = 3;
 /// Where the page shared with the FS server is mapped (a name out, file bytes and directory
 /// listings back). Must match the kernel-side wiring in `kernel/src/user/virtio_service.rs`.
 const FS_VA: u64 = 0x0000_0000_00B0_0000;
+
+/// **What `arg2` says the share is.** Three values rather than a flag, because the write path
+/// made "which backing" and "which direction" two separate questions, and a boolean answering
+/// both would have made a read-only real share unwireable. The `Share` seam is what enforces the
+/// direction; this is only how the boot says which it wants.
+const SHARE_FIXTURE: u64 = 0;
+const SHARE_FS_READ_ONLY: u64 = 1;
+const SHARE_FS_READ_WRITE: u64 = 2;
 
 /// See the module header on why these are 2 and 3.
 const LISTEN_SID: u64 = 2;
@@ -187,6 +205,22 @@ fn fs_readdir(cursor: u64) -> &'static [u8] {
     &d[..n]
 }
 
+/// Turn an FS reply's negated errno into the share model's word for it. The one place the
+/// translation happens, so a client meets one status per condition (`smb_proto`'s `status_for` is
+/// the other half of the same chain). An errno this share has no word for is [`Error::Io`] rather
+/// than silence, which is the whole point of the trait having an error channel at all.
+fn fs_error(r0: u64) -> Error {
+    match fs_proto::reply_errno(r0 as i64) {
+        Some(2) => Error::NotFound,              // ENOENT
+        Some(17) => Error::Exists,               // EEXIST
+        Some(dir::EISDIR) => Error::IsDirectory, // 21
+        Some(dir::EROFS) | Some(dir::EPERM) => Error::ReadOnly,
+        Some(xattr::ENOSPC) => Error::NoSpace, // 28
+        Some(36) => Error::NameTooLong,        // ENAMETOOLONG
+        _ => Error::Io,
+    }
+}
+
 /// Walk the listing to entry `index`, leaving its name in [`NAME`]. Returns the name's length
 /// and whether the entry is a directory.
 fn fs_nth(index: usize) -> Option<(usize, bool)> {
@@ -216,28 +250,6 @@ fn fs_nth(index: usize) -> Option<(usize, bool)> {
     }
 }
 
-/// Walk the listing for `wanted`. Returns its entry index and whether it is a directory.
-fn fs_find(wanted: &[u8]) -> Option<(usize, bool)> {
-    let mut cursor = 0usize;
-    loop {
-        let page = fs_readdir(cursor as u64);
-        if page.is_empty() {
-            return None;
-        }
-        let mut in_page = 0usize;
-        for (nm, is_dir) in dirent::iter(page) {
-            if nm == wanted {
-                return Some((cursor + in_page, is_dir));
-            }
-            in_page += 1;
-        }
-        if in_page == 0 {
-            return None;
-        }
-        cursor += in_page;
-    }
-}
-
 /// The name [`fs_nth`] just resolved, as the slice an [`Entry`] carries.
 fn fs_name(len: usize) -> &'static [u8] {
     let p = &raw const NAME;
@@ -245,38 +257,59 @@ fn fs_name(len: usize) -> &'static [u8] {
     unsafe { &(&*p)[..len] }
 }
 
-/// Open the `index`th entry read-only and return the FS server's handle. `None` for a
-/// directory, a vanished name, or a refusal.
-fn fs_open_nth(index: usize) -> Option<u64> {
-    let (len, is_dir) = fs_nth(index)?;
-    if is_dir {
-        return None;
-    }
-    fs_put(fs_name(len));
-    let (r0, _) = call(FS, fs::req(fs::OPEN, fs::ROOT, len as u64), 0);
-    if (r0 as i64) < 0 { None } else { Some(r0) }
-}
-
 /// **The share backed by the FS server**: every question answered with `fs_proto` verbs over
-/// the directory capability in slot [`FS`], so what the mount reads is RedoxFS. Stateless on
-/// purpose (each call re-resolves; the module BUGS price it): correctness has no cache to go
-/// stale, and the write path is the one that will want state.
+/// the directory capability in slot [`FS`], so what the mount reads and writes is RedoxFS.
+///
+/// **The [`FileId`] is the FS server's own handle**, which is the write path's contribution and
+/// two fixes in one. It retires the open-per-request cost the read path recorded (a 64 KiB READ
+/// cost a listing walk, an OPEN, sixteen reads and a CLOSE; it now costs sixteen reads), and it
+/// makes a handle survive a directory that moves under it, which is what a writable share does
+/// every time a client creates a file.
+///
+/// `writable` comes from the boot (`arg2`), not from probing the capability: the protocol layer
+/// consults it before it asks anything, so a read-only share is read-only whatever the directory
+/// capability behind it would have permitted. A share wired writable over a capability that
+/// lacks `dir::WRITE` still refuses, one layer down, with the FS server's own `EROFS`.
 ///
 /// Name: provisional, minted by this milestone's lane on 2026-08-15 (`FixtureShare` set the
 /// `<what backs it>Share` shape).
-struct FsShare;
+struct FsShare {
+    writable: bool,
+}
 
 impl Share for FsShare {
-    fn lookup(&self, name: &[u8]) -> Option<Node> {
-        if name.is_empty() {
-            return Some(Node::Root);
+    fn writable(&self) -> bool {
+        self.writable
+    }
+
+    fn open(&self, name: &[u8]) -> Result<FileId, Error> {
+        if name.len() > fs_proto::PAGE {
+            return Err(Error::NameTooLong);
         }
-        match fs_find(name) {
-            // A directory answers None: the share model is flat (module BUGS), so a
-            // subdirectory is listable but not openable.
-            Some((i, false)) => Some(Node::File(i)),
-            _ => None,
+        fs_put(name);
+        let (r0, _) = call(FS, fs::req(fs::OPEN, fs::ROOT, name.len() as u64), 0);
+        if (r0 as i64) < 0 {
+            // A directory is `EISDIR`, which this flat share reports as absence: it has no
+            // subdirectory node to hand back (module BUGS), so "there is nothing here you can
+            // open" is the true sentence.
+            return Err(match fs_error(r0) {
+                Error::IsDirectory => Error::NotFound,
+                e => e,
+            });
         }
+        Ok(r0)
+    }
+
+    fn create(&self, name: &[u8]) -> Result<FileId, Error> {
+        if name.len() > fs_proto::PAGE {
+            return Err(Error::NameTooLong);
+        }
+        fs_put(name);
+        let (r0, _) = call(FS, fs::req(fs::CREATE, fs::ROOT, name.len() as u64), 0);
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(r0)
     }
 
     fn entry(&self, index: usize) -> Option<Entry<'_>> {
@@ -285,7 +318,8 @@ impl Share for FsShare {
             0
         } else {
             // OPEN + FSTAT + CLOSE per entry: the listing records carry no size (fs_proto's
-            // dirent is name and kind only).
+            // dirent is name and kind only). This is the one path that still pays per entry,
+            // because a listing is a walk by nature.
             fs_put(fs_name(len));
             let (h, _) = call(FS, fs::req(fs::OPEN, fs::ROOT, len as u64), 0);
             if (h as i64) < 0 {
@@ -303,22 +337,34 @@ impl Share for FsShare {
         })
     }
 
-    fn size(&self, file: usize) -> u64 {
-        self.entry(file).map_or(0, |e| e.size)
+    fn size(&self, file: FileId) -> u64 {
+        let (s, _) = call(FS, fs::req(fs::FSTAT, file, 0), 0);
+        if (s as i64) < 0 { 0 } else { s }
     }
 
-    fn read(&self, file: usize, offset: u64, out: &mut [u8]) -> usize {
-        let Some(h) = fs_open_nth(file) else {
-            return 0;
-        };
+    fn close(&self, file: FileId) {
+        fs_close(file);
+    }
+
+    fn read(&self, file: FileId, offset: u64, out: &mut [u8]) -> Result<usize, Error> {
         let mut done = 0usize;
         while done < out.len() {
             let want = (out.len() - done).min(fs_proto::PAGE);
-            let (r0, _) = call(FS, fs::req(fs::READ, h, want as u64), offset + done as u64);
-            if (r0 as i64) <= 0 {
-                break;
+            let (r0, _) = call(
+                FS,
+                fs::req(fs::READ, file, want as u64),
+                offset + done as u64,
+            );
+            if (r0 as i64) < 0 {
+                // A refusal partway through a multi-page read is still a refusal, not a short
+                // read: reporting the bytes so far would be the silent truncation the trait's
+                // error channel exists to stop.
+                return Err(fs_error(r0));
             }
             let got = (r0 as usize).min(want);
+            if got == 0 {
+                break; // end of file
+            }
             for i in 0..got {
                 out[done + i] = r8(FS_VA + i as u64);
             }
@@ -327,8 +373,77 @@ impl Share for FsShare {
                 break; // a short read is EOF; asking again would answer 0 anyway
             }
         }
-        fs_close(h);
-        done
+        Ok(done)
+    }
+
+    fn write(&self, file: FileId, offset: u64, data: &[u8]) -> Result<usize, Error> {
+        let mut done = 0usize;
+        while done < data.len() {
+            let chunk = (data.len() - done).min(fs_proto::PAGE);
+            for (i, &b) in data[done..done + chunk].iter().enumerate() {
+                w8(FS_VA + i as u64, b);
+            }
+            let (r0, _) = call(
+                FS,
+                fs::req(fs::WRITE, file, chunk as u64),
+                offset + done as u64,
+            );
+            if (r0 as i64) < 0 {
+                // Bytes already written stay written; the caller is told how far it got by the
+                // error rather than by a count, and a client retries from its own offset.
+                return if done == 0 {
+                    Err(fs_error(r0))
+                } else {
+                    Ok(done)
+                };
+            }
+            let took = (r0 as usize).min(chunk);
+            done += took;
+            if took < chunk {
+                break; // a short write is the filesystem's word for "no more room here"
+            }
+        }
+        Ok(done)
+    }
+
+    fn truncate(&self, file: FileId, size: u64) -> Result<(), Error> {
+        let (r0, _) = call(FS, fs::req(fs::TRUNCATE, file, 0), size);
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(())
+    }
+
+    fn rename(&self, from: &[u8], to: &[u8]) -> Result<(), Error> {
+        if from.len() + to.len() > fs_proto::PAGE {
+            return Err(Error::NameTooLong);
+        }
+        // Source first, destination back to back: fs_proto::fs::RENAME's page layout.
+        fs_put(from);
+        for (i, &b) in to.iter().enumerate() {
+            w8(FS_VA + (from.len() + i) as u64, b);
+        }
+        let (r0, _) = call(
+            FS,
+            fs::req(fs::RENAME, fs::ROOT, from.len() as u64),
+            fs::rename_dst(fs::ROOT, to.len() as u64),
+        );
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(())
+    }
+
+    fn remove(&self, name: &[u8]) -> Result<(), Error> {
+        if name.len() > fs_proto::PAGE {
+            return Err(Error::NameTooLong);
+        }
+        fs_put(name);
+        let (r0, _) = call(FS, fs::req(fs::UNLINK, fs::ROOT, name.len() as u64), 0);
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(())
     }
 }
 
@@ -479,12 +594,14 @@ pub extern "C" fn _start(rounds: u64, port: u64, fs_backed: u64) -> ! {
     }
     attach_frame(CONN_SID);
 
-    // Which backing this boot wired (the module header's contract). Dispatched once, here, so
-    // the serve loops stay monomorphic over the trait and no protocol code asks again.
-    if fs_backed != 0 {
-        serve(rounds, &FsShare)
-    } else {
-        serve(rounds, &FIXTURE)
+    // Which backing this boot wired, and in which direction (the module header's contract).
+    // Dispatched once, here, so the serve loops stay monomorphic over the trait and no protocol
+    // code asks again.
+    match fs_backed {
+        SHARE_FIXTURE => serve(rounds, &FIXTURE),
+        SHARE_FS_READ_ONLY => serve(rounds, &FsShare { writable: false }),
+        SHARE_FS_READ_WRITE => serve(rounds, &FsShare { writable: true }),
+        _ => done(0xE130), // an arg2 nobody defined: a wiring bug, named rather than guessed
     }
 }
 

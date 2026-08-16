@@ -1851,6 +1851,35 @@ pub mod fixture {
     pub const SMB_SEED: &[u8] =
         b"these bytes crossed RedoxFS, fs_proto, and SMB2 on their way to you\n";
 
+    /// **The file the SMB gate writes, in the other direction** (milestone 54's write path). The
+    /// host's SMB prober creates it over the wire, writes [`SMB_WROTE`] plus a tail, shortens it
+    /// with `SET_INFO`, and closes; a *different* in-guest process ([`fs_test_client`]'s verify
+    /// role, holding a directory capability and nothing that names the network) then reads it
+    /// back through the FS server and reports what it found.
+    ///
+    /// Two readers, one constant, no second copy of the expectation, exactly as [`SMB_SEED`]
+    /// does for the read direction. Lower-case for the same reason: the wire folds names to
+    /// lower-case ASCII before lookup.
+    pub const SMB_WROTE_NAME: &str = "smb_wrote.txt";
+    /// Its exact contents after the prober has written and shortened it.
+    pub const SMB_WROTE: &[u8] =
+        b"these bytes crossed SMB2, fs_proto, and RedoxFS on their way in\n";
+
+    /// **What the verify role found**, sent as the report's second word. A classification rather
+    /// than a pass/fail, in [`escape`]'s spirit and for the same reason: "the file is not there"
+    /// and "the file is there and wrong" are different bugs, and a bare failure names neither.
+    pub mod smb_wrote {
+        /// The file holds exactly [`super::SMB_WROTE`]. The only passing verdict.
+        pub const EXACT: u64 = 1;
+        /// No such name: the write never reached the filesystem at all.
+        pub const ABSENT: u64 = 2;
+        /// The name is there and the length is wrong, which points at the truncate leg
+        /// (`SET_INFO` / `FileEndOfFileInformation`) rather than at the write.
+        pub const WRONG_SIZE: u64 = 3;
+        /// The right length and the wrong bytes: an offset or a chunking bug in the write path.
+        pub const WRONG_BYTES: u64 = 4;
+    }
+
     /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk
     /// IPC and before it serves clients. The test waits for it, so a hang in `open` (the blk path)
     /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.
