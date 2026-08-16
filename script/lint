@@ -725,6 +725,12 @@ case "$branch" in
     ""|main) ;;
     # The tooling's own worktree branches, which no person types.
     worktree-agent-*) ;;
+    # The merge queue's synthetic branches (gh-readonly-queue/main/pr-N-<sha>), which GitHub names
+    # and nobody can rename. Found 2026-08-15, the day the queue was enabled: this check failed
+    # every group build's clippy job and the queue evicted and rebuilt forever, which is exactly
+    # the hung-queue symptom milestone 120's ordering warned about, from a direction nobody
+    # predicted. A gate that can be wrong about the tree (§77) can be wrong about the robot too.
+    gh-readonly-queue/*) ;;
     milestone/*|fix/*|bench/*|audit/*|integration/*|finalize/*|feature/*) ;;
     *)
         echo "lint: branch '$branch' has no recognised prefix." >&2

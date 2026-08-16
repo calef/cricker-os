@@ -651,3 +651,14 @@ by mistake.
   [fs-server.md](fs-server.md), [shell.md](shell.md), [shell-navigation.md](shell-navigation.md) and
   [line-discipline.md](line-discipline.md) are markdown, so they stay lowercase-hyphenated even
   though the things they describe are now `fs_server`, `swish` and `line_editor`.
+
+## The casing of `nife`, considered and settled
+
+Raised 2026-08-15, the day of the rename: should prose write `Nife` (ordinary proper noun) or
+`NiFe` (the chemically exact form, how Suess and Edison's batteries spell it)? **Lowercase
+`nife` everywhere, kept.** Identifiers are lowercase regardless (crates, the triple, the repo),
+so any other choice splits the spelling per context and drifts to three forms in practice. The
+camel seam in `NiFe` also fights the ratified pronunciation (said like *knife*) by inviting
+"nye-fee". The refusal record matters more than the choice: the sial/sima rule applies, since a
+name that needs a casing note is the pronunciation-note tax in different clothes. The chemistry
+lives in the README's one line, which is where it costs nothing.

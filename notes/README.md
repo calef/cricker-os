@@ -35,6 +35,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   and no gate could see it.
 
 - [Naming things](naming.md): components, crates, scripts, branches, and which document goes
+- [Cobble, the mascot](mascot.md): the name, its claim, the held-not-embedded ruling, and the
+  alternatives set aside. Drawn by Clay.
   where. Why nothing here is named `-d` any more (DECISIONS §39), why `§N` and "milestone N" are
   different numbers over the same integers (it has already produced a wrong citation), and
   which four of these conventions `script/lint` checks. The jargon half cannot be checked:
@@ -461,6 +463,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   that rides milestone 107's spawn, and the mount instructions a real macOS `mount_smbfs` has
   already followed successfully (2026-08-15), with an honest BUGS section led by what Finder's
   own dialog has not yet exercised.
+- [mDNS/DNS-SD: the Time Machine advertisement](mdns.md): milestone 55's second protocol. The
+  reference router's actual `_smb`/`_adisk`/`_device-info` records, captured 2026-08-15 and decoded
+  (one `_adisk` instance with the disks inside its TXT, SRV port 0 on the flag services, and a
+  measured `model=MacSamba` against a config that says TimeCapsule), which are `mdns_proto`'s test
+  vectors. Then the smoltcp 0.13.1 multicast verdict: the `multicast` feature exists and the tree
+  has it off, so receiving on 224.0.0.251 needs a feature line, a join call, and the three pieces
+  of socket surface the note lists; the responder program waits on those.
 - [NTP: the wire format, and the client that carries it](ntp.md): milestone 51 lanes C and D. The
   48-byte NTPv4 packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for
   the 2036 rollover (and why picking the era nearest to "now" is worse), the offset and delay

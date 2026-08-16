@@ -43,6 +43,7 @@ members = [
     "crates/line_editor",
     "crates/manual",
     "crates/measured_boot",
+    "crates/mdns_proto",
     "crates/ntlm",
     "crates/ntp_proto",
     "crates/nvme",
