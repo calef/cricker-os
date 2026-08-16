@@ -800,6 +800,56 @@ pub fn boot_via_init(image: &'static [u8]) {
     spawn_init(image, INIT_BOOT_ROLE, report);
 }
 
+/// **The SMB serve boot** (milestone 54, `--features smb_serve`, `cargo xtask smb-serve`): wire
+/// the net server and the SMB adapter in serve-forever mode, print the mount instructions, and
+/// leave the machine to them. A demo boot in the spirit of `--features shell`, and deliberately
+/// minimal: no init, no console, no shell, because a file server's whole interface is its port.
+///
+/// Reached only on aarch64 (the riscv boot parks in its own tour first), which is scope rather
+/// than accident: the point of this boot is a Mac mounting the guest, and the SMB *protocol*
+/// path is gated on both ISAs by the test suite. See notes/smb.md.
+#[cfg(feature = "smb_serve")]
+pub fn smb_serve_boot() {
+    use crate::println;
+    let Some(net_stack) = program("net_stack") else {
+        println!("smb-serve: no net_stack program in the initrd");
+        return;
+    };
+    let Some(smb_server) = program("smb_server") else {
+        println!("smb-serve: no smb_server program in the initrd");
+        return;
+    };
+    let Some((lease, smb)) = virtio_service::start_smb_serve(net_stack, smb_server) else {
+        println!(
+            "smb-serve: no virtio-net device to serve on (the runner attaches one when NIFE_NET is set)"
+        );
+        return;
+    };
+    let ip = crate::sched::ipc_recv(lease)[0];
+    println!();
+    println!(
+        "smb-serve: DHCP lease {}.{}.{}.{}",
+        (ip >> 24) & 0xff,
+        (ip >> 16) & 0xff,
+        (ip >> 8) & 0xff,
+        ip & 0xff,
+    );
+    let word = crate::sched::ipc_recv(smb)[0];
+    if word == 1 {
+        println!("smb-serve: the SMB adapter is listening on guest port 445.");
+        println!("smb-serve: on the Mac (assuming xtask's default forward, 127.0.0.1:10445):");
+        println!(
+            "smb-serve:   Finder > Go > Connect to Server: smb://127.0.0.1:10445/share  (as Guest)"
+        );
+        println!(
+            "smb-serve:   or: mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share"
+        );
+        println!("smb-serve: read-only fixture share; see notes/smb.md, including its BUGS.");
+    } else {
+        println!("smb-serve: the adapter failed to bind its port (code {word:#x})");
+    }
+}
+
 /// Load the initrd program and become it, handed the world described by `spawn`. Never returns.
 pub fn run(image: &[u8], spawn: Spawn) -> ! {
     let (mut space, entry) = match load(image) {

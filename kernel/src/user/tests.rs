@@ -126,8 +126,26 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
 const NET_LISTEN_PORT: u16 = 7778;
+/// The port the SMB adapter is granted in the same boot (milestone 54): the echo port's
+/// neighbour, so the two-port grant `[7778, 7779]` still refuses the client's 8080 probe. The
+/// runners forward a second host port (`NIFE_SMB_HOSTFWD_PORT`) to this one. Guest-side the
+/// number is arbitrary (hostfwd remaps); the serve-forever boot uses SMB's own 445.
+#[cfg(target_arch = "aarch64")]
+const SMB_LISTEN_PORT: u16 = 7779;
+/// Connections the SMB adapter must serve, matching the prober: two, because the second is what
+/// proves the adapter re-arms after a client disconnects, the same load-bearing round as the
+/// echo gate's.
+#[cfg(target_arch = "aarch64")]
+const SMB_ROUNDS: u64 = 2;
 #[cfg(target_arch = "aarch64")]
 const NET_CLIENT_OK: u64 = 1;
+
+/// The `smb_server` program's ELF bytes (milestone 54): the SMB adapter, spawned as a second
+/// client of the inbound gate's stack.
+#[cfg(target_arch = "aarch64")]
+fn smb_server_image() -> &'static [u8] {
+    program("smb_server").expect("no smb_server program in the initrd archive")
+}
 /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
 /// not because of a defect here. Only the non-gating real-DNS check can report it.
 #[cfg(target_arch = "aarch64")]
@@ -1634,15 +1652,25 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// It is one test rather than two because two net servers do not fit: the second costs a 192-page
 /// untyped region nothing reclaims, and the boot has no such run left (see `virtio::MAX_DEVICES`).
 /// The stage codes stand in for the names the second test would have had.
+///
+/// **Milestone 54 rides the same spawn, for the same reason.** The SMB adapter (`smb_server`) is
+/// a second client of this stack, granted the neighbouring port, and xtask's SMB prober drives a
+/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, read of a fixture
+/// file whose bytes the prober asserts, twice over two connections) through a second `hostfwd`
+/// while the echo exchange runs. Two verdicts come back and both gate. See
+/// `virtio_service::start_net_stack_with_smb` for why they share a NIC, and notes/smb.md for the
+/// protocol's scope.
 // RISC-V twin: `riscv_virtio_tests::a_host_process_connects_to_the_guest_and_is_answered`.
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
+        smb_server_image(),
         NET_TEST_TCP_ACCEPT,
-        false,
-        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+        NET_LISTEN_PORT,
+        SMB_LISTEN_PORT,
+        SMB_ROUNDS,
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -1654,6 +1682,14 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          port outside the grant was bound anyway, which is the capability failure; 0xE060 or \
          0xE070 means nobody ever connected, which is the host side: is the runner adding a \
          hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this suite?",
+    );
+    let verdict = sched::ipc_recv(smb_report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the SMB adapter did not serve a mount-shaped exchange (code {verdict:#x}). 0xE11x is the \
+         listen grant, 0xE120 means no SMB connection ever arrived (is the runner adding the \
+         NIFE_SMB_HOSTFWD_PORT hostfwd, and is xtask's SMB prober running?), 0xE121 means a \
+         connection arrived but no SMB message was answered on it",
     );
 }
 

@@ -524,18 +524,28 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
     );
 }
 
+/// The `smb_server` program's ELF bytes (milestone 54): the SMB adapter, spawned as a second
+/// client of the inbound gate's stack. See the aarch64 twin.
+fn smb_server_image() -> &'static [u8] {
+    program("smb_server").expect("no smb_server program in the initrd archive")
+}
+
 /// **The guest is connected TO, on a granted port, on the second ISA** (milestone 107). A port
 /// outside the stack's grant is refused as a matter of authority, the granted one binds and is
 /// exclusive, and then a host process opens a TCP connection to it twice through QEMU's `hostfwd`
-/// while the guest accepts, reads and answers each. See the aarch64 twin for the shape, for why
-/// both claims share one exchange, and for what the stage codes mean.
+/// while the guest accepts, reads and answers each. **Milestone 54's SMB adapter rides the same
+/// spawn on this ISA too**: a second stack client serving a real SMB2 exchange to xtask's SMB
+/// prober through a second `hostfwd`, both verdicts gating. See the aarch64 twin for the shape,
+/// for why the claims share one exchange, and for what the stage codes mean.
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
+        smb_server_image(),
         NET_TEST_TCP_ACCEPT,
-        false,
-        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+        NET_LISTEN_PORT,
+        NET_LISTEN_PORT + 1,
+        2,
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -546,6 +556,13 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "the guest did not serve an inbound connection (client code {verdict:#x}); 0xE050 means a \
          port outside the grant was bound anyway, 0xE060 or 0xE070 means nobody ever connected, \
          which is the host side",
+    );
+    let verdict = sched::ipc_recv(smb_report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the SMB adapter did not serve a mount-shaped exchange (code {verdict:#x}); 0xE11x is the \
+         listen grant, 0xE120 means no SMB connection arrived (the runner's \
+         NIFE_SMB_HOSTFWD_PORT hostfwd, or the prober), 0xE121 a connection with no SMB on it",
     );
 }
 

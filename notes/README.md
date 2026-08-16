@@ -456,6 +456,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
+- [SMB: the network file service a Mac can mount](smb.md): milestone 54, the head of the customer
+  path. The `smb_proto` wire crate (SMB 2.1, guest sessions, NTLMSSP under minimal SPNEGO, the
+  per-connection state machine as host-testable pure logic), the `smb_server` adapter holding one
+  network endpoint and one share, the wire decisions listed for review, the two-prober QEMU gate
+  that rides milestone 107's spawn, and the mount instructions a real macOS `mount_smbfs` has
+  already followed successfully (2026-08-15), with an honest BUGS section led by what Finder's
+  own dialog has not yet exercised.
 - [mDNS/DNS-SD: the Time Machine advertisement](mdns.md): milestone 55's second protocol. The
   reference router's actual `_smb`/`_adisk`/`_device-info` records, captured 2026-08-15 and decoded
   (one `_adisk` instance with the disks inside its TXT, SRV port 0 on the flag services, and a

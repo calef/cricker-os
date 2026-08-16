@@ -82,7 +82,12 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 /// `-> !` means this never returns, which is true: there is nowhere to return *to*.
 // On riscv64, the boot tour below ends in `arch::halt()`, so the rest of `kernel_main` (the shared
 // full boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
-#[cfg_attr(target_arch = "riscv64", allow(unreachable_code))]
+// The smb_serve boot parks before the tour the same way the riscv tour does: the code after
+// either stays compiled and is deliberately unreachable.
+#[cfg_attr(
+    any(target_arch = "riscv64", feature = "smb_serve"),
+    allow(unreachable_code)
+)]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
     DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
@@ -715,6 +720,17 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 "  scheduler       : {} thread(s), round robin, preemptive",
                 sched::thread_count(),
             );
+        }
+
+        // The SMB serve boot (milestone 54): wire the net server and the SMB adapter serving
+        // forever, print how to mount it, and hand the machine to them. `cargo xtask smb-serve`;
+        // see notes/smb.md. It parks here instead of compiling the tour and the init handoff
+        // out, so this feature manufactures no dead code for the lint to chase; the tour below
+        // is simply never reached.
+        #[cfg(feature = "smb_serve")]
+        {
+            user::smb_serve_boot();
+            arch::halt();
         }
 
         // The milestone tour. Compiled out by `cargo xtask shell` and `cargo xtask initboot`,
