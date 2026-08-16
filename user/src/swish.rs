@@ -67,7 +67,6 @@
 #![no_std]
 #![no_main]
 
-use clock_proto::{ClockPage, state};
 use fs_proto::{dirent, fs};
 use grant_plan::expand::{Expander, NameSet, Resume};
 use grant_plan::line::{self, Line, Source};
@@ -101,14 +100,6 @@ const SH_BUDGET_PAGES: u64 = 128;
 
 // ---- the shell's own clock (milestone 86, notes/time-command.md) ----
 
-/// **Where this shell's read-only clock page is mapped**, in the wiring that granted one. Must match
-/// `crates/system_initializer`'s `SH_CLOCK_VA`, and `pipeline_service`'s.
-///
-/// Not [`OUT_VA`]'s `0x00c0_0000`, which is where a *child* maps its clock (`date`'s `CLOCK_VA`) and
-/// where this shell already maps the terminal's output frame. Two programs in different address
-/// spaces may share an address; one program may not.
-const SH_CLOCK_VA: u64 = 0x0000_0000_00d0_0000;
-
 /// **The slot holding the clock page**, or [`NO_CLOCK`] when this wiring granted none. Told to us in
 /// `x2` at [`_start`] rather than fixed, because the clock is granted after the filesystem pair and a
 /// boot with no disk attached has one fewer capability under it.
@@ -122,30 +113,6 @@ static CLOCK_SLOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64
 /// The `x2` value meaning "this shell was granted no clock". Zero rather than a sentinel, because
 /// slot 0 is the terminal in every wiring, so no clock can ever legitimately be there.
 const NO_CLOCK: u64 = 0;
-
-/// The clock page this shell reads to time a command, or `None` when it holds none.
-///
-/// **The presence check cannot read the page**, which is `date`'s finding and applies unchanged: a
-/// process granted no clock has nothing mapped at [`SH_CLOCK_VA`], so a probe that read it would
-/// fault instead of answering. So it invokes the capability with a method number no object type
-/// defines: an empty slot answers `NoSuchSlot`, a real `Frame` answers `BadMethod`, and a refusal
-/// from an object is proof one is there.
-fn clock_page() -> Option<ClockPage> {
-    let slot = CLOCK_SLOT.load(core::sync::atomic::Ordering::Relaxed);
-    if slot == NO_CLOCK {
-        return None;
-    }
-    /// A method number no object type defines, so the invocation can only ever be refused.
-    const NO_SUCH_METHOD: u64 = 0xffff;
-    // SAFETY: a syscall that cannot succeed; the kernel validates the slot before the method.
-    let r = unsafe { invoke(slot, NO_SUCH_METHOD, 0, 0, 0) };
-    if r == abi::Error::NoSuchSlot as i64 {
-        return None;
-    }
-    // SAFETY: the wiring maps the clock page read-only at SH_CLOCK_VA alongside the capability the
-    // probe just found, and nothing unmaps it. Without the capability we never build the pointer.
-    Some(unsafe { ClockPage::new(SH_CLOCK_VA) })
-}
 
 /// **What this shell holds, which is what decides whether a named file can be backed.**
 ///
@@ -1104,33 +1071,23 @@ fn time_command(nav: &mut Nav, tail: &[u8]) {
         refused();
         return swish::write_untimed(Untimed::NothingToTime, &mut print);
     }
-    // **The refusals come before the command runs**, because `time` is a request to measure and
-    // running the line unmeasured would be the silent degradation DECISIONS §42 forbids, one axis
-    // over. The two sentences are `date`'s: the same two causes, and the same two fixes.
-    let Some(page) = clock_page() else {
-        refused();
-        return swish::write_untimed(Untimed::NoClock, &mut print);
-    };
-    let before = page.read();
-    if !state::known(before.state) {
-        refused();
-        return swish::write_untimed(Untimed::UnknownClock, &mut print);
-    }
-    let start = clock_proto::wall_nanos(before.offset_nanos, monotonic_nanos());
+    // **A duration needs no clock** (§72). Wall time is an offset plus this counter; across a
+    // command the offset cancels, so the subtraction below is the whole measurement, and
+    // `user_rt::monotonic_nanos` is ambient by the kernel's own choice (it opened the counter to
+    // EL0). `time` therefore cannot be refused and has no clock wiring: what a capability gates
+    // here is wall-clock *identity*, which is `date`'s business, not elapsed time.
+    //
+    // This is also strictly more correct than the clock version it replaces. A clock stepped
+    // mid-command used to make the answer a difference of two readings on different clocks,
+    // which the shell had to detect and disclaim; a monotonic counter cannot be stepped, so
+    // there is nothing left to disclaim.
+    let start = monotonic_nanos();
 
     dispatch(nav, tail);
 
-    let after = page.read();
-    let end = clock_proto::wall_nanos(after.offset_nanos, monotonic_nanos());
-    // **Saturating, and the generation is why.** A wall clock can be *stepped* while a command runs,
-    // by an authority this shell does not hold, and a backwards step would make the subtraction wrap
-    // to something enormous. The generation counts publishes, so the shell can see that it happened
-    // and say so rather than print a number it cannot stand behind.
-    swish::write_timing(
-        end.saturating_sub(start),
-        after.generation != before.generation,
-        &mut print,
-    );
+    // Saturating out of habit rather than need: the counter is monotonic, so `end` cannot precede
+    // `start`, and a wrap would take centuries at either board's frequency.
+    swish::write_timing(monotonic_nanos().saturating_sub(start), &mut print);
 }
 
 /// The most batches one sweep will run. A ceiling so a resume rule that failed to advance costs a
