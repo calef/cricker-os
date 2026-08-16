@@ -1,0 +1,379 @@
+#!/bin/sh
+#
+# script/audits: when is the next audit due, and does the audit index still hold together?
+#
+# PROVISIONAL NAME. See the `Name:` block at the end of this comment.
+#
+# **The tripwire milestone 92 asks for, and the machinery milestone 93 shares.** An audit is a
+# deliberate adversarial read of the tree through one named lens, and the failure mode this exists to
+# prevent is not a bad audit: it is no audit, because auditing depended on someone remembering to
+# ask. §74 decided what "due" means, on measured intervals rather than on a calendar somebody liked:
+# event triggers first, a count second, six weeks as a backstop for a quiet period.
+#
+# **This never runs an audit and never edits anything.** Red means "run the audit", not "an
+# automation ran it for you". That distinction is the whole reason the overdue check lives in a
+# scheduled workflow (.github/workflows/audit-cadence.yml) rather than in script/lint: an audit
+# coming due is not a defect in the commit that happened to trip the count, and a gate that blocked
+# every unrelated merge behind a review nobody can hurry is the wall milestone 92 was written not to
+# build. Same split, same reason, as toolchain-drift.yml.
+#
+# script/lint runs `--check`, which is the structural half and nothing else: the two tables in the
+# index describe the same audits, every report link resolves, every kind has a cadence row, the
+# dispositions parse. That one CAN fail a pull request, because a malformed index is a defect in the
+# commit that malformed it.
+#
+# **Everything it knows comes from two places, and both are records a person maintains**: the index
+# at design/audit-reports/README.md, and the tree itself. Nothing is stored in this script. The
+# cadence numbers are in the index too rather than here, which is what lets milestone 93 add a
+# documentation sweep by adding a row instead of by editing code, and what keeps the record and the
+# signal from drifting apart the way script/roadmap keeps status honest by reading the milestone
+# files.
+#
+#   script/audits             the report: every kind, its last audit, and every trigger's distance
+#   script/audits --due       the tripwire: exit 1 if any kind is overdue, and say which trigger
+#   script/audits --check     structural validation of the index; non-zero on a problem (script/lint)
+#   script/audits --baseline  today's counts, to paste into a new baseline row
+#
+# **What the four counted triggers actually count**, because a number nobody can re-derive is a
+# claim rather than evidence:
+#
+#   milestones built     BUILT rows in design/roadmap/README.md
+#   components           crates/*/ plus [[bin]] targets in user/Cargo.toml
+#   ABI constants        the `pub const NAME: u64` surface of crates/abi (see BUGS)
+#   external packages    distinct registry packages across every committed Cargo.lock but vendor's
+#
+# The middle two are milestone 92's event triggers made countable. A new syscall method arrives as a
+# new ABI constant; a new dependency (§46) arrives as a new external package. Both cadence rows are
+# set to 1, so any change at all fires, which is what "event triggers are primary" means when a
+# script has to evaluate it.
+#
+# BUGS.
+#
+# - **Two of milestone 92's four event triggers cannot be counted and are printed as a question.**
+#   "A new component holding device or network authority" is a judgment about what a component does,
+#   and "first boot on a new machine class" is about hardware that may not be in the tree at all.
+#   This prints them on every run rather than filing them somewhere, which is rung four of CLAUDE.md's
+#   ladder and is known to be the weakest part of the mechanism. The count triggers reach the same
+#   place later, and later is the wrong word for an attack surface.
+# - **The ABI-constant count is a superset of "a new syscall method".** It counts the rights bits,
+#   the object types and the sentinels alongside the methods, so a new error sentinel fires the
+#   trigger too. That is the tolerable direction for an audit signal, and separating them would mean
+#   teaching this script the shape of every module in crates/abi, which is a copy of a fact that
+#   already lives there.
+# - **A change that lands as neither a milestone nor a component moves no number here.** A
+#   substantial rewrite inside an existing crate is invisible to every count; only the calendar
+#   backstop eventually catches it.
+# - **It validates the baseline cells as integers, never as true.** Nothing re-derives them at the
+#   commit they claim, so a mistyped baseline silently moves a trigger.
+# - **It cannot tell a report that says nothing from one that found nothing.** `fixed 0, minted 0,
+#   accepted 0` parses and passes.
+#
+# **`minted` rather than `milestone` in the disposition vocabulary, and the reason is a collision
+# with another gate rather than taste.** script/roadmap validates the phrase "milestone <number>"
+# anywhere in the tree as a citation, so a findings cell with a count of zero parsed as a citation to
+# milestone zero and failed the build. Caught on this milestone's first full lint. `minted` is also
+# the verb this tree already uses for what the integrator does with a number, so the vocabulary got
+# closer to the tree's own while it was being moved out of the way.
+#
+# Name: unrecorded. Provisional, minted by milestone 92's lane on 2026-08-16 and not yet put to
+# calef, who names things. Refused `audit` (singular reads as a command that performs one, which is
+# exactly the "an automation ran it for you" misreading the mechanism must not invite), `tripwire`
+# (names the mechanism rather than the record, where this tree's family of report scripts is named
+# for what it reads: `roadmap`, `decisions`, `names`), and `audit-cadence` (names the policy, while
+# this also validates the index, which is not cadence). `audits` over `audit-reports` because the
+# script answers about the audits and the directory holds the reports.
+#
+# See notes/scripts.md, design/audit-reports/README.md, and design/decisions/74-audit-cadence.md.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import datetime
+import glob
+import os
+import re
+import subprocess
+import sys
+
+root, mode = sys.argv[1], sys.argv[2]
+index_path = os.path.join(root, "design", "audit-reports", "README.md")
+
+if mode not in ("", "--check", "--due", "--baseline"):
+    print(f"audits: unknown argument {mode!r} "
+          f"(no argument, --check, --due, or --baseline)", file=sys.stderr)
+    sys.exit(2)
+
+# The trigger names, in the order they are printed and in the order the cadence table's columns
+# stand. `weeks` is last because it is the backstop rather than a peer of the other four.
+COUNTS = ["built", "components", "abi", "packages"]
+LABEL = {
+    "built": "milestones built",
+    "components": "components",
+    "abi": "ABI constants",
+    "packages": "external packages",
+}
+
+CADENCE_HDR = ("| Kind | Milestones | Components | ABI constants | External packages | Weeks |")
+INDEX_HDR = "| Date | Kind | Lens | Findings | Report |"
+BASE_HDR = ("| Date | Kind | Milestones built | Components | ABI constants "
+            "| External packages |")
+
+problems = []
+
+
+# ---- what the tree looks like right now ---------------------------------------
+# Every one of these is counted from the thing it describes, never remembered. The index carries the
+# same four numbers as of each audit, taken the same way, and the deltas are the triggers.
+
+def current():
+    roadmap = os.path.join(root, "design", "roadmap", "README.md")
+    with open(roadmap, errors="replace") as f:
+        built = len(re.findall(r"^\| \d+ \| BUILT \|", f.read(), re.M))
+
+    crates = len([d for d in glob.glob(os.path.join(root, "crates", "*")) if os.path.isdir(d)])
+    with open(os.path.join(root, "user", "Cargo.toml"), errors="replace") as f:
+        programs = f.read().count("[[bin]]")
+
+    with open(os.path.join(root, "crates", "abi", "src", "lib.rs"), errors="replace") as f:
+        abi = len(re.findall(r"^\s*pub const [A-Z_0-9]+: u64 = ", f.read(), re.M))
+
+    # Discovered, not listed. A hard-coded set of lockfile paths is a copy of a fact about the
+    # workspace layout, and script/drift's header records what that costs when it drifts. vendor/ is
+    # somebody else's graph and enters our builds only through the consumers that depend on it.
+    locks = subprocess.run(["git", "-C", root, "ls-files", "*Cargo.lock"],
+                           capture_output=True, text=True).stdout.split()
+    names = set()
+    for lock in locks:
+        if lock.startswith("vendor/"):
+            continue
+        with open(os.path.join(root, lock), errors="replace") as f:
+            for block in f.read().split("[[package]]"):
+                m = re.search(r'^name = "([^"]+)"', block, re.M)
+                if m and 'source = "registry' in block:
+                    names.add(m.group(1))
+
+    return {"built": built, "components": crates + programs, "abi": abi, "packages": len(names)}
+
+
+# ---- the index ----------------------------------------------------------------
+
+def table(lines, header, path):
+    """The rows under a header line, as lists of stripped cells."""
+    try:
+        start = lines.index(header)
+    except ValueError:
+        problems.append(f"{path}: no table headed {header!r}; has the index format changed?")
+        return []
+    rows = []
+    for line in lines[start + 2:]:          # +2 skips the |---|---| separator
+        if not line.startswith("|"):
+            break
+        rows.append([c.strip() for c in line.strip().strip("|").split("|")])
+    return rows
+
+
+try:
+    with open(index_path, errors="replace") as f:
+        lines = f.read().split("\n")
+except FileNotFoundError:
+    print(f"audits: {index_path} not found", file=sys.stderr)
+    sys.exit(1)
+
+DATE = re.compile(r"\d{4}-\d{2}-\d{2}$")
+FINDINGS = re.compile(r"fixed (\d+), minted (\d+), accepted (\d+)$")
+LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)$")
+
+cadence = {}
+for cells in table(lines, CADENCE_HDR, index_path):
+    if len(cells) != 6:
+        problems.append(f"cadence row {cells[0]!r}: {len(cells)} cells, expected 6")
+        continue
+    kind, nums = cells[0], cells[1:]
+    if kind in cadence:
+        problems.append(f"cadence: kind {kind!r} has two rows")
+    bad = [n for n in nums if not (n.isdigit() and int(n) > 0)]
+    if bad:
+        problems.append(f"cadence row {kind!r}: {bad} are not positive integers; a trigger of 0 "
+                        f"would fire forever and one that is not a number cannot fire at all")
+        continue
+    cadence[kind] = dict(zip(COUNTS + ["weeks"], (int(n) for n in nums)))
+
+audits = []
+for cells in table(lines, INDEX_HDR, index_path):
+    if len(cells) != 5:
+        problems.append(f"audit row {cells[0]!r}: {len(cells)} cells, expected 5")
+        continue
+    date, kind, lens, findings, report = cells
+    if not DATE.match(date):
+        problems.append(f"audit row {date!r}: not a YYYY-MM-DD date")
+        continue
+    fm = FINDINGS.match(findings)
+    if not fm:
+        problems.append(f"audit {date} ({kind}): findings {findings!r} must read "
+                        f"'fixed N, minted N, accepted N'. Every finding ends in exactly one of "
+                        f"the three states; \"noted\" is not a state (DECISIONS §35).")
+    lm = LINK.match(report)
+    if not lm:
+        problems.append(f"audit {date} ({kind}): report {report!r} must be a markdown link")
+    elif not os.path.exists(os.path.normpath(
+            os.path.join(os.path.dirname(index_path), lm.group(2)))):
+        problems.append(f"audit {date} ({kind}): report link {lm.group(2)!r} does not resolve")
+    if not lens:
+        problems.append(f"audit {date} ({kind}): no lens. The value of an audit is the lens the "
+                        f"last one lacked, so a row without one cannot be read for what to do next.")
+    audits.append({"date": date, "kind": kind, "lens": lens,
+                   "findings": tuple(int(g) for g in fm.groups()) if fm else (0, 0, 0)})
+
+baselines = {}
+base_order = []
+for cells in table(lines, BASE_HDR, index_path):
+    if len(cells) != 6:
+        problems.append(f"baseline row {cells[0]!r}: {len(cells)} cells, expected 6")
+        continue
+    date, kind, nums = cells[0], cells[1], cells[2:]
+    if not DATE.match(date):
+        problems.append(f"baseline row {date!r}: not a YYYY-MM-DD date")
+        continue
+    bad = [n for n in nums if n != "-" and not n.isdigit()]
+    if bad:
+        problems.append(f"baseline {date} ({kind}): {bad} are neither integers nor '-'")
+        continue
+    base_order.append((date, kind))
+    baselines[(date, kind)] = {k: (None if n == "-" else int(n)) for k, n in zip(COUNTS, nums)}
+
+# The two tables are one record split for two readers, so the check that keeps them one record is
+# that they list exactly the same audits, in the same order. Without this, a lane can add a row to
+# the table a person reads and leave the tripwire reading a baseline from the audit before it, which
+# is the silent half-update that every two-file record eventually suffers.
+index_order = [(a["date"], a["kind"]) for a in audits]
+if index_order != base_order:
+    only_index = [x for x in index_order if x not in base_order]
+    only_base = [x for x in base_order if x not in index_order]
+    if only_index or only_base:
+        for d, k in only_index:
+            problems.append(f"audit {d} ({k}) has no baseline row: the tripwire would read the "
+                            f"previous audit's counts and under-report every trigger")
+        for d, k in only_base:
+            problems.append(f"baseline {d} ({k}) has no audit row")
+    else:
+        problems.append("the two tables list the same audits in different orders; keep both "
+                        "oldest-first so the newest row is the last one in each")
+
+if len(set(index_order)) != len(index_order):
+    problems.append("two audits share a date and a kind; one of them cannot be found")
+if index_order != sorted(index_order):
+    problems.append("the audits are not in date order, and the newest row is what the tripwire "
+                    "reads")
+for kind in {a["kind"] for a in audits}:
+    if kind not in cadence:
+        problems.append(f"audit kind {kind!r} has no cadence row, so nothing can say when the next "
+                        f"one is due. Add it to the cadence table (milestone 93 adds "
+                        f"'documentation' this way).")
+
+if mode == "--check":
+    for p in sorted(set(problems)):
+        print(f"audits: {p}", file=sys.stderr)
+    if problems:
+        sys.exit(1)
+    kinds = ", ".join(sorted(cadence))
+    print(f"audits: {len(audits)} on record, {len(cadence)} cadence ({kinds}), "
+          f"both tables agree, every report resolves, every finding dispositioned")
+    sys.exit(0)
+
+if problems:
+    # Anything below reads these tables, so a malformed one makes the answer a guess.
+    for p in sorted(set(problems)):
+        print(f"audits: {p}", file=sys.stderr)
+    print("audits: the index does not parse, so nothing here can be computed "
+          "(script/audits --check says the same thing and is what script/lint runs)",
+          file=sys.stderr)
+    sys.exit(1)
+
+now = current()
+
+if mode == "--baseline":
+    today = datetime.date.today().isoformat()
+    print("Paste into design/audit-reports/README.md, both tables, oldest first:")
+    print()
+    print(f"| {today} | <kind> | <the lens this audit took> | fixed N, minted N, accepted N | "
+          f"[<title>](../../notes/<report>.md) |")
+    print(f"| {today} | <kind> | {now['built']} | {now['components']} | {now['abi']} "
+          f"| {now['packages']} |")
+    print()
+    for k in COUNTS:
+        print(f"  {LABEL[k]:<20} {now[k]}")
+    sys.exit(0)
+
+
+# ---- due, and why -------------------------------------------------------------
+
+today = datetime.date.today()
+due_kinds = []
+out = []
+
+for kind in sorted(cadence):
+    rows = [a for a in audits if a["kind"] == kind]
+    trigger = cadence[kind]
+    if not rows:
+        due_kinds.append(kind)
+        out.append(f"{kind:<12}  never audited")
+        out.append("  DUE: no audit of this kind has ever run, and its cadence row says one is "
+                   "expected")
+        out.append("")
+        continue
+
+    last = rows[-1]
+    base = baselines[(last["date"], last["kind"])]
+    when = datetime.date.fromisoformat(last["date"])
+    days = (today - when).days
+    fired = []
+
+    out.append(f"{kind:<12}  last {last['date']} ({last['lens'][:60]})")
+    for k in COUNTS:
+        want = trigger[k]
+        if base[k] is None:
+            out.append(f"  {LABEL[k]:<20} baseline not recorded, so this trigger cannot be "
+                       f"evaluated")
+            continue
+        delta = now[k] - base[k]
+        how = "any change fires" if want == 1 else f"fires at {want}"
+        mark = "   <-- FIRED" if delta >= want else ""
+        out.append(f"  {LABEL[k]:<20} {base[k]} -> {now[k]}  (+{delta}, {how}){mark}")
+        if delta >= want:
+            fired.append(f"{LABEL[k]} +{delta} (fires at {want})")
+    weeks_days = trigger["weeks"] * 7
+    mark = "  <-- FIRED" if days >= weeks_days else ""
+    out.append(f"  {'calendar':<20} {days} day{'' if days == 1 else 's'} since "
+               f"({trigger['weeks']} weeks){mark}")
+    if days >= weeks_days:
+        fired.append(f"calendar {days} days (fires at {weeks_days})")
+
+    if fired:
+        due_kinds.append(kind)
+        out.append(f"  DUE: {'; '.join(fired)}")
+    else:
+        out.append("  not due")
+    out.append("")
+
+print("\n".join(out))
+
+# Printed every run, due or not, because these two are the triggers no script can evaluate and the
+# only thing standing behind them is somebody reading this. Milestone 92 lists four event triggers;
+# the two above are counted, and these are not.
+print("The two triggers nothing here can count, which are a judgment and not a number:")
+print("  - has a new component taken device or network authority since the last audit?")
+print("  - has this booted on a new machine class (a board, a cloud) since the last audit?")
+print("  If either is yes, an audit is due regardless of everything above (milestone 92, §74).")
+print()
+
+if due_kinds:
+    print(f"audits: {len(audits)} on record, DUE: {', '.join(due_kinds)}")
+    print("Red means run the audit. Nothing here ran one, and nothing here can.")
+    print("design/audit-reports/README.md says how, and which lens the last one lacked.")
+    sys.exit(1 if mode == "--due" else 0)
+
+print(f"audits: {len(audits)} on record, {len(cadence)} kind"
+      f"{'' if len(cadence) == 1 else 's'}, none due")
+PY

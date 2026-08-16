@@ -883,6 +883,19 @@ echo "naming: no -d names, no daemons, contract crates spelled one way, branch p
 echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated,"
 echo "        every name carries its provenance"
 
+# 8. **The audit index holds together** (milestone 92). Structure only: the index's two tables
+#    describe the same audits in the same order, every report link resolves, every kind has a
+#    cadence row, and every finding carries one of the three dispositions.
+#
+#    **Deliberately not the overdue check.** `script/audits --due` is the tripwire and it lives in
+#    its own scheduled workflow, because an audit coming due is information about the tree rather
+#    than a defect in whichever commit tripped the count, and failing every pull request on it would
+#    hold unrelated merges behind a review nobody can hurry. A malformed index is the opposite: it is
+#    a defect in the commit that malformed it, and it silently breaks the tripwire, which reads the
+#    newest row of both tables. Same split as the toolchain-drift workflow.
+echo "==> the audit index"
+"$(dirname "$0")/audits" --check
+
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero
 # broken relative links and exactly one unindexed note, so generic style rules (heading case, line

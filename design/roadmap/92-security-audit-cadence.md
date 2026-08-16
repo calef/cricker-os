@@ -1,10 +1,12 @@
 # 92. Security audits as a mechanism: cadence, docs, and findings that become milestones
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by calef. The tree has had one security audit and
+**Status: BUILT** 2026-08-16. `design/audit-reports/` exists with its index, its §75 provenance
+line, and the disposition rule where an audit lane will read it; `script/audits` is the tripwire,
+computing overdue from §74's rules against counts it derives from the tree rather than from prose.
+Milestone 93 reuses all of it by adding one row per kind, which is why the thresholds live in the
+index as data rather than in the script as code. Raised 2026-08-03 by calef. The tree has had one security audit and
 milestone 43 asks for a second with a different lens; this milestone is the machine that makes
 them routine, so that auditing stops depending on someone remembering to ask.
-
-**Gate: NONE.** The cadence was decided 2026-08-16 (§74): event triggers first, a count-based trigger at 15 milestones or 8 components, the calendar a six-week backstop for quiet periods. The numbers and the measured interval behind them are in that entry.
 
 **Why a mechanism rather than a habit.** The same argument as script/gates: a practice that lives
 in memory gets skipped exactly when it matters. And the failure mode of audits specifically is

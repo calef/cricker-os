@@ -121,7 +121,13 @@ backport to. If a fix matters to you, it is a commit on `main`.
 
 ## What has already been looked at
 
-Three adversarial reviews are on the record, and reading them first will save you time. Each took a
+**Audits here are routine rather than occasional**, and the index is
+[design/audit-reports/README.md](design/audit-reports/README.md): every audit's date, the lens it
+took, its findings by disposition, and a link to the report. `script/audits` says when the next one
+is due, from the triggers `design/decisions/74-audit-cadence.md` decided, and a weekly workflow asks
+the same question so that auditing does not depend on anyone remembering to.
+
+Four adversarial reviews are on the record, and reading them first will save you time. Each took a
 lens the previous one did not, deliberately, because the value of an audit is the lens the last one
 lacked:
 
@@ -137,6 +143,12 @@ lacked:
   in this tree carries a length in the shared page**, so the classic form of the bug is absent by
   construction. Its scope note says what it did not read, and that list is where an outside reviewer
   has the most room.
+- **notes/untrusted-input-audit.md**: the parsers and drivers that read bytes a hostile counterparty
+  supplies in a single message or completion, which is the surface that arrived with `crates/nvme`
+  and `crates/mdns_proto` after the pass above was written. One finding, recorded and accepted: the
+  NVMe driver panics on two completion fields the device writes, and the rule it hands forward is
+  that **an IOMMU confines placement, not values**, so a confined device's accounting is as
+  untrusted as its reach.
 
 The machine-checked half is `script/verify` (Kani harnesses over the capability model, IPC, the MMU
 invariants, the DMA validator). notes/verification.md states what each proof covers and, more
