@@ -739,6 +739,49 @@ case "$branch" in
         exit 1
         ;;
 esac
+
+# 4b. **A `milestone/N-*` branch must touch that milestone's roadmap file** (§90, 2026-08-16).
+#     The status field lagged the tree four times in one week: 43, 65 and 107 were BUILT for
+#     eleven days while their rows said otherwise, and 54 sat hidden behind them. Merging is what
+#     finishes a lane, so the status flip belongs in the merge rather than with whoever happens to
+#     notice afterwards.
+#
+#     **Aimed at the integrator, not the developer.** A lane may not edit `design/` at all, so a
+#     lane that trips this has found the integrator's job: it reports the status its milestone
+#     should carry, and the integrator lands that flip in the same merge.
+#
+#     A branch that leaves the status unmoved still touches the file, if only to say why. That
+#     sentence was missing four times.
+case "$branch" in
+milestone/*)
+    milestone_n="${branch#milestone/}"
+    milestone_n="${milestone_n%%-*}"
+    case "$milestone_n" in
+    '' | *[!0-9]*) ;; # no leading number: the prefix check above owns that shape
+    *)
+        roadmap_block="$(ls "$(dirname "$0")/../design/roadmap/$milestone_n-"*.md 2>/dev/null | head -1)"
+        if [ -z "$roadmap_block" ]; then
+            echo "lint: branch '$branch' names milestone $milestone_n, which has no roadmap block." >&2
+            exit 1
+        fi
+        # Against the merge base, not the working tree: the question is what this branch changes,
+        # and a branch that has merged main is not thereby excused.
+        merge_base="$(git -C "$(dirname "$0")/.." merge-base HEAD origin/main 2>/dev/null || true)"
+        if [ -n "$merge_base" ] && [ -n "$(git -C "$(dirname "$0")/.." rev-list -n1 "$merge_base"..HEAD 2>/dev/null)" ]; then
+            if [ -z "$(git -C "$(dirname "$0")/.." diff --name-only "$merge_base"..HEAD -- "design/roadmap/$milestone_n-"*.md)" ]; then
+                echo "lint: branch '$branch' changes nothing in ${roadmap_block#*design/}." >&2
+                echo "  A milestone branch lands its status flip in the same merge as the work (§90)." >&2
+                echo "  The developer reports the status it should carry; the integrator makes the" >&2
+                echo "  edit, because a lane may not edit design/. If the status genuinely does not" >&2
+                echo "  move, say so in the block: that sentence was missing four times in a week." >&2
+                exit 1
+            fi
+        fi
+        ;;
+    esac
+    ;;
+esac
+
 # 5. **No `#[path]` module shared by two or more binaries** (CLAUDE.md rule 7, 2026-08-01).
 #    Anything two binaries must agree on is a crate; a `#[path]` module is not one, and the cost is
 #    not tidiness. Such a module is unreachable by host tests AND by Kani, so the constants two
