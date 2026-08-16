@@ -129,7 +129,8 @@ const FRAME_REPORT_MIN: usize = 16;
 /// itself, instead of three tests later as `OutOfFrames` in something innocent.
 ///
 /// **One number for both architectures, and it is one because they were measured separately and
-/// came out together**: 13999 on aarch64 and 13791 on riscv64 (2026-08-16). The two boots build
+/// came out together**: 14031 on aarch64 and 13787 on riscv64 (2026-08-16, remeasured after merging
+/// milestones 54 and 55; 13999 and 13791 before that). The two boots build
 /// different sets of services, so that agreement is a coincidence rather than a property, and if it
 /// ever stops holding the honest fix is a per-architecture pair here rather than a looser single
 /// ceiling.

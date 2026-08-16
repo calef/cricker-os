@@ -207,7 +207,7 @@ What a run prints:
 test kernel::user::dir_capability_tests::a_full_directory_capability_... ... ok
     [that test kept 2284 frames]
 ...
-frames: 29306 free before the first test, 15307 after the last (13999 never returned); longest free run 14080
+frames: 29280 free before the first test, 15249 after the last (14031 never returned); longest free run 14080
   the biggest single spender was kernel::user::dir_capability_tests::a_full_directory_... at 2284 frames
 ```
 
@@ -229,9 +229,18 @@ one was in.
 | before | 29307 | **216** | 29091 | **117** |
 | after reclaiming init | 29306 | 12504 | 16802 | 12394 |
 | after reclaiming init and the net services | 29306 | **15307** | 13999 | **14080** |
+| the same, remeasured on the merged tree | 29280 | **15249** | 14031 | **14080** |
 
 216 free frames and no run longer than 117 is the whole failure. There was no headroom left for
 anything, so which test died was decided by scheduling.
+
+The fourth row is the same boot after merging `main` on 2026-08-16, and the 32 extra frames it keeps
+are milestone 54's second act: the SMB test now runs a seeding client through the FS service before
+it wires the adapter, and that client is one more process. The number that decides whether a boot
+lives is unchanged at 14080, because a client that runs and exits fragments nothing. Read the pair as
+the honest shape of this ledger: the residue moves a little every time a test grows a process, and
+the free run is what the gate is really about. riscv64 came out at 13787 kept and 13733 longest, from
+29692 free.
 
 The largest single causes, before:
 
@@ -281,7 +290,8 @@ missing was a handle and an ordering.
 
 ### What is still held at the end of a boot, and why
 
-13999 frames, and the difference is accounted rather than shrugged at:
+14031 frames on the merged tree (13999 before that merge; the table above says where the 32 went),
+and the difference is accounted rather than shrugged at:
 
 - **The FS service, ~2284.** Wired once (`fs_service::ensure`) and used by every later filesystem
   test. It is a boot service, not a leak.
