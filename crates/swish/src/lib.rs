@@ -91,7 +91,9 @@ use fs_proto::dir;
 use grant_plan::expand::{Expansion, NameSet};
 use grant_plan::line::{self, Line};
 use grant_plan::nav::{self, Cwd, Refused};
-use grant_plan::{Command, Endowment, Holdings, Prog, Refusal, RunSpec, Streams, spawnproto};
+use grant_plan::{
+    ArgSpec, Command, Endowment, Holdings, Prog, Refusal, RunSpec, Streams, spawnproto,
+};
 
 /// What a builtin has to say. A value rather than a print, because the printing half belongs to the
 /// interactive prompt and the navigating witness (which has no terminal) runs the same builtins.
@@ -1075,7 +1077,14 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
         }
     }
     out(b"    arg    ");
-    if matches!(e.prog, Prog::Worker) {
+    // **Read the manifest, do not keep a second list of which programs take an argument.** This
+    // was `matches!(e.prog, Prog::Worker)` until 2026-08-16, so every other argument-taking program
+    // previewed `arg (none)` while the shell went on to hand it the argument anyway. That is the
+    // worst possible direction for this particular line to be wrong in: the next thing it prints is
+    // that reading the command is reading its whole authority, and a preview that under-reports
+    // authority is one a reader would trust. Found by someone adding their first program, who hit
+    // it because the manifest already knew the answer.
+    if e.prog.manifest().arg == ArgSpec::Required {
         write_num(e.arg, out);
         out(b"\n");
     } else {
@@ -1091,6 +1100,7 @@ mod tests {
     use std::string::String;
     use std::vec::Vec;
 
+    use grant_plan::PROG_COUNT;
     use grant_plan::expand::NameSet;
 
     /// Run a renderer and collect what it wrote. Every test below reads the shell's own output,
@@ -1745,6 +1755,50 @@ mod tests {
         assert!(s.contains("wc would grant"), "{s}");
         assert!(s.contains("the rendezvous IS the pipe"), "{s}");
         assert!(s.contains("the previous stage's output"), "{s}");
+    }
+
+    /// The preview's `arg` line must follow the manifest, for **every** program rather than for the
+    /// one that happens to take an argument today.
+    ///
+    /// This is written as a sweep over the whole enum on purpose. The line used to read
+    /// `matches!(e.prog, Prog::Worker)`, which is correct for the tree as it stands (`Worker` is the
+    /// only `ArgSpec::Required` program) and silently wrong for the next one added: the shell would
+    /// print `arg (none)` and then hand the argument over anyway. A test naming `Worker` would have
+    /// passed against the bug. A test that asks the manifest cannot.
+    #[test]
+    fn the_arg_line_follows_the_manifest_for_every_program() {
+        for id in 0..PROG_COUNT as u64 {
+            let Some(prog) = Prog::from_id(id) else {
+                continue;
+            };
+            let takes_arg = prog.manifest().arg == ArgSpec::Required;
+            let line = std::format!("{} 21", prog.name());
+            let s = shown(|o| {
+                write_caps(
+                    line.as_bytes(),
+                    128,
+                    Holdings::default(),
+                    None,
+                    &mut |_| Ok(NameSet::empty()),
+                    o,
+                );
+            });
+            // A program that refuses an argument is refused before any table is printed, so the
+            // preview only has an `arg` line to get wrong when the manifest allows one.
+            if takes_arg {
+                assert!(
+                    s.contains("arg    21"),
+                    "{} takes an argument and the preview did not show it:\n{s}",
+                    prog.name(),
+                );
+            } else {
+                assert!(
+                    !s.contains("arg    21"),
+                    "{} takes no argument and the preview showed one:\n{s}",
+                    prog.name(),
+                );
+            }
+        }
     }
 
     #[test]

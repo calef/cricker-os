@@ -129,13 +129,67 @@ pub fn guard_page_at(addr: u64) -> Option<GuardPage> {
     None
 }
 
-/// Shout if `addr` is a kernel stack guard page, naming which stack and how far past its bottom the
-/// access went. Called from both ISAs' fatal-fault paths with the faulting address.
+/// Where in the thread-stack area an address falls: `(slot, bytes above that slot's lowest usable
+/// byte)`. Negative means inside the slot's guard page, which is the bottom page of every slot.
+///
+/// Separate from [`guard_page_at`] because that function answers "is this address a guard page",
+/// and reading a guard-page fault needs the other half too: **where `sp` was**. The same fault
+/// address means opposite things depending on the answer, so both have to be said in the same
+/// units, and `guard_page_at` returns nothing at all for an address that is ordinary live stack.
+///
+/// Reads one relaxed atomic (via [`crate::thread::stack_area_span`]) and takes no lock, because
+/// every caller is a fault handler that has already lost the machine.
+pub(crate) fn thread_stack_site(addr: u64) -> Option<(u64, i64)> {
+    let (area, watermark) = crate::thread::stack_area_span();
+    if !(area..watermark).contains(&addr) {
+        return None;
+    }
+    let span = crate::thread::STACK_SLOT_SPAN;
+    let off = addr - area;
+    let slot = off / span;
+    // The guard page is the first page of the slot, so the slot's lowest usable byte is one page
+    // in. `above` is signed for exactly the case this exists to report: a negative value is an
+    // address in the guard page, and how negative says how far a single step reached.
+    let above = (off % span) as i64 - 4096;
+    Some((slot, above))
+}
+
+/// Shout if `addr` is a kernel stack guard page, naming which stack, how far below its bottom the
+/// access landed, **and where `sp` actually is**. Called from both ISAs' fatal-fault paths with the
+/// faulting address.
 ///
 /// The distance is the number that matters: a few bytes past the bottom is an ordinary overflow,
 /// and *thousands* of bytes past it means a single frame jumped most of the way across the guard,
 /// which is the case where the next one jumps clean over it. Printing it is what let milestone 78
 /// tell those apart.
+///
+/// # `sp` is printed because this used to assert it without ever reading it
+///
+/// Every line of this report but the last was derived from the faulting **address**, and the
+/// wording ("so sp went N bytes past it") stated a conclusion about the stack **pointer** that
+/// nothing here had measured. The two agree only when the fault really is `sp` walking off the
+/// end. They come apart in two ways that matter, and the report could not tell either of them
+/// from an ordinary overflow:
+///
+///   - a store through a stray pointer that happens to name a guard page, with `sp` nowhere near
+///     it, and
+///   - a store just **past the top** of the stack in the slot below. Slot `N`'s guard page starts
+///     at exactly the address one past slot `N-1`'s last usable stack byte, because the slots are
+///     contiguous and the guard is each slot's first page. So `guard base + 0` and `guard base +
+///     8` are the first two words above a *different* stack's top, and a pointer that treats a
+///     stack top as inclusive lands there rather than anywhere near `sp`.
+///
+/// So it now prints `sp` beside the faulting address in the same units and leaves the comparison
+/// to the reader, rather than asserting the answer. `sp` is read here, in the handler, a few
+/// frames deeper than the faulting context but on the same stack, which is close enough to place
+/// it in a 20 KiB slot and not close enough to trust to the byte.
+///
+/// **One reading of "slot N-1" is a trap, and the printed guidance names it.** aarch64 has no
+/// double fault: if the vector's own `SAVE_CONTEXT` store lands in a guard page it re-enters the
+/// same vector with `sp` another 272 lower, repeatedly, until the frame fits, which puts it in the
+/// slot below and leaves `FAR_EL1` holding the *first* failing address. That produces exactly the
+/// "sp is one slot down" picture a store past a neighbour's top does. The fault PC separates them:
+/// inside the vector table means the walk, ordinary Rust means the store.
 pub fn warn_if_guard_page(addr: u64) {
     let Some(kind) = guard_page_at(addr) else {
         return;
@@ -147,7 +201,7 @@ pub fn warn_if_guard_page(addr: u64) {
         GuardPage::Boot => {
             crate::println!("  {addr:#018x} is in the BOOT stack's guard page.");
             crate::println!(
-                "  bottom {:#018x}, so sp went {} bytes past it.",
+                "  bottom {:#018x}, so the faulting address is {} bytes below it.",
                 crate::arch::mmu::stack_bottom(),
                 crate::arch::mmu::stack_bottom().saturating_sub(addr),
             );
@@ -156,7 +210,7 @@ pub fn warn_if_guard_page(addr: u64) {
             let (bottom, _) = crate::smp::secondary_stack_span(id);
             crate::println!("  {addr:#018x} is in core {id}'s boot-stack guard page.");
             crate::println!(
-                "  bottom {bottom:#018x}, so sp went {} bytes past it.",
+                "  bottom {bottom:#018x}, so the faulting address is {} bytes below it.",
                 bottom.saturating_sub(addr),
             );
         }
@@ -167,12 +221,37 @@ pub fn warn_if_guard_page(addr: u64) {
                 "  {addr:#018x} is in THREAD stack slot {slot}'s guard page (thread.rs)."
             );
             crate::println!(
-                "  bottom {bottom:#018x}, so sp went {} bytes past it, on a {}-byte stack.",
+                "  bottom {bottom:#018x}, so the faulting address is {} bytes below it, on a \
+                 {}-byte stack.",
                 bottom.saturating_sub(addr),
                 crate::thread::STACK_PAGES * 4096,
             );
         }
     }
+
+    // The line the report was missing. Everything above is about the faulting ADDRESS.
+    let sp = crate::arch::current_sp();
+    match thread_stack_site(sp) {
+        Some((slot, above)) if above >= 0 => crate::println!(
+            "  live sp {sp:#018x} is in THREAD stack slot {slot}, {above} bytes above its bottom."
+        ),
+        Some((slot, above)) => crate::println!(
+            "  live sp {sp:#018x} is in THREAD stack slot {slot}'s GUARD PAGE, {} bytes below \
+             its bottom.",
+            -above
+        ),
+        None => crate::println!(
+            "  live sp {sp:#018x} is not in the thread-stack area (a boot or secondary stack)."
+        ),
+    }
+    crate::println!(
+        "  Compare the two lines. Same slot: that stack overflowed. Slot N-1: EITHER a"
+    );
+    crate::println!("  store just past THAT stack's top (slot N's guard page begins where slot");
+    crate::println!("  N-1's stack ends), OR the vector faulted building its own frame and walked");
+    crate::println!("  sp down until it fit, which lands there too. Check whether the reported");
+    crate::println!("  fault PC is inside the vector table to tell those apart. Any other slot,");
+    crate::println!("  or none: a stray pointer, not a stack at all.");
     crate::println!("  The guard page is ONE page. A frame larger than that can step over it");
     crate::println!("  into the slot below without faulting; see notes/stack.md.");
 }

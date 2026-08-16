@@ -1,9 +1,16 @@
 # 117. The stranger test: could someone build this and understand it without asking
 
-**Status: NOT-STARTED.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
-leave it as an aspiration.
+**Status: IN-PROGRESS.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
+leave it as an aspiration. The rubric was written 2026-08-14 (notes/stranger-test.md) and run 1 went
+the same day, finding four defects that are fixed and landed. Run 2 is the remaining half.
 
-**Gate: NONE.** The instrument exists and the first run costs one lane.
+**Gate: NONE.** The instrument exists and the first run cost one lane.
+
+**The column said `NOT-STARTED` until 2026-08-16, with run 1 already recorded in three other files.**
+That is §76's failure again and it is worth naming here rather than quietly correcting: the gate
+compares the index row against this file's own status line, both of which said the same wrong thing,
+so agreement is not accuracy. Nothing in the tree can see that a milestone has moved except a person
+who moves it.
 
 **The question, which is the principle's own wording:** *could a competent stranger, with only this
 repository, reach a passing build and a correct mental model without opening a chat window?* Where

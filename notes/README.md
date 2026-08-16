@@ -77,7 +77,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   system registers, and why the target triple is spelled the way it is.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
-  exception level.
+  exception level. Then the two guard-page incidents: 2026-08-14's real overflows, and
+  2026-08-16's pair that were **not** overflows and said they were, because the report inferred
+  `sp` instead of reading it.
 - [Adding a user program](adding-a-program.md): the six steps, task-oriented, written because
   milestone 117's first stranger run found that no file described them. The two initrd lists in
   two different shapes, the wire id that is expensive to change, and the manifest that declares a
@@ -91,7 +93,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
   separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
   watermark. Milestone 90 closed the asymmetry that inventory found: the per-CPU secondary stacks
-  left `.bss` for a region with an unmapped page under each, proven by a page-table walk.
+  left `.bss` for a region with an unmapped page under each, proven by a page-table walk. Its
+  longest-standing BUGS entry, that nothing walks the call graph, closed on 2026-08-16 with
+  `script/stack-depth-check`, whose static bound and this note's measurement agree to the byte.
 - [Reading aarch64 assembly](reading-assembly.md): five rules that decode almost
   everything, the addressing-mode table, and a line-by-line walkthrough of `boot.s`.
   **Start here if a code block looks like noise.**

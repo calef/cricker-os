@@ -29,22 +29,45 @@ message and does something. These two scripts act.
 
 ```console
 $ scripts/merge-drain.sh --once
-merge-drain: updating #124 against main (Milestone 58: the RISC-V TLB shootdown)
+merge-drain: STALLED. #213 is failing cpu matrix (riscv64 across QEMU CPU models) (§69 decided: Endow becomes ChildEndowment)
+merge-drain: 4 armed, 1 stalled, of 5 unheld
 
-$ scripts/merge-drain.sh            # loop until the queue is empty or stalled
-merge-drain: #124 waiting on checks (Milestone 58: the RISC-V TLB shootdown)
-merge-drain: updating #128 against main (Milestone 67: swish the language)
+$ scripts/merge-drain.sh            # loop until nothing is left to enqueue
+merge-drain: 2 armed, 0 stalled, of 2 unheld
 merge-drain: queue empty; nothing open that does not need calef
 ```
 
-It takes the open pull requests **without** the `needs-architect` label, arms auto-merge on **every one
-of them**, and clicks "Update branch" on **one**. Auto-merge is armed *before* the update, so a merge
-lands whether or not the loop is still alive; the script should be an accelerator, never a
-dependency.
+It takes the open pull requests **without** the `needs-architect` label, skips drafts, arms
+auto-merge on every one of them, and names anything that is conflicted or failing. That is the whole
+script. Arming is one API call that changes nothing until the checks pass, so there is no reason to
+ration it, and an armed pull request enters GitHub's merge queue on its own when it goes green.
 
-**At most one merge in flight**, and this loop took three shapes to get there. Each earlier one
-failed in a way that looked like the opposite bug, which is why the reasoning is here rather than
-only in a commit.
+**It never merges anything labelled `needs-architect`**, which is the one policy the platform does
+not know. That label means the work is outside standing merge authority: it touches the syscall
+surface, adds a dependency, or owes a `DECISIONS` section.
+
+**It stops rather than guessing, per pull request rather than per pass.** A conflict or a failing
+check is reported with the pull request named, and the pass carries on arming the others. Both need
+a person, and a loop that retries them just burns CI. A pass where nothing could be armed ends the
+loop, because re-printing the same stall lines every 150 seconds is not watching.
+
+## What the merge queue took over, and the four shapes that preceded it
+
+**GitHub's merge queue was enabled on this repository by milestone 120's organization move** (the
+setting exists only for organization-owned repositories, which is why it used to be absent rather
+than hidden), and on 2026-08-16 this script lost about 150 lines to it. The queue serializes
+candidates, tests each against the tip, and ejects what fails, which is precisely what the script
+had been reconstructing from outside. Three things changed at once:
+
+- **Ordering stopped being ours.** Enqueue everything eligible and let the queue decide.
+- **Updating a branch became neither necessary nor possible.** The queue builds the merge candidate
+  itself, and GitHub answers `update-branch` on a queued pull request with a 422.
+- **"Arm exactly one" became the wrong answer** rather than a redundant one, because it holds ready
+  work back for a cycle when arming is free.
+
+**The history is kept because it is evidence about the up-to-date rule, not about this script.** The
+merge queue can be turned off, and if it is, every one of these failures returns. The loop took four
+shapes and three of them starved something:
 
 1. **Arm the head only.** #134 sat CLEAN with twelve green checks behind a lower-numbered pull
    request that was still building. calef found it, not the script.
@@ -53,23 +76,15 @@ only in a commit.
    merges, and sends the big one back to the start. **#117 was re-updated twice that way.**
 3. **One target.** Both failures are one fact from two sides: a merge is exclusive, so the queue can
    only land one thing at a time and the only question is which.
-
 4. **Whatever is in flight finishes first.** The third shape preferred a CLEAN pull request on the
-   reasoning that it lands in minutes. Wrong: merging the cheap one **stales the one in flight**, so a
-   five-minute merge costs a thirty-minute one a whole further cycle and saves nothing, because the
-   cheap one would have landed straight afterwards anyway. **#120 paid three cycles** while #137 and
-   #139 went past it.
+   reasoning that it lands in minutes. Wrong: merging the cheap one **stales the one in flight**, so
+   a five-minute merge costs a thirty-minute one a whole further cycle and saves nothing, because
+   the cheap one would have landed straight afterwards anyway. **#120 paid three cycles** while #137
+   and #139 went past it.
 
-So: pick exactly one target, arm exactly that one, leave the rest alone until it lands. Order the two
-operations by **what they cost the queue, not by what they cost themselves**: in flight first, then
-anything already current, then the oldest.
-
-Arming and updating still have very different costs and that is why only the target is updated:
-arming is one API call that changes nothing until the checks pass, while updating triggers a full CI
-run, and `cpu matrix` is this tree's load-sensitive check (notes/cpu-models.md).
-
-**It stops rather than guessing.** A conflict or a failing check ends the pass with the pull request
-named. Both need a human, and a loop that retries them just burns CI.
+The rule those four shapes were groping toward: **order the two operations by what they cost the
+queue, not by what they cost themselves.** A merge queue is that rule implemented by the platform,
+which is why the script no longer needs to hold it.
 
 ## `scripts/trunk-health.sh`
 
@@ -103,6 +118,12 @@ mechanical answer and was applied the same evening (§73). It converts that fail
 into one re-run. These scripts are the detection half; that rule is the prevention half, and it is the
 better one.
 
+**The merge queue is the same prevention with the cost removed** (2026-08-16). Up-to-date-before-merge
+buys the guarantee by making every author pay for it serially, in full CI cycles, which is what made
+the ordering brain above necessary and what milestone 119 measured as the bottleneck. The queue tests
+the same thing, the candidate against the tip, without staling anybody's branch to do it. Same
+prevention, one rung up: the platform holds it rather than a rule everybody has to route around.
+
 ## BUGS
 
 - **Neither script survives the session that starts it.** They are ordinary loops, not services.
@@ -112,10 +133,19 @@ better one.
 - **`merge-drain.sh` trusts the label.** A pull request that *should* be held but was never labelled
   will be merged by it. The label is applied by hand at the moment the decision to hold is made, so a
   maintainer that forgets the label has bypassed the gate rather than tripped it.
-- **It cannot tell "checks still running" from "checks that will never run".** A pull request whose
-  required check was removed, or whose workflow file is broken, reads as `BLOCKED` with no failures
-  and the drain waits on it indefinitely. It says which pull request it is waiting on, so the stall
-  is visible, but it will not time out.
+- **The reduced `merge-drain.sh` has not been run against a live queue.** It was written and
+  shellchecked in a container with no `gh` at all, so every claim above about what it does is read
+  from the source rather than observed. The arming call it makes is the one that put #211 into the
+  queue by hand on 2026-08-16, so the mechanism is known good; the loop around it is not.
+- **`merge-drain.sh` re-arms what is already armed, forever.** A pass counts an arming call as work
+  whether or not it changed anything, so one pull request that never merges (a required check that
+  was removed, a broken workflow file, a queue that is wedged) keeps the loop alive at 150-second
+  intervals with nothing happening. It is cheap and it is silent, which is the bad combination: the
+  script cannot tell a queue that is moving from one that is stuck, and neither can its reader.
+- **It reports what the queue is about to reject, not what the queue did.** Stalls are read from the
+  pull request's own checks. A candidate that fails *inside* the merge queue, against the tip rather
+  than against its own base, is ejected by GitHub and this script says nothing about it; the next
+  pass simply arms it again.
 - **`trunk-health.sh` polls at 90 seconds and reads only `main`.** A release branch, if this tree ever
   grows one, is invisible to it.
 - **Neither reports its own death.** If the process is killed, both simply stop saying anything, and
