@@ -1,7 +1,25 @@
-# 75. Does the naming mechanism cover directories?
+# 75. Directories under `design/` and `notes/` carry provenance in their own README
 
-**Status: PROPOSED.** (raised 2026-08-04 by milestone 115's lane, which found the gap and declined to
-paper over it.)
+**Status: DECIDED.** calef, 2026-08-16, adopting the recommendation below: **a directory under
+`design/` or `notes/` carries its name's provenance as a line in its own `README.md`.** Package
+directories stay out, because a package directory's name is the package's name and milestone
+115's existing mechanism already covers it at the crate header. Everything else the naming tenet
+says about directories is a *form* rule (hyphens, or `snake_case` when it holds a Rust package)
+and is untouched by this.
+
+**Applied the same day** to the three such directories that exist: `design/decisions/`,
+`design/roadmap/`, and `notes/`. The fourth is the case that exposed the gap,
+`design/audit-reports/`, which **does not exist yet**: milestone 92 creates it, and its ratified
+name, with `audit-trail` and bare `audits` refused for the reasons `notes/naming.md` records,
+lands in its README in the same commit that creates the directory. That is written here because
+a decision whose application waits on a milestone is exactly the kind that gets lost.
+
+**No gate, deliberately, and this is rung three rather than rung two.** `script/names --check`
+fails a crate or program with no provenance block because there are 126 of them and forgetting is
+the normal case. There are three directories. A checker for three things is a checker nobody
+maintains, and the failure it would prevent is a missing line in a file whose first paragraph a
+reader is already looking at. If this category grows past a handful, the gate becomes worth
+writing, and the reason to write it will be that somebody forgot.
 
 **What.** Milestone 115 records a name's provenance at the name: a crate's `lib.rs` header, a
 program's module doc, a `script/` entry point's comment block. `script/lint` fails a name with no

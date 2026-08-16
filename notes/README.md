@@ -1,5 +1,7 @@
 # Concept notes
 
+*Name: ratified (§75 covers this directory). `notes` predates every convention here and stays for the reason `elf` and `dtb` stay: it is the plain word for what the files are, and renaming it would spend a reader's recognition to buy nothing.*
+
 Running glossary for nife. Written as concepts come up, not up front. If something
 in the code or the conversation doesn't make sense, it belongs here.
 
