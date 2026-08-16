@@ -32,6 +32,13 @@ Record-all-frames is strictly cheaper here than walk-and-reclaim: O(frames), no 
 no per-leaf TLB dance. So a reclaiming `unmap` was considered and deliberately not built. There
 is nothing for it to do that this doesn't already do better.
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04): this is a decision with its reason
+attached, not an unbuilt feature, and an audit may pass over it. Read it narrowly. It says a
+reclaiming `unmap` buys teardown nothing; it does not say the ABI needs no unmap at all. Milestone
+95 (an unmap primitive, and the mappings init never lets go) is the other question, where init
+holds a writable window on every server it built and there is no way to give one up. See
+notes/untracked-work-sweep.md.
+
 ## The opposite case, in the same kernel
 
 Kernel thread stacks do the reverse, and on purpose. A dead thread's stack VA range is

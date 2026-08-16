@@ -167,6 +167,14 @@ real and reachable option, just a bigger TCB. It becomes worth its cost when ini
 independently of the kernel, which is not true today: they are built by the same command, in the same
 tree, in one sequence.
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04), with one thing owed. The sweep's
+judgement stands: the hash is the decision, the signature is the alternative, and the condition that
+would make it worth its cost is stated, so an audit may pass over it. What is owed is the promotion.
+§71 (a limitation is promoted when it becomes a plan) names this entry as the shape of its second
+trigger, a design fork calef must rule on before any lane could start, and that is the one case that
+lands as a `RECORDED` roadmap row. No such row exists yet. Minting one is the integrator's act and
+not a lane's, so this paragraph is the flag rather than the fix. See notes/untracked-work-sweep.md.
+
 ## Phase B.2: shrinking what a broken init can do
 
 B.1 settled *what bytes init is*. B.2 is the other half: **what a compromised init can still reach.**

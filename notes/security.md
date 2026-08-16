@@ -97,6 +97,11 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
   never reclaimed. This is the accumulation primitive above, and it is the seL4 depth (capability
   derivation tree, revocation) deliberately parked.
 
+  **Recorded-accepted by milestone 94's sweep** (2026-08-04). "Parked" here is a position and not a
+  backlog entry: the tree took generational names instead of a derivation tree, and
+  notes/generational-names.md carries the argument. An audit may pass over it. §71 says what would
+  promote it, and notes/untracked-work-sweep.md holds the sweep's inventory.
+
 ## The shape of the result
 
 The MMU-and-capability confinement, the part the whole architecture is built to get right, held up

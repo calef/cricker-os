@@ -172,6 +172,11 @@ is deliberately deferred**, with the recorded trigger being a socket that must b
 process. The rest of the shape below stands as the contract Piece 3 implements. Recommendation first,
 then the questions (question 1 now answered).
 
+**Recorded-accepted by milestone 94's sweep** (2026-08-04): a deferral that already names what would
+end it, which is the shape a limitation is supposed to have, so an audit may pass over it. The
+trigger is the promotion rule §71 later wrote down, arrived at here first. See
+notes/untracked-work-sweep.md.
+
 **Recommended shape.** A process holds one capability to the stack: a `Stack` endpoint. Everything
 is a `CALL` on it or on a per-connection reply channel, control in the three-word message, bytes in
 a per-connection shared frame delegated at open time.
