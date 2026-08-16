@@ -751,3 +751,169 @@ fn the_probe_tiebreak_is_lexicographic() {
         Ordering::Equal
     );
 }
+
+// ---------------------------------------------------------------------------
+// Announcing (RFC 6762 §8.3), the half a responder needs at startup.
+// ---------------------------------------------------------------------------
+
+/// **An announcement puts every record in the ANSWER section**, which is the difference between it
+/// and the response to a browse. A Mac's resolver caches what an announcement answers; records
+/// arriving as additionals are hints it may discard, so a SRV or TXT that slipped into additionals
+/// here would show up as a share that is discovered and then cannot be resolved.
+#[test]
+fn an_announcement_answers_everything_it_carries() {
+    let mut buf = [0u8; 1024];
+    let n = announcement(&REFERENCE, Service::Adisk, &mut buf).unwrap();
+    let (h, _, rs) = parse_all(&buf[..n]);
+    assert_eq!(h.id, 0, "a multicast message carries no transaction id");
+    assert_eq!(h.flags & FLAG_QR, FLAG_QR, "an announcement is a response");
+    assert_eq!(h.flags & FLAG_AA, FLAG_AA, "and an authoritative one");
+    assert_eq!(h.qdcount, 0, "an announcement answers no question");
+    assert_eq!(h.arcount, 0, "nothing rides in additionals");
+    assert_eq!(h.ancount, 4, "PTR, SRV, TXT and the host's A");
+
+    let service = name_from_dotted(SERVICE_ADISK).unwrap();
+    let instance = name_under(REFERENCE.host.as_bytes(), &service).unwrap();
+    let hostname = name_under(
+        REFERENCE.host.as_bytes(),
+        &name_from_dotted("local").unwrap(),
+    )
+    .unwrap();
+    let ptr = find(&rs, &service, rrtype::PTR).expect("the service PTR");
+    assert_eq!(
+        ptr_target(&buf[..n], ptr).unwrap().as_bytes(),
+        instance.as_bytes()
+    );
+    let srv = find(&rs, &instance, rrtype::SRV).expect("the instance SRV");
+    let srv = srv_fields(&buf[..n], srv).unwrap();
+    assert_eq!(
+        srv.port, 0,
+        "_adisk advertises port 0: measured, not chosen"
+    );
+    assert_eq!(srv.target.as_bytes(), hostname.as_bytes());
+    let a = find(&rs, &hostname, rrtype::A).expect("the host's A record");
+    assert_eq!(a.rdata, &[192, 168, 8, 1]);
+}
+
+/// **The cache-flush bit is set on what this responder owns and never on the PTR.** A responder
+/// that flushed the shared PTR would tell every cache on the segment to discard the other
+/// responders' answers for the same service type, which is how one machine makes everybody else's
+/// shares disappear (RFC 6762 §10.2). The TTLs are the multicast ones, uncapped: the legacy cap is
+/// a property of answering a legacy querier, and an announcement has no querier at all.
+#[test]
+fn an_announcement_flushes_only_the_records_it_owns() {
+    let mut buf = [0u8; 1024];
+    let n = announcement(&REFERENCE, Service::Smb, &mut buf).unwrap();
+    let (_, _, rs) = parse_all(&buf[..n]);
+    for rec in rs.iter().flatten() {
+        let flush = rec.class & CACHE_FLUSH != 0;
+        if rec.rrtype == rrtype::PTR {
+            assert!(!flush, "the shared PTR must not carry cache-flush");
+            assert_eq!(rec.ttl, TTL_SERVICE);
+        } else {
+            assert!(flush, "type {} is ours and must flush", rec.rrtype);
+            assert_eq!(
+                rec.ttl,
+                if rec.rrtype == rrtype::A {
+                    TTL_HOST
+                } else {
+                    TTL_SERVICE
+                }
+            );
+        }
+    }
+}
+
+/// Each service type announces its own records and nothing else: `_smb._tcp` the port and the
+/// empty TXT, `_device-info._tcp` the model, `_adisk._tcp` the disks. Announcing all three at once
+/// is what the MTU here forbids, so a caller sends three datagrams and each must stand alone.
+#[test]
+fn each_service_type_announces_its_own_records() {
+    let mut buf = [0u8; 1024];
+    let local = name_from_dotted("local").unwrap();
+
+    let n = announcement(&REFERENCE, Service::Smb, &mut buf).unwrap();
+    let (_, _, rs) = parse_all(&buf[..n]);
+    let inst = name_under(
+        REFERENCE.host.as_bytes(),
+        &name_from_dotted(SERVICE_SMB).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        srv_fields(&buf[..n], find(&rs, &inst, rrtype::SRV).unwrap())
+            .unwrap()
+            .port,
+        445,
+        "the SMB port is the one connectable service"
+    );
+    assert_eq!(
+        find(&rs, &inst, rrtype::TXT).unwrap().rdata,
+        b"\x00",
+        "RFC 6763 §6.1's single empty string, as the reference emits"
+    );
+
+    let n = announcement(&REFERENCE, Service::DeviceInfo, &mut buf).unwrap();
+    let (_, _, rs) = parse_all(&buf[..n]);
+    let inst = name_under(
+        REFERENCE.host.as_bytes(),
+        &name_from_dotted(SERVICE_DEVICE_INFO).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        find(&rs, &inst, rrtype::TXT).unwrap().rdata,
+        b"\x0emodel=MacSamba"
+    );
+    // And the host name is the same in every announcement, which is what ties the three services
+    // to one machine.
+    let hostname = name_under(REFERENCE.host.as_bytes(), &local).unwrap();
+    assert!(find(&rs, &hostname, rrtype::A).is_some());
+}
+
+/// **An announcement without an address emits no A record**, rather than a zero one. A responder
+/// that has not learned its own address yet still has services worth announcing, and a bogus A is
+/// worse than none: a Mac would cache it and fail to connect to 0.0.0.0.
+#[test]
+fn an_announcement_without_an_address_omits_the_a_record() {
+    let mut adv = REFERENCE;
+    adv.ipv4 = None;
+    let mut buf = [0u8; 1024];
+    let n = announcement(&adv, Service::Adisk, &mut buf).unwrap();
+    let (h, _, rs) = parse_all(&buf[..n]);
+    assert_eq!(h.ancount, 3, "PTR, SRV, TXT and no A");
+    assert!(rs.iter().flatten().all(|r| r.rrtype != rrtype::A));
+}
+
+/// **Every announcement fits the transport this tree has.** The virtio device's MTU is 576 bytes
+/// (a single-page DMA region, `user/src/net_transport.rs`), so a datagram over ~548 bytes is not
+/// fragmented, it is not sent. The `_adisk` announcement is the big one, and it is the one whose
+/// TXT record grows with each disk a household adds.
+#[test]
+fn an_announcement_fits_the_smallest_transport_here() {
+    const UDP_PAYLOAD_LIMIT: usize = 548;
+    let mut buf = [0u8; 1024];
+    for svc in [Service::Smb, Service::Adisk, Service::DeviceInfo] {
+        let n = announcement(&REFERENCE, svc, &mut buf).unwrap();
+        assert!(n <= UDP_PAYLOAD_LIMIT, "{svc:?} announcement is {n} bytes");
+    }
+    // Eight disks is mdns_config's ceiling; the record still fits, which is what makes that
+    // ceiling safe rather than merely arbitrary.
+    let disks = [Disk {
+        volume: "abcdefghijklmnop",
+        flags: "0x82",
+    }; 8];
+    let mut adv = REFERENCE;
+    adv.disks = &disks;
+    let n = announcement(&adv, Service::Adisk, &mut buf).unwrap();
+    assert!(n <= UDP_PAYLOAD_LIMIT, "eight disks announce in {n} bytes");
+}
+
+/// A buffer too small is an error rather than a truncated message, which is the same refusal the
+/// rest of the builder makes: half an announcement is a record set a cache would believe.
+#[test]
+fn an_announcement_refuses_a_buffer_it_cannot_fill() {
+    let mut small = [0u8; 64];
+    assert_eq!(
+        announcement(&REFERENCE, Service::Adisk, &mut small),
+        Err(Error::Overflow)
+    );
+}
