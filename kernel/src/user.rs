@@ -819,7 +819,16 @@ pub fn smb_serve_boot() {
         println!("smb-serve: no smb_server program in the initrd");
         return;
     };
-    let Some((lease, smb)) = virtio_service::start_smb_serve(net_stack, smb_server) else {
+    // The share: the real filesystem when a RedoxFS disk is attached (`cargo xtask smb-serve`
+    // builds and attaches one), the baked-in fixture otherwise. Wired before the adapter exists,
+    // like every service-before-client here.
+    let fs = program("fs_server").and_then(|fs_server| {
+        fs_service::root_directory(fs_service::blk_server_image(), fs_server)
+    });
+    if fs.is_none() {
+        println!("smb-serve: no RedoxFS disk; serving the baked-in fixture share");
+    }
+    let Some((lease, smb)) = virtio_service::start_smb_serve(net_stack, smb_server, fs) else {
         println!(
             "smb-serve: no virtio-net device to serve on (the runner attaches one when NIFE_NET is set)"
         );
@@ -844,7 +853,11 @@ pub fn smb_serve_boot() {
         println!(
             "smb-serve:   or: mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share"
         );
-        println!("smb-serve: read-only fixture share; see notes/smb.md, including its BUGS.");
+        println!(
+            "smb-serve: read-only share; see notes/smb.md, including its BUGS. The files are \
+             the RedoxFS image's (motd, scratch, doc/...) unless the fixture fallback was \
+             announced above."
+        );
     } else {
         println!("smb-serve: the adapter failed to bind its port (code {word:#x})");
     }

@@ -120,7 +120,12 @@ fn main() -> ExitCode {
                 std::env::set_var("NIFE_SMB_HOSTFWD_PORT", "10445");
                 std::env::set_var("NIFE_SMB_GUEST_PORT", "445");
             }
-            mkdisk()
+            // The FS server and the RedoxFS image, exactly as `shell` builds them: with the
+            // disk attached the share the Mac mounts is the real filesystem (milestone 54's
+            // point); without it the boot announces its fixture fallback and serves that.
+            fs_server_build(TARGET)
+                && mkredoxfs()
+                && mkdisk()
                 && user()
                 && cargo(&[
                     "run",
@@ -1706,11 +1711,13 @@ const SMB_ROUNDS: usize = 2;
 /// SMB2 exchange against the guest, through the second `hostfwd` (`NIFE_SMB_HOSTFWD_PORT`).
 ///
 /// The mirror of [`InboundProber`], one protocol up: instead of echo bytes, each round is a full
-/// negotiate, guest session setup, tree connect, open of the fixture file, a read whose bytes are
-/// asserted against `smb_proto::share::FIXTURE` (the same constant the guest serves, so there is
-/// no second copy of the expected contents), close, and logoff. Same retry discipline, including
-/// the never-abandon-a-slow-connection rule the echo prober documents: a connected stream is held
-/// until it answers, dies, or the run ends.
+/// negotiate, guest session setup, tree connect, open of the file the guest's boot seeded
+/// through its FS server, a read whose bytes are asserted against `fs_proto::fixture::SMB_SEED`
+/// (the same constant the seeding client wrote, so there is no second copy of the expected
+/// contents), close, and logoff. Asserting the *seeded* file is what makes this the
+/// RedoxFS-to-TCP gate rather than a wire check against the adapter's baked-in fixture. Same
+/// retry discipline, including the never-abandon-a-slow-connection rule the echo prober
+/// documents: a connected stream is held until it answers, dies, or the run ends.
 struct SmbProber {
     arch: String,
     port: Option<u16>,
@@ -1763,8 +1770,8 @@ impl SmbProber {
                 eprintln!(
                     "smb check ({arch}): {SMB_ROUNDS} SMB2 sessions to 127.0.0.1:{port} were \
                      forwarded into the guest and served end to end: negotiate, guest session, \
-                     tree connect, and a read of the fixture file whose bytes matched. The second \
-                     session is the proof the adapter re-arms."
+                     tree connect, and a read of the FS-server-seeded file whose bytes matched \
+                     (RedoxFS to TCP). The second session is the proof the adapter re-arms."
                 );
                 true
             }
@@ -1885,7 +1892,6 @@ fn smb_session(
     s: &mut std::net::TcpStream,
     stop: &std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
-    use smb_proto::share::FIXTURE;
     use smb_proto::{H_SESSION_ID, H_STATUS, H_TREE_ID, client, r32, r64};
 
     let status = |resp: &[u8]| r32(resp, H_STATUS);
@@ -1931,12 +1937,19 @@ fn smb_session(
     }
     let tid = r32(&resp, H_TREE_ID);
 
-    let (name, expected) = FIXTURE.files[0];
+    // The file the guest's boot seeded through its FS server (fs_test_client's seed role):
+    // asserting these bytes is what proves the served share is the real filesystem, not the
+    // adapter's baked-in fixture. One constant on both sides (fs_proto::fixture), no second copy.
+    let (name, expected) = (
+        fs_proto::fixture::SMB_SEED_NAME.as_bytes(),
+        fs_proto::fixture::SMB_SEED,
+    );
     smb_send(s, &client::create(5, sid, tid, name))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!(
-            "create {}: status {:#x}",
+            "create {}: status {:#x} (a NOT_FOUND here usually means the guest fell back to its \
+             fixture share: was the RedoxFS disk attached, and did the seed role run?)",
             String::from_utf8_lossy(name),
             status(&resp)
         ));
@@ -1945,7 +1958,7 @@ fn smb_session(
     let size = client::create_end_of_file(&resp);
     if size != expected.len() as u64 {
         return Err(format!(
-            "create reported {size} bytes, the fixture is {}",
+            "create reported {size} bytes, the seeded file is {}",
             expected.len()
         ));
     }
