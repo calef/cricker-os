@@ -4,7 +4,8 @@ The head of the customer path. macOS speaks SMB natively and the Time Machine ta
 55) requires it, so SMB is the one network file protocol this tree carries; the roadmap block
 records why NFS and 9P were refused. What milestone 54 builds is the **adapter**: a program
 holding one network endpoint and one share, translating SMB2 on the wire into the share seam on
-the other side, with no storage authority of its own.
+the other side. Its only storage authority is the one directory capability it is granted, so
+"what can the network reach" is a statement about its cspace, not about a check it passes.
 
 **A real Mac has mounted it** (2026-08-15, macOS 26 `mount_smbfs` against the QEMU guest): the
 share mounts, `ls` lists it, both fixture files read back byte-correct, the volume arrives
@@ -21,12 +22,24 @@ forced is recorded below under "the SMB1 probe".
 | `smb_server` | `user/src/smb_server.rs` | The adapter program: listen/accept through the socket contract (milestone 107), reassemble direct-TCP framing from bounded `RECV` chunks, hand messages to the state machine, chunk the answers back out. |
 | The SMB prober | `xtask/src/main.rs` | The host side of the QEMU gate: a real SMB2 client that negotiates, sets up a guest session, connects the share, opens the fixture file and asserts its bytes, twice over two connections. |
 
-The share behind the adapter is the `Share` trait in `crates/smb_proto/src/share.rs`. Today its
-one implementation is `FIXTURE`, files baked into the binary, which is what lets the whole
-protocol path run and gate with no FS service in the boot. The fs_proto-backed share, the program
-holding a real directory capability into the FS server, is **the milestone's remaining piece**:
-it implements the same trait inside `smb_server`, where the IPC lives, and no protocol code
-moves.
+The share behind the adapter is the `Share` trait in `crates/smb_proto/src/share.rs`, with two
+implementations and a boot-time choice between them (`smb_server`'s `arg2`):
+
+- **`FsShare`** (in `smb_server`, where the IPC lives): the real one. The adapter holds a
+  directory capability into the FS server (the endpoint IS the capability, DECISIONS §27) and
+  answers every `Share` question with `fs_proto` verbs, so what a mounted client reads is the
+  RedoxFS image. This is what the test boots and `smb-serve` wire whenever a RedoxFS disk is
+  attached. Landing it changed no protocol code, which was the seam's whole promise.
+- **`FIXTURE`** (in `smb_proto`): files baked into the binary, kept as the no-disk fallback. It
+  is what lets the protocol path run with no FS service in the boot, and what the host tests
+  drive the state machine against, where a share that cannot be wrong is a feature.
+
+The gate proves the distinction rather than asserting it: the combined boot first runs
+`fs_test_client`'s seed role, which writes `fs_proto::fixture::SMB_SEED` through the FS server,
+and the prober then opens that file over the mount and asserts its bytes. Bytes a different
+process put on the filesystem through fs_proto coming back over TCP is the claim
+"RedoxFS -> fs_proto -> `Share` -> SMB2 -> TCP" made checkable; the baked-in fixture could not
+have answered it.
 
 ## The wire decisions, and why
 
@@ -67,9 +80,14 @@ so review can happen where the cost is:
 2. **The QEMU gate**, both ISAs: the SMB adapter rides the milestone-107 inbound test's spawn
    (`a_host_process_connects_to_the_guest_and_is_answered`) as a **second client of the same
    `Stack` endpoint**, because a second `net_stack` does not fit the test boot (its 192-page
-   region is never reclaimed; see `virtio::MAX_DEVICES` for the recorded failure). The runner
-   adds a second `hostfwd` (`NIFE_SMB_HOSTFWD_PORT`) and xtask's SMB prober performs the
-   mount-shaped exchange end to end while the echo prober runs beside it. Both verdicts gate.
+   region is never reclaimed; see `virtio::MAX_DEVICES` for the recorded failure). The test
+   wires the FS service, seeds the gate's file through it, and grants the adapter the directory
+   capability; the runner adds a second `hostfwd` (`NIFE_SMB_HOSTFWD_PORT`) and xtask's SMB
+   prober performs the mount-shaped exchange end to end (asserting the seeded file's bytes)
+   while the echo prober runs beside it. Both verdicts gate. This is the first boot that holds
+   the block server, the FS server, `net_stack` and the SMB adapter at once, so the test prints
+   the free-frame count where it wires them; the day the budget stops fitting, the number is
+   already in the transcript.
 
 ## EXAMPLES
 
@@ -91,9 +109,12 @@ Then, on the Mac (which can be the same machine):
   choose **Guest** when asked how to connect; or
 - `mkdir /tmp/nife-share && mount_smbfs -N //GUEST@127.0.0.1:10445/share /tmp/nife-share`
 
-`hello.txt` and `readme.md` are the fixture; `cat` the first and you are reading bytes served by
-this kernel's userspace over its own TCP stack. Unmount before stopping QEMU, or Finder will beat
-against a dead forward for a while.
+The share is the RedoxFS image (`smb-serve` builds a fresh one): `cat /tmp/nife-share/motd` and
+you are reading bytes that came off a real (virtual) block device, through the block server, the
+FS server, and the SMB adapter, over this kernel's own TCP stack. If the boot printed the
+fixture-fallback line instead (no RedoxFS disk), the files are `hello.txt` and `readme.md`,
+baked into the adapter. Unmount before stopping QEMU, or Finder will beat against a dead forward
+for a while.
 
 ## BUGS
 
@@ -104,11 +125,22 @@ against a dead forward for a while.
   classes. Non-guest accounts are untested and would meet signing expectations; connect as Guest.
 - **Guest means everyone.** Every AUTHENTICATE is accepted. Do not put anything on the share the
   local network may not read. There is also no rate limiting and no credit accounting.
-- **Read-only, flat, fixture-backed.** Writes, creates and `SET_INFO` return
-  `STATUS_ACCESS_DENIED`; there are no subdirectories; the files are baked into the binary. The
-  fs_proto share backend is the next piece and lands behind the `Share` trait.
-- **All timestamps are zero** (the server holds no clock capability), which macOS renders as
-  January 1601 or similar nonsense dates. Cosmetic, and honest: the fixture has no dates.
+- **Read-only and flat.** Writes, creates and `SET_INFO` return `STATUS_ACCESS_DENIED` (the
+  write path is milestone 55's next piece). The share model has no subdirectory nodes, so a
+  directory on the image shows in listings with the directory attribute but answers NOT_FOUND
+  when opened. The doc tree's directories are the visible case.
+- **The fs share pays for statelessness in IPC.** Every `Share` call re-walks the listing and
+  every read re-opens the file: one 64 KiB SMB READ costs a `READDIR` walk, an `OPEN`, sixteen
+  page-sized `fs::READ`s and a `CLOSE`. Fine for a mount and a `cat`; a handle cache is
+  deliberately deferred to the write path, which needs per-connection state anyway.
+- **An FS refusal degrades to absence** (`Share` carries no error channel): a file the FS server
+  refuses to open reads as "no such file" on the wire, a failed read as EOF.
+- **Only lower-case names are reachable over the mount.** The wire folds names to lower-case
+  ASCII before lookup and RedoxFS is case-sensitive, so an upper-case name on the image can be
+  listed but never opened.
+- **All timestamps are zero** (the server holds no clock capability, and fs_proto's FSTAT does
+  not carry times), which macOS renders as January 1601 or similar nonsense dates. Cosmetic, and
+  honest: nothing here has a date to report.
 - **ASCII names only.** A name with any non-ASCII UTF-16 unit is simply not found.
 - **A dropped connection costs a 15 s stall** before the listener re-arms (`net_stack`'s bounded
   `RECV` wait). A clean unmount (LOGOFF) costs nothing. One connection is served at a time.
@@ -117,13 +149,12 @@ against a dead forward for a while.
 - `smb-serve` binds `127.0.0.1:10445` fixed, so two serve boots on one machine collide; the test
   boots pick free ports and do not.
 
-## What remains for milestone 54, in order
+## What remains for milestone 54 and beyond, in order
 
-1. **The fs_proto-backed share**: `smb_server` holding a directory capability into the FS
-   server, implementing `Share` over `fs_proto` calls (open/read/enumerate; milestone 47's
-   rights split expresses "may write backups but not delete them" when writes come). This is
-   what makes the adapter the roadmap's adapter rather than a demo of one.
-2. **The write path** (milestone 55 needs it): `WRITE`, create dispositions, `SET_INFO`, and the
-   share trait's widening.
+1. ~~The fs_proto-backed share~~ **Done** (2026-08-15): `smb_server::FsShare`, gated on both
+   ISAs by the seeded-file exchange above. Milestone 47's rights split (a directory capability
+   that may write backups but not delete them) becomes expressible the moment writes exist.
+2. **The write path** (milestone 55 needs it): `WRITE`, create dispositions, `SET_INFO`, the
+   share trait's widening (and its error channel), and the handle cache the BUGS above defer.
 3. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
    be more than guest-readable. The seam is marked in `smb_proto::ntlmssp`.

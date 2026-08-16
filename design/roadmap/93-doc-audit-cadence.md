@@ -5,9 +5,7 @@ security story from rotting; this keeps every other documented claim from rottin
 demonstrator's docs are part of the deliverable (CLAUDE.md), so a doc describing a system that no
 longer exists is a defect in the deliverable, not a cosmetic lag.
 
-**Gate: DECISION.** The cadence itself is still calef's. The index name and location are settled
-(`design/audit-reports/`, 2026-08-04), and this milestone shares 92's index and tripwire rather than
-growing a twin: one directory, with a type column distinguishing a security lens from a doc sweep.
+**Gate: NONE.** The cadence was decided 2026-08-16 (§74) and this milestone shares it: the same triggers read the same tree, because a documentation sweep's input is what changed since the last one.
 
 **The evidence that rot is real here, all found in one day (2026-08-03):** notes/verification.md
 said the proof suite ran in "a few minutes" a month after that stopped being true; two roadmap

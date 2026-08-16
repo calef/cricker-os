@@ -1836,6 +1836,21 @@ pub mod fixture {
     /// first. Any other value (or silence) fails the test.
     pub const SUCCESS: u64 = 0xF11E_600D;
 
+    /// **The file the SMB gate reads off the real filesystem** (milestone 54). The combined
+    /// inbound boot creates it through the FS server (`fs_test_client`'s seed role) *before* the
+    /// SMB adapter serves, and xtask's SMB prober then opens it by this name over the wire and
+    /// asserts these exact bytes came back, which is what proves the served bytes crossed
+    /// RedoxFS -> `fs_proto` -> the `Share` seam -> SMB2 -> TCP rather than a fixture baked into
+    /// the server binary. One constant, three readers (the seeding client, the kernel test, the
+    /// host prober), zero second copies of the expected contents.
+    ///
+    /// Lower-case on purpose: the SMB server folds wire names to lower-case ASCII before lookup
+    /// (`smb_proto`'s BUGS), so an upper-case name here would be unreachable over the mount.
+    pub const SMB_SEED_NAME: &str = "smb_seed.txt";
+    /// Its exact contents. What the seed role writes and the SMB prober must read back.
+    pub const SMB_SEED: &[u8] =
+        b"these bytes crossed RedoxFS, fs_proto, and SMB2 on their way to you\n";
+
     /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk
     /// IPC and before it serves clients. The test waits for it, so a hang in `open` (the blk path)
     /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.

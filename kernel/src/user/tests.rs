@@ -1684,15 +1684,55 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 ///
 /// **Milestone 54 rides the same spawn, for the same reason.** The SMB adapter (`smb_server`) is
 /// a second client of this stack, granted the neighbouring port, and xtask's SMB prober drives a
-/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, read of a fixture
-/// file whose bytes the prober asserts, twice over two connections) through a second `hostfwd`
-/// while the echo exchange runs. Two verdicts come back and both gate. See
+/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, and a read whose
+/// bytes the prober asserts, twice over two connections) through a second `hostfwd` while the
+/// echo exchange runs. Two verdicts come back and both gate. See
 /// `virtio_service::start_net_stack_with_smb` for why they share a NIC, and notes/smb.md for the
 /// protocol's scope.
+///
+/// **And the share is the real filesystem** (the milestone's second act): this test first wires
+/// the FS service and runs `fs_test_client`'s seed role, which writes
+/// `fs_proto::fixture::SMB_SEED` through the FS server, and then hands the adapter the directory
+/// capability. What the prober reads back is therefore bytes that crossed
+/// RedoxFS -> `fs_proto` -> the `Share` seam -> SMB2 -> TCP, seeded by a different process than
+/// the one serving them. This is the first boot that holds the block server, the FS server,
+/// `net_stack`, and the SMB adapter at once, which is why it prints the free-frame count: the
+/// number is the headroom claim, measured rather than argued. With a NIC but no RedoxFS disk the
+/// adapter falls back to its fixture, and the prober (whose expectation is the seeded file)
+/// fails the run; under `script/test` both devices are always attached.
 // RISC-V twin: `riscv_virtio_tests::a_host_process_connects_to_the_guest_and_is_answered`.
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
+    // Seed the share through the FS service before the adapter exists: the file must be on the
+    // filesystem before the prober's first session can open it.
+    let fs = fs_service::start(
+        init_image(),
+        program("fs_server").expect("no fs_server program in the initrd archive"),
+        program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
+        7, // ROLE_SMB_SEED: write fixture::SMB_SEED at fixture::SMB_SEED_NAME, report, exit
+    )
+    .map(|(readiness, seed_report)| {
+        assert_fs_service_ready(readiness);
+        let status = sched::ipc_recv(seed_report)[0];
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the seeding client could not put the SMB gate's file on the filesystem",
+        );
+        fs_service::root_directory(
+            init_image(),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
+        )
+        .expect("the FS service was wired a moment ago")
+    });
+    if fs.is_none() {
+        crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
+    }
+    crate::println!(
+        "    (combined boot wired: {} frames free before the net + SMB spawn)",
+        crate::memory::free_frames()
+    );
     let Some((report, smb_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -1700,6 +1740,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         NET_LISTEN_PORT,
         SMB_LISTEN_PORT,
         SMB_ROUNDS,
+        fs,
         socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
