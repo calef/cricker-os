@@ -32,6 +32,33 @@ to any question it asks.
    than one that is silent.
 5. **No help mid-run.** If it is stuck, that is the measurement finishing, not a prompt to intervene.
 
+### What run 2 withholds, and what it cannot, decided 2026-08-16 before the run
+
+Run 1's first `BUGS` entry said run 2 must not have this note in the tree it is given. Trying to
+obey it exactly is what showed the entry was asking for something the tree cannot supply, so the
+rule this run used is narrower and is written here rather than left as an intention:
+
+**Withhold the answer key, not the fact that a test exists.** Each stranger got a clone of
+`d6a16b7` with `notes/stranger-test.md` and its `notes/README.md` entry removed and the deletion
+amended into the tip, so the working tree is clean and no `git status` line advertises it. Nothing
+else was touched.
+
+**The mentions of run 1 stay, because removing them would fabricate a different repository.**
+`README.md`, `DECISIONS.md`, `notes/README.md` and the milestone 117 block all cite the first run,
+and three of them do it while making a point a newcomer needs (why `CLAUDE.md` is misnamed, where
+`§N` resolves, what `adding-a-program.md` is for). A tree with those cut is not the tree under test,
+and the milestone's own sentence is *with only this repository*. So a run 2 stranger can discover
+that this project tests its onboarding; what it cannot discover is the rubric's "pass means" column,
+which is the part that made run 1's answers uncountable.
+
+**The strangers were subagents of a maintainer session whose working directory is the repository**,
+which is a weaker isolation than run 1's container and may hand them `CLAUDE.md` before they choose
+to read anything. That would contaminate the reading-order row and four of the eight mental-model
+questions, all of which `CLAUDE.md` answers directly. It is measured rather than assumed: each
+stranger is asked afterwards what it read and in what order, and what was in front of it before it
+chose. A run whose answer is "the constitution was already there" reports no B1 and no M3, M5, M6 or
+M8, rather than reporting them generously.
+
 ## The rubric, written 2026-08-14, before the first run
 
 Two halves. Only the first is mechanical.
