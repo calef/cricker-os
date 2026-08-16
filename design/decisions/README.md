@@ -1,5 +1,7 @@
 # nife: Architecture Decisions
 
+*Name: ratified (§75 covers this directory). `decisions` names what the files are, one each, and the tree cites them as `§N` regardless of the directory's name; the plural is deliberate, since a singular would read as one decision about design rather than a place where decisions live.*
+
 Decisions made 2026-07-12, before any code was written. Each entry records what we
 chose, what we rejected, and why. Revisit these deliberately, not accidentally.
 
@@ -131,7 +133,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 72 | DECIDED | [`time` needs no clock: duration is ambient, wall-clock identity is authority](72-time-command-clock.md) |
 | 73 | DECIDED | [Milestone 44's ten admin minutes, which only calef can spend](73-repository-admin-steps.md) |
 | 74 | DECIDED | [Audits run on change, not on the calendar: events first, then a count](74-audit-cadence.md) |
-| 75 | PROPOSED | [Does the naming mechanism cover directories?](75-naming-covers-directories.md) |
+| 75 | DECIDED | [Directories under `design/` and `notes/` carry provenance in their own README](75-naming-covers-directories.md) |
 | 76 | PROPOSED | [What catches a milestone status that is wrong in both places?](76-roadmap-status-versus-tree.md) |
 | 77 | DECIDED | [The branch-prefix list now describes the tree](77-branch-prefixes.md) |
 | 78 | PROPOSED | [Signed commits: worth doing, and not as a side effect](78-signed-commits.md) |
@@ -145,9 +147,10 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 86 | PROPOSED | [Whether an NVMe driver can leave the kernel, and what capability would let it](86-el0-nvme-driver.md) |
 | 87 | DECIDED | [MIT OR Apache-2.0, and why the GPL's lesson does not transfer](87-permissive-license.md) |
 | 88 | PROPOSED | [`needs-architect` as a required check, rather than as a script's restraint](88-needs-architect-as-a-check.md) |
-| 89 | PROPOSED | [Two words for an unratified name: `provisional` and `unrecorded`](89-provisional-versus-unrecorded.md) |
+| 89 | DECIDED | [`provisional` becomes the fourth provenance state](89-provisional-versus-unrecorded.md) |
 | 90 | DECIDED | [The claim is a draft pull request; the status flip is a gate](90-claiming-and-closing.md) |
 | 91 | DECIDED | [A region's endpoints are swept before its refusal, not after](91-endpoints-before-the-refusal.md) |
+| 92 | DECIDED | [A caretaker is supervised by the client it serves](92-caretaker-lifetime.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

@@ -1,6 +1,7 @@
 use super::*;
 use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
 use crate::sched::EpId;
+use crate::user::holding::Holding;
 
 /// Where the driver expects its DMA page. Must match user/src/virtio.rs. The device registers
 /// are NOT mapped to the driver any more: it drives the device through a `Virtio` capability,
@@ -167,35 +168,31 @@ const NET_SERVER_STACK_PAGES: u64 = 8;
 /// interrupt, a DMA page, and a report endpoint; unlike it, the server also gets an **untyped
 /// budget** (slot 3) for the heap smoltcp allocates against, and extra stack pages. Returns the
 /// endpoint the server reports its acquired address on, or `None` if no NIC is attached.
-pub fn start_net_server(image: &'static [u8]) -> Option<EpId> {
+pub fn start_net_server(image: &'static [u8]) -> Option<(EpId, Holding)> {
     let dev = crate::virtio::find_net_device()?;
-    Some(
-        wire_net_server(
-            image,
-            crate::virtio::Transport::Mmio {
-                mmio_phys: dev.mmio_phys,
-            },
-            dev.intid,
-            None,
-            socket_proto::NO_LISTEN_GRANT, // a DHCP bring-up serves nobody inbound
-        )
-        .0,
-    )
+    let (report, _stack, holding) = wire_net_server(
+        image,
+        crate::virtio::Transport::Mmio {
+            mmio_phys: dev.mmio_phys,
+        },
+        dev.intid,
+        None,
+        socket_proto::NO_LISTEN_GRANT, // a DHCP bring-up serves nobody inbound
+    );
+    Some((report, holding))
 }
 
 /// The net server over the PCIe transport, behind the IOMMU (§20).
-pub fn start_net_server_pci(image: &'static [u8]) -> Option<EpId> {
+pub fn start_net_server_pci(image: &'static [u8]) -> Option<(EpId, Holding)> {
     let d = crate::pci::find_net_device()?;
-    Some(
-        wire_net_server(
-            image,
-            crate::virtio::Transport::pci(&d),
-            d.intid,
-            Some(d.rid),
-            socket_proto::NO_LISTEN_GRANT,
-        )
-        .0,
-    )
+    let (report, _stack, holding) = wire_net_server(
+        image,
+        crate::virtio::Transport::pci(&d),
+        d.intid,
+        Some(d.rid),
+        socket_proto::NO_LISTEN_GRANT,
+    );
+    Some((report, holding))
 }
 
 /// [`wire`] for the net server: the same confined transport, interrupt, DMA page, and report
@@ -209,7 +206,7 @@ fn wire_net_server(
     intid: u32,
     rid: Option<u32>,
     listen_grant: u64,
-) -> (EpId, EpId) {
+) -> (EpId, EpId, Holding) {
     use crate::cap::untyped_cap;
 
     let dma = crate::memory::alloc()
@@ -221,14 +218,28 @@ fn wire_net_server(
         core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
     }
 
-    let irq_ep = crate::sched::create_endpoint();
+    // **The three endpoints come out of a region of their own, and that is what makes this service
+    // reclaimable at all.** `net_stack` blocks in `recv_cap(STACK)` forever, and DECISIONS §16's
+    // armed kill is spent by `schedule()`, which a `Blocked` thread never reaches. What wakes it is
+    // reclaiming the region its endpoints live in: the reap drains their wait queues and aborts the
+    // waiter, and the doomed server is then schedulable enough to die. From the kernel's own
+    // endpoint chunks (`create_endpoint`) there is no such handle, and there was no way to end this
+    // process short of rebooting. Four pages for three endpoints, one page each and one spare.
+    let ep_region = crate::untyped::create(4).expect("no endpoint region for net_stack");
+    let irq_ep = crate::sched::create_endpoint_from(ep_region).expect("no irq endpoint");
     crate::sched::bind_irq(intid, irq_ep);
     crate::arch::irq::enable(intid);
 
-    let report = crate::sched::create_endpoint();
-    let stack = crate::sched::create_endpoint();
+    let report = crate::sched::create_endpoint_from(ep_region).expect("no report endpoint");
+    let stack = crate::sched::create_endpoint_from(ep_region).expect("no stack endpoint");
     let vid = crate::virtio::register(transport, dma, FRAME_SIZE, rid);
     let budget = crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for net_stack");
+    // The extra stack pages, in a region of their own so they can be handed back **after** the
+    // server is provably dead. They cannot come from `budget`: a `Spawn::maps` page is not a
+    // recorded mapping, so revocation cannot pull it, and freeing a running thread's stack is a
+    // use-after-free rather than a fault. See `Holding::region_after_death`.
+    let stack_region =
+        crate::untyped::create(NET_SERVER_STACK_PAGES).expect("no stack region for net_stack");
 
     // The DMA mapping plus the extra stack pages, in one array the spawn closure owns.
     let mut maps = [Mapping {
@@ -242,13 +253,9 @@ fn wire_net_server(
         flags: Flags::user_data(),
     };
     for k in 0..NET_SERVER_STACK_PAGES as usize {
-        let phys = crate::memory::alloc()
-            .expect("no frame for the net server stack")
-            .addr();
-        // SAFETY: fresh frame via the direct map; zero it so the process starts clean.
-        unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
-        }
+        // `retype_page` hands the page back zeroed, so the process starts clean without a second
+        // scrub here.
+        let phys = crate::untyped::retype_page(stack_region).expect("no frame for the net stack");
         maps[k + 1] = Mapping {
             va: USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE,
             phys,
@@ -256,7 +263,7 @@ fn wire_net_server(
         };
     }
 
-    crate::sched::spawn(move || {
+    let tid = crate::sched::spawn(move || {
         run(
             image,
             Spawn {
@@ -276,7 +283,12 @@ fn wire_net_server(
     })
     .expect("could not spawn the net server");
 
-    (report, stack)
+    let mut held = Holding::new();
+    held.add_thread(tid);
+    held.add_region(ep_region);
+    held.add_region_after_death(budget);
+    held.add_region_after_death(stack_region);
+    (report, stack, held)
 }
 
 /// The client's budget, in pages: it mints one shared frame and pays for that frame's own page
@@ -310,7 +322,7 @@ pub fn start_net_stack(
     cli_arg: u64,
     pci: bool,
     listen_grant: u64,
-) -> Option<EpId> {
+) -> Option<(EpId, Holding)> {
     let (transport, intid, rid) = if pci {
         let d = crate::pci::find_net_device()?;
         (crate::virtio::Transport::pci(&d), d.intid, Some(d.rid))
@@ -325,8 +337,9 @@ pub fn start_net_stack(
         )
     };
 
-    let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid, listen_grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
+    let (net_stack_report, stack, mut held) =
+        wire_net_server(image, transport, intid, rid, listen_grant);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, &mut held);
 
     // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
     // enters its serve loop (the client's first request blocks until it does). This also
@@ -334,7 +347,7 @@ pub fn start_net_stack(
     // waits at its first request meanwhile.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some(cli_report)
+    Some((cli_report, held))
 }
 
 /// Where the SMB adapter expects the page it shares with the FS server
@@ -350,18 +363,32 @@ const FS_VA_SMB: u64 = 0x0000_0000_00B0_0000;
 /// frame of the page its clients share with the FS server, granted as slot 3 and mapped at
 /// [`FS_VA_SMB`]. `Some` also tells the program so (`arg2`, `smb_server`'s contract); `None` is
 /// every other stack client, and the fixture-serving adapter of a boot with no RedoxFS disk.
+///
+/// `held` is the caller's [`Holding`]: this client's thread and the three regions behind it are
+/// added to whatever the net server already put there, so one `release` at the end of a test ends
+/// the whole service rather than the server alone.
 fn spawn_stack_client(
     image: &'static [u8],
     arg0: u64,
     arg1: u64,
     stack: EpId,
     fs: Option<(EpId, u64)>,
+    held: &mut Holding,
 ) -> EpId {
     use crate::cap::untyped_cap;
 
-    let cli_report = crate::sched::create_endpoint();
+    // The client's report endpoint and its two stack pages share one region with the budget's
+    // lifetime rules: the report endpoint may go while the client still exists (that is the wake),
+    // the stack pages may not. A client that reports and exits needs neither, but a client that
+    // wedges is exactly the case worth being able to end.
+    let cli_eps = crate::untyped::create(2).expect("no endpoint region for the net client");
+    let cli_report =
+        crate::sched::create_endpoint_from(cli_eps).expect("no client report endpoint");
     let cli_budget =
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the net client");
+    let cli_stack_region =
+        crate::untyped::create(NET_CLIENT_STACK_PAGES).expect("no stack region for the net client");
+    // Three slots: the two stack pages, and the shared FS page an SMB adapter also gets.
     let mut maps = [Mapping {
         va: 0,
         phys: 0,
@@ -372,13 +399,9 @@ fn spawn_stack_client(
         .take(NET_CLIENT_STACK_PAGES as usize)
         .enumerate()
     {
-        let phys = crate::memory::alloc()
-            .expect("no frame for the net client stack")
-            .addr();
-        // SAFETY: fresh frame via the direct map; zero it so the process starts clean.
-        unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
-        }
+        // Retyped, so the pages come back with the region; `retype_page` zeroes them.
+        let phys =
+            crate::untyped::retype_page(cli_stack_region).expect("no frame for the net client");
         m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
         m.phys = phys;
     }
@@ -393,7 +416,7 @@ fn spawn_stack_client(
         NET_CLIENT_STACK_PAGES as usize
     };
 
-    crate::sched::spawn(move || {
+    let tid = crate::sched::spawn(move || {
         let mut grants = [
             endpoint_cap(cli_report, Rights::WRITE), // slot 0: report the verdict
             // slot 1: the stack endpoint, WRITE to send requests and to delegate the
@@ -422,6 +445,10 @@ fn spawn_stack_client(
         )
     })
     .expect("could not spawn the net client");
+    held.add_thread(tid);
+    held.add_region(cli_eps);
+    held.add_region_after_death(cli_budget);
+    held.add_region_after_death(cli_stack_region);
     cli_report
 }
 
@@ -435,10 +462,12 @@ fn spawn_stack_client(
 /// reference wiring has one process and one configuration file serving both.
 ///
 /// One spawn serves three milestones for the same reason milestone 107's grant checks ride in its
-/// accept exchange: **a second `net_stack` does not fit the test boot.** Its 192-page untyped
-/// region is never reclaimed, and the aarch64 suite already ran out of contiguous memory the day
-/// someone tried (see `virtio::MAX_DEVICES`). So the SMB adapter is spawned as a *second client
-/// of the same stack*, which the socket contract permits (clients sharing an endpoint share its
+/// accept exchange: **a second `net_stack` did not fit the test boot** when this was written. Its
+/// untyped region was never reclaimed, and the aarch64 suite ran out of contiguous memory the day
+/// someone tried (see `virtio::MAX_DEVICES`). A `net_stack` is reclaimable as of 2026-08-16
+/// (notes/frames.md), so the memory argument no longer binds; the shape stays because sharing one
+/// stack is *also* what proves two clients share its socket table and its grant. So the SMB adapter
+/// is spawned as a *second client of the same stack*, which the socket contract permits (clients sharing an endpoint share its
 /// grant and its socket table; `socket_proto`'s BUGS): the echo client owns socket ids 0 and 1, the
 /// SMB adapter 2 and 3, and the listen grant is widened to the two-port range
 /// `[NET_LISTEN_PORT, smb_port]`, keeping the denied-port check (8080) meaningful.
@@ -474,16 +503,18 @@ pub fn start_net_stack_with_smb(
     mdns_queries: u64,
     fs: Option<(EpId, u64)>,
     udp_bind_grant: u64,
-) -> Option<(EpId, EpId, EpId)> {
+) -> Option<(EpId, EpId, EpId, Holding)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
     };
     let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port))
         | udp_bind_grant;
-    let (net_stack_report, stack) = wire_net_server(image, transport, dev.intid, None, grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
-    let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs);
+    let (net_stack_report, stack, mut held) =
+        wire_net_server(image, transport, dev.intid, None, grant);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, &mut held);
+    let smb_report =
+        spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs, &mut held);
 
     // Drain the DHCP lease report, as in start_net_stack: the clients block on their first
     // request until the server enters its serve loop.
@@ -495,9 +526,9 @@ pub fn start_net_stack_with_smb(
     // lease is the only place anyone knows it, so the responder is spawned *after* this recv and
     // handed the address it reported.
     let lease = crate::sched::ipc_recv(net_stack_report)[0];
-    let mdns_report = spawn_stack_client(mdns_image, mdns_queries, lease, stack, None);
+    let mdns_report = spawn_stack_client(mdns_image, mdns_queries, lease, stack, None, &mut held);
 
-    Some((cli_report, smb_report, mdns_report))
+    Some((cli_report, smb_report, mdns_report, held))
 }
 
 /// **The serve-forever trio** (milestone 54's demo boot, `--features smb_serve`, joined by
@@ -526,10 +557,13 @@ pub fn start_smb_serve(
         mmio_phys: dev.mmio_phys,
     };
     let grant = socket_proto::listen_grant(445, 445) | socket_proto::udp_bind_grant(5353, 5353);
-    let (report, stack) = wire_net_server(net_stack_image, transport, dev.intid, None, grant);
-    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs);
+    let (report, stack, mut held) =
+        wire_net_server(net_stack_image, transport, dev.intid, None, grant);
+    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs, &mut held);
     let lease = crate::sched::ipc_recv(report)[0];
-    let mdns_report = spawn_stack_client(mdns_image, 0, lease, stack, None);
+    let mdns_report = spawn_stack_client(mdns_image, 0, lease, stack, None, &mut held);
+    // The holding is dropped rather than released: this boot serves until the machine stops, so
+    // nothing here ever hands the memory back, which is the one caller for which that is right.
     Some((lease, smb_report, mdns_report))
 }
 
@@ -550,7 +584,10 @@ const STD_NET_STACK_PAGES: u64 = 32;
 /// same binary spawned without slots 2 and 3 runs the offline transcript instead, which is what
 /// makes "no ambient network" visible: authority, not the code, decides. Returns the program's
 /// stdout endpoint for the test to reassemble, or `None` if no NIC is attached.
-pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
+pub fn start_net_std(
+    net_stack_image: &'static [u8],
+    std_image: &'static [u8],
+) -> Option<(EpId, Holding)> {
     use crate::cap::untyped_cap;
 
     let dev = crate::virtio::find_net_device()?;
@@ -560,7 +597,7 @@ pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -
     // No listen grant: `std::net`'s PAL binds `TcpStream` and `UdpSocket` today, not `TcpListener`
     // (milestone 107's scope note), so a stack that granted ports would be granting authority
     // nothing on the other side can spend.
-    let (net_stack_report, stack) = wire_net_server(
+    let (net_stack_report, stack, mut held) = wire_net_server(
         net_stack_image,
         transport,
         dev.intid,
@@ -568,10 +605,13 @@ pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -
         socket_proto::NO_LISTEN_GRANT,
     );
 
-    let report = crate::sched::create_endpoint();
+    let std_eps = crate::untyped::create(2).expect("no endpoint region for the std net client");
+    let report = crate::sched::create_endpoint_from(std_eps).expect("no std net report endpoint");
     let heap = crate::untyped::create(STD_NET_HEAP_PAGES).expect("no untyped for the std net heap");
     let frames =
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the std net frames");
+    let std_stack_region = crate::untyped::create(STD_NET_STACK_PAGES)
+        .expect("no stack region for the std net client");
 
     let mut stackmaps = [Mapping {
         va: 0,
@@ -579,18 +619,15 @@ pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -
         flags: Flags::user_data(),
     }; STD_NET_STACK_PAGES as usize];
     for (k, m) in stackmaps.iter_mut().enumerate() {
-        let phys = crate::memory::alloc()
-            .expect("no frame for the std net stack")
-            .addr();
-        // SAFETY: fresh frame via the direct map; zero it so the process starts clean.
-        unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
-        }
+        // Retyped rather than allocated, so the stack comes back with its region once the program
+        // is provably gone (`Holding::region_after_death`); `retype_page` zeroes it.
+        let phys =
+            crate::untyped::retype_page(std_stack_region).expect("no frame for the std net stack");
         m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
         m.phys = phys;
     }
 
-    crate::sched::spawn(move || {
+    let tid = crate::sched::spawn(move || {
         run(
             std_image,
             Spawn {
@@ -613,7 +650,12 @@ pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -
     // serve loop before the std program's first request, and confirm DHCP completed.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some(report)
+    held.add_thread(tid);
+    held.add_region(std_eps);
+    held.add_region_after_death(heap);
+    held.add_region_after_death(frames);
+    held.add_region_after_death(std_stack_region);
+    Some((report, held))
 }
 
 /// [`wire`] against the enumerated mmio disk, at `role`.

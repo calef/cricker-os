@@ -554,6 +554,15 @@ struct Device {
 /// later test asking for 128 contiguous pages found **137 free frames and no run that long**. The
 /// two claims now share one exchange with distinct stage codes. So the constraint was never this
 /// table; it is the same missing reclamation, one resource over, and it binds harder there.
+///
+/// **The memory half was fixed on 2026-08-16 and this counter was not**, which is worth saying
+/// plainly rather than letting the eight receipts above read as settled. A net service now hands its
+/// frames back (notes/frames.md), so the *frame* ceiling those receipts describe is gone; this table
+/// still bumps `count` and never reuses a slot, so a boot's device budget is still "how many devices
+/// has this boot ever wired" and the aarch64 machine still has five. Reuse needs a **generational
+/// name** here, the same machinery region slots and Tids already use, because a stale
+/// `Object::Virtio` capability must not resolve to a different device than the one it named. That is
+/// a change to what a capability means, not to a counter, so it is its own piece of work.
 const MAX_DEVICES: usize = 32;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.

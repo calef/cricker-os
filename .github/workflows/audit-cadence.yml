@@ -1,0 +1,86 @@
+name: audit cadence
+
+# **Is a security audit due?** Asked weekly, answered before somebody has to remember to ask.
+#
+# The tree has had four adversarial reviews and every one of them happened because a person thought
+# of it. That is the failure mode milestone 92 exists to close: a practice that lives in memory gets
+# skipped exactly when it matters, and DECISIONS §35 already names what an unactioned finding turns
+# into.
+#
+# §74 decided what "due" means, on measured intervals rather than on a calendar anybody liked: event
+# triggers first (a new syscall method, a new component holding device or network authority, a new
+# dependency class, first boot on a new machine class), a count second (15 milestones built or 8 new
+# components since the last audit), and six weeks as a backstop whose job is catching a *quiet*
+# period rather than a busy one. script/audits evaluates the four of those that a script can count
+# and prints the two it cannot, which are a judgment.
+#
+# **Its own workflow, deliberately, so that red here never blocks a merge.** An audit coming due is
+# information about the tree, not a defect in whichever commit happened to trip the count, and a gate
+# that held every unrelated merge behind a review nobody can hurry is the wall milestone 92 was
+# written not to build. This is the same arrangement, and the same argument, as toolchain-drift.yml.
+#
+# The structural half of the same script (`--check`: the index's two tables agree, every report link
+# resolves, every finding carries a disposition) runs in script/lint on every pull request, because a
+# malformed index IS a defect in the commit that malformed it.
+#
+# **Red means run the audit.** Nothing here runs one, and nothing here can.
+#
+# Milestone 93 reuses this without a second workflow: it adds a `documentation` row to the cadence
+# table in design/audit-reports/README.md, and script/audits evaluates every kind it finds there.
+
+on:
+  schedule:
+    # 08:00 UTC Mondays. Weekly rather than daily because nothing this measures moves in a day: the
+    # tightest trigger is a single new component, and the delay a weekly check adds is small next to
+    # the time it takes to run an audit. A daily run would mostly report the same thing seven times.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+# Least privilege, the same as every other workflow here: a project whose thesis is that a component
+# holds the authority its job needs and nothing more has no business letting its CI token default to
+# write access it never uses.
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-cadence
+  cancel-in-progress: true
+
+jobs:
+  overdue:
+    name: is an audit due
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # No toolchain, no cache, no build. Every number script/audits reads is counted out of files
+      # that are in the checkout, which is why this job takes seconds and can afford to run weekly.
+      # `set -o pipefail` is load-bearing and not decoration. The default shell here is `bash -e`
+      # WITHOUT pipefail, so a pipeline exits with `tee`'s status and `tee` always succeeds: without
+      # this line the step would be green no matter what script/audits said, and the whole mechanism
+      # would report the absence of a signal as the absence of a problem. `shell: bash` is what makes
+      # the option available. Same family of defect as script/fmt shipping for months while silently
+      # ignoring `--check`; a gate that fails open is worse than no gate.
+      - name: script/audits --due
+        shell: bash
+        run: |
+          set -o pipefail
+          script/audits --due | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: What to do if this went red
+        if: failure()
+        run: |
+          {
+            echo
+            echo 'An audit is **due**. This job failing is information about the tree, not a defect'
+            echo 'in any commit; `main` is unaffected and every gate still passes.'
+            echo
+            echo 'To resolve it, deliberately: read `design/audit-reports/README.md` for the lens'
+            echo 'rotation and the disposition rule, run the audit in its own lane, land the report'
+            echo 'and both index rows (`script/audits --baseline` prints the counts), and fix any'
+            echo 'doc the audit finds overclaiming in the same lane.'
+            echo
+            echo 'Closing it by editing the index without running an audit is available, cheap, and'
+            echo 'the one thing that makes this whole mechanism a lie.'
+          } >> "$GITHUB_STEP_SUMMARY"

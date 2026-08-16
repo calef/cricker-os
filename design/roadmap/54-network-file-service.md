@@ -1,18 +1,30 @@
 # 54. A network file service a Mac can actually mount
 
 **Status: PARTIAL.** The finish line's first half fell 2026-08-15 (pull request #210): a real Mac's
-own mount_smbfs mounted a share served by nife's userspace SMB adapter over its own TCP stack,
-read files byte-correct, and remounted; `crates/smb_proto` carries the wire format host-tested,
-and the one correction worth reading is the SMB1 wildcard negotiate a real macOS opens with,
-captured and pinned as a test. What remains: the share is a fixture behind a `Share` trait (the
-fs_proto-backed share is in a lane), read-only, guest-auth SMB 2.1 with no signing. The wire
-decisions are listed in the PR for review, being the expensive category.
+own `mount_smbfs` mounted a share served by nife's userspace SMB adapter over its own TCP stack,
+read files byte-correct, and remounted; `crates/smb_proto` carries the wire format host-tested, and
+the one correction worth reading is the SMB1 wildcard negotiate a real macOS opens with, captured
+and pinned as a test. The **write path** followed (pull request #245): `WRITE`, all six create
+dispositions, `SET_INFO`'s end-of-file, rename, disposition and basic classes, and delete-on-close,
+over the `fs_proto`-backed share, gated on both ISAs by a file the host writes over SMB2 and a
+*different in-guest process* reads back through the FS server. Read-only remains expressible and is
+refused at the protocol layer rather than at the filesystem.
 
 **Gate: NONE.** The protocol question is settled (SMB, because calef's router already serves
 Time Machine over it) and what is left is an adapter holding one directory capability and one
 network endpoint. The old gate was milestone 107's missing listen verb; 107 merged 2026-08-04,
 and this block sat behind a stale IN-PROGRESS status for eleven days before anyone noticed
 (2026-08-15, §76's defect class). Nothing blocks the head of the customer path.
+
+What remains, in order: **a `statfs` verb for `fs_proto`** (free space is a nominal constant today,
+and macOS sizes a Time Machine sparsebundle against what the volume reports), **subdirectories**
+(the share model is flat and a sparsebundle is a directory of band files, which makes this the
+largest piece between here and milestone 55), and **identity** beyond guest-for-everyone, which
+writes made more urgent than reads did. The wire decisions of both halves are listed in their pull
+requests for review, being the expensive category.
+
+**It stays PARTIAL rather than BUILT deliberately**: the two items above are both required by
+milestone 55, and marking 54 done would leave them with no home.
 
 **In brief.** The board serves files over a protocol macOS speaks natively, so it is useful before
 Time Machine specifically is solved.

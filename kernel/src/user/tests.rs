@@ -1445,7 +1445,7 @@ fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-    let Some(report) = virtio_service::start_net_server(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server(net_stack_image()) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
@@ -1455,6 +1455,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The net server over the PCIe transport, behind the IOMMU (milestone 30, §20): smoltcp drives
@@ -1466,7 +1467,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-    let Some(report) = virtio_service::start_net_server_pci(net_stack_image()) else {
+    let Some((report, net)) = virtio_service::start_net_server_pci(net_stack_image()) else {
         crate::println!("    (no virtio-net-pci device attached; skipping)");
         return;
     };
@@ -1476,6 +1477,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
         0x0A00_0200,
         "smoltcp's DHCP lease {addr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The socket contract, UDP end to end** (milestone 30, piece 3 phase B; DECISIONS §25). A
@@ -1497,7 +1499,7 @@ fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         false,
@@ -1511,6 +1513,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip against slirp's TFTP server failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The same UDP round trip over the PCIe transport, behind the IOMMU.
@@ -1521,7 +1524,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_TFTP,
         true,
@@ -1535,6 +1538,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the UDP round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **Real DNS resolution, deliberately non-gating.** The query goes to 10.0.2.3, which libslirp
@@ -1551,7 +1555,7 @@ fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_UDP_DNS,
         false,
@@ -1572,6 +1576,7 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         "a DNS response came back but was not a valid reply to our query (client code \
          {verdict:#x}): a socket-contract defect, not a network problem",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The socket contract, TCP end to end** (milestone 30, piece 3 phase B). A client opens a TCP
@@ -1586,7 +1591,7 @@ fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         false,
@@ -1600,6 +1605,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip through the socket contract failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The same TCP echo round trip over the PCIe transport, behind the IOMMU.
@@ -1610,7 +1616,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_ECHO,
         true,
@@ -1624,6 +1630,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         verdict, NET_CLIENT_OK,
         "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
@@ -1638,7 +1645,7 @@ fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_reopened_socket_id_connects_again_over_tcp() {
-    let Some(report) = virtio_service::start_net_stack(
+    let Some((report, net)) = virtio_service::start_net_stack(
         net_stack_image(),
         NET_TEST_TCP_REOPEN,
         false,
@@ -1653,6 +1660,7 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
         "reopening a socket id and connecting again failed (client code {verdict:#x}): the \
          ephemeral local port is not independent of the socket id",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The guest is connected TO, on a port it was granted** (milestone 107). Every network exchange
@@ -1675,9 +1683,11 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 /// name in a shared namespace, so it is authority, and the **spawn service** decides the range.
 /// Note that no frame is attached until after all of it, because a listener carries no bytes.
 ///
-/// It is one test rather than two because two net servers do not fit: the second costs a 192-page
-/// untyped region nothing reclaims, and the boot has no such run left (see `virtio::MAX_DEVICES`).
-/// The stage codes stand in for the names the second test would have had.
+/// It is one test rather than two because, when it was written, two net servers did not fit: the
+/// second cost an untyped region nothing reclaimed, and the boot had no such run left (see
+/// `virtio::MAX_DEVICES`). **That constraint was lifted on 2026-08-16**, when a net service became
+/// reclaimable (notes/frames.md); the tests stay merged because splitting them is its own change
+/// with its own argument. The stage codes stand in for the names the second test would have had.
 ///
 /// **The mDNS-shaped exchange rides in this same spawn too** (milestone 55's stack half), for the
 /// same memory reason, re-measured by the lane that built it: a twelfth net server died as
@@ -1745,7 +1755,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "    (combined boot wired: {} frames free before the net + SMB spawn)",
         crate::memory::free_frames()
     );
-    let Some((report, smb_report, mdns_report)) = virtio_service::start_net_stack_with_smb(
+    let Some((report, smb_report, mdns_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
         mdns_responder_image(),
@@ -1787,6 +1797,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          the joined group's RX acceptance or the host side (NIFE_MCAST_PORT and xtask's multicast \
          prober). What the prober asserts about the ANSWERS is separate and reported by xtask",
     );
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// The `std_exerciser` std program's ELF bytes. The same binary the offline std test spawns; given
@@ -1815,13 +1826,15 @@ const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn std_net_runs_over_the_socket_contract() {
-    let Some(report) = virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
+    let Some((report, net)) =
+        virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
     else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
 
     assert_std_transcript(report, STD_NET_EXPECTED, "std net");
+    net.release_or_fail("a net test's net_stack");
 }
 
 /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
@@ -2286,7 +2299,7 @@ fn userspace_init_delegates_an_interrupt_to_a_child() {
     const INIT_IRQ_ROLE: u64 = 25;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_IRQ_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_IRQ_ROLE, report);
 
     // Raise the test interrupt. The endpoint counts it if the child is not waiting yet (it is
     // still being built), and the child's WAIT drains that pending signal, so there is no race.
@@ -2297,6 +2310,7 @@ fn userspace_init_delegates_an_interrupt_to_a_child() {
         word, IRQ_WORD,
         "the interrupt never reached the init-built child through the delegated Irq cap",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d.2b: userspace init brings up the real console server.** Past 19d.2a's
@@ -2314,13 +2328,14 @@ fn userspace_init_brings_up_the_console_server() {
     const INIT_CONSOLE_ROLE: u64 = 24;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_CONSOLE_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_CONSOLE_ROLE, report);
 
     let acked = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         acked, MSG_LEN,
         "the init-built console server did not print-and-ack: {acked} bytes, expected {MSG_LEN}",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d.2: userspace init builds a device driver and hands it the hardware.**
@@ -2346,13 +2361,14 @@ fn userspace_init_builds_a_driver_that_reads_real_hardware() {
     const INIT_DEV_ROLE: u64 = 23;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_DEV_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_DEV_ROLE, report);
 
     let id = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         id, PL011_PRIMECELL_ID,
         "the init-built driver did not read the PL011's id: device delegation or the              device-typed mapping is broken",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19d: userspace init parses a real ELF and builds a running process from it.**
@@ -2369,13 +2385,14 @@ fn userspace_init_parses_an_elf_and_builds_a_running_child() {
     const INIT_ROLE: u64 = 20;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_ROLE, report);
 
     let word = crate::sched::ipc_recv(report)[0];
     assert_eq!(
         word, CHILD_WORD,
         "init did not build a running child from the ELF it parsed in userspace",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19e: init builds a worker, passes it an argument, and gets the answer back.**
@@ -2390,7 +2407,7 @@ fn init_builds_a_worker_and_passes_it_an_argument() {
     const WORKER_INPUT: u64 = 7;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_WORKER_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_WORKER_ROLE, report);
 
     let answer = crate::sched::ipc_recv(report)[0];
     assert_eq!(
@@ -2398,6 +2415,7 @@ fn init_builds_a_worker_and_passes_it_an_argument() {
         WORKER_INPUT * WORKER_INPUT,
         "the worker did not receive its START argument: expected n*n back",
     );
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19e: init runs a real compute workload and it comes out right.** The worker's
@@ -2412,7 +2430,7 @@ fn init_runs_the_coremark_workload_and_it_checks_out() {
     const INIT_COREMARK_ROLE: u64 = 29;
 
     let report = crate::sched::create_endpoint();
-    spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
+    let init = spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
 
     let [crc, ticks, freq, _, _] = crate::sched::ipc_recv(report);
     assert_eq!(
@@ -2428,6 +2446,7 @@ fn init_runs_the_coremark_workload_and_it_checks_out() {
         "the workload's self-timing read a frozen counter"
     );
     assert!(freq > 0, "CNTFRQ_EL0 read as zero at EL0");
+    init.release_or_fail("an init test's building budget");
 }
 
 /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**
