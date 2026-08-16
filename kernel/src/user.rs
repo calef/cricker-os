@@ -794,7 +794,10 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) -
     })
     .expect("could not spawn init");
 
-    holding::Holding::new().thread(tid).region(build_region)
+    let mut held = holding::Holding::new();
+    held.add_thread(tid);
+    held.add_region(build_region);
+    held
 }
 
 /// **The init boot path** (milestone 19d.2c): spawn init at the boot role and return. init

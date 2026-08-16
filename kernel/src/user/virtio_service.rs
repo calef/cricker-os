@@ -283,15 +283,12 @@ fn wire_net_server(
     })
     .expect("could not spawn the net server");
 
-    (
-        report,
-        stack,
-        Holding::new()
-            .thread(tid)
-            .region(ep_region)
-            .region_after_death(budget)
-            .region_after_death(stack_region),
-    )
+    let mut held = Holding::new();
+    held.add_thread(tid);
+    held.add_region(ep_region);
+    held.add_region_after_death(budget);
+    held.add_region_after_death(stack_region);
+    (report, stack, held)
 }
 
 /// The client's budget, in pages: it mints one shared frame and pays for that frame's own page
@@ -332,9 +329,9 @@ pub fn start_net_stack(
         )
     };
 
-    let (net_stack_report, stack, holding) =
+    let (net_stack_report, stack, mut held) =
         wire_net_server(image, transport, intid, rid, listen_grant);
-    let (cli_report, holding) = spawn_stack_client(image, cli_arg, 0, stack, holding);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, &mut held);
 
     // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
     // enters its serve loop (the client's first request blocks until it does). This also
@@ -342,7 +339,7 @@ pub fn start_net_stack(
     // waits at its first request meanwhile.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some((cli_report, holding))
+    Some((cli_report, held))
 }
 
 /// Spawn one client of a `Stack` endpoint: WRITE on the shared endpoint, its own untyped, a
@@ -354,8 +351,8 @@ fn spawn_stack_client(
     arg0: u64,
     arg1: u64,
     stack: EpId,
-    holding: Holding,
-) -> (EpId, Holding) {
+    held: &mut Holding,
+) -> EpId {
     use crate::cap::untyped_cap;
 
     // The client's report endpoint and its two stack pages share one region with the budget's
@@ -400,14 +397,11 @@ fn spawn_stack_client(
         )
     })
     .expect("could not spawn the net client");
-    (
-        cli_report,
-        holding
-            .thread(tid)
-            .region(cli_eps)
-            .region_after_death(cli_budget)
-            .region_after_death(cli_stack_region),
-    )
+    held.add_thread(tid);
+    held.add_region(cli_eps);
+    held.add_region_after_death(cli_budget);
+    held.add_region_after_death(cli_stack_region);
+    cli_report
 }
 
 /// **Spawn the net server, the inbound socket-contract client, AND the SMB adapter** (milestones
@@ -451,17 +445,16 @@ pub fn start_net_stack_with_smb(
     };
     let grant = socket_proto::listen_grant(echo_port.min(smb_port), echo_port.max(smb_port))
         | udp_bind_grant;
-    let (net_stack_report, stack, holding) =
+    let (net_stack_report, stack, mut held) =
         wire_net_server(image, transport, dev.intid, None, grant);
-    let (cli_report, holding) = spawn_stack_client(image, cli_arg, 0, stack, holding);
-    let (smb_report, holding) =
-        spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, holding);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, &mut held);
+    let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, &mut held);
 
     // Drain the DHCP lease report, as in start_net_stack: both clients block on their first
     // request until the server enters its serve loop.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some((cli_report, smb_report, holding))
+    Some((cli_report, smb_report, held))
 }
 
 /// **The serve-forever pair** (milestone 54's demo boot, `--features smb_serve`): the net server
@@ -483,9 +476,9 @@ pub fn start_smb_serve(
         mmio_phys: dev.mmio_phys,
     };
     let grant = socket_proto::listen_grant(445, 445);
-    let (report, stack, holding) =
+    let (report, stack, mut held) =
         wire_net_server(net_stack_image, transport, dev.intid, None, grant);
-    let (smb_report, _holding) = spawn_stack_client(smb_image, 0, 445, stack, holding);
+    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, &mut held);
     Some((report, smb_report))
 }
 
@@ -519,7 +512,7 @@ pub fn start_net_std(
     // No listen grant: `std::net`'s PAL binds `TcpStream` and `UdpSocket` today, not `TcpListener`
     // (milestone 107's scope note), so a stack that granted ports would be granting authority
     // nothing on the other side can spend.
-    let (net_stack_report, stack, holding) = wire_net_server(
+    let (net_stack_report, stack, mut held) = wire_net_server(
         net_stack_image,
         transport,
         dev.intid,
@@ -572,15 +565,12 @@ pub fn start_net_std(
     // serve loop before the std program's first request, and confirm DHCP completed.
     crate::sched::ipc_recv(net_stack_report);
 
-    Some((
-        report,
-        holding
-            .thread(tid)
-            .region(std_eps)
-            .region_after_death(heap)
-            .region_after_death(frames)
-            .region_after_death(std_stack_region),
-    ))
+    held.add_thread(tid);
+    held.add_region(std_eps);
+    held.add_region_after_death(heap);
+    held.add_region_after_death(frames);
+    held.add_region_after_death(std_stack_region);
+    Some((report, held))
 }
 
 /// [`wire`] against the enumerated mmio disk, at `role`.

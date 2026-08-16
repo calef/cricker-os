@@ -88,6 +88,14 @@ fn reclaim(region: u64, deadline: u64) -> bool {
 }
 
 /// A service's memory, remembered so it can be handed back. See the module note.
+///
+/// **The `add_*` methods mutate rather than consuming and returning `self`**, and that is a measured
+/// choice rather than a taste. A `Holding` is about 320 bytes of fixed arrays, and a consuming
+/// builder materialises a fresh copy per link at `opt-level=0`, which is what this kernel's test and
+/// tour binaries are built at: five chained calls in `start_net_std` put its frame at **5264 bytes**,
+/// past the 4096-byte guard page under every kernel thread stack, and `script/stack-frame-check`
+/// failed the build. A frame that big can step over the guard in one move and land in the
+/// neighbouring thread's stack with no fault at all. See notes/stack-high-water.md.
 pub struct Holding {
     threads: [Option<Tid>; MAX_THREADS],
     regions: [Option<u64>; MAX_REGIONS],
@@ -108,14 +116,13 @@ impl Holding {
     /// # Panics
     /// If more than [`MAX_THREADS`] are added, because a silently dropped thread is a leak that
     /// looks like a fix.
-    pub fn thread(mut self, tid: Tid) -> Self {
+    pub fn add_thread(&mut self, tid: Tid) {
         let slot = self
             .threads
             .iter_mut()
             .find(|s| s.is_none())
             .expect("a holding holds at most MAX_THREADS threads");
         *slot = Some(tid);
-        self
     }
 
     /// Remember an untyped region the kernel carved for this service, to be reclaimed **while the
@@ -127,15 +134,14 @@ impl Holding {
     /// another: the child must go first, because a parent with live children refuses.
     ///
     /// # Panics
-    /// If more than [`MAX_REGIONS`] are added; see [`thread`](Self::thread).
-    pub fn region(mut self, region: u64) -> Self {
+    /// If more than [`MAX_REGIONS`] are added; see [`add_thread`](Self::add_thread).
+    pub fn add_region(&mut self, region: u64) {
         let slot = self
             .regions
             .iter_mut()
             .find(|s| s.is_none())
             .expect("a holding holds at most MAX_REGIONS regions");
         *slot = Some(region);
-        self
     }
 
     /// Remember a region that may only be reclaimed **once every thread is gone**: memory a live
@@ -150,15 +156,14 @@ impl Holding {
     /// be handed the page.
     ///
     /// # Panics
-    /// If more than [`MAX_REGIONS`] are added; see [`thread`](Self::thread).
-    pub fn region_after_death(mut self, region: u64) -> Self {
+    /// If more than [`MAX_REGIONS`] are added; see [`add_thread`](Self::add_thread).
+    pub fn add_region_after_death(&mut self, region: u64) {
         let slot = self
             .after
             .iter_mut()
             .find(|s| s.is_none())
             .expect("a holding holds at most MAX_REGIONS after-death regions");
         *slot = Some(region);
-        self
     }
 
     /// **Hand it all back.** Arm the kill on every thread, reclaim every region (retrying, because
