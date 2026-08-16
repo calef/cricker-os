@@ -665,7 +665,11 @@ the five diag dumps show `svc=20` frozen, identical event rings, and the two par
 the demo's terminal state. Two observations from 13, recorded rather than chased: the early
 `scheduler :` smoke line reported `0 of 2 kernel threads ran` (boot 12 said 1 of 2; the
 preemption numbers prove scheduling, so the smoke line races real timing and its wording
-overclaims), and a key press at the prompt did nothing, which **confirms on silicon** the
+overclaims; **fixed 2026-08-15**: the check was four yields on the boot hart, a yield count
+rather than a duration, which the other harts outran; it now waits clock-bounded, two seconds,
+until both threads have run, and the success wording prints only then, with a loud FAILED line
+on the timeout path, so the next bench boot should read `2 of 2 kernel threads ran`), and a
+key press at the prompt did nothing, which **confirms on silicon** the
 UART-IRQ limitation below (the driver armed line 10; the board interrupts on 32). The refusal
 followed by the pass is the measured-boot demonstration end to end: the same board, the wrong
 pair refused, the right pair run.

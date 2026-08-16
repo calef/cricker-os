@@ -2,10 +2,11 @@
 
 **Status: NOT-STARTED.**
 
-**Gate: MILESTONE 107.** The protocol question is settled (SMB, because calef's router already
-serves Time Machine over it) and what is left is an adapter holding one directory capability and
-one network endpoint. The gap this block does not name is the one milestone 107 does: the socket
-contract has no listen verb, so nothing here can be connected to.
+**Gate: NONE.** The protocol question is settled (SMB, because calef's router already serves
+Time Machine over it) and what is left is an adapter holding one directory capability and one
+network endpoint. The old gate was milestone 107's missing listen verb; 107 merged 2026-08-04,
+and this block sat behind a stale IN-PROGRESS status for eleven days before anyone noticed
+(2026-08-15, §76's defect class). Nothing blocks the head of the customer path.
 
 **In brief.** The board serves files over a protocol macOS speaks natively, so it is useful before
 Time Machine specifically is solved.
