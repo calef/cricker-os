@@ -4,10 +4,32 @@
 both ISAs**. Minted the same day by calef, out of the riscv64 stack overflow milestone 108 was held
 on. The hold turned out to be the wrong suspect twice over, and this is what was underneath.
 
-**Gate: NONE.** **Nobody is on it**, which is what `PARTIAL` means and what this line said the
-opposite of for two hours after the lane finished. What it needs is a reproduction rather than a
-decision: 45 full-suite runs under deliberate host load did not produce the fault, and CI remains the
-only machine that has ever seen it.
+**Gate: NONE.** What it needs is a reproduction rather than a decision: 45 full-suite runs under
+deliberate host load did not produce the fault, and CI remains the only machine that has ever seen
+it.
+
+**The structural half is built (pull request #248, 2026-08-16) and the status did not move, which
+is the honest reading rather than an omission.** A per-CPU interrupt stack now exists on both
+ISAs, 16 KiB per core over its own guard page, with the handler chain running there instead of on
+whatever thread it interrupted. Three things deliberately stay on the interrupted stack (the trap
+frame, a trap from user mode, and the deferred `schedule()`), and the design's one rule, that
+nothing on an interrupt stack may context-switch away from it, is held three ways: a
+`debug_assert!`, the doc at the thing itself, and **a static CI proof that no context switch is
+reachable from the interrupt-stack entry point on either ISA**.
+
+What that buys, stated as the lane stated it rather than as the headline suggests: the static
+worst-case bound on a thread stack improved by only 256 bytes (13712 to 13456 on aarch64), because
+what remains is `schedule()`'s own chain, which is the cost of scheduling at all and which a
+thread already pays to block in `ipc_recv`. **The defensible claim is structural: a preemption now
+costs the interrupted thread a trap frame plus the same scheduler tail a voluntary block costs,
+and the handler is bounded on a stack of its own.** The measured watermark did not move at all,
+because in this suite the deepest byte of every stack is reached by ordinary code rather than by
+an interrupt landing on top; that is what a watermark can and cannot say about a rare worst case.
+
+**The reopening's own reason is untouched**, which is why this stays `PARTIAL`: the two faults are
+a store at a *fixed address*, not depth, and nothing here explains them. `warn_if_guard_page` now
+prints the interrupted `sp` from the frame rather than the live one, which after this change would
+have named the wrong stack.
 
 ## Reopened: the guard page is being stepped over again (2026-08-16)
 
