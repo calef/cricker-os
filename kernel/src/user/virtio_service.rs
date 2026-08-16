@@ -283,6 +283,14 @@ fn wire_net_server(
 /// table plus its mapping; small and fixed.
 const NET_CLIENT_BUDGET_PAGES: u64 = 16;
 
+/// A stack client's stack, in pages. **Six, raised from two** by milestone 55's responder lane, and
+/// the number came from a call frame rather than from taste: `mdns_proto::respond` holds nine
+/// 256-byte wire names, the echoed questions and a TXT assembly buffer, which is about five
+/// kilobytes of one frame, and the responder adds its own datagram buffers on top. Two pages fit
+/// none of that, and an overflowed EL0 stack is a fault a long way from its cause. Four frames per
+/// client is what it costs, and the three clients here share one NIC.
+const NET_CLIENT_STACK_PAGES: u64 = 6;
+
 /// **Spawn the net server and a client of its socket contract** (milestone 30, piece 3 phase B).
 /// Both are the `net_stack` binary (`image`): the server is entry role 0, the client is a nonzero
 /// role (the client rides in the same binary to keep the initrd under its 15-file directory
@@ -358,8 +366,12 @@ fn spawn_stack_client(
         va: 0,
         phys: 0,
         flags: Flags::user_data(),
-    }; 3];
-    for (k, m) in maps.iter_mut().take(2).enumerate() {
+    }; NET_CLIENT_STACK_PAGES as usize + 1];
+    for (k, m) in maps
+        .iter_mut()
+        .take(NET_CLIENT_STACK_PAGES as usize)
+        .enumerate()
+    {
         let phys = crate::memory::alloc()
             .expect("no frame for the net client stack")
             .addr();
@@ -371,14 +383,14 @@ fn spawn_stack_client(
         m.phys = phys;
     }
     let n_maps = if let Some((_, file_shared)) = fs {
-        maps[2] = Mapping {
+        maps[NET_CLIENT_STACK_PAGES as usize] = Mapping {
             va: FS_VA_SMB,
             phys: file_shared,
             flags: Flags::user_data(),
         };
-        3
+        NET_CLIENT_STACK_PAGES as usize + 1
     } else {
-        2
+        NET_CLIENT_STACK_PAGES as usize
     };
 
     crate::sched::spawn(move || {
@@ -413,9 +425,14 @@ fn spawn_stack_client(
     cli_report
 }
 
-/// **Spawn the net server, the inbound socket-contract client, AND the SMB adapter** (milestones
-/// 107, 54 and 55's stack half), all on one NIC and one `Stack` endpoint. Returns
-/// `(socket client's report, smb server's report)`, or `None` with no NIC.
+/// **Spawn the net server, the inbound socket-contract client, the SMB adapter AND the mDNS
+/// responder** (milestones 107, 54 and 55), all on one NIC and one `Stack` endpoint. Returns
+/// `(socket client's report, smb server's report, responder's report)`, or `None` with no NIC.
+///
+/// The responder is the third client and the last spawned, because it takes the DHCP lease as an
+/// argument (see below). It holds socket id 4, one fixed UDP port, and nothing else: milestone 55's
+/// two halves are two processes with two authorities, which is the whole demonstration. Samba's
+/// reference wiring has one daemon and one config file serving both.
 ///
 /// One spawn serves three milestones for the same reason milestone 107's grant checks ride in its
 /// accept exchange: **a second `net_stack` does not fit the test boot.** Its 192-page untyped
@@ -449,13 +466,15 @@ fn spawn_stack_client(
 pub fn start_net_stack_with_smb(
     image: &'static [u8],
     smb_image: &'static [u8],
+    mdns_image: &'static [u8],
     cli_arg: u64,
     echo_port: u16,
     smb_port: u16,
     smb_rounds: u64,
+    mdns_queries: u64,
     fs: Option<(EpId, u64)>,
     udp_bind_grant: u64,
-) -> Option<(EpId, EpId)> {
+) -> Option<(EpId, EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
@@ -466,36 +485,52 @@ pub fn start_net_stack_with_smb(
     let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None);
     let smb_report = spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs);
 
-    // Drain the DHCP lease report, as in start_net_stack: both clients block on their first
+    // Drain the DHCP lease report, as in start_net_stack: the clients block on their first
     // request until the server enters its serve loop.
-    crate::sched::ipc_recv(net_stack_report);
+    //
+    // **And keep the address**, which is the one thing this drain used to throw away. The mDNS
+    // responder announces an A record for the name it advertises, and the address in it is a fact
+    // about the running system rather than a line in its configuration: a Mac that resolves
+    // `<host>.local` to an address nothing answers on has discovered a share it cannot mount. The
+    // lease is the only place anyone knows it, so the responder is spawned *after* this recv and
+    // handed the address it reported.
+    let lease = crate::sched::ipc_recv(net_stack_report)[0];
+    let mdns_report = spawn_stack_client(mdns_image, mdns_queries, lease, stack, None);
 
-    Some((cli_report, smb_report))
+    Some((cli_report, smb_report, mdns_report))
 }
 
-/// **The serve-forever pair** (milestone 54's demo boot, `--features smb_serve`): the net server
-/// with a listen grant of exactly SMB's port, and the SMB adapter with `rounds = 0`, which is its
-/// "serve until the machine stops" mode. Returns `(the net server's DHCP report, the adapter's
-/// report)`; the adapter reports once, [`smb_proto` speaking, its OK word] when its listener is
-/// bound, and never again. The caller prints the lease and the mount instructions; see
-/// `user::smb_serve_boot` and notes/smb.md.
+/// **The serve-forever trio** (milestone 54's demo boot, `--features smb_serve`, joined by
+/// milestone 55): the net server with a listen grant of exactly SMB's port and a UDP bind grant of
+/// exactly mDNS's, the SMB adapter, and the mDNS responder, both with `rounds = 0`, which is their
+/// "serve until the machine stops" mode. Returns `(the DHCP lease, the adapter's report, the
+/// responder's report)`; each of the two reports once when its port is bound and never again. The
+/// caller prints the lease and the mount instructions; see `user::smb_serve_boot`, notes/smb.md and
+/// notes/mdns.md.
+///
+/// **The lease comes back as a value rather than an endpoint**, because the responder needs it: it
+/// announces an A record for the name it advertises, so the address has to be known before it is
+/// spawned. That is the same ordering [`start_net_stack_with_smb`] makes, for the same reason.
 ///
 /// 445 is IANA's port for SMB direct TCP (`smb_proto::DIRECT_TCP_PORT`; spelled here as a literal
-/// so the kernel does not take the crate for one constant).
+/// so the kernel does not take the crate for one constant), and 5353 is RFC 6762's.
 #[cfg(feature = "smb_serve")]
 pub fn start_smb_serve(
     net_stack_image: &'static [u8],
     smb_image: &'static [u8],
+    mdns_image: &'static [u8],
     fs: Option<(EpId, u64)>,
-) -> Option<(EpId, EpId)> {
+) -> Option<(u64, EpId, EpId)> {
     let dev = crate::virtio::find_net_device()?;
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
     };
-    let grant = socket_proto::listen_grant(445, 445);
+    let grant = socket_proto::listen_grant(445, 445) | socket_proto::udp_bind_grant(5353, 5353);
     let (report, stack) = wire_net_server(net_stack_image, transport, dev.intid, None, grant);
     let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs);
-    Some((report, smb_report))
+    let lease = crate::sched::ipc_recv(report)[0];
+    let mdns_report = spawn_stack_client(mdns_image, 0, lease, stack, None);
+    Some((lease, smb_report, mdns_report))
 }
 
 /// The networked std client's heap budget and extra stack, both larger than the hand-written

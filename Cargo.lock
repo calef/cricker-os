@@ -853,6 +853,8 @@ dependencies = [
  "grant_plan",
  "line_editor",
  "manual",
+ "mdns_config",
+ "mdns_proto",
  "nifefs",
  "ntp_proto",
  "sink_proto",

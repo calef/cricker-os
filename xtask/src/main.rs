@@ -2056,6 +2056,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "smb_server",
             "--bin",
+            "mdns_responder",
+            "--bin",
             "budgeter",
             "--bin",
             "fs_test_client",
@@ -2172,6 +2174,9 @@ fn initrd_riscv() -> bool {
         ("allocator_exerciser", "allocator_exerciser"),
         ("net_stack", "net_stack"),
         ("smb_server", "smb_server"),
+        // The mDNS responder (milestone 55): the discovery half of the Time Machine target.
+        // Portable, so both archives carry it and both ISAs answer the same injected query.
+        ("mdns_responder", "mdns_responder"),
         ("budgeter", "budgeter"),
         ("fs_test_client", "fs_test_client"),
         ("fs_file_caretaker", "fs_file_caretaker"),
@@ -2429,6 +2434,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let mdns_responder = match read_stripped(&bin_elf("mdns_responder")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("mdns_responder"));
+            return false;
+        }
+    };
     let budgeter = match read_stripped(&bin_elf("budgeter")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -2570,6 +2582,7 @@ fn mkinitrd() -> bool {
         ("allocator_exerciser", &allocator_exerciser),
         ("net_stack", &net_stack),
         ("smb_server", &smb_server),
+        ("mdns_responder", &mdns_responder),
         ("budgeter", &budgeter),
         ("fs_test_client", &fs_test_client),
         ("fs_file_caretaker", &fs_file_caretaker),

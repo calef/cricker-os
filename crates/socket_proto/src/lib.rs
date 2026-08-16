@@ -194,9 +194,18 @@ pub const OFF_DST_PORT: u64 = 0x004;
 pub const OFF_LEN: u64 = 0x006;
 pub const OFF_PAYLOAD: u64 = 0x008;
 
-/// The most sockets one client may hold at once. Small and fixed; the shared frame is the real
-/// per-socket resource.
-pub const MAX_SOCKETS: usize = 4;
+/// The most sockets **one `Stack` endpoint** may hold at once, which is not the same as one client:
+/// the socket table is per-endpoint (see the grant's BUGS above), so the clients sharing an endpoint
+/// share this number between them and agree by convention on who owns which id.
+///
+/// **Six, raised from four** by milestone 55's responder lane, and the number is a count of the
+/// programs one net server serves rather than a capacity anyone measured. The combined gate had
+/// exactly four: `socket_test_client` holds 0 and 1, `smb_server` 2 and 3, and the mDNS responder
+/// arriving as a third client had nowhere to go. It is cheap to raise (`net_stack`'s table is
+/// `[Option<Sock>; MAX_SOCKETS]`, and a socket's real cost, its buffers and its mapped frame, is
+/// paid only when one is opened) and it must stay under 256, because the id rides in a byte of the
+/// request word.
+pub const MAX_SOCKETS: usize = 6;
 
 /// The largest payload the frame carries (a 4 KiB frame minus the header).
 pub const DATA_MAX: usize = 4096 - OFF_PAYLOAD as usize;

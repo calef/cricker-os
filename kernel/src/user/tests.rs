@@ -126,10 +126,32 @@ const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// because the *spawn service* is what grants it, which is the point.
 #[cfg(target_arch = "aarch64")]
 const NET_LISTEN_PORT: u16 = 7778;
-/// The one fixed UDP port the mDNS-shaped gate is granted (milestone 55's stack half), RFC 6762's
-/// 5353. Named here for the same reason as the listen port: the spawn service grants it.
+/// The fixed UDP ports the mDNS gate is granted (milestone 55), RFC 6762's 5353 and its
+/// neighbour. Named here for the same reason as the listen port: the spawn service grants them,
+/// and a program cannot ask for what it was not given.
+///
+/// **Two ports, for two clients with two different jobs.** `mdns_responder` holds 5353 and answers
+/// real queries on it for the whole run. `socket_test_client` cannot then use 5353 to prove that a
+/// *granted* port binds and is exclusive, so it uses 5354; the port outside the range (4444) is
+/// what proves the refusal, and that is the check the responder cannot make about itself.
 #[cfg(target_arch = "aarch64")]
 const NET_MDNS_PORT: u16 = 5353;
+#[cfg(target_arch = "aarch64")]
+const NET_MDNS_GRANT_TOP: u16 = 5354;
+/// Queries `mdns_responder` must answer before reporting OK, matching xtask's multicast prober:
+/// one multicast browse and one legacy-unicast query, which are the two shapes RFC 6762 §6.7
+/// splits a responder's behaviour on.
+#[cfg(target_arch = "aarch64")]
+const MDNS_QUERIES: u64 = 2;
+
+/// The `mdns_responder` program's ELF bytes (milestone 55): the discovery half, spawned as a third
+/// client of the same stack. A separate binary rather than a role of `net_stack`, because it is a
+/// separate authority: it holds one UDP port and no share, and the SMB adapter holds the share and
+/// no discovery.
+#[cfg(target_arch = "aarch64")]
+fn mdns_responder_image() -> &'static [u8] {
+    program("mdns_responder").expect("no mdns_responder program in the initrd archive")
+}
 /// The port the SMB adapter is granted in the same boot (milestone 54): the echo port's
 /// neighbour, so the two-port grant `[7778, 7779]` still refuses the client's 8080 probe. The
 /// runners forward a second host port (`NIFE_SMB_HOSTFWD_PORT`) to this one. Guest-side the
@@ -1723,15 +1745,17 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         "    (combined boot wired: {} frames free before the net + SMB spawn)",
         crate::memory::free_frames()
     );
-    let Some((report, smb_report)) = virtio_service::start_net_stack_with_smb(
+    let Some((report, smb_report, mdns_report)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
+        mdns_responder_image(),
         NET_TEST_TCP_ACCEPT,
         NET_LISTEN_PORT,
         SMB_LISTEN_PORT,
         SMB_ROUNDS,
+        MDNS_QUERIES,
         fs,
-        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_PORT),
+        socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_GRANT_TOP),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
@@ -1743,9 +1767,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          0xE080 mean a port outside a grant was bound anyway, which is the capability failure; \
          0xE060 or 0xE070 means nobody ever connected, which is the host side: is the runner \
          adding a hostfwd (NIFE_HOSTFWD_PORT) and is xtask's inbound prober running beside this \
-         suite? 0xE087 means nothing addressed to the joined multicast group arrived: either RX \
-         acceptance, or the host side (NIFE_MCAST_PORT and xtask's multicast prober); \
-         0xE08A/0xE08B mean the datagram arrived without its source endpoint",
+         suite? 0xE082 or 0xE084 mean the UDP bind grant admitted or refused the wrong port",
     );
     let verdict = sched::ipc_recv(smb_report)[0];
     assert_eq!(
@@ -1754,6 +1776,16 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
          listen grant, 0xE120 means no SMB connection ever arrived (is the runner adding the \
          NIFE_SMB_HOSTFWD_PORT hostfwd, and is xtask's SMB prober running?), 0xE121 means a \
          connection arrived but no SMB message was answered on it",
+    );
+    let verdict = sched::ipc_recv(mdns_report)[0];
+    assert_eq!(
+        verdict, NET_CLIENT_OK,
+        "the mDNS responder did not answer the queries xtask injected (code {verdict:#x}). \
+         0xE2xx is this program's range: 0xE20L means its configuration document is wrong at line \
+         L, 0xE220 means it was spawned without the UDP bind grant it needs, 0xE221 that something \
+         else already held 5353, and 0xE240 that nothing ever asked it anything, which is either \
+         the joined group's RX acceptance or the host side (NIFE_MCAST_PORT and xtask's multicast \
+         prober). What the prober asserts about the ANSWERS is separate and reported by xtask",
     );
 }
 
