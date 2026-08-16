@@ -255,6 +255,13 @@ are new.
   notification" while your own gate is running is the failure mode, not patience (calef,
   2026-08-14, after five lanes in one day stopped mid-gate and each needed a manual resume). The
   report comes after the gate, and nothing about a gate is finished until you have read its exit.
+- **A lane's first act is a draft pull request** (§90, 2026-08-16). Cut the branch, push it, open
+  the pull request as a **draft**, before any work. That is the claim, and it is why two lanes
+  cannot silently take the same milestone: the board is `gh pr list --draft`, it costs one
+  command, and a draft cannot be stuck in the merge queue because a draft cannot be merged. The
+  claim and the deliverable are one object, so nothing has to be closed by hand, and a lane that
+  dies leaves a visible stale draft instead of an invisible gap. **Check that board before
+  briefing**, alongside `git ls-remote --heads`.
 - **A developer works in a lane**, and the lane is the isolation rather than the person: its own
   worktree, its own branch, one milestone, no visibility into the others. Two developers in one lane
   is the merge problem this vocabulary exists to prevent.
