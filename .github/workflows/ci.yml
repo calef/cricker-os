@@ -228,6 +228,16 @@ jobs:
       # reused), which is more than `script/gates`'s header promises a developer will wait for, and
       # jobs run in parallel so a separate one costs no wall clock against the 30-minute Kani job.
       - run: script/stack-frame-check
+      # The chain, in the same job as the frame, because they need the identical build: same
+      # targets, same `-Z emit-stack-sizes`, so the second reuses the first's artifacts and costs
+      # near nothing. They answer different halves of one question and a tree that gated only the
+      # first was, on 2026-08-16, unable to say whether a guard-page fault was depth at all.
+      #
+      # The job's display name still says "no frame over a third of a thread stack", which was
+      # already stale before this step existed (milestone 124 moved the ceiling to the guard page)
+      # and understates it further now. Left alone on purpose: the name is what branch protection
+      # matches on, so renaming it is a merge-queue change rather than a wording one.
+      - run: script/stack-depth-check
 
   bench:
     name: bench (icount regression tripwire)

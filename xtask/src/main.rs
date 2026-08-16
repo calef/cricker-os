@@ -106,6 +106,32 @@ fn main() -> ExitCode {
                     TARGET,
                 ])
         }
+        "smb-serve" => {
+            // The SMB serve boot (milestone 54): the guest serves its share on port 445 and QEMU
+            // forwards a fixed host port into it, so a Mac (this one included) can attempt a real
+            // mount. Fixed rather than free: a mount instruction with a port that changes per run
+            // is an instruction nobody can follow. Ctrl-C quits; see notes/smb.md.
+            maybe_hvf();
+            eprintln!("--- booting nife as an SMB file server (milestone 54, Ctrl-C to quit) ---");
+            eprintln!("    mount: smb://127.0.0.1:10445/share  (connect as Guest; notes/smb.md)");
+            // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads.
+            // xtask is single-threaded here: main thread, before the child that reads these.
+            unsafe {
+                std::env::set_var("NIFE_SMB_HOSTFWD_PORT", "10445");
+                std::env::set_var("NIFE_SMB_GUEST_PORT", "445");
+            }
+            mkdisk()
+                && user()
+                && cargo(&[
+                    "run",
+                    "-p",
+                    "kernel",
+                    "--features",
+                    "smb_serve",
+                    "--target",
+                    TARGET,
+                ])
+        }
         "initrd-riscv" => initrd_riscv(),
         // The documentation store (milestone 40): build it, print what it costs, and optionally
         // answer a query against it with the same reader the guest uses.
@@ -134,7 +160,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(
@@ -957,6 +983,9 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     // `NIFE_MCAST_PORT` before the child exists, so it must be constructed first, and it runs
     // passively for the whole boot because nothing here knows when the mDNS test starts.
     let mcast = MulticastProber::new(arch);
+    // And the SMB prober (milestone 54), same terms: it sets `NIFE_SMB_HOSTFWD_PORT` before the
+    // child exists, and it drives the mount-shaped exchange the SMB gate asserts.
+    let smb_prober = SmbProber::new(arch);
     let mut child = match Command::new("cargo").args(test_args).spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -982,12 +1011,13 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         referee.poll();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    // All three, and not short-circuited: a run that lost the scanout AND a network answer should
-    // say so once rather than making the reader run it again to find the second failure.
+    // All four, and not short-circuited: a run that lost the scanout AND a network answer should
+    // say so once rather than making the reader run it again to find the next failure.
     let scanout = referee.report();
     let inbound = prober.report();
     let multicast = mcast.report();
-    scanout && inbound && multicast
+    let smb = smb_prober.report();
+    scanout && inbound && multicast && smb
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -1667,6 +1697,287 @@ fn internet_checksum(data: &[u8], init: u32) -> u16 {
     !(sum as u16)
 }
 
+/// How many SMB connections the prober must complete (milestone 54). Two, mirroring the echo
+/// prober: the second proves the SMB adapter re-arms after a client disconnects. Must match the
+/// rounds the kernel test hands `smb_server`.
+const SMB_ROUNDS: usize = 2;
+
+/// **The host side of the SMB gate** (milestone 54): a host process that performs a mount-shaped
+/// SMB2 exchange against the guest, through the second `hostfwd` (`NIFE_SMB_HOSTFWD_PORT`).
+///
+/// The mirror of [`InboundProber`], one protocol up: instead of echo bytes, each round is a full
+/// negotiate, guest session setup, tree connect, open of the fixture file, a read whose bytes are
+/// asserted against `smb_proto::share::FIXTURE` (the same constant the guest serves, so there is
+/// no second copy of the expected contents), close, and logoff. Same retry discipline, including
+/// the never-abandon-a-slow-connection rule the echo prober documents: a connected stream is held
+/// until it answers, dies, or the run ends.
+struct SmbProber {
+    arch: String,
+    port: Option<u16>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+impl SmbProber {
+    /// Pick the port, tell the runner about it, and start probing. Call **before** the child is
+    /// spawned: the runner reads `NIFE_SMB_HOSTFWD_PORT` from the environment it inherits.
+    fn new(arch: &str) -> Self {
+        let Some(port) = free_loopback_port() else {
+            eprintln!("smb prober ({arch}): could not get a free loopback port");
+            return Self {
+                arch: arch.to_string(),
+                port: None,
+                stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                thread: None,
+            };
+        };
+        // SAFETY: `set_var` became unsafe in edition 2024 because it races other threads. This
+        // runs on the main thread before both the child that reads it and the prober thread
+        // below, and no thread xtask starts writes the environment afterwards.
+        unsafe { std::env::set_var("NIFE_SMB_HOSTFWD_PORT", port.to_string()) };
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let thread = std::thread::spawn(move || probe_smb(port, stop_thread));
+        Self {
+            arch: arch.to_string(),
+            port: Some(port),
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stop probing, and say whether the guest served the exchange. The guest's own assertion
+    /// covers "connections were served"; this covers the other half, that what was served was SMB
+    /// and the file's bytes came back right.
+    fn report(mut self) -> bool {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let arch = &self.arch;
+        let Some(thread) = self.thread.take() else {
+            eprintln!("smb check ({arch}) FAILED: the prober never started");
+            return false;
+        };
+        let port = self.port.unwrap_or(0);
+        match thread.join() {
+            Ok(Ok(())) => {
+                eprintln!(
+                    "smb check ({arch}): {SMB_ROUNDS} SMB2 sessions to 127.0.0.1:{port} were \
+                     forwarded into the guest and served end to end: negotiate, guest session, \
+                     tree connect, and a read of the fixture file whose bytes matched. The second \
+                     session is the proof the adapter re-arms."
+                );
+                true
+            }
+            Ok(Err(reason)) => {
+                eprintln!();
+                eprintln!("smb check ({arch}) FAILED: {reason}");
+                eprintln!(
+                    "  A host process mounting the guest's share is the one thing no in-guest \
+                     test can stage. See notes/smb.md."
+                );
+                false
+            }
+            Err(_) => {
+                eprintln!("smb check ({arch}) FAILED: the prober thread panicked");
+                false
+            }
+        }
+    }
+}
+
+/// The prober thread: complete [`SMB_ROUNDS`] full SMB sessions, retrying for the whole run (the
+/// guest's SMB listener exists only while its test runs, exactly like the echo listener).
+fn probe_smb(port: u16, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut done = 0usize;
+    let mut last = String::from("no SMB listener ever answered on the forwarded port");
+
+    while done < SMB_ROUNDS && !stop.load(Ordering::Relaxed) {
+        let mut s = match std::net::TcpStream::connect_timeout(
+            &addr,
+            std::time::Duration::from_millis(500),
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                last = format!("could not connect to 127.0.0.1:{port}: {e}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+        };
+        // Short, so the read loop can notice `stop`; not a deadline for the exchange (see
+        // `probe_inbound` on why a slow connection must be held, not abandoned).
+        let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+        let _ = s.set_nodelay(true);
+
+        match smb_session(&mut s, &stop) {
+            Ok(()) => done += 1,
+            Err(e) => {
+                last = e;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    if done == SMB_ROUNDS {
+        Ok(())
+    } else {
+        Err(format!(
+            "completed {done} of {SMB_ROUNDS} SMB sessions against the port forwarded to \
+             127.0.0.1:{port}; last attempt: {last}"
+        ))
+    }
+}
+
+/// Send one SMB2 message with its direct-TCP transport prefix.
+fn smb_send(s: &mut std::net::TcpStream, msg: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut hdr = [0u8; smb_proto::XPORT_LEN];
+    smb_proto::xport_write(&mut hdr, msg.len());
+    s.write_all(&hdr)
+        .and_then(|()| s.write_all(msg))
+        .map_err(|e| format!("sending a request failed: {e}"))
+}
+
+/// Read one transport-framed SMB2 message, holding the connection through read timeouts until
+/// `stop` ends the run (the guest may not have polled yet; see `probe_inbound`).
+fn smb_recv(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<u8>, String> {
+    use std::io::{ErrorKind, Read};
+    use std::sync::atomic::Ordering;
+
+    let mut buf = Vec::new();
+    let mut need = smb_proto::XPORT_LEN;
+    let mut chunk = [0u8; 4096];
+    loop {
+        while buf.len() < need {
+            match s.read(&mut chunk) {
+                Ok(0) => return Err(String::from("the guest closed mid-message")),
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
+                    if stop.load(Ordering::Relaxed) {
+                        return Err(String::from(
+                            "the run ended while a response was still awaited",
+                        ));
+                    }
+                }
+                Err(e) => return Err(format!("reading a response failed: {e}")),
+            }
+        }
+        if need == smb_proto::XPORT_LEN {
+            let hdr: [u8; smb_proto::XPORT_LEN] = buf[..smb_proto::XPORT_LEN].try_into().unwrap();
+            let Some(mlen) = smb_proto::xport_parse(&hdr) else {
+                return Err(format!("not SMB2 direct-TCP framing: {hdr:02x?}"));
+            };
+            need += mlen;
+            continue;
+        }
+        return Ok(buf[smb_proto::XPORT_LEN..need].to_vec());
+    }
+}
+
+/// One full mount-shaped exchange. Any protocol surprise is an `Err` naming the step, so a
+/// failing leg says which part of the mount broke rather than "it did not work".
+fn smb_session(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    use smb_proto::share::FIXTURE;
+    use smb_proto::{H_SESSION_ID, H_STATUS, H_TREE_ID, client, r32, r64};
+
+    let status = |resp: &[u8]| r32(resp, H_STATUS);
+
+    smb_send(s, &client::negotiate(1))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("negotiate: status {:#x}", status(&resp)));
+    }
+    if client::negotiate_dialect(&resp) != smb_proto::DIALECT_0210 {
+        return Err(format!(
+            "negotiate settled on dialect {:#x}, wanted SMB 2.1",
+            client::negotiate_dialect(&resp)
+        ));
+    }
+
+    smb_send(s, &client::session_setup_negotiate(2))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_MORE_PROCESSING_REQUIRED {
+        return Err(format!(
+            "session setup (negotiate leg): status {:#x}, wanted MORE_PROCESSING_REQUIRED",
+            status(&resp)
+        ));
+    }
+    let sid = r64(&resp, H_SESSION_ID);
+    if client::session_setup_token(&resp).is_none() {
+        return Err(String::from("session setup carried no NTLMSSP challenge"));
+    }
+
+    smb_send(s, &client::session_setup_authenticate(3, sid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "session setup (auth leg): status {:#x}",
+            status(&resp)
+        ));
+    }
+
+    smb_send(s, &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("tree connect: status {:#x}", status(&resp)));
+    }
+    let tid = r32(&resp, H_TREE_ID);
+
+    let (name, expected) = FIXTURE.files[0];
+    smb_send(s, &client::create(5, sid, tid, name))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "create {}: status {:#x}",
+            String::from_utf8_lossy(name),
+            status(&resp)
+        ));
+    }
+    let fid = client::create_file_id(&resp);
+    let size = client::create_end_of_file(&resp);
+    if size != expected.len() as u64 {
+        return Err(format!(
+            "create reported {size} bytes, the fixture is {}",
+            expected.len()
+        ));
+    }
+
+    smb_send(s, &client::read(6, sid, tid, &fid, 0, 4096))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("read: status {:#x}", status(&resp)));
+    }
+    let data = client::read_data(&resp);
+    if data != expected {
+        return Err(format!(
+            "the file came back wrong: {:?}, wanted {:?}",
+            String::from_utf8_lossy(data),
+            String::from_utf8_lossy(expected)
+        ));
+    }
+
+    smb_send(s, &client::close(7, sid, tid, &fid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("close: status {:#x}", status(&resp)));
+    }
+
+    smb_send(s, &client::logoff(8, sid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("logoff: status {:#x}", status(&resp)));
+    }
+    Ok(())
+}
+
 /// Where the packed initrd archive is written.
 fn initrd_path() -> String {
     workspace_root()
@@ -1729,6 +2040,8 @@ fn initrd_riscv() -> bool {
             "allocator_exerciser",
             "--bin",
             "net_stack",
+            "--bin",
+            "smb_server",
             "--bin",
             "budgeter",
             "--bin",
@@ -1845,6 +2158,7 @@ fn initrd_riscv() -> bool {
         ("blk", "blk"),
         ("allocator_exerciser", "allocator_exerciser"),
         ("net_stack", "net_stack"),
+        ("smb_server", "smb_server"),
         ("budgeter", "budgeter"),
         ("fs_test_client", "fs_test_client"),
         ("fs_file_caretaker", "fs_file_caretaker"),
@@ -2095,6 +2409,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let smb_server = match read_stripped(&bin_elf("smb_server")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("smb_server"));
+            return false;
+        }
+    };
     let budgeter = match read_stripped(&bin_elf("budgeter")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -2235,6 +2556,7 @@ fn mkinitrd() -> bool {
         ("os_primitives_benchmarker", &os_primitives_benchmarker),
         ("allocator_exerciser", &allocator_exerciser),
         ("net_stack", &net_stack),
+        ("smb_server", &smb_server),
         ("budgeter", &budgeter),
         ("fs_test_client", &fs_test_client),
         ("fs_file_caretaker", &fs_file_caretaker),
@@ -3787,6 +4109,8 @@ fn hvf_kernel_leg() -> bool {
     // And the multicast prober (milestone 55's stack half), for the same reason: the mDNS test is
     // in the suite, and a leg without the injection hub and its peer would fail it.
     let mcast = MulticastProber::new("aarch64");
+    // And the SMB prober (milestone 54), same reasoning and same placement.
+    let smb_prober = SmbProber::new("aarch64");
 
     let mut cmd = Command::new(RUNNER);
     cmd.arg(&elf);
@@ -3873,13 +4197,14 @@ fn hvf_kernel_leg() -> bool {
     // there, and their verdicts are collected before QEMU is killed.
     let inbound_ok = prober.report();
     let mcast_ok = mcast.report();
+    let smb_ok = smb_prober.report();
 
     // It is parked at a semihosting trap HVF will not answer, so it will never exit by itself.
     let _ = child.kill();
     let _ = child.wait();
 
     match verdict {
-        Some(true) => scanout_ok && inbound_ok && mcast_ok,
+        Some(true) => scanout_ok && inbound_ok && mcast_ok && smb_ok,
         Some(false) => {
             eprintln!();
             eprintln!(

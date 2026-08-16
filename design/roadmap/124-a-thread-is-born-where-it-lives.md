@@ -1,8 +1,72 @@
 # 124. A thread is born where it lives: the spawn path's copies
 
-**Status: BUILT** 2026-08-14. Minted the same day by calef, out of the riscv64 stack overflow
-milestone 108 was held on. The hold turned out to be the wrong suspect twice over, and this is what
-was underneath.
+**Status: PARTIAL.** Built 2026-08-14, and **reopened 2026-08-16 because the overflow came back on
+both ISAs**. Minted the same day by calef, out of the riscv64 stack overflow milestone 108 was held
+on. The hold turned out to be the wrong suspect twice over, and this is what was underneath.
+
+**Gate: NONE.** **Nobody is on it**, which is what `PARTIAL` means and what this line said the
+opposite of for two hours after the lane finished. What it needs is a reproduction rather than a
+decision: 45 full-suite runs under deliberate host load did not produce the fault, and CI remains the
+only machine that has ever seen it.
+
+## Reopened: the guard page is being stepped over again (2026-08-16)
+
+The same `*** KERNEL STACK OVERFLOW ***` banner, the same one-page guard, the same test on both
+architectures:
+
+- **aarch64**, in a merge-queue run at 01:48Z: slot 87's guard page, `sp` **4096 bytes** past the
+  bottom of a 16384-byte stack, panicking at `arch/aarch64/exceptions.rs:630`.
+- **riscv64**, in pull request #213's `cpu matrix` job at 22:29Z: slot 102's guard page, **4088 bytes**
+  past, on the `rv64` model only, with the other four models green.
+
+Both land in `kernel::user::supervision_tests::a_faulting_child_reports_to_its_supervisor_and_is_
+reaped_then_respawned`.
+
+**Three things are already known and are what make this worth reopening rather than filing fresh.**
+
+**It is not any pull request's fault.** The aarch64 failure was a merge-queue candidate whose pull
+request is 59 lines of markdown, so it reproduces against `main`'s own content. It had been read as
+pull request #213's problem for four hours on that evidence, which was wrong.
+
+**It is intermittent**, which is why the tree stayed green around it: merge-queue runs at 01:52Z and
+01:53Z passed on the same base that failed at 01:41Z.
+
+**The depth hypothesis is refuted, by measurement, and it was this block's own first guess.** The
+reopening proposed cumulative depth plus an exception frame arriving at the worst moment. A lane
+built the instrument this milestone and `notes/stack-high-water.md` had both named as missing, a
+call-graph walker (`script/stack-depth-check`), and measured the deepest chain a thread stack can
+reach: **13712 bytes on aarch64 and 13344 on riscv64, against a 16384-byte stack** (measured on this
+branch, 2026-08-16). **Take these from a run, not from here.** They moved twice in one afternoon,
+13792 to 13760 to 13712 on aarch64, purely from merging other people's work; the gate prints them
+and the gate is the authority, the graph acyclic, and **no frame over the guard page reachable from any
+thread entry point on either ISA**. A
+fault at a slot's guard base needs `sp` 20480 bytes in. The deepest watermark ever observed is 10600.
+
+**So the banner was never a measurement.** `warn_if_guard_page` derived every line from the faulting
+*address* and then wrote "so sp went N bytes past it", which is a claim about the stack *pointer*
+that nothing in it had read. It now prints `sp` beside the address in the same units and leaves the
+comparison to the reader. That one sentence is what sent this reopening, and the four hours before
+it, after the wrong thing.
+
+**What survives is the evidence the hypothesis was invented to explain.** Six recorded guard-page
+faults land on exactly **two addresses**: aarch64 slot 87 (`notes/frames.md`, 2026-08-13, and again
+08-16) and riscv64 slot 102 (`sched.rs`'s harness doc ~08-11, `notes/stack.md` 08-14, and again
+08-16). Unmoved by #157 and unmoved by this milestone's own rebuild of the spawn path. **Depth
+wanders; those do not.** A fixed address is a stray store rather than a stack running out, and the
+two candidate mechanisms are in `notes/stack.md` along with what the next occurrence must print to
+settle it. One of them is geometry worth knowing: slot `N`'s guard page begins one byte past slot
+`N-1`'s last usable stack byte, so a pointer treating a stack top as inclusive lands in a guard page
+with `sp` nowhere near it.
+
+**124's own fix comes out stronger than it claimed**: no oversized frame is reachable from a thread
+stack at all. Its remaining `BUGS` entry, that the riscv64 overflow was not proven fixed, closes as
+*the class it addressed is closed, and this is a different bug wearing its clothes*.
+
+**Why this stays `PARTIAL` rather than going back to `BUILT`**: nobody has reproduced the fault
+outside CI. Forty-five full-suite aarch64 runs under deliberate host load did not produce it, and the
+root cause is unplaced. What shipped is a gate that did not exist, `script/stack-depth-check`, in CI
+on both ISAs, and diagnostics that no longer assert what they have not read. The next occurrence is
+readable, which is not the same as fixed.
 
 **The worst `spawn_on` instantiation went from 4592 bytes to 1040**, every one of them now clears the
 4096-byte guard page on its own merits, and `script/stack-frame-check`'s ratchet is deleted rather

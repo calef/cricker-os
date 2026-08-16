@@ -125,6 +125,9 @@ bench = []
 initboot = []
 # Boot straight to the interactive shell, skipping the milestone tour. Used by cargo xtask shell.
 shell = []
+# The SMB serve boot (milestone 54): wire the net server and the SMB adapter serving forever, so a
+# Mac can attempt a real mount through QEMU's hostfwd. Used by cargo xtask smb-serve; notes/smb.md.
+smb_serve = []
 # Adds a test that deliberately livelocks while making IPC progress, to prove the per-test wall-clock
 # ceiling catches what the no-progress heartbeat cannot see (testing.rs). It is EXPECTED TO FAIL the
 # run, so it is not part of the normal suite; see notes/scheduler.md for the command that runs it.

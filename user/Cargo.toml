@@ -264,6 +264,16 @@ path = "src/net_stack.rs"
 test = false
 bench = false
 
+# The SMB adapter (milestone 54): the network file service a Mac can mount. A client of the
+# socket contract (listen/accept, milestone 107) serving `smb_proto` over direct TCP; the share
+# is the fixture baked into `smb_proto` until the fs_proto-backed share lands (notes/smb.md).
+# Provisional name.
+[[bin]]
+name = "smb_server"
+path = "src/smb_server.rs"
+test = false
+bench = false
+
 # The display driver (milestone 29, the display ladder's rung one): drives the virtio-gpu device
 # over the confined transport and serves the framebuffer contract to clients. `mkinitrd` packs it as
 # "display" for both ISAs.
@@ -492,6 +502,7 @@ system_initializer = { version = "0.1.0", path = "../crates/system_initializer" 
 swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
+smb_proto = { version = "0.1.0", path = "../crates/smb_proto" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 block_roster = { version = "0.1.0", path = "../crates/block_roster" }
 gpt = { version = "0.1.0", path = "../crates/gpt" }
