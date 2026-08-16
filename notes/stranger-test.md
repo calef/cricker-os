@@ -51,6 +51,21 @@ and the milestone's own sentence is *with only this repository*. So a run 2 stra
 that this project tests its onboarding; what it cannot discover is the rubric's "pass means" column,
 which is the part that made run 1's answers uncountable.
 
+**The stranger writes its log as it goes, and that is a change to the instrument.** Run 2's first
+attempt died part way and left nothing at all: the findings lived in the stranger's own context and
+went with it, which is rung four of the ladder wearing a different hat. So the second attempt keeps
+an append-only journal outside the tree, written before and after each step, with the questions and
+the had-to-work-it-out items recorded at the moment they are hit rather than assembled at the end.
+The cost is real and belongs in `BUGS`: a stranger told its confusion is the deliverable is watching
+itself, which run 1's stranger was not.
+
+**The machine is no longer cold, and the build half is weaker for it.** The maintainer ran
+`cargo --version` inside the repository while getting oriented, which installed the pinned nightly
+from `rust-toolchain.toml`, and the attempt that died had already installed `qemu-system-aarch64`
+and `qemu-system-riscv64`. So B2 and B4 measure a partly warmed machine: whatever those two steps
+would have cost a newcomer, this run cannot see. A cold measurement wants a fresh container and is
+worth doing separately rather than pretending this one is it.
+
 **The strangers were subagents of a maintainer session whose working directory is the repository**,
 which is a weaker isolation than run 1's container and may hand them `CLAUDE.md` before they choose
 to read anything. That would contaminate the reading-order row and four of the eight mental-model
