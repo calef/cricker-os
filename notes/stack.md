@@ -492,6 +492,39 @@ store would have faulted again and the machine would have printed nothing. It pr
 register dump. RISC-V's `trap.s` stays on the interrupted `sp` for an S-mode trap and has the same
 property.
 
+### A model that fits the offsets exactly, and why it is still wrong
+
+Worth writing down because it is the reading a careful person reaches next, and because refuting it
+costs an hour the second time.
+
+**The two fault offsets are the two ISAs' first trap-frame stores.** aarch64's `SAVE_CONTEXT` opens
+`sub sp, sp, #272` then `stp x0, x1, [sp, #16 * 0]`, a store at **sp + 0**. RISC-V's `trap_entry`
+opens `addi sp, sp, -288` then `sd x1, 1*8(sp)`, a store at **sp + 8**. The faults are at guard base
+**+ 0** and **+ 8**. So: if `sp` were exactly a slot's guard base at trap entry, each ISA's first
+store lands precisely where its fault did.
+
+That model even survives the double-fault objection. aarch64 has no double fault; a store fault in
+`SAVE_CONTEXT` re-enters the same vector with `sp` another 272 lower, and after one step `sp` is
+inside the previous slot's mapped stack, so the frame builds, `exception_dispatch` runs, and
+`FAR_EL1` still holds the first failing address. The register dump would be the original context's
+(nothing before the store touches `x0`..`x30`), and `SPSR_EL1` would read EL1h with all of `DAIF`
+set, which is exactly the `0x3c5` in the aarch64 dump.
+
+**`ELR_EL1` refutes it.** Under that model the reported `ELR` is the PC of the *previous* level's
+faulting instruction, which is the `stp` inside the vector table. The dump reads
+`0xffff00004013a228`. Two local builds of this tree, with different metadata hashes, both place
+`exception_vectors` at `0xffff0000400b4000` and agree instruction for instruction around it, so the
+assembly's position is stable across builds and the faulting instruction was ordinary Rust roughly
+550 KB further into `.text`. The failing CI build is a different commit and its layout is not
+knowable from here, but it is main plus a 59-line markdown pull request, and that does not move half
+a megabyte of code.
+
+So the offsets are a coincidence, or they point at some other pair of stores. **Say what the next
+occurrence has to print to settle it**: if the new `sp` line names the slot *below* the faulting
+address, the store is past a neighbour's top and the trap-entry model is dead for good; if it names
+the same slot, `sp` really was in the guard page and this section is back on the table with `ELR` to
+explain.
+
 So the report now prints `sp` beside the faulting address in the same units and lets the reader
 compare, rather than asserting the answer. `kernel/src/stack.rs`, and
 `sched::tests::a_slots_guard_page_begins_where_the_slot_below_it_ends` pins the geometry the
