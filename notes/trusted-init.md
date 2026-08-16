@@ -28,10 +28,10 @@ kernel or escape its own confinement. What was missing was earlier than that:
 B.1 is the first of those. Phase B.2 is the second.
 
 **Why it is not theatre.** A check on bytes in RAM is worthless if something can rewrite them between
-the check and the use. Milestone 16b (the IOMMU, DECISIONS §20) closed exactly that window: a device
-can no longer DMA over the initrd behind the kernel's back. So the sequence "hash the bytes, then
-parse and enter the same bytes" is now a real ordering, not a hopeful one. Measured boot arrived
-after DMA confinement on purpose.
+the check and the use. The IOMMU work of milestone 16b (DECISIONS §20) closed exactly that window: a
+device can no longer DMA over the initrd behind the kernel's back. So the sequence "hash the bytes,
+then parse and enter the same bytes" is now a real ordering, not a hopeful one. Measured boot
+arrived after DMA confinement on purpose.
 
 ## What the kernel does
 

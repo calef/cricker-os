@@ -207,6 +207,26 @@ is the narrower version of a carve-out the tree already makes.
 19's file, because there is no `19e` file. A gloss describing what 19e specifically did will not be
 found in 19's text and has to be phrased as commentary instead.
 
+**A file whose only glossed citations are lettered is not scanned at all**, which is a stronger
+statement than the entry above and was found by accident on 2026-08-16. The `git grep` that picks
+candidate files matches `[Mm]ilestone [0-9]+,? \(`, with no `[a-z]?` where the whole-file regex has
+one, so a lettered citation never puts a file on the list:
+
+```
+Milestone 16b (DECISIONS §20, notes/iommu.md)
+```
+
+Three files are invisible to the gate for this reason today (`design/decisions/26-fault-endpoint.md`
+and both `iommu.rs` files), and every citation in them, lettered or not, goes unchecked.
+`notes/trusted-init.md` was the fourth until milestone 94's blessing lane added an ordinary citation
+to it, which pulled the file onto the list and surfaced a lettered gloss that had never been read:
+the gate reported a defect on line 31 in response to an edit on line 167, which is how the blind
+spot was noticed at all. That one was fixed in the same lane; the other three were left, because
+fixing the pattern is one character and then four sites need rewording or an allowlist entry, which
+wants a lane rather than a drive-by. **The general shape is worth more than the bug**: when a
+checker chooses its inputs with one pattern and reads them with another, the gap between the two is
+unreachable by any test that only runs the checker.
+
 **Nothing checks the index rows' own titles against the files they link to**, which is
 `script/decisions`' and `script/roadmap`' stated non-goal (a row may abbreviate). A row that
 abbreviates *wrongly* is still invisible.
