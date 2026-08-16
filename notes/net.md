@@ -665,6 +665,20 @@ The fix is the same one `virtio::MAX_DEVICES` has now asked for eight times: rec
 finished service held. It is one piece of work that would relieve both ceilings, and it is
 increasingly what stands between this suite and the next network milestone.
 
+**And the margin is now thin enough to fail about one run in three, measured.** When milestones 54
+and 55 were merged together (the SMB adapter and the mDNS half now ride the same spawn as milestone
+107's accept test, which is why neither cost a net server of its own), the aarch64 leg was run three
+times on the merged tree: **one of the three died**, and it died exactly the way this section and
+notes/swish-language.md both predict. `time_tests::a_shell_with_no_usable_clock_refuses_rather_than_running_it_unmeasured`
+printed `refused to load a user program: Unmappable(OutOfFrames)` and the lost-wakeup watchdog fired
+sixty seconds later; the other two runs passed all 261 tests with every prober green. Two things
+follow, and the second is the one that costs time. **A red aarch64 leg on a branch that touches the
+net tests is not evidence the branch is wrong**, so re-run before you debug. And **the failure names
+a test that has nothing to do with the change**, because the boot's last spawn is the one that pays,
+which is what makes this so expensive to diagnose from the failure alone. That is the third distinct
+milestone to be misled by it, and it is the argument for reclaim being a milestone rather than a
+cleanup.
+
 ### What is still not proven, and what is deliberately out of scope
 
 - **`std::net::TcpListener` is still `Unsupported`.** The block asked whether the PAL binding lands
