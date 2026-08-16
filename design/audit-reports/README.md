@@ -80,10 +80,10 @@ malformed it.
 
 | Date | Kind | Lens | Findings | Report |
 |---|---|---|---|---|
-| 2026-07-15 | security | The whole kernel read cold, four reviewers, one dimension each, after milestone 11 | fixed 4, milestone 0, accepted 0 | [A security audit](../../notes/security.md) |
-| 2026-07-29 | security | The hand-written architecture assembly, for state staged in single-copy hardware registers across more than one instruction | fixed 2, milestone 0, accepted 1 | [Auditing the hand-written architecture assembly](../../notes/arch-audit.md) |
-| 2026-08-04 | security | Time of check to time of use across every page shared by two address spaces | fixed 5, milestone 1, accepted 1 | [Auditing the shared pages](../../notes/shared-page-audit.md) |
-| 2026-08-15 | security | Untrusted counterparty input: a value a hostile counterparty supplies in one message or completion | fixed 0, milestone 0, accepted 1 | [Auditing untrusted counterparty input](../../notes/untrusted-input-audit.md) |
+| 2026-07-15 | security | The whole kernel read cold, four reviewers, one dimension each, after milestone 11 | fixed 4, minted 0, accepted 0 | [A security audit](../../notes/security.md) |
+| 2026-07-29 | security | The hand-written architecture assembly, for state staged in single-copy hardware registers across more than one instruction | fixed 2, minted 0, accepted 1 | [Auditing the hand-written architecture assembly](../../notes/arch-audit.md) |
+| 2026-08-04 | security | Time of check to time of use across every page shared by two address spaces | fixed 5, minted 1, accepted 1 | [Auditing the shared pages](../../notes/shared-page-audit.md) |
+| 2026-08-15 | security | Untrusted counterparty input: a value a hostile counterparty supplies in one message or completion | fixed 0, minted 0, accepted 1 | [Auditing untrusted counterparty input](../../notes/untrusted-input-audit.md) |
 
 ## What the tree looked like when each ran
 
@@ -154,7 +154,12 @@ index that took every file called an audit would report a coverage it does not h
      section wherever a reader would meet the risk.
 
    **"Noted" is not a state.** DECISIONS §35 already names the failure mode: a finding nobody
-   dispositions is wallpaper, and a security label does not change that.
+   dispositions is wallpaper, and a security label does not change that. The `Findings` cell counts
+   them as `fixed N, minted N, accepted N`, and `script/audits --check` fails a row that does not.
+   The cell says `minted` rather than `milestone` because `script/roadmap` validates the phrase
+   "milestone <number>" anywhere in the tree as a citation, so a findings cell with a count of zero
+   read as a citation to milestone zero and failed the build on this milestone's first full lint
+   run.
 4. **Re-baseline the docs in the same lane.** `SECURITY.md`'s claims, the confinement scope, and the
    affected notes' `BUGS` sections are part of the audit's diff. An audit that finds the docs
    overclaiming fixes them there and then, because an overclaim in `SECURITY.md` is itself a security

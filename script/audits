@@ -65,8 +65,15 @@
 #   backstop eventually catches it.
 # - **It validates the baseline cells as integers, never as true.** Nothing re-derives them at the
 #   commit they claim, so a mistyped baseline silently moves a trigger.
-# - **It cannot tell a report that says nothing from one that found nothing.** `fixed 0, milestone 0,
+# - **It cannot tell a report that says nothing from one that found nothing.** `fixed 0, minted 0,
 #   accepted 0` parses and passes.
+#
+# **`minted` rather than `milestone` in the disposition vocabulary, and the reason is a collision
+# with another gate rather than taste.** script/roadmap validates the phrase "milestone <number>"
+# anywhere in the tree as a citation, so a findings cell with a count of zero parsed as a citation to
+# milestone zero and failed the build. Caught on this milestone's first full lint. `minted` is also
+# the verb this tree already uses for what the integrator does with a number, so the vocabulary got
+# closer to the tree's own while it was being moved out of the way.
 #
 # Name: unrecorded. Provisional, minted by milestone 92's lane on 2026-08-16 and not yet put to
 # calef, who names things. Refused `audit` (singular reads as a command that performs one, which is
@@ -175,7 +182,7 @@ except FileNotFoundError:
     sys.exit(1)
 
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}$")
-FINDINGS = re.compile(r"fixed (\d+), milestone (\d+), accepted (\d+)$")
+FINDINGS = re.compile(r"fixed (\d+), minted (\d+), accepted (\d+)$")
 LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)$")
 
 cadence = {}
@@ -205,7 +212,7 @@ for cells in table(lines, INDEX_HDR, index_path):
     fm = FINDINGS.match(findings)
     if not fm:
         problems.append(f"audit {date} ({kind}): findings {findings!r} must read "
-                        f"'fixed N, milestone N, accepted N'. Every finding ends in exactly one of "
+                        f"'fixed N, minted N, accepted N'. Every finding ends in exactly one of "
                         f"the three states; \"noted\" is not a state (DECISIONS §35).")
     lm = LINK.match(report)
     if not lm:
@@ -290,7 +297,7 @@ if mode == "--baseline":
     today = datetime.date.today().isoformat()
     print("Paste into design/audit-reports/README.md, both tables, oldest first:")
     print()
-    print(f"| {today} | <kind> | <the lens this audit took> | fixed N, milestone N, accepted N | "
+    print(f"| {today} | <kind> | <the lens this audit took> | fixed N, minted N, accepted N | "
           f"[<title>](../../notes/<report>.md) |")
     print(f"| {today} | <kind> | {now['built']} | {now['components']} | {now['abi']} "
           f"| {now['packages']} |")
