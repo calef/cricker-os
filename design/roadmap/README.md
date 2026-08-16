@@ -183,7 +183,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 40 | NOT-STARTED | [Documentation as a system service: searchable, rendered, and installed by packages](40-documentation-service.md) | the OS explains itself, on itself | |
 | 41 | BUILT | [Dead code: triage the suppressions, and un-blindfold the gate](41-dead-code-triage.md) | a `-D warnings` gate with holes in a third of the kernel is not a gate | 2026-07-30 |
 | 42 | BUILT | [Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit)](42-supply-chain-and-fuzzing.md) | we confine code we did not write, and the parsers that read what firmware and disks hand us are where a bound is a lie | 2026-08-02 |
-| 43 | NOT-STARTED | [A second security audit, with a different lens](43-second-security-audit.md) | the attack surface roughly doubled after the first audit was written | |
+| 43 | BUILT | [A second security audit, with a different lens](43-second-security-audit.md) | the attack surface roughly doubled after the first audit was written | |
 | 44 | BUILT | [GitHub repository hardening: policy, private reporting, code scanning, pull requests](44-github-hardening.md) | a repository with a security thesis should be able to receive a report privately | 2026-08-04 |
 | 45 | BUILT | [Triage the CodeQL code-scanning alerts, and decide what the tool is for](45-codeql-triage.md) | the alerts land on this project's most-used unsafe abstraction | 2026-07-30 |
 | 46 | BUILT | [Rename the components for what they are, and write down the naming rules](46-component-renames.md) | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph | 2026-07-30 |
