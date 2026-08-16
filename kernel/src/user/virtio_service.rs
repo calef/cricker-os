@@ -493,14 +493,8 @@ pub fn start_net_stack_with_smb(
     let (net_stack_report, stack, mut held) =
         wire_net_server(image, transport, dev.intid, None, grant);
     let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, &mut held);
-    let smb_report = spawn_stack_client(
-        smb_image,
-        smb_rounds,
-        smb_port as u64,
-        stack,
-        fs,
-        &mut held,
-    );
+    let smb_report =
+        spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs, &mut held);
 
     // Drain the DHCP lease report, as in start_net_stack: both clients block on their first
     // request until the server enters its serve loop.
