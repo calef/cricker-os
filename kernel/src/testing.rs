@@ -116,6 +116,44 @@ static WORST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
 /// are. Sixteen frames is 64 KiB, about the smallest thing a service-shaped test takes.
 const FRAME_REPORT_MIN: usize = 16;
 
+/// **What the whole suite may leave unreturned, in frames**, checked once at the end of the run.
+///
+/// Not zero, and the difference is accounted rather than shrugged at. A boot legitimately keeps some
+/// of what its tests built: the FS service and the credential store are wired once and shared by
+/// every later test that needs them, `root_supervisor`'s budget cannot be reclaimed at all (it was
+/// `SPLIT`, and a parent with live children refuses), and each kernel endpoint costs a page that is
+/// never freed by design. notes/frames.md lists every item and what it is for.
+///
+/// What must not *grow* is the per-test residue, and this ceiling sits just above the measured total
+/// so that a new service-shaped test which forgets to hand its memory back fails **here**, naming
+/// itself, instead of three tests later as `OutOfFrames` in something innocent.
+///
+/// **One number for both architectures, and it is one because they were measured separately and
+/// came out together**: 13999 on aarch64 and 13791 on riscv64 (2026-08-16). The two boots build
+/// different sets of services, so that agreement is a coincidence rather than a property, and if it
+/// ever stops holding the honest fix is a per-architecture pair here rather than a looser single
+/// ceiling.
+///
+/// Raising it is a decision, not a formality: read the `[that test kept N frames]` lines the run
+/// prints, find who grew, and be able to say why that growth is permanent.
+const SUITE_FRAME_BUDGET: usize = 15_000;
+
+/// **The longest run of free frames the boot must still have at the end**, in frames.
+///
+/// The other half of the gate, and the half that names the actual failure. Loading any program calls
+/// `AddressSpace::new`, which calls `untyped::create`, which calls `alloc_contiguous`: what a boot
+/// runs out of is not memory, it is a **contiguous run**, and the two can be far apart. Milestone
+/// 107 measured 137 frames free with no run of 128; the boot this gate was written for ended with
+/// 216 free and no run longer than **117**, so any test loading a program bigger than that failed as
+/// `Unmappable(OutOfFrames)`, in whichever test happened to be next rather than in the one that
+/// spent the memory. [`SUITE_FRAME_BUDGET`] alone would not have caught that, because a suite can
+/// pass a residue ceiling and still be fragmented into uselessness.
+///
+/// 1024 frames is 4 MiB, comfortably more than the largest program this boot loads (`fs_server` and
+/// `net_stack` are the big ones, a few hundred pages with their page tables) and comfortably under
+/// the 14080 measured after reclamation. It is a floor with room, not a target.
+const SUITE_MIN_FREE_RUN: usize = 1024;
+
 /// **Charge the test that just finished, and open an account for the one about to start.**
 ///
 /// Called at the top of every test, and once more from the ledger, so the readings **partition the
@@ -158,9 +196,8 @@ fn worst_spender_name() -> Option<&'static str> {
     unsafe { core::str::from_utf8(core::slice::from_raw_parts(ptr as *const u8, len)).ok() }
 }
 
-/// Print the ledger. **Reporting only, for now**: what the run may keep is a number nobody has yet,
-/// and inventing one before the measurement is the mistake this instrument exists to stop. The two
-/// ceilings arrive once the reclamation below has made them meaningful.
+/// Print the ledger, and fail the run if the boot ends with no usable contiguous run
+/// ([`SUITE_MIN_FREE_RUN`]) or with more kept than is accounted for ([`SUITE_FRAME_BUDGET`]).
 fn report_frame_ledger() {
     if !FRAMES_STAMPED.load(Ordering::Relaxed) {
         return; // no test ran; nothing was spent
@@ -180,6 +217,29 @@ fn report_frame_ledger() {
             "  the biggest single spender was {name} at {} frames",
             WORST_SPEND.load(Ordering::Relaxed)
         );
+    }
+    if run < SUITE_MIN_FREE_RUN {
+        println!();
+        println!(
+            "FRAME LEDGER: the boot ends with no free run longer than {run} frames, under the \
+             {SUITE_MIN_FREE_RUN} this gate requires. This is the failure rather than a warning \
+             about one: loading a program takes a contiguous run, so the next test to load anything \
+             substantial would fail as Unmappable(OutOfFrames), and it would do so in whichever \
+             test happened to be next rather than in the one that spent the memory. Read the \
+             `[that test kept N frames]` lines above for who grew. See notes/frames.md."
+        );
+        semihosting::exit(semihosting::EXIT_FAILURE);
+    }
+    if spent > SUITE_FRAME_BUDGET {
+        println!();
+        println!(
+            "FRAME LEDGER: the suite kept {spent} frames against a budget of {SUITE_FRAME_BUDGET}. \
+             A test built a service and did not hand its memory back. Read the \
+             `[that test kept N frames]` lines above for who grew; the reclaim path is \
+             `kill_thread` + `sched::reclaim_region`, wrapped as `user::holding::Holding`. Do not \
+             raise the budget without an account of what is permanent and why. See notes/frames.md."
+        );
+        semihosting::exit(semihosting::EXIT_FAILURE);
     }
 }
 
