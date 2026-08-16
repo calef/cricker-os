@@ -731,10 +731,20 @@ case "$branch" in
     # the hung-queue symptom milestone 120's ordering warned about, from a direction nobody
     # predicted. A gate that can be wrong about the tree (§77) can be wrong about the robot too.
     gh-readonly-queue/*) ;;
+    # Machine-generated and not ours to name.
+    dependabot/*) ;;
+    # The list §77 measured against the tree on 2026-08-16. `roadmap/`, `decisions/`, `toolchain/`
+    # and `ci/` were added because each was already established (roadmap/ was the repository's
+    # SECOND commonest prefix while this check rejected it, and the check would have refused about
+    # 35 merges already on main). `audit/` and `finalize/` stay as declared intent though neither
+    # has ever been used; they cost a word each and dropping a permitted name is how a lane's
+    # branch gets refused for having read an older file.
     milestone/*|fix/*|bench/*|audit/*|integration/*|finalize/*|feature/*) ;;
+    roadmap/*|decisions/*|toolchain/*|ci/*) ;;
     *)
         echo "lint: branch '$branch' has no recognised prefix." >&2
-        echo "Use milestone/, fix/, bench/, audit/, integration/, finalize/ or feature/." >&2
+        echo "Use milestone/, roadmap/, decisions/, fix/, feature/, integration/, toolchain/," >&2
+        echo "ci/, bench/, audit/ or finalize/ (§77)." >&2
         echo "Not feat/: one spelling, and feature/ is the older one (notes/naming.md)." >&2
         exit 1
         ;;
