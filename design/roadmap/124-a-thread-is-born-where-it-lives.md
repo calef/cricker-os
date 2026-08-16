@@ -32,9 +32,10 @@ pull request #213's problem for four hours on that evidence, which was wrong.
 reopening proposed cumulative depth plus an exception frame arriving at the worst moment. A lane
 built the instrument this milestone and `notes/stack-high-water.md` had both named as missing, a
 call-graph walker (`script/stack-depth-check`), and measured the deepest chain a thread stack can
-reach: **13760 bytes on aarch64 and 12864 on riscv64, against a 16384-byte stack** (the numbers on
-the merged tree, 2026-08-16; the gate prints them and they move with the code, so take them from a
-run rather than from here), the graph acyclic, and **no frame over the guard page reachable from any
+reach: **13712 bytes on aarch64 and 13344 on riscv64, against a 16384-byte stack** (measured on this
+branch, 2026-08-16). **Take these from a run, not from here.** They moved twice in one afternoon,
+13792 to 13760 to 13712 on aarch64, purely from merging other people's work; the gate prints them
+and the gate is the authority, the graph acyclic, and **no frame over the guard page reachable from any
 thread entry point on either ISA**. A
 fault at a slot's guard base needs `sp` 20480 bytes in. The deepest watermark ever observed is 10600.
 
