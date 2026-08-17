@@ -238,7 +238,7 @@ which kind. `xargs` now reads it the same way `&&` does.
 
 ## EXAMPLES
 
-At a real prompt on the RedoxFS fixture. The transcript below is `CRICKER_SHOW_TRANSCRIPT=1
+At a real prompt on the RedoxFS fixture. The transcript below is `NIFE_SHOW_TRANSCRIPT=1
 script/shell-check --arch aarch64`, which boots `--features shell` and types at the prompt through
 the real `user/src/system_initializer.rs`.
 

@@ -261,7 +261,7 @@ aimed there would let it *exfiltrate* kernel memory to disk, and neither address
 device. The roadmap's claim that the transport "already speaks both directions" was verified
 against the code and is accurate.
 
-What was new: the driver's write verb (`user/src/virtio.rs::write_block`, one flag away from the
+What was new: the driver's write verb (`crates/virtio`'s `write_block`, one flag away from the
 read), attaching QEMU's disks writable (one image file per transport, because QEMU write-locks a
 file once any attachment can write; see the runners), and the tests. The write tests run the same
 matrix as the read path: both ISAs, both transports (mmio and PCIe), a full pattern round trip
@@ -294,7 +294,7 @@ round trip. Three facts make the abandoned request harmless, and all three are l
   signal and then found its own request not yet on the used ring. The read path never noticed
   because it only ever expects one completion. The fix is the correct virtio discipline anyway: a
   driver treats the used ring advancing, not a single wakeup, as the completion, so
-  `complete_block` (`user/src/virtio.rs`) now loops WAIT/ack until `used.idx` moves, discarding a
+  `complete_block` (`crates/virtio`) now loops WAIT/ack until `used.idx` moves, discarding a
   wakeup that was really someone else's. Every real completion also raises the line, so the loop
   always makes progress. This hardens the read path too: coalesced and spurious interrupts were
   always possible and were only tolerated by luck before.

@@ -896,6 +896,87 @@ echo "        every name carries its provenance"
 echo "==> the audit index"
 "$(dirname "$0")/audits" --check
 
+# 9. **An environment variable named in prose has to exist** (milestone 93's first documentation
+#    sweep, 2026-08-16). This is the compounding half of that mechanism rather than a check somebody
+#    thought of: a sweep is supposed to convert checkable claims into checked ones, and this class
+#    was the first one it found. Milestone 120 renamed the OS and swept `cricker` out of the
+#    identifiers; it did not sweep the *environment* namespace, and eleven `CRICKER_*` names survived
+#    in eight documents for a day, every one of them an instruction a reader would type and get
+#    nothing from.
+#
+#    **It derives the answer rather than knowing it**, which is what keeps it honest through the next
+#    rename: a name in prose is live if some non-markdown file reads or assigns it. That is why
+#    `CRICKER_CC` passes today. `script/bootstrap` really does read `$CRICKER_CC`, so the note
+#    naming it is *right* and the script is the stale one, and a gate spelling `NIFE_` into a rule
+#    would have reported the correct document as the defect.
+#
+#    Prose only, and prose in the syntax `$NAME`/`${NAME}`/`NAME=`/`"NAME"` is what counts as a
+#    definition, so a passing mention in a comment does not vouch for a name. `design/decisions/` is
+#    out of scope, the same exclusion `script/audits --worklist` makes and for the same reason: a
+#    decision is a dated record of an argument, and lanes do not edit them. Five stale names live
+#    there and are milestone 93's handed-off finding, not this gate's business.
+#
+#    **Two more paths are exempt because they are where the argument about these names lives**, which
+#    is the same exemption the "daemon" check makes for `design/` and `notes/naming.md`: an audit
+#    report has to be able to quote the stale name it found, and so does the procedure that explains
+#    how it was found. Note what is deliberately NOT exempt: a fenced code block. The eleventh stale
+#    name in the first sweep was inside one (`notes/cpu-models.md` opened with
+#    `CRICKER_CPU=sifive-u54 cargo run ...`), and a fence is exactly where a reader copies from, so
+#    exempting fences would exempt the sites that matter most.
+#
+#    It is deliberately narrow. It knows one namespace, `NIFE_`/`CRICKER_`, because those are the
+#    names this project mints and therefore the ones only this project can check. See
+#    notes/documentation-audit.md.
+echo "==> environment names in prose"
+python3 - <<'PY'
+import re, subprocess, sys
+
+tracked = [f for f in subprocess.run(['git', 'ls-files'], capture_output=True, text=True)
+           .stdout.split('\n') if f]
+
+TOKEN = re.compile(r'\b((?:NIFE|CRICKER)_[A-Z0-9_]+)\b')
+
+live = set()
+for f in tracked:
+    if f.endswith('.md') or f.startswith(('vendor/', 'patches/')):
+        continue
+    try:
+        text = open(f, errors='replace').read()
+    except (IsADirectoryError, FileNotFoundError):
+        continue
+    # A definition or a read, never a mention. `$NAME` and `${NAME` are a shell read; `NAME =` and
+    # `NAME:` cover a shell assignment, a Rust `pub const NAME: Guid`, and a YAML key; `"NAME"` is
+    # how Rust asks for one (`env::var("NIFE_KBD")`). A name that only appears inside a sentence in
+    # a comment is NOT live, which is the whole point: `script/qemu-check` mentions `CRICKER_DISK`
+    # in a comment about a check, and that mention is itself stale rather than a definition.
+    for m in re.finditer(r'\$\{?([A-Z0-9_]+)|\b([A-Z0-9_]+)\s*[:=]|"([A-Z0-9_]+)"', text):
+        live.add(m.group(1) or m.group(2) or m.group(3))
+
+bad = []
+for f in tracked:
+    if not f.endswith('.md') or f.startswith(('vendor/', 'patches/', 'design/decisions/',
+                                              'design/audit-reports/')):
+        continue
+    if f == 'notes/documentation-audit.md':
+        continue
+    for i, line in enumerate(open(f, errors='replace'), 1):
+        for name in TOKEN.findall(line):
+            if name not in live:
+                bad.append((f, i, name))
+
+if bad:
+    print('lint: an environment variable named in prose does not exist in the tree:', file=sys.stderr)
+    for f, i, name in bad:
+        print(f'  {f}:{i}: {name}', file=sys.stderr)
+    print('Nothing reads or assigns it, so a reader who types it gets nothing. Either the tree '
+          'renamed it and the prose did not follow (milestone 120 left eleven of these), or the '
+          'name is new and the code that reads it has not landed. See notes/documentation-audit.md.',
+          file=sys.stderr)
+    sys.exit(1)
+ours = sorted(n for n in live if n.startswith(('NIFE_', 'CRICKER_')))
+print(f'environment names: {len(ours)} live, and every one named in prose is read or assigned')
+PY
+
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero
 # broken relative links and exactly one unindexed note, so generic style rules (heading case, line
@@ -907,10 +988,21 @@ echo "==> markdown links and the notes index"
 # 2. Every notes/*.md must appear in notes/README.md, which CLAUDE.md requires and which had already
 #    drifted (notes/session-handoff.md).
 #
-# Backticked repo paths are deliberately NOT checked. The same survey found 8 that do not resolve and
-# all 8 are correct: `crates/linedisc` is preserved on purpose in DECISIONS §39 and the milestone 46
-# block, and `crates/heap`/`crates/slab`/`kernel/src/heap.rs` are accurate prose about what milestone
-# 14 removed. A checker there is 100% false positives, and history we deliberately keep is not rot.
+# Backticked repo paths are still deliberately NOT checked, but **the measurement that justified it
+# has rotted and the conclusion is weaker than it was.** Re-measured by milestone 93's first
+# documentation sweep, 2026-08-16: 31 distinct unresolvable backticked paths over 379 markdown files,
+# where this comment used to say 8 over 95 and "a checker there is 100% false positives".
+#
+# It is no longer 100%. Most are still deliberate history (`crates/linedisc` preserved in DECISIONS
+# §39; `crates/heap`/`crates/slab`/`kernel/src/heap.rs` accurate prose about what milestone 14
+# removed; every old spelling inside design/roadmap/73 and /63, which are the blocks *about* renaming
+# those files; `script/sanitize` and `script/brief`, which are names milestone 115 rejected). But the
+# sweep found six that were simply wrong and fixed them: `user/src/suptree.rs`, `user/src/virtio.rs`
+# and `script/stack-frames` had all been renamed out from under their notes.
+#
+# The reason it stays ungated is now the false-positive *rate* rather than a claim of perfection, and
+# separating deliberate history from rot needs a reader. That reader is the documentation sweep
+# (notes/documentation-audit.md), and `script/audits --worklist` ranks which document to hand them.
 python3 - <<'PY'
 import glob, os, re, sys
 

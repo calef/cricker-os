@@ -38,7 +38,7 @@ hands a driver either way), owns the registers and the two DMA-critical powers, 
 a confined `Virtio` capability, a DMA page, and an interrupt. On PCIe the NIC sits behind the IOMMU
 (`iommu_platform=on`), the disk's pattern exactly, so it is confined in hardware too.
 
-The driver is `user/src/virtio.rs::run_net`, dispatched by both driver binaries (the aarch64 tests
+The driver is `crates/virtio`'s `run_net`, dispatched by both driver binaries (the aarch64 tests
 run it as a role of `hello`, the riscv tests as a role of the dedicated `blk` binary; both include
 the shared `virtio` module). It brings up **both** virtqueues (receive = 0, transmit = 1) through the
 one capability, passing the queue number to `SETUP_QUEUE` and `NOTIFY`. The whole net-specific DMA

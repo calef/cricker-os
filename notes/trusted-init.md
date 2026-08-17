@@ -187,7 +187,7 @@ init away from being built wrong. The answer is not to make init more careful; i
 ### The tree
 
 Four small portable programs (`user/src/root_supervisor.rs`, `spawner.rs`, `sub_server_supervisor.rs`, `flaky.rs`, sharing
-`user/src/suptree.rs`):
+`crates/supervision_proto`):
 
 ```text
   root_supervisor   the root untyped + the initrd + a report endpoint       (briefly)

@@ -24,7 +24,7 @@ endpoint I read and write blocks on"; the client holds "an endpoint that opens a
 under the one directory this endpoint is bound to." Rewire the endpoints and neither side can tell,
 which is milestone 23's hot-swap claim in component form.
 
-- **The block server** is a role of the virtio driver (`user/src/virtio.rs::run_blk_server`). It
+- **The block server** is a role of the virtio driver (`crates/virtio`'s `run_blk_server`, dispatched by `crates/virtio`). It
   brings the RedoxFS disk up, then serves read/write/size over **blk IPC** forever. The device
   confinement is unchanged from any driver (the kernel owns the transport and validates every DMA
   descriptor, notes/dma.md), so a serving block driver is as confined as a reading one.
@@ -78,7 +78,7 @@ choices keep that inside the test's watchdog:
    milestone-9 driver roles still transfer one 512-byte sector at a time; this role does not. This
    is what keeps the mount's read count in the low hundreds rather than thousands.
 2. **Wait on the completion interrupt, the milestone-9 discipline** (`complete_blk`,
-   `user/src/virtio.rs`). The kernel turns the device's completion IRQ into a message on the block
+   `crates/virtio`). The kernel turns the device's completion IRQ into a message on the block
    server's `Irq` endpoint; the server WAITs for it, quiets the device, ACKs the line, and lets
    `used.idx` decide when the completion is really its own (a wakeup can be stale or coalesced), the
    same loop the read driver uses. This is a **correction** (fix/irq-delivery, 2026-07-29): the
@@ -440,7 +440,7 @@ rather than a choice.*
 **None of that is true of this tree, and it stopped being true two days before the salvage.**
 `fix/irq-delivery` (2026-07-29, commit `dd8f186`, "block server: wait on the completion interrupt,
 do not poll the used ring") replaced the poll with a `WAIT` on the `Irq` endpoint, and that is what
-`user/src/virtio.rs::complete_blk` does on `main` today. The correction is written up **higher in
+`crates/virtio`'s `complete_block` does on `main` today. The correction is written up **higher in
 this same file**, under "The block server, and how it completes a request", point 2. The salvage
 folded in a branch that predated the fix and did not reconcile it against the note it was being
 folded into, so one file ended up asserting both a defect and its repair, seventy lines apart. That

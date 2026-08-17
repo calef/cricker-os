@@ -152,6 +152,15 @@ lift `virtio`, `net_transport`, `socket_proto`, `suptree` into `runtime/` crates
 crate-is-both-a-program-collection-and-a-library problem, makes dependencies expressible, and leaves
 the gate untouched.
 
+**Corrected 2026-08-16 by milestone 93's first documentation sweep: half of that move already
+happened, under a different rule and without a `runtime/` directory.** Rule 7 (crates, not `#[path]`
+modules) lifted `suptree` out as `crates/supervision_proto` on 2026-07-31, and `virtio` and
+`socket_proto` followed. Of the four named above, only `net_transport` is still a module under
+`user/src/`. So the remaining "cheap first move" is mostly the `components/`-and-`fixtures/` split of
+`user/`, and a reader costing this proposal should cost it as the smaller thing it now is. The
+paragraph above is left standing because it is the argument that was made; this is what it looks like
+against the tree today.
+
 **Whichever option is chosen, do the move as one mechanical commit with the pairing audited.**
 Renaming directories touches `xtask`'s `--bin` lists and the initrd packing, and a union merge in
 exactly that code dropped a `--bin` flag on 2026-07-29 and duplicated a loop header the same day. It

@@ -303,7 +303,7 @@ history against `vttest` that we would otherwise be writing from scratch for yea
    have to be rebuilt.** That is the cost this increment discovered and could not have known before.
 4. **Their API is in flux**, so any adoption pins a version and takes the divergence-management
    discipline the vendored RedoxFS already has (DECISIONS §18's vendoring policy).
-5. **`crates/video_terminal` would not be deleted.** It is about 1,500 lines including its tests and its keymap,
+5. **`crates/video_terminal` would not be deleted.** It is about 1,750 lines including its tests and its keymap (1,500 when this was written; it is a hedged magnitude, re-measured at each documentation sweep rather than gated, because a line count moves on every test anyone adds),
    and it is the thing that makes the host-side scanout check possible; keeping it as the reference
    implementation the foreign one is *checked against* is more valuable than either alone, and it is
    a better milestone-23 demonstration too (swap the engine, run the same suite, compare the grids).
@@ -329,4 +329,4 @@ property this increment was asked to keep and did.
 | the wiring | `kernel/src/user/display_service.rs` (`start_terminal`), `kernel/src/user/compositor_service.rs` (`spawn_terminal`), `kernel/src/user/keyboard_service.rs` |
 | the tests | `kernel/src/user/display_tests.rs`, `kernel/src/user/compositor_tests.rs` |
 | the host-side text check and its negative control | `xtask/src/main.rs` |
-| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` (`CRICKER_KBD`) |
+| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` (`NIFE_KBD`) |
