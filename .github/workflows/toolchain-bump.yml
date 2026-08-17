@@ -160,7 +160,9 @@ jobs:
           of proposing rather than applying.
 
           Merging changes what every build in the project compiles with, so it wants a human."
-            body="Raises \`rust-toolchain.toml\` from \`$CURRENT\` to \`$TARGET\`.
+            body="**Lane:** $branch, opened by a scheduled workflow; calef's account is the author GitHub shows.
+
+          Raises \`rust-toolchain.toml\` from \`$CURRENT\` to \`$TARGET\`.
 
           The std overlay was rebuilt from a clean farm against this nightly and compiles, which is the
           check that catches upstream drift. **Everything else is this PR's own CI**: both ISAs, the
@@ -187,7 +189,9 @@ jobs:
             # The compiler's own words, trimmed to the errors. A log link expires; this does not.
             errors="$(grep -E '^(error|warning: unused)' /tmp/overlay-build.log 2>/dev/null | head -20 || true)"
             [ -n "$errors" ] || errors="(no error lines matched; see the job log)"
-            body="**Upstream has moved away from us.** \`$TARGET\` does not build the \`std\` overlay.
+            body="**Lane:** $branch, opened by a scheduled workflow; calef's account is the author GitHub shows.
+
+          **Upstream has moved away from us.** \`$TARGET\` does not build the \`std\` overlay.
 
           This is a **draft on purpose and must not be merged as-is.** The pin is raised and the
           overlay is untouched, so this branch's CI will be red. That red is the evidence, not a
