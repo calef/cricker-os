@@ -33,3 +33,9 @@ fs_proto = { version = "0.1.0", path = "../fs_proto" }
 # treats it as a path, so `echo a:b` prints text instead of being refused as a name. Expansion itself
 # is `grant_plan::expand`; this crate moved the dependency off `user`, which no longer uses it.
 glob = { version = "0.1.0", path = "../glob" }
+
+# `index::Ranked` and `index::Found`, so `apropos`'s answer is rendered here with everything else
+# the user reads (milestone 40 phase 2). The *reading* of a shard is `manual`'s and needs a
+# capability, so it stays in the program; what a person is told about the result does not, and a
+# sentence the shell invents is exactly what this crate exists to stop.
+manual = { version = "0.1.0", path = "../manual" }

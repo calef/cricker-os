@@ -3689,8 +3689,14 @@ const DOC_BUNDLES: &[(&str, &[&str])] = &[
 ];
 
 /// Where the store is staged on the host before it is imported into the filesystem image.
+///
+/// The last component is [`manual::index::STORE_DIR`] rather than the literal `doc`, because the
+/// guest opens that name and this writes it: it is a thing two programs agree on, so it is a
+/// constant in the crate they share.
 fn doc_store_path() -> std::path::PathBuf {
-    workspace_root().join("target/redoxfs-tree/doc")
+    workspace_root()
+        .join("target/redoxfs-tree")
+        .join(manual::index::STORE_DIR)
 }
 
 /// What one bundle cost, so the numbers in notes/manual.md are measured rather than estimated.
@@ -3758,8 +3764,8 @@ fn doc_store() -> Option<Vec<Shard>> {
             .collect();
         let index = manual::index::build(&sources);
         let header = manual::index::Header::parse(&index[..manual::index::PAGE]).ok()?;
-        if std::fs::write(dir.join("index"), &index).is_err() {
-            eprintln!("doc-store: cannot write {bundle}/index");
+        if std::fs::write(dir.join(manual::index::SHARD), &index).is_err() {
+            eprintln!("doc-store: cannot write {bundle}/{}", manual::index::SHARD);
             return None;
         }
         shards.push(Shard {
@@ -3778,7 +3784,7 @@ fn doc_store() -> Option<Vec<Shard>> {
     // A file rather than a directory listing, because **there is no directory iteration in this
     // system** and adding one would be adding authority: a program that can list a directory can
     // discover what it was not given. See notes/manual.md.
-    if std::fs::write(root.join("bundles"), names).is_err() {
+    if std::fs::write(root.join(manual::index::MANIFEST), names).is_err() {
         eprintln!("doc-store: cannot write the bundle manifest");
         return None;
     }
@@ -3823,37 +3829,56 @@ fn manual_store(term: Option<String>) -> bool {
     };
     println!();
     println!("search: {term}");
-    let mut found = 0;
-    for (bundle, _) in DOC_BUNDLES {
-        let Ok(bytes) = std::fs::read(doc_store_path().join(bundle).join("index")) else {
-            continue;
+
+    // **The bundles come from the manifest the build just wrote**, not from `DOC_BUNDLES`, because
+    // that is what the guest reads and the whole value of this query is that it takes the guest's
+    // path. A store whose manifest disagreed with the table would answer differently at the prompt
+    // than it does here, and this is where that would show.
+    let Ok(manifest) = std::fs::read(doc_store_path().join(manual::index::MANIFEST)) else {
+        eprintln!("doc-store: the bundle manifest is not there");
+        return false;
+    };
+    let mut ranked = manual::index::Ranked::new();
+    let mut bad = Vec::new();
+    manual::index::bundles(&manifest, |bundle| {
+        let name = String::from_utf8_lossy(bundle).to_string();
+        let Ok(bytes) = std::fs::read(doc_store_path().join(&name).join(manual::index::SHARD))
+        else {
+            bad.push(format!("{name}: no shard"));
+            return;
         };
-        let mut pages = manual::index::Slice(&bytes);
-        let Ok(header) = manual::index::Header::parse(&bytes[..manual::index::PAGE]) else {
-            continue;
-        };
-        let Some(hit) = manual::index::lookup(&header, term.as_bytes(), &mut pages) else {
-            continue;
-        };
-        let mut posts = [manual::index::Posting { page: 0, count: 0 }; 16];
-        let n = manual::index::postings(&header, &hit, &mut pages, &mut posts);
-        for p in &posts[..n] {
-            let Some(rec) = manual::index::page_record(&header, p.page, &mut pages) else {
-                continue;
-            };
-            println!(
-                "  {:>4}  {:<24}  {}",
-                p.count,
-                String::from_utf8_lossy(rec.title()),
-                String::from_utf8_lossy(rec.path())
-            );
-            found += 1;
+        if let Err(e) = manual::index::search(
+            bundle,
+            term.as_bytes(),
+            &mut manual::index::Slice(&bytes),
+            &mut ranked,
+        ) {
+            bad.push(format!("{name}: {e:?}"));
         }
+    });
+    for b in &bad {
+        println!("  {b}");
     }
-    if found == 0 {
+
+    for f in ranked.results() {
+        println!(
+            "  {:>4}  {:<28}  {:<46}  {}",
+            f.count,
+            String::from_utf8_lossy(f.location()),
+            String::from_utf8_lossy(f.title()),
+            String::from_utf8_lossy(f.origin())
+        );
+    }
+    if ranked.offered() == 0 {
         println!("  nothing in the store says that");
+    } else if ranked.offered() > ranked.results().len() {
+        println!(
+            "  {} of {} pages, strongest first",
+            ranked.results().len(),
+            ranked.offered()
+        );
     }
-    true
+    bad.is_empty()
 }
 
 /// Where the RedoxFS test image is written. The runners derive exactly this name from
@@ -5319,7 +5344,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 40] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 45] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5364,6 +5389,43 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 40] = [
     // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
     // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
     ("doc", &["name a file"]),
+    // **Milestone 40 phase 2, at the same interface**: the documentation store is installed, and a
+    // search of it answers with pages a person can then open.
+    //
+    // `doc/bundles` is the manifest the search reads, and it is checked as a *file* first, with an
+    // ordinary designation, because that is the claim underneath everything below it: the store is
+    // real, it is where the reader thinks it is, and nothing special is needed to read it. The
+    // numbers are the four bundle names and their newlines, so a bundle added to `DOC_BUNDLES`
+    // fails here, which is right: the manifest is what the guest enumerates by.
+    ("wc doc/bundles", &["4 4 25"]),
+    // **The query a person would type, against shards built from this repository's own markdown.**
+    // Two bundles, so the answer is the merge across shards rather than one shard's list, and both
+    // named pages are ones a reader wanting to know what a capability is here would want. The
+    // counts are deliberately not asserted: they move whenever the notes are edited, and the claim
+    // is which pages were found, not how often the word appears in them.
+    (
+        "apropos capability",
+        &["doc/swish/pipes.md", "doc/kernel/ipc-naming.md"],
+    ),
+    // The negative control, and the word is chosen to appear in **no bundled page**. See
+    // notes/manual.md's BUGS for why this one cannot be written into the note that documents it:
+    // that note is itself in the store, so a word written there is a word the store then says.
+    (
+        "apropos photosynthesis",
+        &["no page in the store says photosynthesis"],
+    ),
+    // And a search with nothing to search for is refused, in the same sentence every other verb
+    // that needs an operand uses.
+    ("apropos", &["name what you mean"]),
+    // **The payoff, and the reason a search may be a builtin at all.** The name the search printed
+    // is an ordinary designation: this line grants `wc` exactly that one page out of the store and
+    // nothing else, resolved by the shell against the directory it holds. So search produced a
+    // *name*, and the authority moved on the line where a person typed it. A search that had
+    // handed a program the store's directory would have moved it three lines earlier and silently.
+    (
+        "caps wc doc/kernel/ipc-naming.md",
+        &["input    ipc-naming.md"],
+    ),
     // **The clock, from the prompt** (milestone 51's wiring). The answer cannot be a constant, so
     // the check is the one word that separates a real time from both ways of not having one:
     // `Format::Human` ends in the offset's name and the two unknown-clock sentences ("the machine
@@ -5515,11 +5577,12 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 40] = [
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
-    // **Twelve spawns above plus these six are eighteen jobs through a six-job pool**, so a boot
+    // **Thirteen spawns above plus these six are nineteen jobs through a six-job pool**, so a boot
     // where nothing collected would answer "could not spawn (init is out of memory)" somewhere in
     // here rather than the arithmetic. (Eleven when milestone 22 wrote this line, `2>` added two
-    // more spawning lines above, milestone 86's `time` added two more, and milestone 67's quoting
-    // added three; the count is a fact about the whole script, so it is taken at the merge and not
+    // more spawning lines above, milestone 86's `time` added two more, milestone 67's quoting added
+    // three, and milestone 40 phase 2's `wc doc/bundles` added one; the count is a fact about the
+    // whole script, so it is taken at the merge and not
     // from any one lane.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
@@ -5784,9 +5847,10 @@ fn shell_check_leg(riscv: bool) -> bool {
              a declared second stream off the redirection, printed a directory among the \
              capabilities it holds and refused the one grant it cannot yet deliver, swept a \
              match too large to hand over in batches whose authority is exactly what each was \
-             designated, named a file whose name has a space in it, ran a && past a command \
-             that succeeded and not past one it refused, and ran eighteen jobs through init's \
-             six-job pool after init gave its construction budget away"
+             designated, named a file whose name has a space in it, searched an installed \
+             documentation store and got back pages a following line could then designate, ran \
+             a && past a command that succeeded and not past one it refused, and ran nineteen \
+             jobs through init's six-job pool after init gave its construction budget away"
         );
         return true;
     }

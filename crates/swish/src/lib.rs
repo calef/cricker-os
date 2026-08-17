@@ -539,6 +539,86 @@ pub fn write_num(mut v: u64, out: &mut dyn FnMut(&[u8])) {
     out(&digits[i..]);
 }
 
+// ---- `apropos`: what a search of the documentation store says (milestone 40 phase 2) ----
+
+/// How wide the count column is, so the numbers line up on their right edge. Four digits, because
+/// the strongest term in the shipped store occurs 32 times and a page mentioning one nine thousand
+/// times is a page with a different problem.
+const APROPOS_COUNT: usize = 4;
+
+/// **The column a title starts in**, counted from the start of the line.
+///
+/// Two spaces of indent, the count, two spaces, then the widest location the shipped store
+/// produces (`doc/swish/line-discipline.md`, twenty-eight bytes) and two more. A longer location
+/// pushes its title right rather than being truncated: losing the name a reader is meant to type
+/// would defeat the whole line. See `BUGS` in notes/manual.md for what that costs at eighty
+/// columns.
+const APROPOS_TITLE: usize = 2 + APROPOS_COUNT + 2 + 28 + 2;
+
+/// **Render one search result**: how strongly it matched, the name a reader can type, and the
+/// page's title.
+///
+/// The columns are the answer's argument. A person reads this to decide what to open, so the
+/// **typeable name** is what has to be unmissable, and the count is what orders the list. The
+/// origin ([`manual::index::Found::origin`]) is deliberately not printed: it is provenance, it is
+/// nearly the location again, and a second path on the line would compete with the one the reader
+/// is meant to type.
+pub fn write_found(f: &manual::index::Found, out: &mut dyn FnMut(&[u8])) {
+    let mut digits = 1;
+    let mut v = f.count as u64 / 10;
+    while v > 0 {
+        digits += 1;
+        v /= 10;
+    }
+    out(b"  ");
+    pad(APROPOS_COUNT.saturating_sub(digits), out);
+    write_num(f.count as u64, out);
+    out(b"  ");
+    out(f.location());
+    let n = 2 + APROPOS_COUNT.max(digits) + 2 + f.location().len();
+    // A location that ran past its column still gets one space, because a title jammed against a
+    // path reads as one word.
+    pad(APROPOS_TITLE.saturating_sub(n).max(1), out);
+    out(f.title());
+    out(b"\n");
+}
+
+/// **Render a whole search answer**, including the tail that keeps it honest.
+///
+/// Three things a reader needs and one of them is a refusal to overclaim: the results, the fact
+/// that a store said nothing at all, and the fact that more pages matched than the table can hold.
+/// [`manual::index::Ranked`] counts what it dropped precisely so this can say so; printing the
+/// results alone would imply the answer was complete.
+pub fn write_apropos(term: &[u8], r: &manual::index::Ranked, out: &mut dyn FnMut(&[u8])) {
+    if r.offered() == 0 {
+        out(b"  no page in the store says ");
+        out(term);
+        out(b"\n");
+        return;
+    }
+    for f in r.results() {
+        write_found(f, out);
+    }
+    if r.offered() > r.results().len() {
+        out(b"  ");
+        write_num(r.results().len() as u64, out);
+        out(b" of ");
+        write_num(r.offered() as u64, out);
+        out(b" pages, strongest first\n");
+    }
+}
+
+/// Write `n` spaces.
+fn pad(n: usize, out: &mut dyn FnMut(&[u8])) {
+    const SPACES: &[u8; 32] = &[b' '; 32];
+    let mut left = n;
+    while left > 0 {
+        let take = left.min(SPACES.len());
+        out(&SPACES[..take]);
+        left -= take;
+    }
+}
+
 // ---- `time`: what the shell may say about how long something took (milestone 86) ----
 
 /// **The three reasons a line was not timed**, printed instead of a duration.
@@ -693,11 +773,15 @@ pub fn write_help(out: &mut dyn FnMut(&[u8])) {
     out(b"  pwd                     where you are, relative to YOUR root\n");
     out(b"  ls [path]               list a directory you can reach\n");
     out(b"  mkdir <path>            make a directory\n");
+    out(
+        b"  apropos <word>          name the installed pages that mention it (it grants nothing)\n",
+    );
     out(b"  rm [-rfv] <path>        a PROGRAM, granted the directory holding what you name\n");
     out(b"  worker <n>              spawn a process that returns n*n\n");
     out(b"  budgeter --mem N        grant a process N pages from this shell's budget\n");
     out(b"  date                    print the wall-clock time\n");
     out(b"  wc                      count lines, words and bytes on its INPUT\n");
+    out(b"  doc <page>              render markdown from its INPUT (apropos names the pages)\n");
     out(b"  <prog> <name>           grant a process one file, and only that file\n");
     out(b"\n  operators (milestone 50). > and | are the same mechanism: a different\n");
     out(b"  capability in a program's output slot, which it cannot look behind.\n");
@@ -1114,6 +1198,54 @@ mod tests {
             assert!(set.push(n, false), "fixture too large for a NameSet");
         }
         set
+    }
+
+    // ---- `apropos`: the answer a search prints (milestone 40 phase 2) ----
+
+    #[test]
+    fn a_search_answer_names_pages_a_reader_can_type() {
+        let mut r = manual::index::Ranked::new();
+        r.offer(b"swish", b"notes/pipes.md", b"Pipes and redirection", 31);
+        r.offer(b"kernel", b"notes/ipc-naming.md", b"Who does IPC name?", 11);
+        let s = shown(|o| write_apropos(b"capability", &r, o));
+
+        // **The typeable name is the deliverable.** A result a person cannot act on is a list of
+        // titles, and `doc doc/swish/pipes.md` is the line this answer exists to produce.
+        assert!(s.contains("doc/swish/pipes.md"), "{s}");
+        assert!(s.contains("doc/kernel/ipc-naming.md"), "{s}");
+        assert!(s.contains("Pipes and redirection"), "{s}");
+        // Strongest first, and the source path is not printed: it is provenance, and a second path
+        // on the line would compete with the one the reader is meant to type.
+        let pipes = s.find("pipes.md").expect("the first result");
+        let ipc = s.find("ipc-naming.md").expect("the second result");
+        assert!(pipes < ipc, "{s}");
+        assert!(!s.contains("notes/pipes.md"), "{s}");
+        // The titles line up, which is what makes a list of five scannable rather than ragged.
+        let cols: Vec<usize> = s
+            .lines()
+            .map(|l| l.find("Pipes").or_else(|| l.find("Who")).unwrap_or(0))
+            .filter(|&c| c > 0)
+            .collect();
+        assert_eq!(cols, [APROPOS_TITLE, APROPOS_TITLE], "{s}");
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_says_so_in_the_words_of_the_question() {
+        let r = manual::index::Ranked::new();
+        let s = shown(|o| write_apropos(b"quantum", &r, o));
+        assert_eq!(s, "  no page in the store says quantum\n");
+    }
+
+    #[test]
+    fn a_truncated_answer_says_how_much_it_dropped() {
+        // The half that keeps the answer honest: printing sixteen results out of forty without
+        // saying so implies the store holds sixteen.
+        let mut r = manual::index::Ranked::new();
+        for i in 0..manual::index::RESULTS_MAX + 4 {
+            r.offer(b"kernel", b"notes/x.md", b"X", i as u16);
+        }
+        let s = shown(|o| write_apropos(b"capability", &r, o));
+        assert!(s.contains("16 of 20 pages, strongest first"), "{s}");
     }
 
     // ---- routing: the ordering with a bug behind it ----

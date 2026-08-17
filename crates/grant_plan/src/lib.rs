@@ -717,6 +717,21 @@ pub enum Command<'a> {
     /// `mkdir <path>`: make a directory and, in the same verb, obtain a capability to it
     /// (`fs_proto::fs::MKDIR` is descend-with-creation). Needs `CREATE` **and** `DESCEND`.
     Mkdir(&'a [u8]),
+    /// `apropos <term>`: **name the installed pages that mention a word** (milestone 40 phase 2).
+    /// The operand is one word, folded the way the host builder folded the text it indexed.
+    ///
+    /// **A builtin, in [`Ls`](Command::Ls)'s category rather than [`Prog::Rm`]'s**, and the
+    /// argument is the one that milestone's own note reached: search *is* enumeration, the shell
+    /// already holds enumeration over what it can see, and a searching *program* would have to be
+    /// handed a capability to the whole documentation store in order to read every shard in it.
+    /// That is a wider grant than the answer needs and a new principal holding it, for a command
+    /// that moves no authority at all.
+    ///
+    /// **What it produces is names, never capabilities.** A result is a store location a person can
+    /// then type at `doc`, and *that* line is where the grant happens, resolved against the
+    /// directory the shell holds exactly as any other designation is. So search cannot widen what
+    /// its caller could already reach, which is the property `doc notes/ipc-naming.md` rests on.
+    Apropos(&'a [u8]),
     /// A program invocation: `<prog> [--mem N] [token ...]`. Named `Run` for the act of running a
     /// program, not for a verb on the line; milestone 47 deleted the verb. A first word that is not
     /// a builtin lands here even when no such program exists, and [`plan`] answers
@@ -1313,6 +1328,11 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         b"pwd" => Command::Pwd,
         b"ls" => Command::Ls(trim(rest)),
         b"mkdir" => Command::Mkdir(trim(rest)),
+        // **Search the documentation store** (milestone 40 phase 2). A builtin for exactly
+        // [`Command::Ls`]'s reason, stated there: a search *is* an enumeration, and a searching
+        // program would have to be handed the store's directory in order to read every shard in it.
+        // The operand is a word rather than a path, so `trim` is all the classification it needs.
+        b"apropos" => Command::Apropos(trim(rest)),
         // **`rm` is deliberately not here.** It was a builtin in the commands lane and is a program
         // now (milestone 47's rmdir lane): a builtin runs with the shell's whole endowment, and a
         // destructive loop should take an explicit attenuated grant instead. Since builtins are
@@ -2223,6 +2243,17 @@ mod tests {
         assert_eq!(parse(b"ls"), Command::Ls(b""));
         assert_eq!(parse(b"ls  sub "), Command::Ls(b"sub"));
         assert_eq!(parse(b"mkdir logs"), Command::Mkdir(b"logs"));
+        assert_eq!(
+            parse(b"apropos capability"),
+            Command::Apropos(b"capability")
+        );
+        assert_eq!(
+            parse(b"apropos  capability "),
+            Command::Apropos(b"capability")
+        );
+        // With no operand it is still the builtin, so the shell answers "that verb needs a word"
+        // rather than looking for a program nobody has.
+        assert_eq!(parse(b"apropos"), Command::Apropos(b""));
         // **And `rm` is a program**, which is the whole of milestone 47's rmdir lane at this level.
         // A builtin would have shadowed the name, so this line is also the check that it no longer
         // does; the manifest is what decides what the operand grants.
