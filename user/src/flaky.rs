@@ -42,7 +42,4 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
     user_rt::exit()
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    supervision_proto::fail()
-}
+user_rt::panic_handler!();

@@ -48,7 +48,4 @@ pub extern "C" fn _start(device: u64, log_base: u64, _a2: u64) -> ! {
     swap_proto::serve(swap_proto::V2, digest_in_c, log_base, device != 0)
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap_proto::fail()
-}
+user_rt::panic_handler!();

@@ -418,23 +418,4 @@ fn die(step: u64) -> ! {
     exit()
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    // No channel worth trusting to report on, and nothing here should be reported in detail
-    // anyway: a panic message from a credential service is a place a secret could escape. A fault
-    // the kernel turns into a kill is the honest signal, and a dead credential service refuses
-    // every login rather than answering any of them wrongly. aarch64 `brk`, RISC-V `ebreak`.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: a trap instruction; no memory is accessed.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: as above.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    loop {
-        core::hint::spin_loop();
-    }
-}
+user_rt::panic_handler!();

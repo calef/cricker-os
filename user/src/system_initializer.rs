@@ -57,7 +57,4 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     system_initializer::boot(&GRANTS, initrd_len, fs_rights)
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    supervision_proto::fail()
-}
+user_rt::panic_handler!();

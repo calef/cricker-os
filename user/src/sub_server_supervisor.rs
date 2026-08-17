@@ -118,7 +118,4 @@ fn reap(tid: u64) -> bool {
     user_rt::reap(FAULT, tid) == 0
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    supervision_proto::fail()
-}
+user_rt::panic_handler!();
