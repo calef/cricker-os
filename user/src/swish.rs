@@ -639,6 +639,148 @@ fn get_page(n: usize, out: &mut [u8]) {
     }
 }
 
+// ---- `apropos`: searching the documentation store (milestone 40 phase 2) ----
+
+/// **One index shard, as pages read one at a time through the file contract.**
+///
+/// This is the entire guest half of the search, and it is small on purpose: the layout was designed
+/// so that a reader holds one 4 KiB page and never more, which is exactly what a client of the file
+/// contract already shares with the FS server. So there is no buffering, no memory grant, and no
+/// second copy of the index anywhere.
+struct Shard {
+    /// The slot the directory capability lives in, which is what a request is sent on.
+    dir: u64,
+    /// The open file handle for `<bundle>/index`.
+    handle: u64,
+}
+
+impl manual::index::Pages for Shard {
+    fn page(&mut self, index: u64, out: &mut [u8; manual::index::PAGE]) -> bool {
+        let got = call(
+            self.dir,
+            fs::req(fs::READ, self.handle, manual::index::PAGE as u64),
+            index * manual::index::PAGE as u64,
+        )
+        .0 as i64;
+        if got <= 0 {
+            return false;
+        }
+        let got = (got as usize).min(manual::index::PAGE);
+        get_page(got, &mut out[..]);
+        // A short read is a page at the end of the file. The layout guarantees a record never
+        // straddles a page, so the tail is padding and zeroing it is the truth rather than a
+        // convenience: leaving the previous page's bytes there would let a stale record be read.
+        out[got..].fill(0);
+        true
+    }
+}
+
+/// The most of the bundle manifest one search reads. It is one short name per line and the shipped
+/// store has four, so this is two orders of magnitude of headroom in a buffer that costs a quarter
+/// of a page.
+const MANIFEST_MAX: usize = 256;
+
+/// **The merge across shards**, in `.bss` rather than on the stack: it is about 2.4 KiB and this
+/// program's stack is twelve pages that several deeper paths already spend.
+static mut RANKED: manual::index::Ranked = manual::index::Ranked::new();
+
+/// **`apropos <word>`: name the installed pages that mention it.**
+///
+/// A builtin, and `grant_plan::Command::Apropos` carries the argument for why. What is here is only
+/// the IO: open the store, read the manifest, and hand each shard to `manual::index::search`, which
+/// is the same function `cargo xtask manual <word>` runs on the host over the same bytes.
+///
+/// **The store is opened from the root, not from the cwd**, because it is installed at the root of
+/// whatever this shell was granted. A `cd` does not move the manual, and a search that answered
+/// differently depending on where you were standing would be a worse tool.
+///
+/// **It grants nothing and spawns nothing.** What comes back is a list of names; opening one is a
+/// separate line the reader types, and *that* is where a capability moves.
+fn apropos(nav: &mut Nav, term: &[u8]) -> Say {
+    use manual::index;
+
+    if nav.dir.is_none() {
+        return Say::NoDirectory;
+    }
+    if term.is_empty() {
+        return Say::NeedsAName;
+    }
+    let dir = nav.dir.unwrap_or(DIR);
+
+    let store = nav.name_call(
+        fs::OPENDIR,
+        fs::ROOT,
+        index::STORE_DIR.as_bytes(),
+        nav.rights,
+    );
+    if store < 0 {
+        return Say::Failed(-store as i32);
+    }
+    let store = store as u64;
+
+    // The manifest, copied out of the shared page before anything else touches it: every `OPENDIR`
+    // below stages a name in that same page.
+    let mut names = [0u8; MANIFEST_MAX];
+    let handle = nav.name_call(fs::OPEN, store, index::MANIFEST.as_bytes(), 0);
+    if handle < 0 {
+        nav.close(store);
+        return Say::Failed(-handle as i32);
+    }
+    let got = call(
+        dir,
+        fs::req(fs::READ, handle as u64, MANIFEST_MAX as u64),
+        0,
+    )
+    .0 as i64;
+    nav.close(handle as u64);
+    if got < 0 {
+        nav.close(store);
+        return Say::Failed(-got as i32);
+    }
+    let got = (got as usize).min(MANIFEST_MAX);
+    get_page(got, &mut names);
+
+    // SAFETY: this process is single-threaded, so there is exactly one live reference to this
+    // static for the whole run. It is taken once, here, and passed down by reference.
+    let ranked = unsafe { &mut *core::ptr::addr_of_mut!(RANKED) };
+    *ranked = index::Ranked::new();
+    let mut trouble = 0i32;
+    let mut unreadable = false;
+    index::bundles(&names[..got], |bundle| {
+        let at = nav.name_call(fs::OPENDIR, store, bundle, nav.rights);
+        if at < 0 {
+            trouble = -at as i32;
+            return;
+        }
+        let shard = nav.name_call(fs::OPEN, at as u64, index::SHARD.as_bytes(), 0);
+        if shard < 0 {
+            trouble = -shard as i32;
+        } else {
+            let mut src = Shard {
+                dir,
+                handle: shard as u64,
+            };
+            // A shard this reader cannot read is reported rather than skipped: a search that
+            // quietly left a bundle out would answer "no page says that" about pages that do.
+            unreadable |= index::search(bundle, term, &mut src, ranked).is_err();
+            nav.close(shard as u64);
+        }
+        nav.close(at as u64);
+    });
+    nav.close(store);
+
+    if unreadable {
+        print(b"  a shard in the store is not an index this reader knows\n");
+    }
+    swish::write_apropos(term, ranked, &mut print);
+    // A bundle that would not open is the filesystem's answer and belongs in the status, but only
+    // after the results: the pages that *were* found are still the answer to the question.
+    if trouble != 0 {
+        return Say::Failed(trouble);
+    }
+    Say::Nothing
+}
+
 /// Print through the terminal: write the text into the shared page, CALL `OP_WRITE`. The reply
 /// means the bytes are on the wire and the page is ours again.
 fn print(s: &[u8]) {
@@ -919,7 +1061,8 @@ const TIMING_DONE: &[u8] = b"== timings done\n";
 fn interactive(rights: u64) -> ! {
     print(b"\nnife capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], time <command>, xargs <command>,\n");
-    print(b"          cd, pwd, ls, mkdir, rm, wc, <prog> [--mem N] [arg]   and  >  >>  <  |\n");
+    print(b"          cd, pwd, ls, mkdir, apropos <word>, rm, wc, doc, <prog> [--mem N] [arg]\n");
+    print(b"          and the operators  >  >>  <  |\n");
     print(b"          'quote a whole word'   and   ;  &&  ||   with  echo $?  for the status\n");
 
     // Whether the navigation builtins and the redirection operators have anything to name is
@@ -1200,6 +1343,11 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
         Command::Time(tail) => time_command(nav, tail),
         Command::Xargs(tail) => xargs(nav, tail),
         Command::Pwd => print_pwd(nav),
+        // **Search, which grants nothing** (milestone 40 phase 2). It is here rather than in
+        // [`builtin`] because its answer is columns of text rather than a listing, so the witness's
+        // `each(name, is_dir)` callback is the wrong shape for it; what it shares with the
+        // navigation builtins is the argument for being a builtin at all.
+        Command::Apropos(term) => say(apropos(nav, term)),
         Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
         Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) => {}

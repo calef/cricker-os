@@ -516,7 +516,11 @@ impl Ranked {
     }
 
     /// Offer one page that mentioned the term. Kept if it beats the weakest result held.
-    pub fn offer(&mut self, bundle: &[u8], page: &Page, count: u16) {
+    ///
+    /// It takes the record's two fields rather than a [`Page`], so the merge is independent of how
+    /// the record was read: a caller with a path and a title in hand can offer one, which is what
+    /// lets the shell's rendering be host-tested without a shard to open.
+    pub fn offer(&mut self, bundle: &[u8], path: &[u8], title: &[u8], count: u16) {
         self.offered += 1;
         // Where it goes: past everything that matched at least as strongly, which keeps ties in
         // offer order because the test is strict.
@@ -535,9 +539,9 @@ impl Ranked {
 
         let f = &mut self.found[at];
         f.count = count;
-        (f.location_len, f.truncated) = location(bundle, page.path(), &mut f.location);
-        f.title_len = copy_into(&mut f.title, page.title()) as u8;
-        f.origin_len = copy_into(&mut f.origin, page.path()) as u8;
+        (f.location_len, f.truncated) = location(bundle, path, &mut f.location);
+        f.title_len = copy_into(&mut f.title, title) as u8;
+        f.origin_len = copy_into(&mut f.origin, path) as u8;
     }
 
     /// The results, strongest first.
@@ -595,7 +599,7 @@ pub fn search(
         }
         for p in &batch[..n] {
             if let Some(rec) = page_record(&h, p.page, src) {
-                into.offer(bundle, &rec, p.count);
+                into.offer(bundle, rec.path(), rec.title(), p.count);
             }
         }
         done += n as u32;

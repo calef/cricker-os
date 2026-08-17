@@ -696,6 +696,7 @@ dependencies = [
  "fs_proto",
  "glob",
  "grant_plan",
+ "manual",
 ]
 
 [[package]]
