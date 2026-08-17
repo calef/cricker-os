@@ -1,6 +1,6 @@
 # 130. The copy that outlived its reason: one trap instruction, forty-eight sites
 
-**Status: IN-PROGRESS** on `claude/code-smells-review-3uipoy`. Raised 2026-08-17 from a code-smell
+**Status: IN-PROGRESS** on `feature/130-code-smells`. Raised 2026-08-17 from a code-smell
 survey calef asked for. The number is **provisional**, minted by the lane against a tree whose
 highest milestone was 129; expect the integrator to renumber.
 
@@ -165,10 +165,18 @@ integrator's to mint at merge.
 
 ## BUGS
 
-The branch this was built on, `claude/code-smells-review-3uipoy`, has a prefix `script/lint` does
-not recognise (§77's list). The name was mandated by the harness that opened the lane and could not
-be changed from inside it. **CI is unaffected**: `pull_request` runs build the merge commit and so
-run detached, which that check skips by design. A local `script/lint` on the branch fails on the
-prefix and on nothing else. Either §77's list grows a prefix for agent lanes, which is milestone
-128's territory, or the harness learns to use `feature/`; both are calef's call and neither is
-this milestone's.
+**Resolved, and it cost a pull request.** This lane was opened on
+`claude/code-smells-review-3uipoy`, a prefix `script/lint` does not recognise (§77's list), mandated
+by the harness and unchangeable from inside the lane. CI was unaffected, because `pull_request` runs
+build the merge commit and run detached, which that check skips by design; what failed was a local
+`script/lint`, on the prefix and nothing else.
+
+calef ruled `feature/` on 2026-08-17 and the maintainer renamed the branch. **GitHub's branch rename
+closed the pull request rather than retargeting it**, which is not its usual behaviour, so #278
+became #284 with the same branch and the same commits. Recorded because the next person to rename a
+branch under an open pull request should expect it.
+
+The wider question the rename raised is not this milestone's: calef asked what the prefix taxonomy is
+for, a grep found that **nothing consumes it except the check that enforces it**, and the proposal to
+retire all of it except `milestone/N-` (the one prefix §90's roadmap-block check actually reads) is
+separate work.

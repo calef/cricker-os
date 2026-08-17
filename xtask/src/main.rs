@@ -3408,9 +3408,9 @@ fn mkinitrd() -> bool {
         ("doc", "doc"),
         // `ps` (milestone 126): the process listing over a supervision domain.
         ("ps", "ps"),
-            // `pgrep` (milestone 126): that listing, filtered to the members a selector names.
-            // It must ship with `ps` because the two together are the claim.
-            ("pgrep", "pgrep"),
+        // `pgrep` (milestone 126): that listing, filtered to the members a selector names.
+        // It must ship with `ps` because the two together are the claim.
+        ("pgrep", "pgrep"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
