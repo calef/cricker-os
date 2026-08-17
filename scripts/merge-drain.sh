@@ -86,6 +86,7 @@ pass() {
 
 	armed=0
 	stalled=0
+	attempted=""
 	for num in $(printf '%s' "$q" | jq -r '.[].number'); do
 		state=$(printf '%s' "$q" | jq -r --arg n "$num" '.[] | select(.number == ($n | tonumber)) | .mergeStateStatus')
 		title=$(printf '%s' "$q" | jq -r --arg n "$num" '.[] | select(.number == ($n | tonumber)) | .title')
@@ -110,8 +111,49 @@ pass() {
 			continue
 		fi
 
-		gh pr merge "$num" --repo "$REPO" --auto --merge --delete-branch >/dev/null 2>&1 || true
-		armed=$((armed + 1))
+		# NO `--delete-branch` HERE, and this is not a style preference. With a merge queue
+		# enabled GitHub refuses the whole command with "Cannot use `-d` or `--delete-branch`
+		# when merge queue enabled", so passing it enqueues NOTHING. The flag was also always
+		# redundant: this repository sets `delete_branch_on_merge`, so the platform deletes the
+		# head branch itself. `gh` prints "the merge strategy for main is set by the merge
+		# queue" and enqueues anyway; that line is a notice, not a failure.
+		#
+		# The failure this cost: on 2026-08-17 the drain reported "9 armed" every pass for
+		# three hours while the queue stayed empty and nothing merged, because the error went
+		# to /dev/null and `|| true` swallowed the exit code. A count of ATTEMPTS was being
+		# printed as a count of RESULTS.
+		if ! gh pr merge "$num" --repo "$REPO" --auto --merge >/dev/null 2>&1; then
+			echo "merge-drain: STALLED. #$num would not enqueue ($title)"
+			stalled=$((stalled + 1))
+			continue
+		fi
+
+		attempted="$attempted $num"
+	done
+
+	# **Verify, and know that "armed" has two shapes, because neither field alone covers both.**
+	#
+	#   - Checks still running: the pull request carries an `autoMergeRequest` and reports
+	#     `BLOCKED`. It enters the queue by itself when the last check goes green.
+	#   - Checks green: it is IN the queue, and it reports `mergeStateStatus: CLEAN` with a
+	#     **null** `autoMergeRequest`, because arming became membership.
+	#
+	# So a queued pull request looks unarmed on the pull request object, which is the same trap
+	# that produced the bug above one level along: the obvious field looks authoritative and is
+	# not. `mergeQueue.entries` is the only thing that knows about the second shape, and it is
+	# asked once per pass rather than once per pull request.
+	queued=$(gh api graphql -f query='{repository(owner:"'"${REPO%/*}"'",name:"'"${REPO#*/}"'"){mergeQueue{entries(first:50){nodes{pullRequest{number}}}}}}' \
+		--jq '.data.repository.mergeQueue.entries.nodes[].pullRequest.number' 2>/dev/null)
+	for num in $attempted; do
+		if printf '%s\n' "$queued" | grep -qx "$num"; then
+			armed=$((armed + 1))
+		elif [ "$(gh pr view "$num" --repo "$REPO" --json autoMergeRequest \
+			-q '.autoMergeRequest != null' 2>/dev/null)" = "true" ]; then
+			armed=$((armed + 1))
+		else
+			echo "merge-drain: STALLED. #$num took the call but is neither queued nor armed"
+			stalled=$((stalled + 1))
+		fi
 	done
 
 	echo "merge-drain: $armed armed, $stalled stalled, of $n unheld"

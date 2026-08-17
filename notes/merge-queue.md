@@ -282,10 +282,23 @@ Keep it; expect it to speak rarely.
 - **`merge-drain.sh` trusts the label.** A pull request that *should* be held but was never labelled
   will be merged by it. The label is applied by hand at the moment the decision to hold is made, so a
   maintainer that forgets the label has bypassed the gate rather than tripped it.
-- **The reduced `merge-drain.sh` has not been run against a live queue.** It was written and
-  shellchecked in a container with no `gh` at all, so every claim above about what it does is read
-  from the source rather than observed. The arming call it makes is the one that put #211 into the
-  queue by hand on 2026-08-16, so the mechanism is known good; the loop around it is not.
+- **The reduced `merge-drain.sh` had not been run against a live queue, and the first time it was,
+  it enqueued nothing for three hours.** Fixed 2026-08-17; the entry is kept because the prediction
+  that preceded it was right and was not acted on. It said every claim about the script was read
+  from the source rather than observed, because it was written and shellchecked in a container with
+  no `gh` at all. What the source could not show: **`gh pr merge --auto --merge --delete-branch`
+  fails outright when a merge queue is enabled** (`Cannot use -d or --delete-branch when merge queue
+  enabled`), and the call site sent its output to `/dev/null` under `|| true`. So every pass printed
+  `9 armed, 0 stalled` while the queue sat empty and nothing merged. The flag was redundant as well
+  as fatal: this repository sets `delete_branch_on_merge`, so the platform deletes the head branch
+  itself.
+
+  **Two lessons, and the second is the reusable one.** A count of *attempts* was being printed as a
+  count of *results*, which is the shape AGENTS.md's ladder calls rung zero wearing a uniform. And
+  **nothing on a pull request object says it is in a merge queue**: a queued pull request reports
+  `mergeStateStatus: CLEAN` with a **null** `autoMergeRequest`, because arming became membership.
+  `mergeQueue.entries` is the only authority, and the obvious field looking authoritative while
+  being wrong is what cost the three hours. The verification now asks the queue.
 - **`merge-drain.sh` re-arms what is already armed, forever.** A pass counts an arming call as work
   whether or not it changed anything, so one pull request that never merges (a required check that
   was removed, a broken workflow file, a queue that is wedged) keeps the loop alive at 150-second
