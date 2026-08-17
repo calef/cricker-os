@@ -204,6 +204,49 @@ fn build_create(
     h + 56 + wide - at
 }
 
+/// **A CREATE carrying an `AAPL` create context**, which is how a macOS client negotiates Apple's
+/// extensions: it hangs the context off the first CREATE of a tree connect and reads the server's
+/// answer off the response ([`crate::apple`]).
+///
+/// `bitmap` is which of the three answers to ask for and `client_caps` is what the client claims
+/// to implement, both spelled by the caller rather than defaulted, because a test whose whole
+/// subject is a negotiation should not have half of it hidden in a builder.
+pub fn create_aapl(
+    msg_id: u64,
+    sid: u64,
+    tid: u32,
+    name: &[u8],
+    bitmap: u64,
+    client_caps: u64,
+) -> Msg {
+    let mut b = [0u8; MSG_MAX];
+    let body = build_create(&mut b, 0, msg_id, sid, tid, name, 1, 0, 0);
+    // The chain goes after the name, 8-byte aligned, and both offsets are from the SMB2 header.
+    let at = body.next_multiple_of(8);
+    let mut payload = [0u8; crate::apple::REQUEST_LEN];
+    w32(&mut payload, 0, crate::apple::CMD_SERVER_QUERY);
+    w64(&mut payload, 8, bitmap);
+    w64(&mut payload, 16, client_caps);
+    let n = crate::create_context::write_one(&mut b[at..], crate::apple::TAG, &payload)
+        .expect("MSG_MAX holds one AAPL context");
+    w32(&mut b, HDR_LEN + 48, at as u32); // CreateContextsOffset
+    w32(&mut b, HDR_LEN + 52, n as u32); // CreateContextsLength
+    msg(at + n, b)
+}
+
+/// **The payload of the create context tagged `tag` in a CREATE response**, or `None` if the
+/// response carried no such context. Reads through the response's own offset pair, so a client
+/// and the server share one reading of where a chain lives.
+pub fn create_context_data<'a>(resp: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
+    let off = r32(resp, HDR_LEN + 80) as usize;
+    let len = r32(resp, HDR_LEN + 84) as usize;
+    if len == 0 {
+        return None;
+    }
+    let blob = off.checked_add(len).and_then(|end| resp.get(off..end))?;
+    crate::create_context::find(blob, tag)
+}
+
 /// The 16-byte file id a CREATE response carries.
 pub fn create_file_id(resp: &[u8]) -> [u8; 16] {
     let mut fid = [0u8; 16];
