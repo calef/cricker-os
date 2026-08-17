@@ -167,3 +167,39 @@ This is the part worth reading, because it says what §32 did and did not buy.
 The authorization invariant is machine-checked, not only tested: two Kani harnesses in `crates/capability`
 cover it, which is the right instrument for "a capability that cannot build cannot be made to build via
 reap" because it quantifies over rights combinations rather than sampling them.
+
+## BUGS
+
+- **The rights on the placed fault capability do nothing, and two comments credit them with the
+  confinement that the slot's *deletion* actually provides.** Found by the 2026-08-17 security audit
+  (design/audit-reports/), recorded-accepted.
+
+  Two facts that only look alarming together. `sched::start_tcb` reads the reserved slot with
+  `cspace.get(FAULT_EP_SLOT)` rather than `get_with`, so **any** `Endpoint` capability there makes
+  the thread supervised, `Rights::NONE` included; it is the one place in the kernel where a
+  capability's *presence* authorizes something and its rights are never consulted. And
+  `supervision_proto` is the only site that places one, with `abi::rights::READ`, chosen by every
+  spawner that uses `build_child` (`system_initializer`, `root_supervisor`, `c_confiner`,
+  `builder`).
+
+  **Nothing escalates through it, and the reason is worth being precise about**, because the obvious
+  reason is the wrong one. `START` deletes the slot before `arm_for_start` makes the thread
+  runnable, so the child never executes an instruction while holding that capability, whatever
+  rights it carries. The child therefore cannot `RECV` a sibling's death message or `REAP` a
+  sibling, which is what `READ` on a supervision endpoint would otherwise buy it. The protection is
+  the **deletion**, and the ordering inside `start_tcb` is load-bearing.
+
+  **What is actually wrong is the record.** `crates/system_initializer` ("to place a `READ` view of
+  it in each job's reserved fault slot") and `supervision_proto` both present the choice of `READ`
+  as a deliberate narrowing, and `abi::fault::FAULT_EP_SLOT`'s own doc says the clearing is what
+  keeps the kernel the only sender. All three are true sentences that a reader assembles into a
+  false one: that placing it with `WRITE` would open a hole. It would not, and neither would
+  `Rights::NONE`. A maintainer who believes the rights are the mechanism will either refuse a change
+  that is safe or, worse, reorder `start_tcb` to delete the slot later on the reasoning that the
+  rights have it covered.
+
+  **Not fixed here because the fix is a choice, not a correction.** Requiring `WRITE` at `START`
+  would make the rights mean something and would refuse every current caller, since they all place
+  `READ`; requiring `READ` would encode the accident. Deciding which right a supervision placement
+  should demand is a syscall-surface question and belongs to the architect (§16, §26). Until then,
+  read the `READ` in `supervision_proto` as arbitrary and the deletion as the mechanism.

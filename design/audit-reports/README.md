@@ -113,6 +113,7 @@ malformed it.
 | 2026-08-04 | security | Time of check to time of use across every page shared by two address spaces | fixed 5, minted 1, accepted 1 | [Auditing the shared pages](../../notes/shared-page-audit.md) |
 | 2026-08-15 | security | Untrusted counterparty input: a value a hostile counterparty supplies in one message or completion | fixed 0, minted 0, accepted 1 | [Auditing untrusted counterparty input](../../notes/untrusted-input-audit.md) |
 | 2026-08-16 | documentation | Docs versus reality, scoped by the staleness worklist, read for names and numbers a reader would act on | fixed 4, minted 1, accepted 2 | [Names and numbers the tree moved past](2026-08-16-docs-versus-reality.md) |
+| 2026-08-17 | security | Newly minted authority, read adversarially: the seven ABI constants and the new right that landed overnight, not the tree at large | fixed 2, minted 1, accepted 3 | [The authority that was minted overnight](2026-08-17-newly-minted-authority.md) |
 
 ## What the tree looked like when each ran
 
@@ -134,6 +135,7 @@ packages is the distinct registry packages across every committed lockfile but t
 | 2026-08-04 | security | 55 | 95 | 43 | 87 |
 | 2026-08-15 | security | 71 | 104 | 43 | 108 |
 | 2026-08-16 | documentation | 73 | 108 | 43 | 108 |
+| 2026-08-17 | security | 76 | 110 | 50 | 108 |
 
 The two `-` cells are honest rather than lazy: `design/roadmap/README.md` did not exist until
 milestone 76 split it out on 2026-08-03, and milestones 1 to 11 were backfilled the same day, so

@@ -416,6 +416,22 @@ pub mod fs {
     ///   There are no quotas in this filesystem, so there is no smaller number that would be true;
     ///   reporting the subtree's own usage as a "size" would be the silent degradation DECISIONS
     ///   §42 forbids. If quotas ever exist, this verb reports the quota and this note goes away.
+    /// - **The number moves when somebody else writes, so it is a channel and not only a leak.**
+    ///   The 2026-08-17 security audit's extension of the entry above, recorded-accepted. The entry
+    ///   above states what a confined holder learns *once*; polling states what it learns *over
+    ///   time*, and the two have different characters. Two programs confined to disjoint subtrees of
+    ///   one image, sharing no capability and unable to name each other's names, can still
+    ///   communicate: one writes and truncates to modulate the free count, the other polls `STATFS`.
+    ///   Nobody has measured the bandwidth. It is bounded below by the store's allocation
+    ///   granularity and above by how fast a client can `CALL` this server.
+    ///
+    ///   It is not fixable at this verb, which is why it is recorded rather than milestoned. A
+    ///   confined writer has to be able to ask whether its next write fits, and any answer that is
+    ///   true is an answer that moves when the volume moves. Per-subtree quotas would replace the
+    ///   channel with a private number rather than merely narrow it, which is the second reason the
+    ///   entry above wants them. Until then the honest statement is that **two subtrees on one
+    ///   image are not isolated from each other's write volume**, and a deployment that needs that
+    ///   isolation needs two images.
     /// - **The numbers are a snapshot with no lock behind it.** Two clients writing concurrently
     ///   both see a free count that was true when it was read; the store's own `ENOSPC` at write
     ///   time is the authority, and this is a forecast. That is what `statfs` is everywhere.

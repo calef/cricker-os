@@ -1092,8 +1092,18 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
         out(b"    cap 7  endpoint  domain   ENUMERATE. the processes this shell's jobs are\n");
         out(b"                              supervised by, and no others. it can name them and\n");
         out(b"                              do nothing to them: not receive their deaths, not\n");
-        out(b"                              collect them, and not learn that a process outside\n");
-        out(b"                              this domain exists\n");
+        out(
+            b"                              collect them, and not learn anything about a process\n",
+        );
+        // **The last line was an overclaim until 2026-08-17**, and the audit that found it
+        // (design/audit-reports/) fixed the sentence rather than the mechanism, on purpose. It read
+        // "and not learn that a process outside this domain exists", which is false: `SURVEY`
+        // returns a cursor that is a machine-wide thread-table slot index, and a tid whose low half
+        // is the same index, so a viewer with two members can subtract and count the threads
+        // created between them. It still cannot name one. Narrowing the claim to what the mechanism
+        // actually delivers is the honest half-step; scoping the cursor to the domain is a
+        // milestone, and notes/process-view.md's `BUGS` carries the disposition.
+        out(b"                              outside this domain but that it exists\n");
     }
     // **Where its output goes**, which is the demonstration milestone 50 owed: the destination is a
     // capability rather than an integer with a convention attached, so `caps` can name it. On Unix
