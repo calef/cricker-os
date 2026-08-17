@@ -65,6 +65,7 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `std::random::SystemRng` | the entropy service's endpoint on slot 6 (`sys/random/nife.rs`), or a **panic** when not granted |
 | `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
 | `std::env::consts::OS` | `"nife"` (patched into `env_consts.rs`) |
+| `std::env::var` / `vars` / `set_var` | a **process-local table, empty at start** (`sys/env/nife.rs`); nothing endows a nife process with variables |
 
 The syscall glue (`sys/pal/nife/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
@@ -242,6 +243,13 @@ refusal was the right call at the time for a reason worth remembering: without `
 `create_new` over a name that exists closes the handle the probing open minted before returning
 `AlreadyExists`, because the error path is the one nobody exercises and therefore the one that leaks.
 
+**And bound since milestone 64's second pass:** `File::set_len` and `fs::copy`. `set_len` is the same
+`TRUNCATE` message `File::open` has been sending since 31, with the requested size in the second word
+instead of a 0; it grows as well as shrinks, because the contract's verb is `ftruncate` in both
+directions and a binding that only shrank would pass a shrink-only test. `copy` is backed by no verb
+at all and needs none. Neither was waiting on the contract, which is the third time this milestone
+has found a refusal that outlived its own reason; see notes/crates-io-on-nife.md.
+
 **A per-file grant needs no std API at all**, which is the payoff of having bound the PAL to a
 capability contract rather than to a namespace. A program handed a narrowed file capability (§27's
 caretaker, `user/src/fs_file_caretaker.rs`) is an ordinary `std::fs` client: the one granted name
@@ -305,7 +313,9 @@ Still Unsupported, and now genuinely because **no verb in the contract backs it*
   has to descend, and a nested path is refused (§27 carries one name resolved in the bound
   directory). The loop belongs where it can hold a directory capability per level, which is
   `user/src/rm.rs`.
-- `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
+- `canonicalize`, `hard_link`, symlinks and `read_link`. **`copy` is bound** (milestone 64's second
+  pass) and needed no verb: it is an open, a read/write loop and two closes, both names under the
+  granted directory.
 - **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb
   reports one. The second half of that reason is now stale and is recorded as such: there **is** a
   wall clock to interpret a timestamp against since milestone 51, so what stands between
@@ -340,6 +350,20 @@ completes, not why the poll path did not.
   safe: a TLS story, park/unpark on a kernel primitive, join. Phase one ships without it rather than
   shipping it wrong. The sync primitives are std's single-threaded `no_threads` implementations, and
   the allocator's spinlock is uncontended today but stays correct under future preemption.
+- **The environment is empty, and `set_var` is real** (milestone 64, `sys/env/nife.rs`). A nife
+  process inherits no variables, because there is nothing to inherit from: what a process holds is
+  what it was granted, and a variable is not a capability. So `env::var("HOME")` is `None` because
+  nobody gave this program a home, and `env::vars()` yields nothing. What a program sets on itself
+  reads back, because that is what `set_var` means on every platform and nothing about it leaves the
+  process. When milestone 47's namespace gives a program an endowment, it seeds this table; the shape
+  does not change.
+
+  **This module exists because `env::vars()` used to abort the process.** Without a nife backend, std
+  fell through to `sys::env::unsupported`, whose `env()` is `panic!("not supported on this
+  platform")`. `getenv` was already answering `None` honestly, so nothing in the type system, the
+  build, or a gap list built from `Unsupported` counts said a word; the program simply died. It is
+  the same lesson as `Path::is_dir()` returning `false` for every directory: the dangerous refusal is
+  not the one that says `Unsupported`, it is the one that answers.
 - **`fs` is bound, with the gaps listed above.** A program granted no directory capability still gets
   `Unsupported` from all of it, and the offline demo checks exactly that: same binary, no slot 4, and
   `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
