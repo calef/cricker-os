@@ -61,13 +61,25 @@ answers, in the prose's own words**, and a derivation.
 | `harness-crates` | how many crates carry at least one Kani proof harness | distinct crate directories among those files |
 | `sh-scripts` | how many `#!/bin/sh` scripts there are under `script/` and `scripts/`, which is the set shellcheck gates | files whose first line is exactly `#!/bin/sh` |
 | `longest-markdown-line` | how long the repository's longest markdown line is, in bytes, which is what `manual::render::LINE_MAX` is sized against | tracked `*.md`, vendor excluded |
+| `syscalls` | how many syscall numbers the ABI defines, which is the whole width of the trap | `pub const SYS_*: u64` in `crates/abi/src/lib.rs` |
+| `rights-bits` | how many named single-bit rights a capability can carry | `pub const NAME: Rights = Rights(1 << N)` in `crates/capability` |
+| `loom-harnesses` | how many loom harnesses the tree carries, which is what `script/interleaving-check` runs | `loom::model(` calls in `crates/**/*.rs` |
+| `loom-crates` | how many crates carry at least one loom harness | distinct crate directories among those files |
 
-**The fourth entry is the one with a consumer rather than a reader**, and it is worth understanding
-before you add a fifth. `manual::render::LINE_MAX` is 2048 because the longest markdown line is 1835,
+The last four arrived with the 2026-08-17 documentation sweep, whose lens was the ABI. `syscalls`
+exists because the ABI crate's own front page, the kernel's syscall module, an `Error` variant's
+description and two notes all said the surface was **three** calls; `SYS_CAP_DELETE` had landed
+three weeks earlier and moved none of them. `rights-bits` exists because `ENUMERATE` made the rights
+four and `notes/capability-lifecycle.md` still said three the next day. The `loom-*` pair is the one
+this note asked for by name: it cited `notes/interleaving.md` as the claim a marker could never
+reach, and measuring it in order to mark it found it wrong in both halves.
+
+**The `longest-markdown-line` entry is the one with a consumer rather than a reader**, and it is
+worth understanding before you add another. `manual::render::LINE_MAX` is 2048 because the longest markdown line is 1835,
 and a document over `LINE_MAX` is truncated. So that number is a **margin**, and a lane that spends
 it silently makes the renderer wrong about a file nobody has written yet. Every other entry here
 describes the tree; this one guards it. If you can find another number in that class, it is worth
-more than three descriptive ones.
+more than any number of descriptive ones.
 
 **The question is not decoration, it is the entry's most important field.** "How many `#!/bin/sh`
 scripts" has at least three defensible answers: `ls script/` gives 37, the shellcheck glob
@@ -236,6 +248,15 @@ hand-editing is cheap and thinking is the point.
   noun. Same limit `script/names --check` records: presence is checkable, meaning is prose, and prose
   is checked by reading.
 
+- **A marker works in a `.rs` doc comment, and the fence exemption does not follow it there.** The
+  2026-08-17 sweep put four in `crates/abi/src/lib.rs` and `kernel/src/syscall.rs`, because the
+  claims it was gating live in the boundary artifact rather than in a note, and an HTML comment is
+  invisible in rustdoc. The gate finds them: it greps every tracked file. But the fenced-block skip
+  is implemented for `.md` only, so a marker inside a ```` ```text ```` block in Rust source **is**
+  checked as a live claim. Nothing in the tree does that today. Keep markers in the prose of a doc
+  comment, never inside its fences, and note that the file's own examples cannot demonstrate the
+  convention the way a note's can.
+
 - **Only fenced blocks and backtick spans are exempt.** A marker inside a fence, or inside inline
   code, is being shown rather than asserted, and the gate skips it: prose explaining the convention
   has to be able to spell it, the same exemption `script/lint`'s rejected-vocabulary check makes for the
@@ -246,8 +267,16 @@ hand-editing is cheap and thinking is the point.
   number fails with "no number before it on this line", which is a confusing message for what is
   really a line-wrapping accident. Reflow the paragraph so the two sit together.
 
-- **A count spelled in words is invisible.** `notes/interleaving.md` says "sixteen harnesses across
-  three crates" and no marker can help it. Digits or nothing.
+- **A count spelled in words is read, but only a small one, and never a composed one.** The marker
+  took digits only until the 2026-08-17 documentation sweep, which needed words: the claim it went to
+  gate was "the surface is three calls", and a small count in prose about a design is written as a
+  word far more often than as a numeral. Cardinals up to `twenty`, plus the round tens and
+  `hundred`, are understood; **`twenty-one` is not**, and a marker on one fails with "no number
+  before it" rather than passing. That is deliberate rather than unfinished. A count large enough to
+  want composing is one a person writes in digits anyway, and a parser that accepted "one hundred
+  and twenty" would be guessing at prose. This changed nothing about the ratchet, because only a
+  *marked* number is ever read: admitting words cannot make the gate fire on an ordinary sentence
+  that says "the three of them".
 
 - **An untracked file is not scanned.** The gate runs `git grep`, so a marker in a file that has not
   been `git add`ed yet is silently unchecked until it is staged. It starts being checked at the moment
