@@ -2394,9 +2394,13 @@ impl SmbProber {
                     "smb check ({arch}): {SMB_ROUNDS} SMB2 sessions to 127.0.0.1:{port} were \
                      forwarded into the guest and served end to end: negotiate, guest session, \
                      tree connect, a read of the FS-server-seeded file whose bytes matched \
-                     (RedoxFS to TCP), and a create-write-truncate-close of a second file (TCP \
-                     to RedoxFS), which the guest's own verifier reads back through the FS \
-                     server. The second session is the proof the adapter re-arms."
+                     (RedoxFS to TCP), a create-write-truncate-close of a second file (TCP to \
+                     RedoxFS), and a subdirectory made over the wire with a file written inside \
+                     it and listed back by its leaf name. The volume reported real numbers \
+                     rather than the nominal constant. The guest's own verifier reads both files \
+                     back through the FS server, descending into the directory to prove a \
+                     directory is what landed. The second session is the proof the adapter \
+                     re-arms."
                 );
                 true
             }
@@ -2610,7 +2614,10 @@ fn smb_session(
 
     smb_write_leg(s, stop, sid, tid)?;
 
-    smb_send(s, &client::logoff(20, sid))?;
+    // Well past the write and subdirectory legs' ids. They are echoed and never validated (the
+    // crate BUGS), so a collision would not fail; keeping them distinct is what makes a packet
+    // capture readable.
+    smb_send(s, &client::logoff(40, sid))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!("logoff: status {:#x}", status(&resp)));
@@ -2722,6 +2729,164 @@ fn smb_write_leg(
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!("close after writing: status {:#x}", status(&resp)));
     }
+    msg_id += 1;
+
+    smb_subdirectory_leg(s, stop, sid, tid, msg_id)?;
+    Ok(())
+}
+
+/// **The subdirectory leg** (milestone 54's third act): make a directory over the wire, put a file
+/// in it, list it back, and leave both for the guest's own verifier.
+///
+/// This is the shape milestone 55 needs and nothing else is: a sparsebundle is a directory of band
+/// files, so "can this share hold a directory with a file in it" is the question, and the answer a
+/// flat share gives is a file whose *name* contains a separator. The guest-side verifier is what
+/// tells those apart (`fs_test_client`'s `smb_verify`, verdict `DIR_IS_A_FILE`), so this side does
+/// not read the file back for the reason [`smb_write_leg`] gives.
+///
+/// It **does** read the listing back, and that is not the same thing: a listing is a fact about the
+/// server's own view, and getting it wrong is a bug this side can see (a leaf name shown as a full
+/// path, or a grandchild shown in the parent) that the filesystem cannot.
+fn smb_subdirectory_leg(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+    sid: u64,
+    tid: u32,
+    first_msg_id: u64,
+) -> Result<(), String> {
+    use smb_proto::{H_STATUS, client, r32};
+    let status = |resp: &[u8]| r32(resp, H_STATUS);
+
+    let dir = fs_proto::fixture::SMB_DIR_NAME.as_bytes();
+    let leaf = fs_proto::fixture::SMB_NESTED_NAME.as_bytes();
+    let body = fs_proto::fixture::SMB_NESTED;
+    // The path a client actually sends: the components joined by SMB's own separator. One string,
+    // built from the two constants the guest checks separately, so the two sides cannot drift.
+    let mut nested = dir.to_vec();
+    nested.push(b'\\');
+    nested.extend_from_slice(leaf);
+
+    // FILE_OPEN_IF (3) plus FILE_DIRECTORY_FILE (0x1): make it, or take the one a previous round
+    // left. FILE_CREATE would collide on the second round and on the HVF leg's reboot.
+    let mut msg_id = first_msg_id;
+    smb_send(
+        s,
+        &client::create_full(msg_id, sid, tid, dir, 3, 0x0000_0001),
+    )?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "create directory {}: status {:#x} (a PATH_NOT_FOUND here means the share is still \
+             flat; ACCESS_DENIED means it was wired read-only)",
+            String::from_utf8_lossy(dir),
+            status(&resp)
+        ));
+    }
+    let dir_fid = client::create_file_id(&resp);
+    msg_id += 1;
+
+    // The file inside it, by its full path. FILE_OVERWRITE_IF (5) so a second round replaces.
+    smb_send(s, &client::create_disposition(msg_id, sid, tid, &nested, 5))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "create {}: status {:#x} (the directory was made, so this is the path walk failing on \
+             the last component)",
+            String::from_utf8_lossy(&nested),
+            status(&resp)
+        ));
+    }
+    let fid = client::create_file_id(&resp);
+    msg_id += 1;
+
+    smb_send(s, &client::write_at(msg_id, sid, tid, &fid, 0, body))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "write into the subdirectory: status {:#x}",
+            status(&resp)
+        ));
+    }
+    if client::write_count(&resp) as usize != body.len() {
+        return Err(format!(
+            "the nested write took {} of {} bytes",
+            client::write_count(&resp),
+            body.len()
+        ));
+    }
+    msg_id += 1;
+
+    smb_send(s, &client::close(msg_id, sid, tid, &fid))?;
+    smb_recv(s, stop)?;
+    msg_id += 1;
+
+    // The listing of the directory just filled: `.`, `..`, then the leaf by its own name. A share
+    // that returned the whole path here, or that showed the file in the share root instead, is a
+    // bug this side can see and the filesystem cannot.
+    smb_send(
+        s,
+        &client::query_directory(msg_id, sid, tid, &dir_fid, 37, b"*"),
+    )?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "listing the subdirectory: status {:#x}",
+            status(&resp)
+        ));
+    }
+    let names: Vec<Vec<u8>> = client::dir_entries(&resp, 37)
+        .map(|n| n.as_bytes().to_vec())
+        .collect();
+    if !names.iter().any(|n| n == leaf) {
+        return Err(format!(
+            "the subdirectory's listing is {:?}; it must hold {} by its leaf name",
+            names
+                .iter()
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .collect::<Vec<_>>(),
+            String::from_utf8_lossy(leaf),
+        ));
+    }
+    msg_id += 1;
+
+    // The volume, which is the statfs half arriving on the wire. What is asserted is that it is
+    // *not* the constant it used to be: `NOMINAL_VOLUME_BYTES` is what a share with no volume
+    // reports, and the fs-backed share has one.
+    smb_send(s, &client::query_info(msg_id, sid, tid, &dir_fid, 2, 7))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "FileFsFullSizeInformation: status {:#x}",
+            status(&resp)
+        ));
+    }
+    let at = smb_proto::HDR_LEN + 8;
+    let (total, free, unit) = (
+        smb_proto::r64(&resp, at),
+        smb_proto::r64(&resp, at + 8),
+        smb_proto::r32(&resp, at + 28) as u64,
+    );
+    let nominal = smb_proto::share::NOMINAL_VOLUME_BYTES / 4096;
+    if total == 0 || unit == 0 {
+        return Err(format!(
+            "the volume reports {total} units of {unit} bytes, which no client can size work \
+             against"
+        ));
+    }
+    if total == nominal && free == nominal {
+        return Err(String::from(
+            "the volume is still the nominal constant (total == free == the fallback), so \
+             fs_proto's STATFS is not reaching the wire. Time Machine sizes a sparsebundle \
+             against these fields; see notes/smb.md.",
+        ));
+    }
+    if free > total {
+        return Err(format!("the volume reports {free} free of {total} total"));
+    }
+    msg_id += 1;
+
+    smb_send(s, &client::close(msg_id, sid, tid, &dir_fid))?;
+    smb_recv(s, stop)?;
     Ok(())
 }
 

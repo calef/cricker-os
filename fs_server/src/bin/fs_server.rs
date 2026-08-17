@@ -404,6 +404,17 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
             // truncate at 4096 bytes. Reading it from `offset` is what lets a file be truncated to
             // any size the filesystem can hold.
             fs::TRUNCATE => server.truncate(handle, offset).map(|()| 0),
+            // The reply is a record in the shared page and `r0` is its length, [`READDIR`]'s shape:
+            // a reply word carries one i64 and this answer is three u64s. Encoding here rather than
+            // in the core keeps the core free of the wire's layout, which is the same boundary the
+            // errno mapping below sits on.
+            fs::STATFS => server.statfs(handle).and_then(|(block, total, free)| {
+                // SAFETY: the whole page is ours to fill; the encoder never writes past its slice.
+                let buf = unsafe { file_page(BLOCK) };
+                fs_proto::statfs::encode(buf, block, total, free)
+                    .map(|n| n as i64)
+                    .ok_or(Error::new(EINVAL))
+            }),
             _ => Err(Error::new(EINVAL)),
         };
 

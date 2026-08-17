@@ -79,7 +79,8 @@ so review can happen where the cost is:
   `smb_proto::ntlmssp`.
 - **`MaxTransactSize`/`MaxReadSize`/`MaxWriteSize` = 65536**, the floor mainstream clients are
   written against, and exactly the static buffer the allocator-less server carries.
-- **One share, named `share`**, flat (no subdirectories), **writable when the boot says so.**
+- **One share, named `share`**, a **tree** of directories and files, **writable when the boot says
+  so.**
   The direction is `smb_server`'s `arg2`, which the write path grew from a flag into three values
   (fixture, fs-backed read-only, fs-backed read-write) because "which backing" and "which
   direction" are two questions and a boolean answered only one. Both boots that exist wire
@@ -109,9 +110,42 @@ so review can happen where the cost is:
   successes that change nothing, and both are in BUGS: preallocation is a hint whose obvious
   implementation (truncate) would zero-extend a file the client is about to fill, and there is no
   clock capability here to record a timestamp against.
-- **Free space is nominal** (`smb_proto::share::NOMINAL_VOLUME_BYTES`, 64 MiB). `fs_proto` has no
-  `statfs` verb, so nothing between the adapter and RedoxFS knows the image's size. A read-only
-  share reports zero free, which is what makes macOS refuse a write client-side.
+- **Free space is the image's, through `fs_proto`'s `STATFS`** (op 18, milestone 54). The record
+  is three little-endian `u64`s in the shared page (allocation unit, total units, free units) and
+  `r0` is its length, which is `READDIR`'s and `LISTXATTR`'s existing shape: a reply word carries
+  one `i64` and this answer is three numbers. **The record's length is its version**, so a later
+  field extends it and a client written against this one reads its prefix; there is deliberately no
+  version word, because the length already is one. The verb demands **no right** and takes any
+  handle the server minted, file or directory: the handle is the qualification rather than the
+  subject, and demanding `READ` would leave a write-only grant unable to answer the one question it
+  has. A backing that cannot ask (the baked-in fixture has no volume) answers `None` and the
+  protocol layer falls back to `NOMINAL_VOLUME_BYTES`, stated rather than silent. **A read-only
+  share reports zero free** whatever the image says, which is the same statement `READ_ONLY_VOLUME`
+  makes one field over and is what makes macOS refuse a write client-side.
+- **A path is parsed once, at the wire's edge** (`crates/smb_proto/src/path.rs`), and the `Share`
+  seam takes a `Path` that cannot be constructed without that parse. What a client is allowed to
+  *say* is wire format, so `..` dies where the bytes arrive rather than wherever a backing happens
+  to look at it. `.` is refused as well, for a different reason: it is a second spelling of a path,
+  and a handle's path is its identity here (rename and delete-on-close both read it back), so one
+  path per name is cheaper to hold than a canonicaliser. A forward slash is refused because SMB's
+  separator is backslash and accepting both would let two clients spell one file two ways. A single
+  leading and a single trailing separator are stripped, because clients send `dir\`.
+- **`fs_proto` resolves a component under a handle and never a path**, so the adapter walks: one
+  `fs::OPENDIR` per component, then the verb on the leaf under the parent's handle. That is the
+  contract's shape rather than a limitation to route around, and it is why the descent's rights are
+  exactly what the share will use rather than `dir::ALL`: `OPENDIR` refuses with `EPERM` when the
+  intersection with the parent is smaller than the request, so asking for everything would fail on
+  a capability that was correctly narrowed.
+- **`MKDIR` and `RMDIR` are separate from `CREATE` and `UNLINK`**, and `RMDIR` takes only an empty
+  directory. A call that removed whatever it found would put a subtree behind one message, and no
+  capability check afterwards could undo that; the recursion belongs in whoever is deleting, as a
+  loop of individually refusable steps. A client's delete-on-close on a non-empty directory
+  therefore leaves it there.
+- **A directory may be renamed in place but not moved into another directory**, which is
+  `fs_proto::fs::RENAME`'s own boundary (the cycle guard is an ancestry walk in a server whose stack
+  is measured at three quarters used). The one refusal this layer adds is moving a directory into
+  its own subtree, checked on paths here because this is the only layer holding both sides as paths
+  at once.
 - Compounds (macOS stats files as CREATE + QUERY_INFO + CLOSE related chains) are implemented;
   credits are granted as asked and never accounted.
 - **The SMB1 probe.** The machine overruled the assumption that a modern client opens with SMB2:
@@ -139,6 +173,18 @@ so review can happen where the cost is:
    classification: exact, absent, wrong size (the truncate leg), or wrong bytes (an offset or
    chunking bug). A prober that read back its own write would prove only that the adapter
    remembers, which an adapter can do with no filesystem under it at all.
+
+   **The subdirectory leg is the same discipline one level up** and is the one check the prober
+   genuinely cannot make for itself. It makes a directory over the wire with `FILE_DIRECTORY_FILE`,
+   writes a file inside it by its full path, and lists the directory back (a listing is a fact about
+   the server's own view, so a leaf shown as a full path is a bug this side *can* see). What it
+   cannot see is whether a **directory** reached RedoxFS: a share that ignored the separator would
+   create a file literally called `tm_bands\band0` in the share root, and that is indistinguishable
+   from success on the wire. The verify role descends with `fs::OPENDIR` and reports
+   `DIR_IS_A_FILE` when the answer is `ENOTDIR`, which is exactly that failure named.
+
+   The prober also asserts `FileFsFullSizeInformation` is **not** the nominal constant, which is the
+   `STATFS` half arriving where Time Machine will read it.
 
    The adapter rides the milestone-107 inbound test's spawn
    (`a_host_process_connects_to_the_guest_and_is_answered`) as a **second client of the same
@@ -196,17 +242,26 @@ for a while.
   client this tree wrote, and a conforming client is not the same thing as `smbfs`. Expect the
   first writable Finder copy to find something, most likely in the `SET_INFO` classes or in a
   `QUERY_INFO` class nothing has asked for yet. This is the same gap the SMB1 probe fell into.
-- **Flat, and writing cannot change that.** The share model has no subdirectory nodes, so a
-  directory on the image shows in listings with the directory attribute but answers NOT_FOUND
-  when opened, and no disposition creates one: `MKDIR` is a verb this share does not offer. The
-  doc tree's directories are the visible case, and a client trying to save into a folder it can
-  see is the failure to expect.
-- **Free space is a constant.** `FileFsSizeInformation` reports
-  `smb_proto::share::NOMINAL_VOLUME_BYTES` (64 MiB) because `fs_proto` has no `statfs` verb, so a
-  client that sizes its work against the answer is sizing it against a number nothing measured. A
-  write past the real end of the image fails with `STATUS_DISK_FULL` at the write rather than
-  being predicted. **Time Machine will care**: macOS sizes a sparsebundle against reported free
-  space, so a `statfs` verb is on milestone 55's path rather than beside it.
+- **A path costs one descent per component, on every call.** `open("a\\b\\c")` is two
+  `fs::OPENDIR`s and an `fs::OPEN`, and the two directory handles are opened and closed again for
+  the next call. There is no cache, because a cache here would have to be invalidated by every
+  other client of the same FS server and this adapter cannot see them. Reads and writes are
+  unaffected: they go through the handle CREATE minted.
+- **Free space is a forecast, not a reservation.** The numbers are the image's now, but two clients
+  writing concurrently both see a count that was true when it was read, and a write past the real
+  end still fails with `STATUS_DISK_FULL` at the write. That is what `statfs` is everywhere.
+  `STATFS` also answers about the **whole image**, never about a subtree, so a share served over a
+  narrow directory capability still reports the volume's free space; there are no quotas in this
+  filesystem, so there is no smaller number that would be true.
+- **A directory moved into another directory is refused, and the status is unhelpful.**
+  `fs_proto::fs::RENAME` answers `EINVAL`, which this share has no word for and reports as
+  `STATUS_UNEXPECTED_IO_ERROR`. Renaming a directory in place works, which is the case a client
+  performs; moving one between folders in Finder is the failure to expect.
+- **The reserved characters SMB forbids in a name are not checked** (`:` `*` `?` `"` `<` `>` `|`).
+  A client that creates `a?b` gets a file called `a?b` on the image, which no Windows client can
+  open afterwards. A compatibility gap rather than a safety one; nothing macOS sends contains them.
+- **Nothing bounds a path's depth**, only its total length (`smb_proto::path::MAX_PATH`, 128 bytes).
+  A path of many one-byte components is legal and slow, per the descent cost above.
 - **Timestamps are accepted and thrown away.** `SET_INFO`'s `FileBasicInformation` succeeds and
   changes nothing (no clock capability here, and `fs_proto`'s `FSTAT` carries no times), so a
   client that sets a modification time and reads it back gets the epoch. Refusing it instead
@@ -223,9 +278,11 @@ for a while.
 - **`FILE_SUPERSEDE` is `FILE_OVERWRITE_IF` with a different `CreateAction`.** Superseding
   properly replaces a file's identity, attributes and all, and this model has no attributes to
   replace.
-- **Names are capped at 64 bytes** (`smb_proto::server::MAX_NAME`), because a handle keeps its own
-  copy of its name and the table lives on the adapter's small stack. A longer name is
-  `STATUS_OBJECT_NAME_INVALID`, said out loud rather than truncated into some other file's name.
+- **A single name is capped at 64 bytes and a whole path at 128** (`smb_proto::path`'s
+  `MAX_COMPONENT` and `MAX_PATH`), because a handle keeps its own copy of its *path* and the table
+  lives on the adapter's stack: `MAX_HANDLES * MAX_PATH` bytes of the `Connection`. Either bound
+  exceeded is `STATUS_OBJECT_NAME_INVALID`, said out loud rather than truncated into some other
+  file's name.
 - **Only lower-case names are reachable over the mount.** The wire folds names to lower-case
   ASCII before lookup and RedoxFS is case-sensitive, so an upper-case name on the image can be
   listed but never opened.
@@ -252,12 +309,12 @@ for a while.
    different process. Milestone 47's rights split is now expressible end to end: a directory
    capability carrying `WRITE | CREATE` and not `REMOVE` gives a share that takes backups and
    destroys nothing, and the FS server enforces it under an adapter that never sees the mask.
-3. **A `statfs` verb for `fs_proto`**, which the write path found and did not take: free space is
-   a constant today (BUGS above), and Time Machine sizes its sparsebundle against what the volume
-   reports. A new verb is a contract change and is the integrator's to mint, not a lane's.
-4. **Subdirectories**, which Time Machine also needs: a sparsebundle is a *directory* of band
-   files. The share model is flat and `MKDIR` is unoffered, so this is the largest single piece
-   between here and milestone 55.
+3. ~~A `statfs` verb for `fs_proto`~~ **Done** (2026-08-16): `fs::STATFS`, op 18, and the SMB
+   volume classes report the image's real numbers through it. The wire decisions are in the
+   section above and in pull request #255.
+4. ~~Subdirectories~~ **Done** (2026-08-16): `smb_proto::path`, the `Share` seam's directory ids
+   and its `mkdir`/`rmdir`/`open_dir` verbs, and the adapter's per-component walk. Gated on both
+   ISAs by a directory the host makes over SMB2 and a different in-guest process descends into.
 5. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
    be more than guest-readable. The seam is marked in `smb_proto::ntlmssp`. **Writes raised the
    stakes**: guest means everyone, and on a writable share that means everyone may change it.

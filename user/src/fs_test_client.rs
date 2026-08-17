@@ -224,12 +224,69 @@ fn smb_verify() -> ! {
     } else if &buf[..n] != want {
         fixture::smb_wrote::WRONG_BYTES
     } else {
-        fixture::smb_wrote::EXACT
+        // The flat write landed. Now the nested one, which is milestone 54's subdirectory half:
+        // the prober made a directory over the wire and put a file in it, and the whole question
+        // is whether a *directory* is what reached RedoxFS.
+        smb_verify_nested()
     };
     let (c, _) = call(FILE, fs::req(fs::CLOSE, h, 0), 0);
     check((c as i64) >= 0);
     send(REPORT, fixture::SUCCESS, verdict, 0);
     exit();
+}
+
+/// **Did the SMB client's `mkdir` make a directory, and is the file inside it?**
+///
+/// Descended rather than opened by path, deliberately: `fs_proto` has no paths, so reaching
+/// `tm_bands\band0` from here means an `OPENDIR` and then an `OPEN` under the handle it minted.
+/// That is the same walk the adapter performs, done from the other side of the machine by a
+/// process with nothing that names the network, which is what makes it a witness rather than an
+/// assertion.
+///
+/// **`OPENDIR` is what separates the two failures worth telling apart.** A share that ignored the
+/// separator would have created a *file* called `tm_bands\band0` in the root, and the descent
+/// answers `ENOTDIR` for it rather than `ENOENT`, so the verdict says which kind of wrong it is.
+fn smb_verify_nested() -> u64 {
+    let dir_name = fixture::SMB_DIR_NAME;
+    put_page(dir_name.as_bytes());
+    let (d, _) = call(
+        FILE,
+        fs::req(fs::OPENDIR, 0, dir_name.len() as u64),
+        dir::ALL,
+    );
+    if (d as i64) < 0 {
+        return match fs_proto::reply_errno(d as i64) {
+            // The name is there and is not a directory: the adapter wrote a file whose name
+            // contains a separator, which is the flat share's failure exactly.
+            Some(dir::ENOTDIR) => fixture::smb_wrote::DIR_IS_A_FILE,
+            _ => fixture::smb_wrote::DIR_ABSENT,
+        };
+    }
+
+    let name = fixture::SMB_NESTED_NAME;
+    put_page(name.as_bytes());
+    let (h, _) = call(FILE, fs::req(fs::OPEN, d, name.len() as u64), 0);
+    if (h as i64) < 0 {
+        let (c, _) = call(FILE, fs::req(fs::CLOSE, d, 0), 0);
+        check((c as i64) >= 0);
+        return fixture::smb_wrote::NESTED_ABSENT;
+    }
+
+    let want = fixture::SMB_NESTED;
+    let (size, _) = call(FILE, fs::req(fs::FSTAT, h, 0), 0);
+    let mut buf = [0u8; 256];
+    let n = read(h, 0, want.len().min(buf.len()));
+    get_page(n, &mut buf);
+    let verdict = if size as usize == want.len() && &buf[..n] == want {
+        fixture::smb_wrote::EXACT
+    } else {
+        fixture::smb_wrote::NESTED_WRONG
+    };
+    for handle in [h, d] {
+        let (c, _) = call(FILE, fs::req(fs::CLOSE, handle, 0), 0);
+        check((c as i64) >= 0);
+    }
+    verdict
 }
 
 /// **Seed the SMB gate's file** (milestone 54): put [`fixture::SMB_SEED`] at

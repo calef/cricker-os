@@ -608,6 +608,53 @@ without being compared against the set, while a directory name never does. Both 
 getting that wrong are real: filter the attribute name and a program cannot read its own file's
 attributes; stop filtering a directory name and a set capability escapes its set.
 
+## `STATFS`: how much room the store behind a capability has (milestone 54)
+
+Op 18, added because macOS sizes a Time Machine sparsebundle against what the volume reports and the
+SMB share was reporting a 64 MiB constant with a `BUGS` entry explaining that nothing in the stack
+could ask.
+
+**The wire.** `fs::req(fs::STATFS, handle, 0)`, second word 0. The reply fills the shared page with
+`fs_proto::statfs`'s record (three little-endian `u64`s: the allocation unit in bytes, the volume's
+size in those units, and how many are free) and `r0` is its length. That is `READDIR`'s and
+`LISTXATTR`'s existing shape rather than a new one, and it is forced: a reply word carries one
+`i64`, and two 64-bit counts do not fit in one however they are packed.
+
+Three choices in it are worth disagreeing with rather than skipping past:
+
+- **The allocation unit is a field, not `fs_proto::PAGE`.** They are the same number today (4096)
+  and they are not the same *thing*: one is the filesystem's granularity, the other is the IPC
+  transfer unit. A client that assumed they were equal would mis-size a volume the day a filesystem
+  with 64 KiB records is served through this contract.
+- **The record's length is its version.** A later field extends the record and raises `LEN`; a
+  client written against this version reads its prefix correctly because it checks `r0 >= LEN` for
+  the fields it knows, which is how `statfs::decode` is written. There is deliberately no version
+  word, because the length already is one and a second one is a thing to keep in sync.
+- **No inode count.** POSIX `statfs` carries `f_files`/`f_ffree` and SMB's volume classes carry
+  neither, so nothing above this contract has asked. Adding them extends the record.
+
+**It demands no right, and takes any handle this server minted, file or directory.** The handle is
+the *qualification* rather than the subject: holding one is what entitles a caller to ask, and the
+answer is about the one image behind all of them, so `EBADF` for a handle nobody minted is the whole
+check. It is validated and then not used, which looks odd in the code and is the point. Demanding
+`dir::READ` would have left a write-only grant unable to answer the one question it has, which is
+whether its next write fits, so the verb table's row is `needs_all: 0` beside `FSTAT` and `CLOSE`,
+and `verb::file_grant::POLICY` forwards it: `STATFS` is the one directory-shaped question that means
+something through a file capability.
+
+**Honest limits, both recorded at the verb.** It answers about the whole image and never about a
+subtree, so a narrow subtree capability's holder learns the volume's free space; there are no quotas
+here, so there is no smaller number that would be true, and reporting a subtree's usage as a "size"
+would be the silent degradation DECISIONS §42 forbids. And free space is a **forecast**: the store's
+own `ENOSPC` at write time is the authority. That is what `statfs` is everywhere.
+
+**Where the numbers come from.** `FileSystem::header.size()` for the volume's bytes and
+`FileSystem::allocator().free()` for the free level-0 blocks, both read **outside** `fs.tx`.
+Opening a transaction to answer a question changes nothing and would put a commit in the path of a
+read-only verb; RedoxFS's own `clone` computes free space from exactly this pair. Nothing races it,
+because this server runs one request to completion before it receives the next, which is the same
+property `RENAME`'s concurrency atomicity rests on.
+
 ## For later milestones
 
 - **31 (capability shell)** is **done** as a mechanism: per-file grants exist, proven on both ISAs by

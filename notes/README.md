@@ -484,7 +484,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   network endpoint and one share, the wire decisions listed for review, the two-prober QEMU gate
   that rides milestone 107's spawn, and the mount instructions a real macOS `mount_smbfs` has
   already followed successfully (2026-08-15), with an honest BUGS section led by what Finder's
-  own dialog has not yet exercised.
+  own dialog has not yet exercised. Since 2026-08-16 the share is a **tree** and the volume's
+  numbers are the image's: `smb_proto::path` parses a share-relative path once at the wire's edge
+  so `..` dies where the bytes arrive, and `fs_proto`'s `STATFS` reaches the volume classes a
+  Time Machine sparsebundle is sized against.
 - [mDNS/DNS-SD: the Time Machine advertisement](mdns.md): milestone 55's second protocol. The
   reference router's actual `_smb`/`_adisk`/`_device-info` records, captured 2026-08-15 and decoded
   (one `_adisk` instance with the disks inside its TXT, SRV port 0 on the flag services, and a

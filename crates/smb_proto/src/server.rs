@@ -20,19 +20,21 @@
 //! file, and it means a read-only share is read-only even if its backing would have said yes.
 //! [`crate::share`]'s trait defaults are the independent second line.
 
-use crate::share::{Error, FileId, Node, Share};
+use crate::path::{MAX_PATH, Path, PathError};
+use crate::share::{Error, FileId, Node, ROOT_DIR, Share};
 use crate::{
     CMD_CHANGE_NOTIFY, CMD_CLOSE, CMD_CREATE, CMD_ECHO, CMD_FLUSH, CMD_IOCTL, CMD_LOCK, CMD_LOGOFF,
     CMD_NEGOTIATE, CMD_QUERY_DIRECTORY, CMD_QUERY_INFO, CMD_READ, CMD_SESSION_SETUP, CMD_SET_INFO,
     CMD_TREE_CONNECT, CMD_TREE_DISCONNECT, CMD_WRITE, DIALECT_0210, DIALECT_WILDCARD, H_COMMAND,
     H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND, H_SESSION_ID, H_TREE_ID, HDR_LEN, MAX_TRANSACT,
-    STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_DISK_FULL, STATUS_END_OF_FILE,
-    STATUS_FILE_CLOSED, STATUS_FILE_IS_A_DIRECTORY, STATUS_FS_DRIVER_REQUIRED,
+    STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL,
+    STATUS_END_OF_FILE, STATUS_FILE_CLOSED, STATUS_FILE_IS_A_DIRECTORY, STATUS_FS_DRIVER_REQUIRED,
     STATUS_INVALID_PARAMETER, STATUS_MORE_PROCESSING_REQUIRED, STATUS_NO_MORE_FILES,
-    STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID,
-    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SUCCESS,
-    STATUS_UNEXPECTED_IO_ERROR, STATUS_USER_SESSION_DELETED, ascii_to_utf16le, is_smb2, ntlmssp,
-    r16, r32, r64, spnego, utf16le_to_ascii_lower, w16, w32, w64, write_response_header,
+    STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION,
+    STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
+    STATUS_SUCCESS, STATUS_UNEXPECTED_IO_ERROR, STATUS_USER_SESSION_DELETED, ascii_to_utf16le,
+    is_smb2, ntlmssp, r16, r32, r64, spnego, utf16le_to_ascii_lower, w16, w32, w64,
+    write_response_header,
 };
 
 /// How many files (and the root) one connection may hold open at once. macOS keeps a handful open
@@ -40,13 +42,19 @@ use crate::{
 /// corrupted table.
 pub const MAX_HANDLES: usize = 16;
 
-/// **The longest name this share will carry**, in ASCII bytes. A handle keeps its own copy of its
-/// name (the write path needs one for rename, for delete-on-close, and for `QUERY_INFO`'s name
-/// class, none of which can re-derive it from a listing that moves), so the bound is what a
-/// connection's handle table costs: `MAX_HANDLES * MAX_NAME` bytes of the [`Connection`], which
-/// lives on the adapter's small stack. A longer name is [`STATUS_OBJECT_NAME_INVALID`], said out
-/// loud rather than truncated into a different file's name.
-pub const MAX_NAME: usize = 64;
+/// **The longest single name this share will carry**, in ASCII bytes, and the same number as
+/// [`crate::path::MAX_COMPONENT`] because they are the same bound: a path is made of names.
+///
+/// It was this module's own constant while the share was flat and the two could not disagree. It
+/// is an alias now rather than a second `64`, so that raising one raises both; the bound that
+/// costs bytes moved to [`MAX_PATH`], since a handle keeps its whole path (rename, delete-on-close
+/// and `QUERY_INFO`'s name class all read it back and none can re-derive it from a listing that
+/// moves). A connection's handle table is therefore `MAX_HANDLES * MAX_PATH` bytes of the
+/// [`Connection`], which lives on the adapter's stack.
+///
+/// An over-long name is [`STATUS_OBJECT_NAME_INVALID`], said out loud rather than truncated into a
+/// different file's name.
+pub const MAX_NAME: usize = crate::path::MAX_COMPONENT;
 
 /// `STATUS_INSUFFICIENT_RESOURCES`, the seventeenth handle's answer.
 pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
@@ -100,8 +108,14 @@ const CLASS_END_OF_FILE: u8 = 20;
 pub const fn status_for(e: Error) -> u32 {
     match e {
         Error::NotFound => STATUS_OBJECT_NAME_NOT_FOUND,
+        // A component *before* the last is missing, which is a different thing for a client to do
+        // about: "path not found" says the parent must be made first, "name not found" says the
+        // parent is there. The flat share could not tell them apart because it had one directory.
+        Error::PathNotFound => STATUS_OBJECT_PATH_NOT_FOUND,
         Error::Exists => STATUS_OBJECT_NAME_COLLISION,
         Error::IsDirectory => STATUS_FILE_IS_A_DIRECTORY,
+        Error::NotDirectory => STATUS_NOT_A_DIRECTORY,
+        Error::NotEmpty => STATUS_DIRECTORY_NOT_EMPTY,
         Error::ReadOnly => STATUS_ACCESS_DENIED,
         Error::NoSpace => STATUS_DISK_FULL,
         Error::NameTooLong => STATUS_OBJECT_NAME_INVALID,
@@ -109,18 +123,39 @@ pub const fn status_for(e: Error) -> u32 {
     }
 }
 
-/// One open handle: the node, its name, and (for the root) where its directory enumeration has
-/// got to.
+/// **The NT status one malformed path becomes.** Separate from [`status_for`] because a path is
+/// refused before any backing is asked, and because the refusals mean different things: a
+/// traversal is a client naming somewhere it may not be, and an over-long path is a client naming
+/// something this share cannot hold.
+///
+/// A traversal answers `STATUS_OBJECT_PATH_NOT_FOUND` rather than `ACCESS_DENIED`, deliberately and
+/// for `fs_proto`'s reason: a refusal implies a policy that could have said yes, and there is no
+/// policy here. Outside the share there is no such path, which is the same sentence
+/// `fs_file_caretaker` says about a name it does not carry.
+pub const fn status_for_path(e: PathError) -> u32 {
+    match e {
+        PathError::Traversal => STATUS_OBJECT_PATH_NOT_FOUND,
+        PathError::Empty | PathError::Separator => STATUS_OBJECT_NAME_INVALID,
+        PathError::TooLong => STATUS_OBJECT_NAME_INVALID,
+    }
+}
+
+/// One open handle: the node, its path, and (for a directory) where its enumeration has got to.
 #[derive(Clone, Copy)]
 struct Handle {
     node: Node,
     /// The volatile half of the wire file id, so a stale id from a closed handle misses.
     volatile: u64,
-    /// The name this handle was opened under, ASCII, lower-cased. Kept per handle because a
-    /// writable share's listing moves under it: rename, delete-on-close and `QUERY_INFO`'s name
-    /// class all need the name, and none of them can go and look it up again.
-    name: [u8; MAX_NAME],
-    name_len: u8,
+    /// **The whole share-relative path this handle was opened under**, ASCII, lower-cased,
+    /// separators included. Kept per handle because a writable share's listing moves under it:
+    /// rename, delete-on-close and `QUERY_INFO`'s name class all need it, and none of them can go
+    /// and look it up again.
+    ///
+    /// It became a path rather than a name when the share grew subdirectories, and that is the
+    /// change that made the handle table's size worth stating: [`MAX_HANDLES`] times
+    /// [`MAX_PATH`], on the adapter's stack.
+    path: [u8; MAX_PATH],
+    path_len: u8,
     /// Set by `FILE_DELETE_ON_CLOSE` or by `SET_INFO`'s disposition class. The name goes at CLOSE,
     /// which is [MS-FSCC] §2.4.11's semantics and Unix's `unlink`: an open handle keeps reading.
     delete_on_close: bool,
@@ -133,9 +168,20 @@ struct Handle {
 }
 
 impl Handle {
-    /// The name this handle carries.
-    fn name(&self) -> &[u8] {
-        &self.name[..self.name_len as usize]
+    /// The path this handle carries, as the parsed type the share seam takes.
+    ///
+    /// The `unwrap_or` cannot fire: nothing is stored here that did not come out of
+    /// [`Path::parse`], and re-parsing a path this crate joined is the cheapest way to hand the
+    /// backing a type it can trust rather than a slice it would have to check. Falling back to the
+    /// root would be wrong if it could happen, so this is the one place the invariant is worth
+    /// stating out loud.
+    fn path(&self) -> Path<'_> {
+        Path::parse(&self.path[..self.path_len as usize]).unwrap_or(Path::ROOT)
+    }
+
+    /// The raw bytes of its path: what `QUERY_INFO`'s name class puts on the wire.
+    fn path_bytes(&self) -> &[u8] {
+        &self.path[..self.path_len as usize]
     }
 }
 
@@ -516,8 +562,8 @@ impl Connection {
         }
     }
 
-    /// CREATE, which after the write path is the share's whole open-and-make story: it resolves
-    /// the name, applies the disposition (create, truncate, or neither), and installs a handle.
+    /// CREATE: the share's whole open-and-make story. It parses the path, applies the disposition
+    /// (create, truncate, or neither) to a file *or* a directory, and installs a handle.
     ///
     /// The disposition is where read-only lives. Every disposition except `FILE_OPEN` can change
     /// the share, so on a share that answers `writable() == false` each of them is refused here,
@@ -525,6 +571,15 @@ impl Connection {
     /// degrades to `FILE_OPEN` rather than being refused outright, because "open it if it is
     /// there" is answerable without writing anything and refusing it would break clients that
     /// open every file that way.
+    ///
+    /// # Directories, and the two ways a client asks for one
+    ///
+    /// `FILE_DIRECTORY_FILE` in `CreateOptions` is a client *insisting* on a directory, and is how
+    /// `mkdir` reaches an SMB server: `FILE_CREATE` plus that bit. But a client may also open a
+    /// directory without saying so, which macOS does when it stats a path it has not seen before,
+    /// so a plain open that meets [`Error::IsDirectory`] falls back to opening it as one. The
+    /// fallback is deliberately **not** taken for a creating disposition: "make me a file called
+    /// `bands`" must not quietly return the directory that is already there.
     fn create(
         &mut self,
         req: &[u8],
@@ -540,25 +595,22 @@ impl Connection {
         let Some(wide) = req.get(name_off..name_off + name_len) else {
             return err(out, STATUS_INVALID_PARAMETER);
         };
-        let mut buf = [0u8; 128];
-        let Some(mut name) = (if wide.is_empty() {
+        let mut buf = [0u8; MAX_PATH + 2];
+        let Some(raw) = (if wide.is_empty() {
             Some(&[] as &[u8])
         } else {
             utf16le_to_ascii_lower(wide, &mut buf)
         }) else {
+            // A name this share cannot spell at all (non-ASCII, or longer than the decode buffer)
+            // is not found rather than mangled into a different one; see the crate BUGS on names.
             return err(out, STATUS_OBJECT_NAME_NOT_FOUND);
         };
-        if name.first() == Some(&b'\\') {
-            name = &name[1..];
-        }
-        if name.contains(&b'\\') {
-            // A flat share has no paths below the root; saying "path not found" (not "name") is
-            // what tells the client which component failed.
-            return err(out, STATUS_OBJECT_PATH_NOT_FOUND);
-        }
-        if name.len() > MAX_NAME {
-            return err(out, STATUS_OBJECT_NAME_INVALID);
-        }
+        // **The traversal dies here**, at the wire, before any backing is asked. See
+        // `crate::path`'s header for why every refusal is this module's rather than the share's.
+        let path = match Path::parse(raw) {
+            Ok(p) => p,
+            Err(e) => return err(out, status_for_path(e)),
+        };
 
         // The read-only gate, before the backing hears about it. Only FILE_OPEN is unconditionally
         // harmless; FILE_OPEN_IF is demoted rather than refused (see the doc comment).
@@ -574,49 +626,48 @@ impl Connection {
         }
 
         // The root is opened without asking the backing anything: it is the one node the share
-        // model guarantees, and a directory has no id to mint.
-        let (node, action) = if name.is_empty() {
+        // model guarantees, and it has no id to mint.
+        let (node, action) = if path.is_root() {
             if !matches!(
                 disposition,
                 FILE_OPEN | FILE_OPEN_IF | FILE_SUPERSEDE | FILE_OVERWRITE_IF
             ) {
                 return err(out, STATUS_ACCESS_DENIED);
             }
-            (Node::Root, ACTION_OPENED)
+            (Node::ROOT, ACTION_OPENED)
         } else {
-            match open_with_disposition(share, name, disposition) {
-                Ok((id, action)) => (Node::File(id), action),
+            match open_with_disposition(share, path, disposition, options) {
+                Ok(pair) => pair,
                 Err(e) => return err(out, status_for(e)),
             }
         };
 
-        // CreateOptions can insist on one kind of node.
-        let is_dir = matches!(node, Node::Root);
+        // CreateOptions can insist on one kind of node. `open_with_disposition` already honours
+        // DIRECTORY_FILE on the way in; this catches the case it cannot, which is a disposition
+        // that opened the root or produced the other kind anyway.
+        let is_dir = node.is_dir();
         if options & OPT_DIRECTORY_FILE != 0 && !is_dir {
-            if let Node::File(id) = node {
-                share.close(id);
-            }
-            return err(out, STATUS_NOT_SUPPORTED); // FILE_DIRECTORY_FILE on a file
+            release(share, node);
+            return err(out, STATUS_NOT_A_DIRECTORY);
         }
         if options & OPT_NON_DIRECTORY_FILE != 0 && is_dir {
-            return err(out, STATUS_FILE_IS_A_DIRECTORY); // FILE_NON_DIRECTORY_FILE on the root
+            release(share, node);
+            return err(out, STATUS_FILE_IS_A_DIRECTORY);
         }
 
         let Some(slot) = self.handles.iter().position(Option::is_none) else {
-            if let Node::File(id) = node {
-                share.close(id);
-            }
+            release(share, node);
             return err(out, STATUS_INSUFFICIENT_RESOURCES);
         };
         let volatile = self.next_volatile;
         self.next_volatile += 1;
-        let mut stored = [0u8; MAX_NAME];
-        stored[..name.len()].copy_from_slice(name);
+        let mut stored = [0u8; MAX_PATH];
+        stored[..path.as_bytes().len()].copy_from_slice(path.as_bytes());
         self.handles[slot] = Some(Handle {
             node,
             volatile,
-            name: stored,
-            name_len: name.len() as u8,
+            path: stored,
+            path_len: path.as_bytes().len() as u8,
             delete_on_close: options & OPT_DELETE_ON_CLOSE != 0,
             enum_index: 0,
             enum_done: false,
@@ -627,10 +678,7 @@ impl Connection {
         fid[8..].copy_from_slice(&volatile.to_le_bytes());
         *chain_fid = Some(fid);
 
-        let (size, attrs) = match node {
-            Node::Root => (0, ATTR_DIRECTORY),
-            Node::File(i) => (share.size(i), ATTR_NORMAL),
-        };
+        let (size, attrs) = node_facts(share, node);
         write_response_header(
             out,
             CMD_CREATE,
@@ -665,21 +713,24 @@ impl Connection {
             Err(status) => return err(out, status),
         };
         let h = self.handles[slot].take().unwrap();
-        let (size, attrs) = match h.node {
-            Node::Root => (0, ATTR_DIRECTORY),
-            Node::File(i) => (share.size(i), ATTR_NORMAL),
-        };
-        // The size above is read while the handle is still open, because closing it is what makes
-        // the backing forget the file; the POSTQUERY_ATTRIB fields below have to be the truth as
-        // of the close.
-        if let Node::File(i) = h.node {
-            share.close(i);
-        }
+        // The size is read while the handle is still open, because closing it is what makes the
+        // backing forget the file; the POSTQUERY_ATTRIB fields below have to be the truth as of
+        // the close.
+        let (size, attrs) = node_facts(share, h.node);
+        release(share, h.node);
         // Delete-on-close: the name goes after the handle does. A failure is not reported, because
         // CLOSE has no field to report it in and the client has already stopped caring; the share
-        // keeps the file, which is the safe direction to fail in.
-        if h.delete_on_close && share.writable() && !h.name().is_empty() {
-            let _ = share.remove(h.name());
+        // keeps the node, which is the safe direction to fail in.
+        //
+        // A directory takes `rmdir` and a file takes `remove`, and neither is a call that removes
+        // whatever it finds: a marked directory with anything in it stays, which is `NotEmpty`
+        // arriving where no client can see it and is the right way for this to fail.
+        if h.delete_on_close && share.writable() && !h.path().is_root() {
+            let _ = if h.node.is_dir() {
+                share.rmdir(h.path())
+            } else {
+                share.remove(h.path())
+            };
         }
         write_response_header(
             out,
@@ -855,12 +906,14 @@ impl Connection {
                     share.truncate(id, r64(data, 0)).map_err(status_for)
                 }
                 Node::File(_) => Err(STATUS_INVALID_PARAMETER),
-                Node::Root => Err(STATUS_INVALID_PARAMETER),
+                Node::Dir(_) => Err(STATUS_FILE_IS_A_DIRECTORY),
             },
             CLASS_DISPOSITION => {
                 if data.is_empty() {
                     Err(STATUS_INVALID_PARAMETER)
-                } else if matches!(handle.node, Node::Root) {
+                } else if handle.node == Node::ROOT {
+                    // The share itself cannot be deleted through the share. A subdirectory can,
+                    // and its removal at CLOSE is `rmdir`'s empty-only one.
                     Err(STATUS_FILE_IS_A_DIRECTORY)
                 } else {
                     // The name goes at CLOSE, not here. Setting it back to zero un-marks it,
@@ -894,10 +947,16 @@ impl Connection {
     /// `FileRenameInformation`'s body ([MS-FSCC] §2.4.37): `ReplaceIfExists`, seven reserved
     /// bytes, an eight-byte `RootDirectory` handle, the name's length, then the UTF-16 name.
     ///
-    /// `RootDirectory` must be zero: nonzero means "relative to that open directory", and this
-    /// share has exactly one directory, so honouring it would be pretending to a namespace that
-    /// does not exist. The handle's own stored name is the source, which is why a handle carries
-    /// one at all.
+    /// `RootDirectory` must be zero: nonzero means "relative to that open directory", and a client
+    /// that wants a path relative to the share root can send one, which is what every client does.
+    /// Honouring it would mean this crate resolving a second handle into a path it then has to
+    /// join, for no client that asks. The handle's own stored path is the source, which is why a
+    /// handle carries one at all.
+    ///
+    /// **The destination is a full share-relative path**, so this is how a client moves a file
+    /// between directories as well as how it renames one in place. The refusal a directory meets
+    /// when it is moved rather than renamed is the backing's (`fs_proto::fs::RENAME` draws that
+    /// boundary and says why), reported here rather than hidden.
     fn rename(&mut self, share: &impl Share, slot: usize, data: &[u8]) -> Result<(), u32> {
         if data.len() < 20 {
             return Err(STATUS_INVALID_PARAMETER);
@@ -907,31 +966,36 @@ impl Connection {
         }
         let n = r32(data, 16) as usize;
         let wide = data.get(20..20 + n).ok_or(STATUS_INVALID_PARAMETER)?;
-        let mut buf = [0u8; 128];
-        let mut to = utf16le_to_ascii_lower(wide, &mut buf).ok_or(STATUS_OBJECT_NAME_INVALID)?;
-        if to.first() == Some(&b'\\') {
-            to = &to[1..];
-        }
-        if to.contains(&b'\\') {
-            return Err(STATUS_OBJECT_PATH_NOT_FOUND);
-        }
-        if to.is_empty() || to.len() > MAX_NAME {
+        let mut buf = [0u8; MAX_PATH + 2];
+        let raw = utf16le_to_ascii_lower(wide, &mut buf).ok_or(STATUS_OBJECT_NAME_INVALID)?;
+        let to = Path::parse(raw).map_err(status_for_path)?;
+        if to.is_root() {
+            // Renaming something *onto* the share itself is not a move, it is nonsense with a
+            // plausible spelling.
             return Err(STATUS_OBJECT_NAME_INVALID);
         }
         let handle = self.handles[slot].unwrap();
-        if matches!(handle.node, Node::Root) {
+        if handle.node == Node::ROOT {
             return Err(STATUS_FILE_IS_A_DIRECTORY);
         }
-        let mut from = [0u8; MAX_NAME];
-        let from_len = handle.name_len as usize;
-        from[..from_len].copy_from_slice(handle.name());
-        share.rename(&from[..from_len], to).map_err(status_for)?;
-        // The handle now answers to the new name, which matters because delete-on-close and
+        // A directory cannot be moved inside itself. Checked here, on paths, because this is the
+        // one layer that has both of them as paths at once: the backing sees two handles and the
+        // filesystem below it has no path to take a prefix of. `fs_proto::fs::RENAME` records the
+        // same refusal from the other side.
+        let mut from = [0u8; MAX_PATH];
+        let from_len = handle.path_len as usize;
+        from[..from_len].copy_from_slice(handle.path_bytes());
+        let from_path = Path::parse(&from[..from_len]).map_err(status_for_path)?;
+        if handle.node.is_dir() && to.starts_with(from_path) {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        share.rename(from_path, to).map_err(status_for)?;
+        // The handle now answers to the new path, which matters because delete-on-close and
         // QUERY_INFO's name class both read it, and because a client may rename twice.
         let h = self.handles[slot].as_mut().unwrap();
-        h.name = [0u8; MAX_NAME];
-        h.name[..to.len()].copy_from_slice(to);
-        h.name_len = to.len() as u8;
+        h.path = [0u8; MAX_PATH];
+        h.path[..to.as_bytes().len()].copy_from_slice(to.as_bytes());
+        h.path_len = to.as_bytes().len() as u8;
         Ok(())
     }
 
@@ -949,9 +1013,11 @@ impl Connection {
             Ok(s) => s,
             Err(status) => return err(out, status),
         };
-        if !matches!(self.handles[slot].unwrap().node, Node::Root) {
+        let Node::Dir(dir) = self.handles[slot].unwrap().node else {
+            // [MS-SMB2] §3.3.5.18: a QUERY_DIRECTORY on a file handle is INVALID_PARAMETER, which
+            // is a statement about the request rather than about the file.
             return err(out, STATUS_INVALID_PARAMETER);
-        }
+        };
         // The search pattern: `*` enumerates; a literal name matches one entry. Anything else
         // non-ASCII simply matches nothing.
         let pat_off = r16(req, 88) as usize;
@@ -990,7 +1056,7 @@ impl Connection {
             let (name, size, is_dir): (&[u8], u64, bool) = match index {
                 0 => (b".", 0, true),
                 1 => (b"..", 0, true),
-                k => match share.entry(k - 2) {
+                k => match share.entry(dir, k - 2) {
                     Some(e) => (e.name, e.size, e.is_dir),
                     None => {
                         self.handles[slot].as_mut().unwrap().enum_done = true;
@@ -1060,10 +1126,8 @@ impl Connection {
         };
         let handle = self.handles[slot].unwrap();
         let node = handle.node;
-        let (size, attrs, is_dir) = match node {
-            Node::Root => (0, ATTR_DIRECTORY, true),
-            Node::File(i) => (share.size(i), ATTR_NORMAL, false),
-        };
+        let (size, attrs) = node_facts(share, node);
+        let is_dir = node.is_dir();
         let writable = share.writable();
 
         let b = HDR_LEN;
@@ -1087,9 +1151,12 @@ impl Connection {
             }
             // FILE / FileInternalInformation: a stable index; the handle's node is one.
             (1, 6) => {
+                // Two id spaces interleaved into one, because [MS-FSCC] §2.4.20's index must be
+                // unique across the volume and a directory id and a file id may be the same
+                // number. Even is a directory, odd is a file; the root is 2 as it always was.
                 let id = match node {
-                    Node::Root => 2u64,
-                    Node::File(i) => 3 + i,
+                    Node::Dir(i) => 2 + i * 2,
+                    Node::File(i) => 3 + i * 2,
                 };
                 w64(d, 0, id);
                 8
@@ -1110,13 +1177,14 @@ impl Connection {
                 d[61] = is_dir as u8;
                 d[62] = handle.delete_on_close as u8; // Standard.DeletePending
                 w32(d, 76, maximal_access(writable)); // AccessInformation
-                // NameInformation: `\` + the name the handle was opened under. The handle's own
-                // copy, not a listing lookup: a writable share's listing moves.
-                let mut name = [0u8; 1 + MAX_NAME];
+                // NameInformation: `\` + the whole share-relative path the handle was opened
+                // under. The handle's own copy, not a listing lookup: a writable share's listing
+                // moves, and with subdirectories a listing could not have produced the path anyway.
+                let mut name = [0u8; 1 + MAX_PATH];
                 name[0] = b'\\';
                 let nlen = 1 + {
-                    let n = handle.name().len();
-                    name[1..1 + n].copy_from_slice(handle.name());
+                    let n = handle.path_bytes().len();
+                    name[1..1 + n].copy_from_slice(handle.path_bytes());
                     n
                 };
                 let wide = ascii_to_utf16le(&name[..nlen], &mut d[100..]);
@@ -1152,16 +1220,15 @@ impl Connection {
                 w32(d, 12, wide as u32); // LabelLength
                 18 + wide
             }
-            // FILESYSTEM / FileFsSizeInformation. Free space is nominal on a writable share and
-            // zero on a read-only one, which is the honest pair: see `share::NOMINAL_VOLUME_BYTES`
-            // for why there is no real number to report, and the crate BUGS for what a client
-            // that believes it will meet instead.
+            // FILESYSTEM / FileFsSizeInformation. The backing's real numbers when it can ask
+            // (milestone 54's `fs_proto::fs::STATFS`), nominal when it cannot; zero free on a
+            // read-only share either way. See `volume_units`.
             (2, 3) => {
-                let (total, free) = volume_units(writable);
+                let (unit, total, free) = volume_units(share, writable);
                 w64(d, 0, total); // TotalAllocationUnits
                 w64(d, 8, free); // AvailableAllocationUnits
                 w32(d, 16, 1); // SectorsPerAllocationUnit
-                w32(d, 20, VOLUME_UNIT as u32); // BytesPerSector
+                w32(d, 20, unit as u32); // BytesPerSector
                 24
             }
             // FILESYSTEM / FileFsDeviceInformation: a disk, read-only only when it is.
@@ -1181,19 +1248,19 @@ impl Connection {
                 let flags =
                     CASE_PRESERVED | UNICODE_ON_DISK | if writable { 0 } else { READ_ONLY_VOLUME };
                 w32(d, 0, flags);
-                w32(d, 4, MAX_NAME as u32); // MaximumComponentNameLength
+                w32(d, 4, crate::path::MAX_COMPONENT as u32); // MaximumComponentNameLength
                 let wide = ascii_to_utf16le(b"nifefs", &mut d[12..]);
                 w32(d, 8, wide as u32);
                 12 + wide
             }
             // FILESYSTEM / FileFsFullSizeInformation.
             (2, 7) => {
-                let (total, free) = volume_units(writable);
+                let (unit, total, free) = volume_units(share, writable);
                 w64(d, 0, total);
                 w64(d, 8, free); // CallerAvailableAllocationUnits
                 w64(d, 16, free); // ActualAvailableAllocationUnits
                 w32(d, 24, 1);
-                w32(d, 28, VOLUME_UNIT as u32);
+                w32(d, 28, unit as u32);
                 32
             }
             // SECURITY: this server has no security descriptors to show; the status is honest.
@@ -1218,30 +1285,65 @@ impl Connection {
     }
 }
 
-/// **Resolve a name under a CREATE disposition**, returning the file's id and the `CreateAction`
-/// the response must report.
+/// **Resolve a path under a CREATE disposition**, returning the node and the `CreateAction` the
+/// response must report.
 ///
 /// Free rather than a method because it is pure protocol-to-share translation, and because
 /// keeping it out of [`Connection`] makes it obvious that nothing here touches connection state:
-/// a disposition either produced a file or it did not.
+/// a disposition either produced a node or it did not.
 ///
 /// The read-only gate is the caller's ([`Connection::create`]); by the time this runs, a write is
-/// already permitted.
+/// already permitted. So is the path check: `path` came out of [`Path::parse`].
 fn open_with_disposition(
     share: &impl Share,
-    name: &[u8],
+    path: Path<'_>,
     disposition: u32,
-) -> Result<(FileId, u32), Error> {
+    options: u32,
+) -> Result<(Node, u32), Error> {
+    // A client insisting on a directory gets the directory verbs and nothing else. Only three
+    // dispositions mean anything to a directory: open it, make it, or either. Overwriting or
+    // superseding a directory is not an operation, and a success for it would be a lie a client
+    // acts on.
+    if options & OPT_DIRECTORY_FILE != 0 {
+        return match disposition {
+            FILE_OPEN => share.open_dir(path).map(|d| (Node::Dir(d), ACTION_OPENED)),
+            FILE_CREATE => share.mkdir(path).map(|d| (Node::Dir(d), ACTION_CREATED)),
+            FILE_OPEN_IF => match share.open_dir(path) {
+                Ok(d) => Ok((Node::Dir(d), ACTION_OPENED)),
+                Err(Error::NotFound) => share.mkdir(path).map(|d| (Node::Dir(d), ACTION_CREATED)),
+                Err(e) => Err(e),
+            },
+            _ => Err(Error::IsDirectory),
+        };
+    }
+
+    // A file, with a fallback to opening a directory the client did not say it wanted. The
+    // fallback is only for the two non-creating dispositions: "make me a file called `bands`" must
+    // not quietly hand back the directory that is already there.
+    let as_dir = |e: Error| -> Result<(Node, u32), Error> {
+        if e == Error::IsDirectory && options & OPT_NON_DIRECTORY_FILE == 0 {
+            share.open_dir(path).map(|d| (Node::Dir(d), ACTION_OPENED))
+        } else {
+            Err(e)
+        }
+    };
     match disposition {
-        FILE_OPEN => share.open(name).map(|id| (id, ACTION_OPENED)),
-        FILE_CREATE => share.create(name).map(|id| (id, ACTION_CREATED)),
-        FILE_OPEN_IF => match share.open(name) {
-            Ok(id) => Ok((id, ACTION_OPENED)),
-            Err(Error::NotFound) => share.create(name).map(|id| (id, ACTION_CREATED)),
-            Err(e) => Err(e),
+        FILE_OPEN => match share.open(path) {
+            Ok(id) => Ok((Node::File(id), ACTION_OPENED)),
+            Err(e) => as_dir(e),
+        },
+        FILE_CREATE => share
+            .create(path)
+            .map(|id| (Node::File(id), ACTION_CREATED)),
+        FILE_OPEN_IF => match share.open(path) {
+            Ok(id) => Ok((Node::File(id), ACTION_OPENED)),
+            Err(Error::NotFound) => share
+                .create(path)
+                .map(|id| (Node::File(id), ACTION_CREATED)),
+            Err(e) => as_dir(e),
         },
         FILE_OVERWRITE => {
-            let id = share.open(name)?;
+            let id = share.open(path)?;
             truncate_or_close(share, id, ACTION_OVERWRITTEN)
         }
         // SUPERSEDE and OVERWRITE_IF differ only in the action they report. Superseding properly
@@ -1253,9 +1355,11 @@ fn open_with_disposition(
             } else {
                 ACTION_OVERWRITTEN
             };
-            match share.open(name) {
+            match share.open(path) {
                 Ok(id) => truncate_or_close(share, id, action),
-                Err(Error::NotFound) => share.create(name).map(|id| (id, ACTION_CREATED)),
+                Err(Error::NotFound) => share
+                    .create(path)
+                    .map(|id| (Node::File(id), ACTION_CREATED)),
                 Err(e) => Err(e),
             }
         }
@@ -1265,13 +1369,35 @@ fn open_with_disposition(
 
 /// Truncate a freshly opened file to zero, closing it if that fails: a CREATE that answers an
 /// error must not leave the backing holding an id nobody will ever close.
-fn truncate_or_close(share: &impl Share, id: FileId, action: u32) -> Result<(FileId, u32), Error> {
+fn truncate_or_close(share: &impl Share, id: FileId, action: u32) -> Result<(Node, u32), Error> {
     match share.truncate(id, 0) {
-        Ok(()) => Ok((id, action)),
+        Ok(()) => Ok((Node::File(id), action)),
         Err(e) => {
             share.close(id);
             Err(e)
         }
+    }
+}
+
+/// Give a node's id back to the backing. **The one place a node is released**, so a CREATE that
+/// succeeded and is then refused for a different reason cannot leak a handle in the FS server: the
+/// three refusals after the open all go through here rather than each remembering.
+///
+/// The root is never released, because nobody opened it.
+fn release(share: &impl Share, node: Node) {
+    match node {
+        Node::File(id) => share.close(id),
+        Node::Dir(ROOT_DIR) => {}
+        Node::Dir(id) => share.close_dir(id),
+    }
+}
+
+/// `(size, attributes)` for a node: what CREATE, CLOSE and `QUERY_INFO` all report. A directory has
+/// no size in this model, which is what every SMB server says about one.
+fn node_facts(share: &impl Share, node: Node) -> (u64, u32) {
+    match node {
+        Node::Dir(_) => (0, ATTR_DIRECTORY),
+        Node::File(id) => (share.size(id), ATTR_NORMAL),
     }
 }
 
@@ -1289,15 +1415,36 @@ const fn maximal_access(writable: bool) -> u32 {
     }
 }
 
-/// The allocation unit the volume information classes report in. 4 KiB, matching the filesystem's
-/// block size, so a client's arithmetic lands on real boundaries.
+/// The allocation unit the volume classes fall back to when the backing has no volume to ask.
+/// 4 KiB, matching the filesystem's block size, so a client's arithmetic lands on real boundaries
+/// even in the nominal case.
 const VOLUME_UNIT: u64 = 4096;
 
-/// `(total, free)` allocation units. Read the doc on [`crate::share::NOMINAL_VOLUME_BYTES`] before
-/// believing either number: nothing in this stack can ask the filesystem how big it is.
-const fn volume_units(writable: bool) -> (u64, u64) {
-    let total = crate::share::NOMINAL_VOLUME_BYTES / VOLUME_UNIT;
-    (total, if writable { total } else { 0 })
+/// **`(unit, total, free)` for the volume classes**, in the backing's own allocation unit.
+///
+/// The real numbers when [`Share::statfs`] can answer, which is what milestone 54's
+/// `fs_proto::fs::STATFS` made possible and what macOS needs to size a Time Machine sparsebundle.
+/// A backing with no volume (the fixture is baked into a binary) falls back to
+/// [`crate::share::NOMINAL_VOLUME_BYTES`], and the crate BUGS say so where a reader meets it.
+///
+/// **A read-only share reports zero free either way**, and that is not a rounding of the truth: it
+/// is the same statement `READ_ONLY_VOLUME` makes one field over, in the units a client's
+/// arithmetic uses, and a client that believed the real free count would try a write this server
+/// refuses at the protocol layer. Reporting room a caller cannot use is the lie worth avoiding
+/// here; the volume's *size* stays truthful because a client uses it to decide whether the volume
+/// is the right one at all.
+fn volume_units(share: &impl Share, writable: bool) -> (u64, u64, u64) {
+    match share.statfs() {
+        Some(v) => (
+            v.block_size,
+            v.total_blocks,
+            if writable { v.free_blocks } else { 0 },
+        ),
+        None => {
+            let total = crate::share::NOMINAL_VOLUME_BYTES / VOLUME_UNIT;
+            (VOLUME_UNIT, total, if writable { total } else { 0 })
+        }
+    }
 }
 
 /// Is this an SMB1 multi-protocol NEGOTIATE (`\xFFSMB`, command `0x72`)? The only SMB1 shape
@@ -1508,6 +1655,9 @@ mod tests {
             vec![
                 b".".to_vec(),
                 b"..".to_vec(),
+                // `bands` is the fixture's one subdirectory, listed before the files (share.rs
+                // orders directories first) and one level only: `bands\0` is not here.
+                b"bands".to_vec(),
                 b"hello.txt".to_vec(),
                 b"readme.md".to_vec()
             ]
@@ -1638,11 +1788,351 @@ mod tests {
         let resp = rt(&mut c, &client::read(12, sid, tid, &fid, 0, 64));
         assert_eq!(client::read_data(&resp), b"nife serves SMB\n");
 
-        // A name that is not there, and a path below a flat root.
+        // A name that is not there, and a path whose parent is not there. The two are different
+        // statuses on purpose now that the share has directories: one says "make the parent
+        // first", the other says the parent is fine.
         let resp = rt(&mut c, &client::create(13, sid, tid, b"absent.txt"));
         assert_eq!(status(&resp), STATUS_OBJECT_NAME_NOT_FOUND);
         let resp = rt(&mut c, &client::create(14, sid, tid, b"a\\b.txt"));
         assert_eq!(status(&resp), STATUS_OBJECT_PATH_NOT_FOUND);
+        let resp = rt(&mut c, &client::create(15, sid, tid, b"bands\\absent"));
+        assert_eq!(status(&resp), STATUS_OBJECT_NAME_NOT_FOUND);
+    }
+
+    // --- Subdirectories (milestone 54's third act) ---
+
+    /// **The whole sparsebundle sequence, in the order a client performs it**: make a directory,
+    /// make a file inside it, write to it, list the directory, and read the file back by its full
+    /// path through a fresh handle.
+    ///
+    /// This is one test rather than five because the thing under test is that the steps compose:
+    /// each one alone was expressible against a flat share by dropping the path, and only the
+    /// sequence catches a `CREATE` that made `bands\band0` as a file literally called
+    /// `bands\band0` in the root.
+    #[test]
+    fn a_directory_is_made_filled_listed_and_read_back_by_path() {
+        let share = MemoryShare::new(&[], &[]);
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &share);
+
+        // mkdir: FILE_CREATE (2) with FILE_DIRECTORY_FILE (0x1).
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(5, sid, tid, b"backup.sparsebundle", 2, OPT_DIRECTORY_FILE),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(client::create_action(&resp), ACTION_CREATED);
+        assert!(share.has_dir(b"backup.sparsebundle"));
+        let dir_fid = client::create_file_id(&resp);
+
+        // Making it twice is a collision, not a silent open: create is create.
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(6, sid, tid, b"backup.sparsebundle", 2, OPT_DIRECTORY_FILE),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_OBJECT_NAME_COLLISION);
+
+        // One level per call: a directory two deep needs its parent made first.
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(7, sid, tid, b"a\\b\\c", 2, OPT_DIRECTORY_FILE),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_OBJECT_PATH_NOT_FOUND);
+
+        // A file inside it, written through the handle CREATE minted.
+        let resp = rt_on(
+            &mut c,
+            &client::create_disposition(8, sid, tid, b"backup.sparsebundle\\band0", 5),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        let resp = rt_on(
+            &mut c,
+            &client::write(9, sid, tid, &fid, b"bandbytes"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        rt_on(&mut c, &client::close(10, sid, tid, &fid), &share);
+        assert_eq!(
+            share.contents(b"backup.sparsebundle\\band0").as_deref(),
+            Some(b"bandbytes".as_slice()),
+            "the bytes landed under the path, not at a name containing a separator",
+        );
+
+        // The directory's own listing: `.`, `..`, then the one child, by its leaf name.
+        let resp = rt_on(
+            &mut c,
+            &client::query_directory(11, sid, tid, &dir_fid, 37, b"*"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let names: Vec<Vec<u8>> = client::dir_entries(&resp, 37)
+            .map(|n| n.as_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            names,
+            vec![b".".to_vec(), b"..".to_vec(), b"band0".to_vec()],
+            "a listing shows leaf names, and only what is directly inside",
+        );
+
+        // And the root shows the directory rather than what is in it.
+        let resp = rt_on(&mut c, &client::create(12, sid, tid, b""), &share);
+        let root_fid = client::create_file_id(&resp);
+        let resp = rt_on(
+            &mut c,
+            &client::query_directory(13, sid, tid, &root_fid, 37, b"*"),
+            &share,
+        );
+        let names: Vec<Vec<u8>> = client::dir_entries(&resp, 37)
+            .map(|n| n.as_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                b".".to_vec(),
+                b"..".to_vec(),
+                b"backup.sparsebundle".to_vec()
+            ],
+        );
+
+        // Read it back through a fresh handle, by its full path.
+        let resp = rt_on(
+            &mut c,
+            &client::create(14, sid, tid, b"backup.sparsebundle\\band0"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        assert_eq!(client::create_end_of_file(&resp), 9);
+        let resp = rt_on(&mut c, &client::read(15, sid, tid, &fid, 0, 64), &share);
+        assert_eq!(client::read_data(&resp), b"bandbytes");
+    }
+
+    /// **A path that climbs out of the share is refused at the wire**, whatever it is asked to do
+    /// with. The share seam never sees one, so no backing has to be trusted to notice: `Path` is
+    /// unconstructible without the check.
+    #[test]
+    fn no_request_can_name_anything_above_the_share() {
+        let share = MemoryShare::new(&[b"sub"], &[(b"sub\\f", b"x")]);
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &share);
+
+        for (i, path) in [
+            b"..".as_slice(),
+            b"..\\..\\etc\\passwd".as_slice(),
+            b"sub\\..\\..\\escape".as_slice(),
+            b"\\..\\x".as_slice(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let resp = rt_on(
+                &mut c,
+                &client::create_disposition(20 + i as u64, sid, tid, path, 5),
+                &share,
+            );
+            assert_eq!(
+                status(&resp),
+                STATUS_OBJECT_PATH_NOT_FOUND,
+                "{:?} must not resolve",
+                core::str::from_utf8(path).unwrap(),
+            );
+        }
+        // And a rename cannot smuggle one in through SET_INFO either, which is the second door.
+        let resp = rt_on(&mut c, &client::create(30, sid, tid, b"sub\\f"), &share);
+        let fid = client::create_file_id(&resp);
+        let resp = rt_on(
+            &mut c,
+            &client::set_rename(31, sid, tid, &fid, b"..\\stolen"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_OBJECT_PATH_NOT_FOUND);
+        assert!(share.contents(b"sub\\f").is_some(), "and nothing moved");
+    }
+
+    /// **A directory cannot be moved into itself**, which is the one rename no filesystem can
+    /// perform and which only this layer can see, because it is the only one holding both sides as
+    /// paths at once.
+    #[test]
+    fn a_directory_cannot_be_renamed_inside_itself() {
+        let share = MemoryShare::new(&[b"a", b"a\\b"], &[]);
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &share);
+
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(5, sid, tid, b"a", 1, OPT_DIRECTORY_FILE),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        let resp = rt_on(
+            &mut c,
+            &client::set_rename(6, sid, tid, &fid, b"a\\b\\a"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_INVALID_PARAMETER);
+        // A prefix that is not a component boundary is a different directory, and is allowed.
+        let resp = rt_on(
+            &mut c,
+            &client::set_rename(7, sid, tid, &fid, b"ax"),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert!(share.has_dir(b"ax"));
+    }
+
+    /// **A directory is removed by `rmdir` and only when empty**, and the two verbs stay apart:
+    /// neither will remove the kind the other is for. Proven through delete-on-close, which is how
+    /// an SMB client deletes anything.
+    #[test]
+    fn removing_a_directory_is_rmdir_and_takes_only_an_empty_one() {
+        let share = MemoryShare::new(&[b"full", b"empty"], &[(b"full\\f", b"x")]);
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &share);
+
+        // A non-empty directory marked for deletion survives, because rmdir refuses it.
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(
+                5,
+                sid,
+                tid,
+                b"full",
+                1,
+                OPT_DIRECTORY_FILE | OPT_DELETE_ON_CLOSE,
+            ),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        rt_on(&mut c, &client::close(6, sid, tid, &fid), &share);
+        assert!(
+            share.has_dir(b"full"),
+            "a non-empty directory is not emptied"
+        );
+
+        // An empty one goes.
+        let resp = rt_on(
+            &mut c,
+            &client::create_full(
+                7,
+                sid,
+                tid,
+                b"empty",
+                1,
+                OPT_DIRECTORY_FILE | OPT_DELETE_ON_CLOSE,
+            ),
+            &share,
+        );
+        let fid = client::create_file_id(&resp);
+        rt_on(&mut c, &client::close(8, sid, tid, &fid), &share);
+        assert!(!share.has_dir(b"empty"));
+
+        // The share itself is not deletable through the share.
+        let resp = rt_on(&mut c, &client::create(9, sid, tid, b""), &share);
+        let fid = client::create_file_id(&resp);
+        let resp = rt_on(
+            &mut c,
+            &client::set_disposition(10, sid, tid, &fid, true),
+            &share,
+        );
+        assert_eq!(status(&resp), STATUS_FILE_IS_A_DIRECTORY);
+    }
+
+    /// **A directory and a file are told apart in both directions**, which is the pair of statuses
+    /// a flat share had no need of and a tree cannot work without.
+    #[test]
+    fn the_kind_checks_answer_in_both_directions() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+
+        // FILE_DIRECTORY_FILE on a file.
+        let resp = rt(
+            &mut c,
+            &client::create_full(5, sid, tid, b"hello.txt", 1, OPT_DIRECTORY_FILE),
+        );
+        assert_eq!(status(&resp), STATUS_NOT_A_DIRECTORY);
+        // FILE_NON_DIRECTORY_FILE on a directory.
+        let resp = rt(
+            &mut c,
+            &client::create_full(6, sid, tid, b"bands", 1, OPT_NON_DIRECTORY_FILE),
+        );
+        assert_eq!(status(&resp), STATUS_FILE_IS_A_DIRECTORY);
+
+        // A plain open of a directory falls back to opening it as one, which is what macOS does
+        // when it stats a path: the response carries the directory attribute rather than an error.
+        let resp = rt(&mut c, &client::create(7, sid, tid, b"bands"));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        let resp = rt(&mut c, &client::query_info(8, sid, tid, &fid, 1, 5));
+        // FileStandardInformation's Directory byte, at offset 21 of the payload.
+        let at = HDR_LEN + 8;
+        assert_eq!(resp[at + 21], 1, "it is reported as a directory");
+        // And reading it is not an operation.
+        let resp = rt(&mut c, &client::read(9, sid, tid, &fid, 0, 16));
+        assert_eq!(status(&resp), STATUS_INVALID_PARAMETER);
+    }
+
+    /// **The volume classes report the backing's real numbers when it has them**, which is the
+    /// whole point of `fs_proto::fs::STATFS` reaching this far: macOS sizes a Time Machine
+    /// sparsebundle against these fields, and a constant is what it was sizing against before.
+    #[test]
+    fn the_volume_classes_report_what_the_backing_says_rather_than_a_constant() {
+        let share = MemoryShare::new(&[], &[]);
+        let v = share.statfs().unwrap();
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &share);
+        let resp = rt_on(&mut c, &client::create(5, sid, tid, b""), &share);
+        let fid = client::create_file_id(&resp);
+
+        let at = HDR_LEN + 8;
+        let resp = rt_on(&mut c, &client::query_info(6, sid, tid, &fid, 2, 3), &share);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(r64(&resp, at), v.total_blocks, "TotalAllocationUnits");
+        assert_eq!(
+            r64(&resp, at + 8),
+            v.free_blocks,
+            "AvailableAllocationUnits"
+        );
+        assert_eq!(r32(&resp, at + 20), v.block_size as u32, "BytesPerSector");
+
+        // Fill the share and ask again: the free count must move, or this is still a constant
+        // wearing a different value.
+        let resp = rt_on(
+            &mut c,
+            &client::create_disposition(7, sid, tid, b"filler", 2),
+            &share,
+        );
+        let ffid = client::create_file_id(&resp);
+        rt_on(
+            &mut c,
+            &client::write(8, sid, tid, &ffid, &[0u8; 600]),
+            &share,
+        );
+        let resp = rt_on(&mut c, &client::query_info(9, sid, tid, &fid, 2, 7), &share);
+        let after = r64(&resp, at + 8);
+        assert!(
+            after < v.free_blocks,
+            "free went {} -> {after} after 600 bytes were written",
+            v.free_blocks,
+        );
+
+        // The fixture has no volume and falls back to the nominal figure, stated rather than
+        // silent (see `volume_units`).
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(&mut c, &client::create(5, sid, tid, b""));
+        let fid = client::create_file_id(&resp);
+        let resp = rt(&mut c, &client::query_info(6, sid, tid, &fid, 2, 3));
+        assert_eq!(
+            r64(&resp, at),
+            crate::share::NOMINAL_VOLUME_BYTES / VOLUME_UNIT,
+        );
     }
 
     /// **A read-only share says so in every field a client reads before it tries.** macOS refuses
@@ -1690,7 +2180,10 @@ mod tests {
             );
         }
         check(&FIXTURE);
-        check(&MemoryShare::new(&[(b"a.txt" as &[u8], b"x" as &[u8])]));
+        check(&MemoryShare::new(
+            &[],
+            &[(b"a.txt" as &[u8], b"x" as &[u8])],
+        ));
     }
 
     /// **The write path end to end, through the wire.** Create a file that was not there, write
@@ -1700,7 +2193,7 @@ mod tests {
     /// going through the FS server).
     #[test]
     fn a_file_is_created_written_and_reads_back_from_the_share_itself() {
-        let share = MemoryShare::new(&[]);
+        let share = MemoryShare::new(&[], &[]);
         let mut c = conn();
         let (sid, tid) = establish_on(&mut c, &share);
 
@@ -1761,9 +2254,9 @@ mod tests {
         ];
         for &(disposition, exists, want_status, want_action, want_size) in cases {
             let share = if exists {
-                MemoryShare::new(&[(b"f.txt" as &[u8], b"abc" as &[u8])])
+                MemoryShare::new(&[], &[(b"f.txt" as &[u8], b"abc" as &[u8])])
             } else {
-                MemoryShare::new(&[])
+                MemoryShare::new(&[], &[])
             };
             let mut c = conn();
             let (sid, tid) = establish_on(&mut c, &share);
@@ -1803,7 +2296,7 @@ mod tests {
     /// hide.
     #[test]
     fn set_info_truncates_renames_and_deletes() {
-        let share = MemoryShare::new(&[(b"f.txt" as &[u8], b"abcdefgh" as &[u8])]);
+        let share = MemoryShare::new(&[], &[(b"f.txt" as &[u8], b"abcdefgh" as &[u8])]);
         let mut c = conn();
         let (sid, tid) = establish_on(&mut c, &share);
         let resp = rt_on(&mut c, &client::create(5, sid, tid, b"f.txt"), &share);
@@ -1887,7 +2380,7 @@ mod tests {
     /// open, mark on the way in, close.
     #[test]
     fn delete_on_close_at_create_removes_the_name() {
-        let share = MemoryShare::new(&[(b"doomed.txt" as &[u8], b"x" as &[u8])]);
+        let share = MemoryShare::new(&[], &[(b"doomed.txt" as &[u8], b"x" as &[u8])]);
         let mut c = conn();
         let (sid, tid) = establish_on(&mut c, &share);
         let resp = rt_on(
@@ -1909,7 +2402,7 @@ mod tests {
     /// why nothing caught it until writes existed.
     #[test]
     fn an_open_handle_survives_a_create_that_reorders_the_share() {
-        let share = MemoryShare::new(&[(b"zebra.txt" as &[u8], b"stripes" as &[u8])]);
+        let share = MemoryShare::new(&[], &[(b"zebra.txt" as &[u8], b"stripes" as &[u8])]);
         let mut c = conn();
         let (sid, tid) = establish_on(&mut c, &share);
         let resp = rt_on(&mut c, &client::create(5, sid, tid, b"zebra.txt"), &share);
