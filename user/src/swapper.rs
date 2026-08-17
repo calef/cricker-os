@@ -47,6 +47,7 @@
 
 // Two shared modules: the swap system's protocol and the supervision tree's loader. Each binary
 // uses a different slice of both, so the unused halves are expected (§38).
+use component_plan::Provisions;
 use supervision_proto::ChildEndowment;
 use swap_proto::log_checks as lc;
 use user_rt::{cap_delete, invoke, recv, recv_fault, send};
@@ -59,12 +60,10 @@ const ROOT_UT: u64 = 0; // the construction budget: what every process here is b
 const REPORT: u64 = 1; // WRITE|GRANT, so each child gets its own narrowed view
 const DEVICE: u64 = 2; // the UART's registers, WRITE|GRANT: ours to lend, and ours to take back
 
-/// Pages per process we build: its segments (three pages for a debug build of a program this
-/// small), its four-page stack, its address-space root, its TCB, its page tables and its revocation
-/// log. Forty is roughly double what any of them uses, and it is a **peak**: this operator never
-/// destroys a region, so all five splits are live at once and the budget below has to cover them
-/// all together.
-const INSTANCE_PAGES: u64 = 32;
+// Pages per process we build is NOT here any more. It is `swap_proto::INSTANCE_PAGES`, declared by
+// each contract, and it reaches this program through `component_plan::Plan::pages`. It is a **peak**,
+// because this operator never destroys a region: all five splits are live at once and the budget has
+// to cover them together.
 
 /// The channels this operator owns, created once out of its own budget.
 struct Wiring {
@@ -122,42 +121,57 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
     let v2 = image(fs, "c_swappable", 3);
     let client_img = image(fs, "chatty", 4);
 
-    // The two endowments, whole, so a reader can see the complete authority of everything this
-    // program starts. The capability order is the slot order each program expects.
-    let instance_caps = [
-        (w.svc, abi::rights::READ),   // swap_proto::SVC:  we may answer here
-        (REPORT, abi::rights::WRITE), // swap_proto::RPT
-        (w.note, abi::rights::WRITE), // swap_proto::NOTE
-        (w.poke, abi::rights::READ),  // swap_proto::POKE
-    ];
-    let client_caps = [
-        (w.svc, abi::rights::WRITE), // we may ASK here, and only ask: no READ, so no answering
-        (REPORT, abi::rights::WRITE),
-        (w.note, abi::rights::WRITE),
-    ];
-    let with_device = [
-        (swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW),
-        // The mode is ignored for a device capability, which is always device-typed read/write.
-        (swap_proto::DEV_VA, DEVICE, abi::aspace::MAP_RO),
-    ];
-    let without_device = [(swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
+    // **What this operator will route, per child, by the name the component uses for it.** This is
+    // the whole of what used to be four literal endowment arrays: no rights are spelled here, no
+    // addresses, and no slot order, because every one of those is declared by the component and
+    // computed by `component_plan`. What is left is the only thing an operator actually knows, which
+    // is which of *its own* objects answers to which name.
+    //
+    // Two tables rather than one, and the reason is not that the manifests would take too much from
+    // a wide one (they take what they declare either way). It is that the two bounds are
+    // independent: the manifest bounds what a component may *ask* for, and a routing table bounds
+    // what this operator *offers* it. A client that could be routed the device is a client one
+    // manifest edit away from holding it.
+    let to_component = Provisions {
+        held: &[
+            ("service", w.svc),
+            ("report", REPORT),
+            ("operator", w.note),
+            ("control", w.poke),
+            ("witness", w.logframe),
+            ("uart", DEVICE),
+        ],
+    };
+    let to_client = Provisions {
+        held: &[("service", w.svc), ("report", REPORT), ("operator", w.note)],
+    };
+
+    // ------------------------------------------------------------------------------------------
+    // **The control that must fail, before anything exists.** The queue broker's declaration names
+    // `requests` and `backend`, and this channel routes neither: the queued rung is the other role's
+    // system. So a component this operator cannot provide for is refused as a *value*, with nothing
+    // built, nothing mapped and nothing started, which is what makes a manifest a request rather
+    // than an instruction. A run in which this *succeeds* is failed loudly, the same way an
+    // instance's post-revoke probe surviving is.
+    // ------------------------------------------------------------------------------------------
+
+    match component_plan::plan(&swap_proto::BROKER, &to_component) {
+        Ok(_) => bail(60),
+        Err(refusal) => send(REPORT, swap_proto::RPT_REFUSED, refusal.code(), 0),
+    };
+
+    let Ok(component) = component_plan::plan(&swap_proto::CONSOLE, &to_component) else {
+        bail(61)
+    };
+    let Ok(client) = component_plan::plan(&swap_proto::CLIENT, &to_client) else {
+        bail(62)
+    };
 
     // ------------------------------------------------------------------------------------------
     // The incumbent.
     // ------------------------------------------------------------------------------------------
 
-    start_child(
-        &v1,
-        &ChildEndowment {
-            caps: &instance_caps,
-            maps: &with_device,
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
-        [1, 0, 0], // a device, and log entries from 0
-        11,
-    );
+    start_child(&v1, &component, w.faultep, [1, 0, 0], 11); // a device, log entries from 0
 
     // ------------------------------------------------------------------------------------------
     // Step 1: build the replacement, **before anyone is talking**. Endowed with everything except
@@ -170,7 +184,11 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // "however long a build takes".
     // ------------------------------------------------------------------------------------------
 
-    let Ok(b_region) = supervision_proto::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
+    // The one endowment this operator still writes by hand, and it is the deferral rather than the
+    // authority: `maps_without_devices` is the declaration minus what a revoke is about to take, and
+    // `devices` below is the rest of it. `component_plan` sorts device mappings last so both halves
+    // are slices of one plan and neither can be built by hand.
+    let Ok(b_region) = supervision_proto::untyped_split(ROOT_UT, component.pages()) else {
         bail(20)
     };
     let Ok((b_tcb, b_aspace)) = supervision_proto::build_child_space(
@@ -178,8 +196,8 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
         b_region,
         &v2,
         &ChildEndowment {
-            caps: &instance_caps,
-            maps: &without_device,
+            caps: component.caps(),
+            maps: component.maps_without_devices(),
             blobs: &[],
             fault: Some(w.faultep),
             ..ChildEndowment::new()
@@ -203,13 +221,8 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
 
     start_child(
         &client_img,
-        &ChildEndowment {
-            caps: &client_caps,
-            maps: &[],
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
+        &client,
+        w.faultep,
         [swap_proto::ROLE_CLIENT, 0, 0],
         14,
     );
@@ -247,18 +260,11 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // the service endpoint's sender queue while nobody was receiving.
     // ------------------------------------------------------------------------------------------
 
-    // SAFETY: plain syscall; the aspace capability is still ours until CONFIGURE consumes it.
-    if unsafe {
-        invoke(
-            b_aspace,
-            abi::aspace::MAP_INTO,
-            swap_proto::DEV_VA,
-            DEVICE,
-            abi::aspace::MAP_RO,
-        )
-    } != 0
-    {
-        bail(24)
+    for &(va, slot, mode) in component.devices() {
+        // SAFETY: plain syscall; the aspace capability is still ours until CONFIGURE consumes it.
+        if unsafe { invoke(b_aspace, abi::aspace::MAP_INTO, va, slot, mode) } != 0 {
+            bail(24)
+        }
     }
     if supervision_proto::configure_child(b_tcb, b_aspace, v2.entry()).is_err() {
         bail(25)
@@ -297,15 +303,13 @@ fn direct(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // client's capabilities and tries to become the server on the endpoint it is a client of.
     // ------------------------------------------------------------------------------------------
 
+    // The attacker is wired from the client's own declaration and the client's own routing table, so
+    // "exactly the honest client's capabilities" is now a property of the code rather than of two
+    // arrays a reader has to compare.
     start_child(
         &client_img,
-        &ChildEndowment {
-            caps: &client_caps,
-            maps: &[],
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
+        &client,
+        w.faultep,
         [swap_proto::ROLE_USURPER, 0, 0],
         30,
     );
@@ -343,62 +347,63 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
     // `svc` is the *back* endpoint here: what the broker forwards to and what a backend receives
     // on. `front` is what the producer holds, and it is the stable name on this channel.
     let front = obj(abi::objtype::ENDPOINT, 41);
-
-    let backend_caps = [
-        (w.svc, abi::rights::READ),
-        (REPORT, abi::rights::WRITE),
-        (w.note, abi::rights::WRITE),
-        (w.poke, abi::rights::READ),
-    ];
-    let broker_caps = [
-        (front, abi::rights::READ),   // broker::FRONT
-        (w.svc, abi::rights::WRITE),  // broker::BACK
-        (REPORT, abi::rights::WRITE), // broker::RPT
-        (w.note, abi::rights::WRITE), // broker::NOTE
-    ];
-    let producer_caps = [
-        (front, abi::rights::WRITE),
-        (REPORT, abi::rights::WRITE),
-        (w.note, abi::rights::WRITE),
-    ];
-    let logmap = [(swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
     let base = swap_proto::BROKER_LOG_BASE;
+
+    // **Three routing tables, and the interesting thing about them is `service`.** The producer's
+    // declaration is `swap_proto::CLIENT`, byte for byte the one the direct channel's client is
+    // wired from, and it asks to use an endpoint it calls `service`. Here that name resolves to the
+    // broker's front endpoint instead of to the component's. One declaration, two routings, and the
+    // program cannot tell which it got: that is the indirection the manifest buys, and it is what
+    // makes a component's *peer* substitutable and not only the component.
+    let to_backend = Provisions {
+        held: &[
+            ("service", w.svc),
+            ("report", REPORT),
+            ("operator", w.note),
+            ("control", w.poke),
+            ("witness", w.logframe),
+        ],
+    };
+    let to_broker = Provisions {
+        held: &[
+            ("requests", front),
+            ("backend", w.svc),
+            ("report", REPORT),
+            ("operator", w.note),
+        ],
+    };
+    let to_producer = Provisions {
+        held: &[("service", front), ("report", REPORT), ("operator", w.note)],
+    };
+
+    // The control that must fail on this channel, and it is the mirror of the direct one: no device
+    // is routed here, so the console component's declaration cannot be satisfied and is refused
+    // before anything is built. This is the same refusal from the other side, which is why both
+    // roles report it: a mechanism that only worked for the one component it was written against
+    // would not be a mechanism.
+    match component_plan::plan(&swap_proto::CONSOLE, &to_backend) {
+        Ok(_) => bail(60),
+        Err(refusal) => send(REPORT, swap_proto::RPT_REFUSED, refusal.code(), 0),
+    };
 
     // No device on this channel: the backend behind a broker is a plain service, and mixing the
     // device story into the queue story would make it unclear which mechanism carried which claim.
-    start_child(
-        &v1,
-        &ChildEndowment {
-            caps: &backend_caps,
-            maps: &logmap,
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
-        [0, base, 0],
-        42,
-    );
-    start_child(
-        &broker_img,
-        &ChildEndowment {
-            caps: &broker_caps,
-            maps: &[],
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
-        [0, 0, 0],
-        43,
-    );
+    let Ok(backend) = component_plan::plan(&swap_proto::BACKEND, &to_backend) else {
+        bail(61)
+    };
+    let Ok(broker) = component_plan::plan(&swap_proto::BROKER, &to_broker) else {
+        bail(62)
+    };
+    let Ok(producer) = component_plan::plan(&swap_proto::CLIENT, &to_producer) else {
+        bail(63)
+    };
+
+    start_child(&v1, &backend, w.faultep, [0, base, 0], 42);
+    start_child(&broker_img, &broker, w.faultep, [0, 0, 0], 43);
     start_child(
         &client_img,
-        &ChildEndowment {
-            caps: &producer_caps,
-            maps: &[],
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
+        &producer,
+        w.faultep,
         [swap_proto::ROLE_PRODUCER, 0, 0],
         44,
     );
@@ -427,19 +432,9 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
     let mut corpses = 0u64;
     reap_to(w.faultep, &mut corpses, 1);
 
-    // The replacement, in a different language, on the same back endpoint.
-    start_child(
-        &v2,
-        &ChildEndowment {
-            caps: &backend_caps,
-            maps: &logmap,
-            blobs: &[],
-            fault: Some(w.faultep),
-            ..ChildEndowment::new()
-        },
-        [0, base, 0],
-        48,
-    );
+    // The replacement, in a different language, on the same back endpoint, wired from the same
+    // declaration the outgoing one was.
+    start_child(&v2, &backend, w.faultep, [0, base, 0], 48);
     send(
         REPORT,
         swap_proto::RPT_STEP,
@@ -480,11 +475,30 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
 /// Split a region, build a child in it, start it, and drop both capabilities. Neither is the thing
 /// itself: a TCB capability is not the thread (dropping it leaves the thread running), and since
 /// DECISIONS §32 the region capability is not the reap either.
-fn start_child(elf: &elf::Elf, endow: &ChildEndowment, args: [u64; 3], stage: u64) {
-    let Ok(region) = supervision_proto::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
+///
+/// **It takes a plan rather than an endowment**, which is milestone 23's manifest lane in one
+/// signature: the caller says which component and which supervision endpoint, and every capability,
+/// every mapping and the region size come from the component's own declaration. `args` stays a
+/// caller's business because it is configuration and not authority (which log entries this instance
+/// writes, and which of `chatty`'s three roles it is playing).
+fn start_child(
+    elf: &elf::Elf,
+    plan: &component_plan::Plan,
+    faultep: u64,
+    args: [u64; 3],
+    stage: u64,
+) {
+    let Ok(region) = supervision_proto::untyped_split(ROOT_UT, plan.pages()) else {
         bail(stage)
     };
-    let Ok(tcb) = supervision_proto::build_child(ROOT_UT, region, elf, endow) else {
+    let endow = ChildEndowment {
+        caps: plan.caps(),
+        maps: plan.maps(),
+        blobs: &[],
+        fault: Some(faultep),
+        ..ChildEndowment::new()
+    };
+    let Ok(tcb) = supervision_proto::build_child(ROOT_UT, region, elf, &endow) else {
         bail(stage + 1)
     };
     if !supervision_proto::tcb_start(tcb, args[0], args[1], args[2]) {

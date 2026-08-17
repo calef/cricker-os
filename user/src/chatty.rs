@@ -40,10 +40,16 @@
 use swap_proto::client_checks as ck;
 use user_rt::{call, send};
 
-/// What `swapper` endowed us with, in order. The attacker gets the same three, deliberately.
-const SVC: u64 = 0; // WRITE: we may ask. We may not answer.
-const RPT: u64 = 1; // WRITE: our verdict
-const NOTE: u64 = 2; // WRITE: the operator's coordination channel
+/// What `swapper` endowed us with, **derived from our own declaration** (`swap_proto::CLIENT`,
+/// milestone 23's manifest). The attacker gets the same three, deliberately, and now that is a fact
+/// about the code rather than about two arrays a reader has to compare.
+///
+/// `service` is `Direction::Use`, so the capability carries `WRITE` and not `READ`: we may ask, and
+/// we may not answer. The operator no longer spells either right, which is what makes the usurper
+/// refusal a property of the declaration instead of a typo waiting to happen.
+const SVC: u64 = component_plan::slot_of(&swap_proto::CLIENT, "service");
+const RPT: u64 = component_plan::slot_of(&swap_proto::CLIENT, "report");
+const NOTE: u64 = component_plan::slot_of(&swap_proto::CLIENT, "operator");
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
