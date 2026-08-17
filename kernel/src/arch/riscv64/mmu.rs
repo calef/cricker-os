@@ -902,6 +902,27 @@ pub fn is_mapped_in_current_space(va: u64) -> bool {
     half(Half::Low).translate(va).is_some() || half(Half::High).translate(va).is_some()
 }
 
+/// **Is this kernel address mapped, asked without taking a lock?**
+///
+/// For fault handlers, and the "without a lock" is the whole reason it exists rather than
+/// `translate`: [`translate`] takes `KERNEL_MMU`, and a handler that has already lost the machine
+/// may not block on a lock whose holder might be the thread that just died. aarch64 has the same
+/// function for the same caller (`stack::print_text_words`), where it is a one-line wrapper because
+/// `TTBR1_EL1` needs no lock at all; the asymmetry is RISC-V's single-root design, not a difference
+/// in intent.
+///
+/// Walks the root installed on this hart, which carries the kernel half
+/// ([`share_kernel_half`]), so a high-half address resolves whichever process is current.
+///
+/// **Provisional name** (2026-08-17): calef has not ruled on it.
+pub fn is_mapped(va: u64) -> bool {
+    let root = current_root_pa();
+    // SAFETY: `root` is the live installed root; the direct map makes `phys_to_ptr` valid; a
+    // translate allocates nothing, so the `|| None` allocator is never called.
+    let mapper = unsafe { Mapper::<_, _, Sv39>::new(root, Half::High, || None, phys_to_ptr) };
+    mapper.translate(va).is_some()
+}
+
 /// Populate a fresh process root's **high half** with the kernel's, so a single `satp` pointing at
 /// it sees both the process's user pages (low half) and the whole kernel (high half).
 ///

@@ -2342,7 +2342,8 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
 
 /// Tear down every kernel object whose backing page lies in `[base, end)`, so `untyped::destroy`
 /// can reclaim the region (object revocation). `Err` if a **live** thread (`Ready`/`Running`/
-/// `Blocked`) sits in the region; the region stays pinned. But the refusal is no longer passive:
+/// `Blocked`) sits in the region, or if a dead one is still standing on its kernel stack
+/// (`handshake.on_cpu`); the region stays pinned. But the refusal is no longer passive:
 /// it **arms the kill** (DECISIONS §16 amendment), marking each live resident thread so the
 /// scheduler tears it down at its next preemption, so an owner that retries (the shell's `^C`
 /// escalation, §24) reclaims a runaway rather than being told forever to wait for it. `Embryo` and
@@ -2357,6 +2358,37 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
 /// Takes `SCHED`, so it must run **outside** any teardown `Drop`: this is the caller-driven half of
 /// revocation, and `untyped::destroy` is the `SCHED`-free half (which is why the reaper's
 /// `Drop` -> `destroy` path cannot deadlock against it). See `untyped::unpin`.
+/// What the refuse phase of [`reap_region_objects`] decides about one resident thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionReap {
+    /// Free its pages: it can never run again and no core is standing on its stack.
+    Reap,
+    /// It can still be scheduled. Refuse, and arm DECISIONS §16's kill so the owner's retry
+    /// reclaims a runaway rather than being told to wait forever.
+    RefuseAndArm,
+    /// It is dead but has not left its own kernel stack yet. Refuse, and arm **nothing**: there is
+    /// nothing left to doom, and the condition clears on its own one context switch from now.
+    RefuseStanding,
+}
+
+/// **The refuse phase's rule, lifted out so it can be stated and tested without staging a race.**
+///
+/// The `on_cpu` arm is the one that had to be learned the expensive way, and it is why this is a
+/// named function rather than a condition inside the loop. The rule a reader must carry away:
+/// **`state` says whether a thread can run again, and `on_cpu` says whether a core is standing on
+/// its stack, and freeing a `Thread` unmaps that stack.** Those are different questions; this path
+/// asked only the first for months, and the answer to the second is what four CI panics were.
+/// See notes/stack.md, "a kernel stack freed under its owner".
+fn region_reap_verdict(state: State, on_cpu: bool) -> RegionReap {
+    if matches!(state, State::Ready | State::Running | State::Blocked) {
+        RegionReap::RefuseAndArm
+    } else if on_cpu {
+        RegionReap::RefuseStanding
+    } else {
+        RegionReap::Reap
+    }
+}
+
 fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     let mut guard = SCHED.lock();
     let Some(sched) = guard.as_mut() else {
@@ -2439,6 +2471,24 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // reclaims. A thread that only ever blocks, never scheduled to hit that preemption, is the
     // cooperative tier's job (send it its interrupt endpoint), not this one.
     let mut live = false;
+    // **And a second refusal, which is not about being alive at all**: a thread whose
+    // `handshake.on_cpu` is still set. That flag means "a core is standing on this thread's kernel
+    // stack", it is cleared by that core's successor in `finish_switch`, and freeing the `Thread`
+    // is what unmaps the stack. `finish_switch` is built around exactly this and says so; this
+    // path was not, because it reasoned from `state`, and `Dead` genuinely does mean "never runs
+    // again". **Never runs again is not the same as off its stack**, and the gap between them is a
+    // real window: `depart` marks a supervised thread `Dead`, delivers its death message (waking
+    // the supervisor, possibly on another core), releases `SCHED`, and only *then* calls
+    // `schedule()`. A supervisor that reaps inside those few hundred instructions unmapped the
+    // stack under the corpse, whose next store then walked the exception vector down to this
+    // slot's base. Four CI runs over five days, always the same test, always the same slot, and
+    // read as a stack overflow for three of them. See notes/stack.md, "a kernel stack freed under
+    // its owner".
+    //
+    // No kill is armed for this one, deliberately: the thread is already dead, so there is nothing
+    // to doom, and the refusal clears on its own one context switch from now. The caller retries,
+    // which is `reclaim_region`'s existing contract.
+    let mut standing = false;
     //
     // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
     // the running address space, out from under a thread that can still be scheduled. A `Dead`
@@ -2449,18 +2499,19 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // sweep), the same property a configured embryo already relies on.
     for t in sched.threads.iter_mut() {
         let phys = page_of(t);
-        if base <= phys
-            && phys < end
-            && matches!(
-                t.handshake.state,
-                State::Ready | State::Running | State::Blocked
-            )
-        {
-            t.killed = true;
-            live = true;
+        if !(base <= phys && phys < end) {
+            continue;
+        }
+        match region_reap_verdict(t.handshake.state, t.handshake.on_cpu) {
+            RegionReap::RefuseAndArm => {
+                t.killed = true;
+                live = true;
+            }
+            RegionReap::RefuseStanding => standing = true,
+            RegionReap::Reap => {}
         }
     }
-    if live {
+    if live || standing {
         return Err(());
     }
     // --- Removal phase: every object in the region is reapable. ---
@@ -4011,10 +4062,14 @@ mod tests {
     /// to discover that the address was the base of a thread stack's guard page. `guard_page_at` is
     /// that arithmetic, in the kernel, so the machine says it instead.
     ///
-    /// **That `stval` is one of only two addresses this project's guard-page faults have ever
-    /// used**, and the other is aarch64's `0xffff0010001b3000`. Six faults across five days landed
-    /// on those two, unmoved by two fixes that changed thousands of bytes of frames between them.
-    /// A depth-driven overflow does not repeat an address. See notes/stack.md.
+    /// **That `stval` is one of only two addresses this project's guard-page faults ever used**,
+    /// and the other is aarch64's `0xffff0010001b3000`. An earlier version of this paragraph read
+    /// that as proof of a fixed-site writer, on the argument that "a depth-driven overflow does not
+    /// repeat an address". **It does, and exactly this one** (2026-08-17): a fault that reaches the
+    /// exception vector's own frame store walks `sp` down a frame at a time and stores upward in
+    /// aligned steps, so the terminal store lands on the guard base exactly, whatever `sp` was
+    /// doing. The address carried no information; the *slot number* did, and it survived a change
+    /// to the slot span. See notes/stack.md, "a kernel stack freed under its owner".
     ///
     /// The three kinds are allocated three different ways (a linker symbol, a `.bss` array, a slot
     /// in the virtual area 64 GiB up), so this checks one of each rather than trusting one to stand
@@ -4062,6 +4117,62 @@ mod tests {
 
         // Kernel text is not a stack of any kind.
         assert_eq!(guard_page_at(guard_page_at as *const () as u64), None);
+    }
+
+    /// **A dead thread that has not left its own kernel stack is not reapable**, and that one
+    /// clause is the whole of the bug that produced four `*** KERNEL STACK OVERFLOW ***` panics in
+    /// CI over five days without any stack ever overflowing.
+    ///
+    /// `depart` publishes a supervised thread as `Dead` and delivers its death message, waking the
+    /// supervisor, *before* it reaches `switch_to`. A supervisor that reaps in that window used to
+    /// free the `Thread`, and `KernelStack::drop` unmaps six pages with a real `tlbi` under a core
+    /// that is still running on them. The corpse's next store faulted, the exception vector's own
+    /// frame store faulted on the same dead stack, and the vector walked `sp` down one 272-byte
+    /// frame at a time until it landed in the mapped stack below, which is why the reported address
+    /// was the slot base every single time and never moved.
+    ///
+    /// The rule is stated over `(state, on_cpu)` rather than over a live thread table because the
+    /// window is a few hundred instructions wide on two cores, which is not a thing a test can
+    /// stage. It reproduced on a desk only with a deliberate spin loop inserted in `depart`; see
+    /// notes/stack.md, "a kernel stack freed under its owner". What this pins is the claim, so the
+    /// next person to edit that loop meets `on_cpu` as a requirement rather than as a detail.
+    #[test_case]
+    fn a_dead_thread_still_standing_on_its_stack_is_not_reapable() {
+        use super::{RegionReap, State, region_reap_verdict};
+
+        // Off its stack: the states that mean "never runs again" really are reapable, which is
+        // what makes region teardown work at all.
+        for state in [State::Dead, State::Finished, State::Embryo] {
+            assert_eq!(
+                region_reap_verdict(state, false),
+                RegionReap::Reap,
+                "{state:?} with no core on its stack must be reapable",
+            );
+        }
+
+        // Still on its stack: refused, and refused WITHOUT arming a kill, because there is nothing
+        // left to kill and the condition clears itself one context switch from now.
+        for state in [State::Dead, State::Finished] {
+            assert_eq!(
+                region_reap_verdict(state, true),
+                RegionReap::RefuseStanding,
+                "{state:?} still standing on its kernel stack must not have that stack unmapped",
+            );
+        }
+
+        // A thread that can still be scheduled is the older refusal, and it still arms the kill.
+        for state in [State::Ready, State::Running, State::Blocked] {
+            assert_eq!(
+                region_reap_verdict(state, false),
+                RegionReap::RefuseAndArm,
+                "a live {state:?} thread must be refused and armed",
+            );
+            assert_eq!(
+                region_reap_verdict(state, true),
+                RegionReap::RefuseAndArm,
+                "being on a cpu must not downgrade a live thread's refusal to the passive one",
+            );
+        }
     }
 
     /// **The slots are contiguous, so one stack's guard page begins where the previous stack

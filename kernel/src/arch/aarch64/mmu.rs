@@ -1024,6 +1024,18 @@ pub fn translate(va: u64) -> Option<(u64, Flags)> {
     mapper.translate(va)
 }
 
+/// **Is this kernel address mapped, asked without taking a lock?**
+///
+/// For fault handlers. [`translate`] already takes no lock here, so this is a rename of its
+/// question rather than a different walk; it exists because RISC-V's `translate` **does** take one
+/// and its callers are handlers that may not block. Same name, same meaning, one signature on both
+/// architectures: `stack::print_text_words` is written once and calls this.
+///
+/// **Provisional name** (2026-08-17): calef has not ruled on it.
+pub fn is_mapped(va: u64) -> bool {
+    translate(va).is_some()
+}
+
 /// Ask the live **user** page tables what a low virtual address maps to.
 ///
 /// Reads `TTBR0_EL1`, so it answers for whichever address space is installed right now, which

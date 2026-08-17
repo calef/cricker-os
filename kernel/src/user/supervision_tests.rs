@@ -146,7 +146,19 @@ fn a_faulting_child_reports_to_its_supervisor_and_is_reaped_then_respawned() {
 
     // Reap it with §16 revocation, the supervisor's explicit act. The corpse is Dead, not live,
     // so the region reclaims without a force-kill.
-    sched::reclaim_region(region).expect("reaping the corpse's region failed");
+    //
+    // **Retried rather than asserted once, and the retry is the point.** The death message that
+    // woke this test is delivered by `depart` *before* the corpse leaves its own kernel stack, so
+    // for the few hundred instructions between there and its `switch_to` the reap is refused: a
+    // stack must not be unmapped under a core standing on it. This test is the only place in the
+    // suite that reaps a corpse the instant it is told about one, which is why it is the only
+    // place that ever hit the window, and why it panicked with a guard-page fault in CI four times
+    // over five days instead of failing here. See notes/stack.md, "a kernel stack freed under its
+    // owner", and the `on_cpu` refusal in `reap_region_objects`.
+    assert!(
+        super::tests::wait_for(|| sched::reclaim_region(region).is_ok()),
+        "reaping the corpse's region failed",
+    );
     assert_eq!(
         sched::corpse_fault_msg(child),
         None,
@@ -195,6 +207,12 @@ fn a_clean_exit_reports_the_exit_event_not_a_fault() {
     assert_eq!(msg[2], 0, "a clean exit has no faulting pc");
     assert_eq!(msg[3], 0, "a clean exit has no faulting address");
 
-    // A cleanly-exited supervised child is dead until reaped, exactly like a crashed one.
-    sched::reclaim_region(region).expect("reaping the exited corpse's region failed");
+    // A cleanly-exited supervised child is dead until reaped, exactly like a crashed one, and it
+    // is retried for exactly the reason its crashing sibling above is: the death message arrives
+    // before the corpse leaves its kernel stack. This one has never been seen to lose the race and
+    // is written the same way anyway, because "has not happened yet" is not a property of the code.
+    assert!(
+        super::tests::wait_for(|| sched::reclaim_region(region).is_ok()),
+        "reaping the exited corpse's region failed",
+    );
 }

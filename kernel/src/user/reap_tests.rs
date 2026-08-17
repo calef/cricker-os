@@ -54,6 +54,32 @@ fn reap(slot: u64, tid: u64) -> Result<i64, Error> {
     invoke(&mut frame, slot, abi::endpoint::REAP, tid, 0, 0)
 }
 
+/// **`reap`, retried while the corpse is still standing on its own kernel stack.**
+///
+/// The refusal these tests race is transient and one context switch wide, and every test here is
+/// built to lose it. `depart` publishes a supervised thread `Dead` and parks it on its supervision
+/// endpoint *before* it reaches `switch_to`, so the instant a test sees the death message or the
+/// parked sender, the corpse is still executing. `reap_region_objects` refuses to unmap a stack a
+/// core is standing on, and answers `NotPermitted`.
+///
+/// Until 2026-08-17 it did not refuse, and freed the stack instead: four CI panics over five days,
+/// every one reported as `*** KERNEL STACK OVERFLOW ***` with no stack overflowing. See
+/// notes/stack.md, "a kernel stack freed under its owner", and milestone 124's block.
+///
+/// A test that means "this reap is refused for good" keeps calling [`reap`] and asserting on the
+/// answer; this is only for the ones that mean "this reap succeeds".
+fn reap_when_settled(slot: u64, tid: u64) -> Result<i64, Error> {
+    let mut answer = reap(slot, tid);
+    super::tests::wait_for(|| {
+        if answer != Err(Error::NotPermitted) {
+            return true;
+        }
+        answer = reap(slot, tid);
+        answer != Err(Error::NotPermitted)
+    });
+    answer
+}
+
 /// Receive one five-word death message through the ABI, so the tid a test reaps with is the tid
 /// a real supervisor would have read out of its registers.
 fn recv_death(slot: u64) -> [u64; 5] {
@@ -150,7 +176,7 @@ fn a_supervisor_holding_only_its_endpoint_reaps_its_dead_child() {
     assert_eq!(msg[1], child, "the death message named the wrong thread");
 
     assert_eq!(
-        reap(cap, msg[1]),
+        reap_when_settled(cap, msg[1]),
         Ok(0),
         "a supervisor holding only its supervision endpoint could not collect its own corpse",
     );
@@ -195,7 +221,7 @@ fn the_reaped_region_returns_to_the_builder_not_the_reaper() {
     assert_eq!(msg[1], child);
     let slots_before = occupied_slots();
 
-    assert_eq!(reap(cap, msg[1]), Ok(0), "the reap failed");
+    assert_eq!(reap_when_settled(cap, msg[1]), Ok(0), "the reap failed");
 
     assert_eq!(
         crate::untyped::usage(budget).unwrap().0,
@@ -322,7 +348,11 @@ fn reap_refuses_a_recycled_tid_rather_than_the_wrong_thread() {
     let first_region = crate::untyped::split(budget, INSTANCE_PAGES).expect("no first region");
     let first = build_child_in(first_region, FAULT_STUB, None, Some(fault_ep));
     assert_eq!(recv_death(cap)[1], first);
-    assert_eq!(reap(cap, first), Ok(0), "the first reap failed");
+    assert_eq!(
+        reap_when_settled(cap, first),
+        Ok(0),
+        "the first reap failed"
+    );
 
     let second_region = crate::untyped::split(budget, INSTANCE_PAGES).expect("no second region");
     let second = build_child_in(second_region, REPORT_STUB, Some(report), Some(fault_ep));
@@ -350,7 +380,7 @@ fn reap_refuses_a_recycled_tid_rather_than_the_wrong_thread() {
     );
     let msg = recv_death(cap);
     assert_eq!(msg[1], second);
-    assert_eq!(reap(cap, second), Ok(0));
+    assert_eq!(reap_when_settled(cap, second), Ok(0));
 
     tidy(budget, endpoints, &[cap]);
 }
@@ -385,7 +415,7 @@ fn reaping_an_uncollected_corpse_leaves_no_ghost_on_the_endpoint() {
         "the corpse never parked on its supervision endpoint",
     );
 
-    assert_eq!(reap(cap, child), Ok(0), "the reap failed");
+    assert_eq!(reap_when_settled(cap, child), Ok(0), "the reap failed");
     assert_eq!(
         sched::endpoint_waiting_senders(fault_ep),
         0,
@@ -402,7 +432,7 @@ fn reaping_an_uncollected_corpse_leaves_no_ghost_on_the_endpoint() {
         msg[1], next,
         "the endpoint delivered something other than the new child's death",
     );
-    assert_eq!(reap(cap, next), Ok(0));
+    assert_eq!(reap_when_settled(cap, next), Ok(0));
 
     tidy(budget, endpoints, &[cap]);
 }
