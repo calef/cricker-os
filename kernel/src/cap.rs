@@ -120,6 +120,51 @@ const _: () = assert!(CSPACE_SLOTS as u64 == abi::CSPACE_SLOTS);
 
 pub use capability::{Error, Rights};
 
+// **The rights vocabulary is written twice, so the compiler is what keeps the two copies honest.**
+//
+// `abi::rights` is what userspace *names* a right with: it is the word that travels in a syscall
+// register at 79 call sites outside `crates/abi` as this lands, from `system_initializer`'s grant
+// tables to every `SEND_CAP`/`CAP_INSERT` in `user/src/`. `capability::Rights` is what the kernel
+// *means* by one.
+// Until this block existed nothing compared them, and the two are not one definition with two
+// spellings: they are two arrays of magic numbers in two dependency-free crates that cannot see
+// each other.
+//
+// The failure this closes is not hypothetical, it is the one milestone 126 hit on its way in. That
+// lane added `ENUMERATE` and found `RETYPE_OBJ`'s hand-listed `READ|WRITE|GRANT` had silently
+// stopped meaning "full rights", and the symptom surfaced three steps away as `OutOfMemory` at a
+// prompt. `Rights::ALL` is now the invariant on the kernel side; this is the same invariant across
+// the boundary. A fifth right added to one crate and not the other is a compile error here rather
+// than a delegation that quietly drops a bit at a `from_bits`, which is exactly the shape that
+// takes three steps to diagnose.
+//
+// Found by the 2026-08-17 security audit (design/audit-reports/), which was looking for a path
+// where widening `Rights::ALL` widened something unintended and found instead that nothing checked
+// the two vocabularies at all.
+const _: () = assert!(Rights::READ.bits() as u64 == abi::rights::READ);
+const _: () = assert!(Rights::WRITE.bits() as u64 == abi::rights::WRITE);
+const _: () = assert!(Rights::GRANT.bits() as u64 == abi::rights::GRANT);
+const _: () = assert!(Rights::ENUMERATE.bits() as u64 == abi::rights::ENUMERATE);
+
+// **`ALL` is exactly the ABI's vocabulary and no more.** Both directions are load-bearing and they
+// fail differently. A bit in `abi::rights` that is missing from `ALL` is a right userspace can name
+// and `Rights::from_bits` masks to zero, so a delegation asking for it succeeds while conferring
+// nothing. A bit in `ALL` with no ABI name is a right the kernel honours that no caller can ask for
+// by name, which is how a hand-listed set drifts into granting more than any manifest says.
+const _: () = assert!(
+    Rights::ALL.bits() as u64
+        == abi::rights::READ | abi::rights::WRITE | abi::rights::GRANT | abi::rights::ENUMERATE
+);
+
+// `abi::rights` is `u64` and `Rights` is `u32`, and the syscall path narrows with `a1 as u32`
+// (`SEND_CAP` and `CAP_INSERT` in kernel/src/syscall.rs). A right defined at bit 32 or above would
+// therefore be truncated to nothing on the way in, silently, and the delegation would appear to
+// succeed. Nothing about the ABI's type stops somebody writing `1 << 32`; this does.
+const _: () = assert!(
+    abi::rights::READ | abi::rights::WRITE | abi::rights::GRANT | abi::rights::ENUMERATE
+        <= u32::MAX as u64
+);
+
 /// A capability naming an endpoint, with the given rights.
 ///
 /// **`WRITE` lets the holder `SEND`; `READ` lets it `RECV`.** Hand the two ends of one endpoint
