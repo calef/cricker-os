@@ -27,6 +27,10 @@
 #     (the filed-under-an-essay class, and the appended-past-the-closer class);
 #   - two files claiming one milestone number is fatal, for the reason script/decisions records: as
 #     two files it would merge clean and silently where one file makes it a visible text conflict;
+#   - the **`Built` column**: five columns per row, a date on every BUILT row and on no other
+#     status. Added 2026-08-17 after calef found milestone 43 BUILT with an empty date by eye and
+#     the sweep behind it found 23 defective rows, every one invisible to this script because the
+#     row regex anchors on the first four fields and stopped;
 #   - the **readiness classification**, which is the `Gate:` line every non-BUILT milestone file
 #     carries directly under its status. It answers "what stops a lane from starting this", the
 #     question that used to be answered by asking calef, and it lives in the milestone's own file so
@@ -110,6 +114,37 @@ for i, line in enumerate(index.split("\n"), start=1):
         problems.append(f"milestone {num}: row links to {target!r}, not to its own file")
     elif not os.path.exists(os.path.join(d, target)):
         problems.append(f"milestone {num}: row links to {target!r}, which does not exist")
+    # ---- the Built column ----------------------------------------------------
+    # `ROW` above anchors on the first four fields and stops, which the index's own note explains
+    # as deliberate: a column appended at the end cannot break the parser. The cost was that
+    # nothing ever LOOKED at the appended column, and on 2026-08-17 calef found milestone 43
+    # BUILT with an empty date by eye. The sweep that followed found 23 defective rows: 13 BUILT
+    # with no date, 3 non-BUILT carrying one, 1 row missing the column entirely, and 6 whose date
+    # sat behind a stray empty cell, so GitHub rendered five columns and dropped the date. Every
+    # one of them was invisible here. "Somebody will notice" is rung zero (AGENTS.md), and this is
+    # the same fact one rung up.
+    #
+    # Split on unescaped pipes only: six descriptions contain `\|`, milestone 67's because it is
+    # about the `||` operator, and a naive split miscounts their cells.
+    cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.rstrip())[1:-1]]
+    if len(cells) != 5:
+        problems.append(f"milestone {num}: the row has {len(cells)} columns where the header has "
+                        f"5 (# | Status | Milestone | Why it matters | Built). A stray or missing "
+                        f"pipe puts the date in a column GitHub does not render (line {i})")
+    else:
+        built = cells[4]
+        if status == "BUILT" and not built:
+            problems.append(f"milestone {num}: BUILT with no date in the Built column. It is the "
+                            f"date the milestone turned BUILT, from the milestone's own file where "
+                            f"that file states one (line {i})")
+        elif status == "BUILT" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", built):
+            problems.append(f"milestone {num}: Built column reads {built!r}, which is not an "
+                            f"ISO date. Dates in this tree are UTC (line {i})")
+        elif status != "BUILT" and built:
+            problems.append(f"milestone {num}: status is {status} and the Built column reads "
+                            f"{built!r}. It is the date a milestone turned BUILT and is empty for "
+                            f"every other status; a first phase's date belongs in the block "
+                            f"(line {i})")
     rows[num] = (status, title, target)
 
 if not rows:
