@@ -75,7 +75,32 @@ impl Rights {
     /// `FD_CLOEXEC` had to be invented as an afterthought.
     pub const GRANT: Rights = Rights(1 << 2);
 
-    pub const ALL: Rights = Rights(0b111);
+    /// The right to **learn what exists**, as distinct from acting on it (milestone 126).
+    ///
+    /// This is the kernel-level twin of `fs_proto`'s directory `ENUMERATE`, and it is the same
+    /// argument one layer down: listing is a larger power than reading something you were handed,
+    /// so it is a right of its own rather than a corner of `READ`. The name is deliberately the
+    /// word the filesystem already uses, because a reader who has met one has met both.
+    ///
+    /// **Why it had to exist.** `endpoint::SURVEY` first shipped needing `READ`, and `READ` on a
+    /// supervision endpoint is also what `RECV` and `REAP` take. A viewer granted `READ` could
+    /// therefore reap a child, which is acting on a member of a domain rather than naming one.
+    /// calef ruled on 2026-08-17 that **a domain names its members and never acts on them**, and
+    /// one bit for three operations cannot express that. With this right the wrong operation is
+    /// not refused to a viewer, it is unnameable by one.
+    ///
+    /// **Deliberately not pre-wired to other objects.** Only `Endpoint` consults it today. `Aspace`
+    /// wants it when `pmap` is built (observe a mapping without being able to map) and `Untyped`
+    /// wants it when `free` is built (ask what is committed without being able to `SPLIT` or
+    /// `DESTROY`), and both are named in milestone 126's strata rather than built ahead of a
+    /// consumer that can say what it needs. A right defined for three hypothetical callers is the
+    /// speculative abstraction this tree declines.
+    pub const ENUMERATE: Rights = Rights(1 << 3);
+
+    /// **Every defined bit.** [`from_bits`](Self::from_bits) masks against this, so a right that is
+    /// missing here is silently dropped at every delegation: adding a constant above without
+    /// widening this mask produces a right that cannot survive being passed on.
+    pub const ALL: Rights = Rights(0b1111);
 
     pub const fn bits(self) -> u32 {
         self.0
@@ -171,6 +196,24 @@ pub const fn reap_decision(fault_ep: Option<u64>, invoked_ep: u64, dead: bool) -
         }
         _ => Reap::NotSupervised,
     }
+}
+
+/// **Is this thread inside the domain that endpoint supervises?** (milestone 126,
+/// `endpoint::SURVEY`.)
+///
+/// The whole scoping decision of a process view, as pure logic, so it is proved for every input
+/// rather than tested on the cases we thought of. The kernel walks its thread table and reports an
+/// entry exactly when this says so (`sched::survey_supervised`).
+///
+/// **It is deliberately the same predicate [`reap_decision`] authorizes with**, and that is the
+/// point rather than a saving: the set of threads a supervisor may *see* is the set whose deaths
+/// arrive on its endpoint, so a domain cannot drift out of agreement with the relationship the
+/// kernel already maintains. Two predicates would have been two things to keep in step.
+///
+/// Liveness is not an input. A corpse is still in the domain, which is what makes `ps` able to show
+/// a `Dead` child the supervisor has not collected yet.
+pub const fn survey_includes(fault_ep: Option<u64>, invoked_ep: u64) -> bool {
+    matches!(fault_ep, Some(ep) if ep == invoked_ep)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,6 +565,44 @@ mod verification {
             reap_decision(fault_ep, invoked, false),
         );
         assert_eq!(reap_decision(fault_ep, invoked, true), Reap::NotSupervised);
+    }
+
+    /// **A survey shows a thread only to the endpoint that supervises it** (milestone 126). The
+    /// scoping half of the same claim the two harnesses above make about the reap: for every pair
+    /// of endpoint names, inclusion implies the recorded fault endpoint *is* the invoked one, so
+    /// there is no input where an unsupervised thread, another supervisor's child, or a stale name
+    /// appears in somebody else's `ps`.
+    ///
+    /// The `if and only if` matters in both directions here, which it does not for the reap. One
+    /// direction is confinement (a stranger is never shown). The other is truthfulness: **every
+    /// thread that really is in the domain is reported**, so a monitor that sees an entry missing
+    /// can conclude the thread is gone rather than hidden. A view that could silently omit its own
+    /// children would be worse than no view.
+    #[kani::proof]
+    fn a_survey_shows_exactly_the_endpoints_own_children() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+
+        assert_eq!(
+            survey_includes(fault_ep, invoked),
+            fault_ep == Some(invoked)
+        );
+    }
+
+    /// **Seeing and collecting are scoped by the same relationship** (milestone 126). For every
+    /// input, a thread is in the survey exactly when a reap of it would get past the supervision
+    /// check, whatever its liveness. So the domain `ps` reports and the domain a supervisor may
+    /// reap from cannot diverge, which is the property that lets one predicate answer both.
+    #[kani::proof]
+    fn the_view_and_the_reap_have_the_same_scope() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+        let dead: bool = kani::any();
+
+        assert_eq!(
+            survey_includes(fault_ep, invoked),
+            reap_decision(fault_ep, invoked, dead) != Reap::NotSupervised,
+        );
     }
 }
 

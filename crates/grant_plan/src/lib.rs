@@ -148,13 +148,21 @@ pub enum Prog {
     ///
     /// **Provisional name.**
     Doc,
+    /// **List the processes in the supervision domain it was spawned into** (milestone 126,
+    /// `user/src/ps.rs`, notes/process-view.md).
+    ///
+    /// The reason [`Manifest::domain`] exists, and the same asymmetry [`Prog::Date`] made for the
+    /// clock: the grant is real and it is not something a person designates on the line. There is
+    /// no `/proc` here to name and no pid space to scan, so what `ps` can see is decided entirely
+    /// by which supervision endpoint init put in its cspace, and `caps ps` prints that.
+    Ps,
 }
 
 /// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
 /// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
 /// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
 /// can be written against one number.
-pub const PROG_COUNT: usize = 8;
+pub const PROG_COUNT: usize = 9;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
@@ -174,6 +182,7 @@ impl Prog {
             b"rm" => Some(Prog::Rm),
             b"wc" => Some(Prog::Wc),
             b"doc" => Some(Prog::Doc),
+            b"ps" => Some(Prog::Ps),
             _ => None,
         }
     }
@@ -189,6 +198,7 @@ impl Prog {
             Prog::Rm => "rm",
             Prog::Wc => "wc",
             Prog::Doc => "doc",
+            Prog::Ps => "ps",
         }
     }
 
@@ -203,6 +213,7 @@ impl Prog {
             Prog::Rm => 5,
             Prog::Wc => 6,
             Prog::Doc => 7,
+            Prog::Ps => 8,
         }
     }
 
@@ -217,6 +228,7 @@ impl Prog {
             5 => Some(Prog::Rm),
             6 => Some(Prog::Wc),
             7 => Some(Prog::Doc),
+            8 => Some(Prog::Ps),
             _ => None,
         }
     }
@@ -241,6 +253,7 @@ impl Prog {
                 // applies (DECISIONS §24).
                 interruptible: false,
                 clock: false,
+                domain: false,
             },
             Prog::Budgeter => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -257,6 +270,7 @@ impl Prog {
                 reports: true,
                 interruptible: false,
                 clock: false,
+                domain: false,
             },
             // The two interrupt demonstrators. Both run until interrupted, take no argument and no
             // memory grant, and report through the shared job frame rather than the result endpoint
@@ -276,6 +290,7 @@ impl Prog {
                 reports: false,
                 interruptible: true,
                 clock: false,
+                domain: false,
             },
             Prog::Spinner => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -288,6 +303,7 @@ impl Prog {
                 reports: false,
                 interruptible: true,
                 clock: false,
+                domain: false,
             },
             // `date` declares an empty grant expression, and that is the interesting part: its
             // authority (a read-only mapping of the clock page) is not something the command line
@@ -329,6 +345,7 @@ impl Prog {
                 // exists. Nothing on the command line designates it, so init reads this to decide
                 // which children get the read-only mapping (milestone 51's wiring, notes/date.md).
                 clock: true,
+                domain: false,
             },
             // **The first program endowed a directory**, and the first with options. It takes no
             // integer and no memory: what it needs is the authority to take a name out of the
@@ -355,6 +372,7 @@ impl Prog {
                 reports: true,
                 interruptible: false,
                 clock: false,
+                domain: false,
             },
             // **The consumer**, and the only program that declares an input. Everything else about
             // it is empty: no argument, no memory, no file, no directory, no options. What it does
@@ -376,6 +394,7 @@ impl Prog {
                 reports: true,
                 interruptible: false,
                 clock: false,
+                domain: false,
             },
             // **The viewer**, whose manifest is "a stream in, a stream out" like `wc`'s, and handed
             // bytes like every other stage. The one place it parts from `wc` is the field milestone
@@ -398,6 +417,33 @@ impl Prog {
                 reports: true,
                 interruptible: false,
                 clock: false,
+                domain: false,
+            },
+            // **`ps`: a stream out, a domain in, and nothing else** (milestone 126).
+            //
+            // Every designated grant is `Forbidden`, which is the row worth reading: there is no
+            // file, no directory, no memory and no argument, so nothing a person could type widens
+            // what this program sees. Its whole authority is `domain`, which init endows and the
+            // command line cannot name, exactly as `date`'s clock is.
+            //
+            // `OutputSpec::BytesAndDiagnostics` because a refusal and a listing must not travel on
+            // the same stream: `ps > running.txt` on a domain it was not granted has to leave the
+            // file empty and put the reason on the terminal, which is the whole of DECISIONS §67
+            // applied to a monitor. `InputSpec::Forbidden` because a snapshot reads nothing.
+            Prog::Ps => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                output: OutputSpec::BytesAndDiagnostics {
+                    slot: DIAGNOSTICS_SLOT,
+                },
+                input: InputSpec::Forbidden,
+                reports: true,
+                interruptible: false,
+                clock: false,
+                domain: true,
             },
         }
     }
@@ -513,6 +559,19 @@ pub const NO_FLAGS: &[u8] = b"";
 /// move under the program. `abi::tcb::CAP_INSERT`'s explicit target is what puts it there, and it
 /// exists already, for the fault endpoint, for exactly this reason.
 pub const DIAGNOSTICS_SLOT: u64 = 8;
+
+/// **The cspace slot a process-domain capability lands in** (milestone 126), for the programs that
+/// declare [`Manifest::domain`].
+///
+/// Placed rather than taken from the next free slot, for exactly the reason above: how many low
+/// slots a child gets depends on what else the line granted it, and `ps` reads a fixed number. Seven
+/// sits below [`DIAGNOSTICS_SLOT`] and above every ordinary grant, so the two named slots read as one
+/// small block a person can hold in their head.
+///
+/// A number is not a right. What it means to hold this slot is decided by the capability init puts
+/// in it, and a program spawned without the declaration holds an empty slot here and is refused by
+/// the kernel rather than shown an empty domain.
+pub const DOMAIN_SLOT: u64 = 7;
 
 /// A program's expectation about the integer argument (`worker 9`'s `9`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -654,6 +713,19 @@ pub struct Manifest {
     /// made concrete: a program declaring this can read the time and has no object through which it
     /// could set or propose one. See notes/date.md.
     pub clock: bool,
+    /// **Endowed a view over the supervision domain it is spawned into** (milestone 126,
+    /// notes/process-view.md).
+    ///
+    /// [`clock`](Manifest::clock)'s twin, and for the same reason: a process domain is not a name a
+    /// person types, so there is no token to place and no refusal to write. What this field does is
+    /// tell **init** which children to endow, and tell a person reading `caps ps` that the authority
+    /// exists and how wide it is.
+    ///
+    /// It lands in [`DOMAIN_SLOT`] carrying `READ`, which is what `abi::endpoint::SURVEY` takes. A
+    /// program that does not declare it holds nothing there, and the kernel refuses its survey
+    /// loudly instead of answering with an empty list: **that difference is the whole feature**, and
+    /// `ps` prints the two apart.
+    pub domain: bool,
 }
 
 /// A parsed command line. The shell dispatches on this; only [`Command::Run`] carries a grant
@@ -2478,6 +2550,7 @@ mod tests {
         reports: true,
         interruptible: false,
         clock: false,
+        domain: false,
     };
 
     /// The writable twin: a program that is endowed a file it may write.
@@ -2501,6 +2574,7 @@ mod tests {
         reports: true,
         interruptible: false,
         clock: false,
+        domain: false,
     };
 
     /// A shell that WAS granted a directory to narrow, standing at its root.
@@ -3171,6 +3245,7 @@ mod tests {
         reports: true,
         interruptible: false,
         clock: false,
+        domain: false,
     };
 
     /// Plan one stage against an explicit manifest, with the operators' answer folded in.

@@ -879,7 +879,7 @@ pub fn write_outcome(e: &Endowment, answer: u64, out: &mut dyn FnMut(&[u8])) {
         // unreachable from the interactive prompt at all (a directory grant needs a caretaker that
         // shell cannot build, and it says so), and when it is reachable it will report the way
         // `date` does: diagnostics as text, then an exit status.
-        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc | Prog::Doc => {}
+        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc | Prog::Doc | Prog::Ps => {}
     }
 }
 
@@ -1079,6 +1079,21 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
     if e.prog.manifest().clock {
         out(b"    cap 1  frame     clock    read-only. it can read the time and not set it,\n");
         out(b"                              and no token on the line could have asked for more\n");
+    }
+    // **The row this milestone exists to print.** On Linux there is nothing here to say: `ps` reads
+    // /proc and the answer is "every process on the machine", which no command line chose and no
+    // tool can narrow. Here the scope is a capability, so it is a line a person can read before
+    // anything is spawned, and a wider grant would be a different line rather than an invisible one.
+    if e.prog.manifest().domain {
+        // `ENUMERATE`, and the word is the point of the line rather than decoration: it is the
+        // right that lets this program *name* the domain's members and not the one that would let
+        // it receive their deaths or collect them. Printing `READ` here would describe a wider
+        // grant than the one being made, which is the failure a `caps` output has available.
+        out(b"    cap 7  endpoint  domain   ENUMERATE. the processes this shell's jobs are\n");
+        out(b"                              supervised by, and no others. it can name them and\n");
+        out(b"                              do nothing to them: not receive their deaths, not\n");
+        out(b"                              collect them, and not learn that a process outside\n");
+        out(b"                              this domain exists\n");
     }
     // **Where its output goes**, which is the demonstration milestone 50 owed: the destination is a
     // capability rather than an integer with a convention attached, so `caps` can name it. On Unix

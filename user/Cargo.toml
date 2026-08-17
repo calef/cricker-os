@@ -490,6 +490,16 @@ path = "src/wc.rs"
 test = false
 bench = false
 
+# `ps` (milestone 126): the process listing, over a supervision domain rather than over /proc. Its
+# whole authority is one endpoint init endows and the command line cannot name; the listing itself
+# is crates/ps, host-tested. Portable, so both ISAs' archives carry it: the confinement claim is
+# about the capability model and would not be a claim if it held on one instruction set.
+[[bin]]
+name = "ps"
+path = "src/ps.rs"
+test = false
+bench = false
+
 [lints]
 workspace = true
 
@@ -526,6 +536,7 @@ cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 compositor = { version = "0.1.0", path = "../crates/compositor" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 nifefs = { version = "0.1.0", path = "../crates/nifefs" }
+ps = { version = "0.1.0", path = "../crates/ps" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }

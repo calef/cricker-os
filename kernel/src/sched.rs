@@ -75,7 +75,7 @@ type Endpoint = ipc::Endpoint<Thread>;
 /// The most threads that can be alive at once, whole machine (milestone 14 phase A). A documented
 /// limit of the image rather than a heap that can be exhausted: spawn past it fails cleanly, the
 /// same contract callers already have for out-of-memory. The table itself is ~2 KiB of pointers.
-const MAX_THREADS: usize = 128;
+pub(crate) const MAX_THREADS: usize = 128;
 
 /// The thread table: generational names (`crates/slots`, notes/generational-names.md) over
 /// **page-resident** TCBs (milestone 19c.2). Each `Thread` lives at the start of one page from
@@ -235,6 +235,17 @@ impl Threads {
         // SAFETY: each stored pointer is a distinct live page (one page per thread), and
         // `&mut self` carries SCHED's exclusivity across the whole sweep.
         self.table.values().map(|&TcbPtr(p)| unsafe { &mut *p })
+    }
+
+    /// Every live TCB from slot `from` onward, with its slot index, for a **resumable** sweep
+    /// (`endpoint::SURVEY`, milestone 126). The slot is the caller's cursor; see
+    /// `slots::Table::iter_from` for why a position would not do.
+    fn iter_from(&self, from: usize) -> impl Iterator<Item = (usize, &Thread)> + '_ {
+        // SAFETY: as `iter_mut`, and shared rather than exclusive: each stored pointer is a
+        // distinct live page, and `&self` carries SCHED for the walk.
+        self.table
+            .iter_from(from)
+            .map(|(slot, _, &TcbPtr(p))| (slot, unsafe { &*p }))
     }
 }
 
@@ -2568,6 +2579,57 @@ pub fn reap_supervised(ep: EpId, tid: Tid) -> Result<(), abi::Error> {
     // child region still owns part of the run, or a racing reap got there first and the name is now
     // stale. A restart policy reads it as "not yet", which is what it means.
     reclaim_region(region).map_err(|_| abi::Error::NotPermitted)
+}
+
+/// **Read one entry of the domain a supervision endpoint supervises** (milestone 126,
+/// `endpoint::SURVEY`). Returns `(next_cursor, tid, state)`; a `next_cursor` of
+/// `abi::survey::DONE` means the walk is finished and the other two words are 0.
+///
+/// **The domain is the supervision subtree the kernel already maintains**, so there is no registry
+/// to keep in step with reality and no way for the view to disagree with it. Membership is
+/// `capability::survey_includes`, which is the same relationship `reap_supervised` authorizes with
+/// and is proved in that crate; a thread appears here exactly when its `Thread::fault_ep` *is* the
+/// invoked endpoint. Nothing about the caller's own identity is consulted, because holding the
+/// endpoint with `READ` is the whole of the claim (the rights check is the syscall layer's).
+///
+/// **One entry per call, and the lock is given back between them.** A survey of a domain with a
+/// hundred children would otherwise hold `SCHED` for a hundred children's worth of work at a
+/// userspace program's discretion, which is a scheduler-latency hole a program could open on
+/// purpose. The cost is that the survey is a sequence of snapshots rather than one; see the `BUGS`
+/// section of notes/process-view.md, which states exactly what that does and does not promise.
+pub fn survey_supervised(ep: EpId, cursor: u64) -> Result<(u64, u64, u64), abi::Error> {
+    let guard = SCHED.lock();
+    // Before the scheduler exists there is no domain to report, which is "nothing here", not a
+    // refusal: the caller's authority was never in question.
+    let Some(sched) = guard.as_ref() else {
+        return Ok((abi::survey::DONE, 0, 0));
+    };
+    // A cursor past the table is empty rather than an error (`iter_from`'s contract), so a caller
+    // that keeps feeding back what it was given cannot walk off the end into a refusal that would
+    // read as "you may not look".
+    let from = usize::try_from(cursor).unwrap_or(usize::MAX);
+    for (slot, t) in sched.threads.iter_from(from) {
+        if capability::survey_includes(t.fault_ep, ep) {
+            return Ok((slot as u64 + 1, t.id, survey_state(t.handshake.state)));
+        }
+    }
+    Ok((abi::survey::DONE, 0, 0))
+}
+
+/// The run state a survey reports, as an `abi::survey` code.
+///
+/// `Embryo` and `Finished` are unreachable for a supervised thread and are mapped anyway rather
+/// than left to a panic or a wildcard: supervision is recorded at `START`, so an embryo has no
+/// `fault_ep` to match, and a supervised death goes to `Dead` rather than `Finished`. Reporting
+/// them as `READY` and `DEAD` is the honest nearest neighbour if either ever becomes reachable,
+/// and the `match` is exhaustive so a seventh state cannot be added without meeting this.
+const fn survey_state(state: State) -> u64 {
+    match state {
+        State::Embryo | State::Ready => abi::survey::READY,
+        State::Running => abi::survey::RUNNING,
+        State::Blocked => abi::survey::BLOCKED,
+        State::Finished | State::Dead => abi::survey::DEAD,
+    }
 }
 
 /// **Configure an embryo** (milestone 19c.3): bind the address space named by `aspace_name`

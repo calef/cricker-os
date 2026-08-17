@@ -109,6 +109,57 @@ pub fn reap(slot: u64, tid: u64) -> i64 {
     unsafe { invoke(slot, abi::endpoint::REAP, tid, 0, 0) }
 }
 
+/// **Read one entry of the domain this supervision endpoint supervises** (milestone 126,
+/// `endpoint::SURVEY`). Returns `(next_cursor, tid, state)`: start at `cursor = 0`, feed each
+/// `next_cursor` back, and stop when [`abi::survey::DONE`] comes back.
+///
+/// A negative first word is an [`abi::Error`], and the one that matters is `NotPermitted`: this
+/// endpoint capability does not carry `READ`, so the holder may send here but not look. **That is
+/// a refusal and not an empty domain**, and a caller must print it as one.
+///
+/// Three words out of one `invoke`, so it is written like [`recv`] rather than through the
+/// single-value helper.
+#[cfg(target_arch = "aarch64")]
+pub fn survey(slot: u64, cursor: u64) -> (i64, u64, u64) {
+    let (mut r0, mut w1, mut w2): (i64, u64, u64);
+    // SAFETY: `svc`. SURVEY returns three words in x0/x1/x2.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => r0,
+            in("x1") abi::endpoint::SURVEY,
+            lateout("x1") w1,
+            inlateout("x2") cursor => w2,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, w1, w2)
+}
+
+/// `SURVEY` one entry (RISC-V). See the aarch64 twin; `ecall`, slot in `a0`, `SURVEY` in `a1`, the
+/// cursor in `a2`, the three returned words in `a0`/`a1`/`a2`.
+#[cfg(target_arch = "riscv64")]
+pub fn survey(slot: u64, cursor: u64) -> (i64, u64, u64) {
+    let (mut r0, mut w1, mut w2): (i64, u64, u64);
+    // SAFETY: `ecall`. SURVEY returns three words in a0/a1/a2.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") abi::SYS_INVOKE,
+            inlateout("a0") slot => r0,
+            inlateout("a1") abi::endpoint::SURVEY => w1,
+            inlateout("a2") cursor => w2,
+            in("a3") 0u64,
+            in("a4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, w1, w2)
+}
+
 /// `RECV` three words on the endpoint capability in `slot`. Blocks until a sender arrives; returns
 /// the three words the sender passed in `x0`, `x1`, `x2`.
 #[cfg(target_arch = "aarch64")]

@@ -839,6 +839,10 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
         // Read from the program's own declaration, not from the request: a clock is not something
         // the command line can designate, so there is no bit on the wire for it (`Manifest::clock`).
         let wants_clock = prog.is_some_and(|p| p.manifest().clock);
+        // Same reasoning, one authority over (milestone 126): a **process domain** is not something
+        // a person designates either. There is no /proc to name and no pid space to scan, so what a
+        // program may see is decided here, by which supervision endpoint init puts in its cspace.
+        let wants_domain = prog.is_some_and(|p| p.manifest().domain);
 
         if interruptible {
             // Build the whole child from the shell's job untyped, mapping the shared job frame; no
@@ -928,14 +932,33 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
             let default_diag = term_sink.filter(|_| diag_slot.is_some());
             // Either half missing means no second stream reaches the child, and it then says what it
             // has to say in-band, which is what every program did before §67.
-            let placed_buf = match (diagnostics.or(default_diag), diag_slot) {
-                (Some(ep), Some(slot)) => Some([(slot, ep, abi::rights::WRITE)]),
-                _ => None,
-            };
-            let placed: &[(u64, u64, u64)] = match &placed_buf {
-                Some(p) => p,
-                None => &[],
-            };
+            //
+            // **Two named slots now, and they are placed the same way for the same reason.** The
+            // second is a view over the domain this child is *about to be born into*: `deaths` is
+            // the endpoint every job init spawns for this shell is supervised by, so a `ps` handed
+            // it with READ sees exactly this shell's jobs, including itself, and nothing else on the
+            // machine. Init, the shell, the terminal and the filesystem server are all outside it,
+            // which is the confinement claim and is checked by `kernel::user::survey_tests`.
+            //
+            // **READ is wider than looking needs, and that is recorded rather than hidden**: READ on
+            // a supervision endpoint is also what `RECV` and `abi::endpoint::REAP` take, so this
+            // grant would let a viewer take a death message out from under `job_undertaker`. `ps`
+            // does neither, splitting view from control needs a rights-model decision, and
+            // notes/process-view.md carries the whole argument and what would close it.
+            let mut placed_buf = [(0u64, 0u64, 0u64); 2];
+            let mut placed_n = 0usize;
+            if let (Some(ep), Some(slot)) = (diagnostics.or(default_diag), diag_slot) {
+                placed_buf[placed_n] = (slot, ep, abi::rights::WRITE);
+                placed_n += 1;
+            }
+            if wants_domain {
+                // `ENUMERATE` alone, deliberately. Granting `READ` here would hand a viewer
+                // `RECV` and `REAP` on the supervision endpoint as well, which is authority to
+                // collect a child rather than to name one. See `Rights::ENUMERATE`.
+                placed_buf[placed_n] = (grant_plan::DOMAIN_SLOT, deaths, abi::rights::ENUMERATE);
+                placed_n += 1;
+            }
+            let placed: &[(u64, u64, u64)] = &placed_buf[..placed_n];
             let clock_map = [(CHILD_CLOCK_VA, clock_page, abi::aspace::MAP_RO)];
             let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
             // **A region of its own, so the job's memory can come home** (milestone 22, the
