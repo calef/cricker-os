@@ -65,6 +65,8 @@ pub fn run() -> ! {
     broker_rtt();
     spawn_reap();
     map_new();
+    #[cfg(target_arch = "riscv64")]
+    rfence_self();
     coremark_compute();
     null_syscall_el0();
     ctx_switch_el0();
@@ -338,6 +340,11 @@ fn map_new() {
     let mut space = crate::user::AddressSpace::new(MAP_ITERS + 8).expect("bench: no address space");
     let base = 0x40_0000u64;
 
+    // The shootdown probe (notes/benchmarks.md, the 2026-08-15 reading). Counted across exactly the
+    // timed window, because the claim under test is about what `map_new` itself issues.
+    #[cfg(target_arch = "riscv64")]
+    let fences_before = crate::arch::remote_fence_count();
+
     timed("map_new", MAP_ITERS, || {
         for i in 0..MAP_ITERS {
             let page = space
@@ -347,7 +354,58 @@ fn map_new() {
             TOTAL.fetch_add(page[0] as u64, Ordering::Relaxed);
         }
     });
+
+    // **Not a `timed` line, and deliberately not on the baseline.** These are counts and a bitmask,
+    // not durations: putting them through `timed` would invite `--check` to police them with a 10%
+    // tolerance, when the only interesting values are exact (`0` fences, one bit set). They are
+    // printed next to `map_new` because that is the benchmark whose reading they settle.
+    #[cfg(target_arch = "riscv64")]
+    {
+        println!(
+            "bench-probe: map_new_remote_fences {} over {MAP_ITERS} iters",
+            crate::arch::remote_fence_count() - fences_before
+        );
+        println!(
+            "bench-probe: online_harts_mask {:#x} ({} online, this hart {})",
+            crate::smp::online_harts_mask(),
+            crate::smp::online_count(),
+            crate::cpu::id()
+        );
+    }
     drop(space); // teardown outside the timed window; it is spawn_reap's kind of cost, not map's
+}
+
+/// **What one remote RFENCE costs, measured on a single hart** (the calibration that settles the
+/// 2026-08-15 reading; notes/benchmarks.md).
+///
+/// The reading said a `map_new` regression of +370 ticks over 64 iterations was remote RFENCEs
+/// fired against an over-reporting mask, and it could not rule out the rival reading, that the
+/// delta was the *mask arithmetic itself* being consulted per flush. Those two differ by orders of
+/// magnitude, so measuring the RFENCE once decides it. This is the only way to get that number on
+/// one hart: **a hart may name itself in an SBI hart mask**, which is a legal call the firmware
+/// serves with a local fence, and it exercises the whole `ecall`-into-firmware path that the
+/// shootdown pays and a local `sfence.vma` does not.
+///
+/// It must be single-hart. A two-hart comparison would be the 2026-07-28 mistake again: under
+/// `-icount` all harts share one virtual clock, so a second hart's idle `wfi` dumps quantized time
+/// into whatever window is open, and the delta would measure interleaving rather than the call.
+#[cfg(target_arch = "riscv64")]
+fn rfence_self() {
+    const RFENCE_ITERS: u64 = 512;
+    // Any mapped kernel address: the firmware fences a range, and which range it is does not change
+    // the cost of getting there, which is the whole of what this measures.
+    static ANCHOR: AtomicU64 = AtomicU64::new(0);
+    let va = &raw const ANCHOR as usize;
+    let me = 1usize << crate::cpu::id();
+
+    for _ in 0..WARMUP {
+        crate::arch::sbi_remote_sfence_vma(me, va, frames::FRAME_SIZE as usize);
+    }
+    timed("rfence_self", RFENCE_ITERS, || {
+        for _ in 0..RFENCE_ITERS {
+            crate::arch::sbi_remote_sfence_vma(me, va, frames::FRAME_SIZE as usize);
+        }
+    });
 }
 
 // Roles for the `os_primitives_benchmarker` EL0 program (must match user/src/os_primitives_benchmarker.rs). One binary, one micro-

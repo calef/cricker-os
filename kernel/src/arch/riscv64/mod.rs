@@ -232,6 +232,35 @@ const SBI_RFENCE_EID: usize = 0x5246_4E43;
 /// and would silently undo the milestone on every other hart.
 const SBI_RFENCE_ALL: usize = usize::MAX;
 
+/// **How many remote RFENCEs this boot has issued** (milestone 130's follow-on, bench builds only).
+///
+/// Every SBI RFENCE is an `ecall` into firmware, so it is the single most expensive thing on an
+/// otherwise local TLB path, and whether one is issued at all is decided by a *mask*
+/// (`smp::online_harts_mask()`). On a single-hart boot the correct answer is **zero**: there is
+/// nobody to shoot down, and both call sites skip the call when the mask names no other hart.
+///
+/// This counter exists because a reading in notes/benchmarks.md (2026-08-15) inferred that a
+/// `map_new` regression was remote RFENCEs fired against an over-reporting mask, and recorded
+/// honestly that **nothing had counted a fence**. This counts them.
+///
+/// `feature = "bench"` rather than always-on: a relaxed increment is cheap but this is the TLB
+/// shootdown path, and a diagnostic has no business on it in a shipping kernel. The bench build is
+/// its own kernel binary, so the instrument and the shipping path stay separate objects.
+#[cfg(feature = "bench")]
+static REMOTE_FENCES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Record one issued RFENCE. See [`REMOTE_FENCES`].
+#[cfg(feature = "bench")]
+fn note_remote_fence() {
+    REMOTE_FENCES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Remote RFENCEs issued so far this boot. Bench builds only; see [`REMOTE_FENCES`].
+#[cfg(feature = "bench")]
+pub fn remote_fence_count() -> u64 {
+    REMOTE_FENCES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Shoot down a virtual-address translation on the harts in `hart_mask`, via the SBI RFENCE
 /// extension. The firmware IPIs those harts and each executes `sfence.vma start, ...` for the range.
 /// RISC-V has no hardware TLB broadcast (aarch64's `tlbi ..., is` does), so a kernel page-table change
@@ -239,6 +268,8 @@ const SBI_RFENCE_ALL: usize = usize::MAX;
 /// `mmu::flush_tlb`.
 pub fn sbi_remote_sfence_vma(hart_mask: usize, start: usize, size: usize) {
     const SBI_REMOTE_SFENCE_VMA_FID: usize = 1;
+    #[cfg(feature = "bench")]
+    note_remote_fence();
     // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0), a2/a3 =
     // the address range. The firmware returns in a0/a1 (ignored); nothing else is touched.
     unsafe {
@@ -291,6 +322,8 @@ pub fn sbi_remote_sfence_vma(hart_mask: usize, start: usize, size: usize) {
 ///   limitation `smp::bring_up_secondaries` documents for logical-id-equals-hart-id.
 pub fn sbi_remote_sfence_vma_asid(hart_mask: usize, asid: u16) {
     const SBI_REMOTE_SFENCE_VMA_ASID_FID: usize = 2;
+    #[cfg(feature = "bench")]
+    note_remote_fence();
     // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0), a2/a3 =
     // the address range (all of it), a4 = the ASID. The firmware returns in a0/a1 (ignored).
     unsafe {
