@@ -4,10 +4,25 @@
 pull requests that changed no executable code, two of them documentation only. Milestone 72 fixed the
 one that was a real bug. What is left is a family, and it is not one problem.
 
-**Gate: NONE.** The three assertions that report a negative discrepancy are diagnosed in the block,
-and what it asks for is three small changes with three arguments, decided per assertion.
+**Gate: NONE.** What is left is **the icount instrument**, for the two remaining timing claims: that
+SBI fired at the riscv64 software grid's deadlines, and that the handler takes fewer than N
+instructions. Both need `-icount shift=0,sleep=off`, which today lives only on the bench paths
+(`xtask/src/main.rs:6020` and `:6075`) and nowhere on the test path. The three negative-discrepancy
+assertions this line used to send a lane at are **done**; see the table's note below.
 
-## The day's evidence
+## The day's evidence, which is history rather than a worklist
+
+**All three negative-discrepancy assertions were fixed, and the line numbers in this table are stale**
+(corrected 2026-08-17 by the status-accuracy sweep; notes/load-sensitive-assertions.md:465 had already
+named this exact defect, that a reader coming to the block first is sent to three finished sites). The
+reaper count is now at `kernel/src/sched.rs:3978`, rescoped to per-`Tid` waits and `used() <= before`.
+The address-space frame check is `kernel/src/user/tests.rs:2221`, where the old "-19" survives as a
+comment recording the past failure rather than as a live baseline. The frame-hygiene check was
+**removed** rather than rescoped. `threads_round_robin` is at `kernel/src/sched.rs:3809` and waits on
+the clock. The timer twins were rebuilt against the re-arm law on both ISAs
+(`kernel/src/arch/aarch64/timer.rs:382`, `kernel/src/arch/riscv64/timer.rs:423`). The table is left
+below as the record of the day that prompted the milestone; read it for the failure shapes, not for
+where the code is.
 
 | assertion | site | what it reported |
 |---|---|---|

@@ -2,12 +2,12 @@
 
 **Status: PARTIAL.**
 
-**Gate: NONE.** Phase 3 is exactly one thing with no decision in front of it: wire an FS service
-into the interactive boot and flip `holdings()` in `user/src/swish.rs`. The block's own caution is
-that nothing in the suite boots the interactive shell, so whoever takes it should gate that boot
-first.
+**Gate: NONE.** Phase 3 has one item left, and it is **not** the four this block used to list:
+**init building a `fs_subtree_caretaker` per grant**. Everything else in phase 3 landed under
+milestone 50 and is gated at the real prompt on both ISAs; the corrections are in "Phase 3" below.
+Read that before starting, because this gate line sent lanes at finished work for twelve days.
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `grant_plan` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `grant_plan` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note, **retired 2026-08-16**: the interactive shell used to refuse a named file because its boot wired no FS service. Milestone 50 wired it, and `wc gate.txt` at the real prompt is gated on both ISAs; what remains is init building a caretaker per grant. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
@@ -46,21 +46,34 @@ second. Phase 2 also landed the contract's `CREATE` and `TRUNCATE` (so `File::cr
 only by the absence of a path walker, and a measured stack for the FS server after a 528-byte
 overflow presented as a mystery 900-second test.
 
-**Why the status is PARTIAL and not BUILT, stated plainly.** The mechanism is complete and gated on
-both ISAs, but this milestone's headline is about *the one interface a human touches*, and at that
-interface `wc report.txt` is still a refusal. The interactive shell holds no directory to
-narrow, because the boot that starts it wires no FS service; the refusal it prints ("you hold no such
-capability: this shell was granted no directory to narrow") is **true** rather than a placeholder,
-and `caps` says the same. `grant_plan` carries the whole vocabulary (`FileSpec` in the manifest, a
-`FileGrant` in the endowment, refusals both ways, `caps` printing the file endowment), and the
-decision is a function of what the shell *holds* rather than of the calendar, which phase 1's
-hardcoded "arrives with milestone 32" was not.
+**Why the status was PARTIAL, and the paragraph that was true until 2026-08-16.** It read: the
+mechanism is complete and gated on both ISAs, but this milestone's headline is about *the one interface
+a human touches*, and at that interface `wc report.txt` is still a refusal, because the boot that
+starts the interactive shell wires no FS service and it holds no directory to narrow.
 
-**Phase 3, then, is exactly one thing:** wire an FS service into the interactive boot (the kernel's
-shell boot path, a RedoxFS disk on the interactive runner, and init building the caretaker per
-grant), and flip `holdings()` in `user/src/swish.rs`. It was not done here because **nothing in the
-test suite boots the interactive shell**, so it would ship unexercised, and a demonstrator's ungated
-feature is worse than a recorded gap. Whoever takes it should consider gating that boot first.
+**That is no longer true, and the headline is now gated at the real prompt on both ISAs.**
+`xtask/src/main.rs:5368` runs `wc gate.txt` at the interactive shell and expects `2 4 24`, with
+`wc gate.txt | wc` beside it, `caps wc gate.txt` printing the endowment, and **bare `wc` refused as the
+negative control**, which is the claim stated as a pair rather than asserted. `holdings()` is flipped
+(`user/src/swish.rs:128`, `dir: nav.dir.is_some()`), the kernel's shell boot path grants an FS service
+on both ISAs (`kernel/src/user.rs:1351` for riscv64, `user/src/hello.rs:390` for aarch64), and the
+interactive runner carries a RedoxFS disk (`xtask/src/main.rs:5646`). The harness that was said not to
+exist is `script/shell-check`, which is the gate for `user/src/system_initializer.rs` and runs both
+legs.
+
+**Why this block did not say so for twelve days**, which is worth recording because it is the §76
+defect class arriving sideways rather than by neglect: the work landed under **milestone 50**, whose
+commit `43a2967e` says it in its own message, "Milestone 31 phase 3 is 'wire an FS service into the
+interactive boot and flip holdings()', and milestone 50 did both. Nothing read the result." A
+milestone's status is maintained by its own lane, and nothing maintains it when another lane finishes
+its work. Found 2026-08-17 by the status-accuracy sweep.
+
+**Phase 3's one remaining item**, and it is already gated *as a gap*, on both ISAs: **init building a
+`fs_subtree_caretaker` per grant.** `xtask/src/main.rs:5530` runs `rm gate.txt` at the prompt and
+expects `needs init to build the caretaker`. A directory grant is delivered by a caretaker, init is the
+only process that can build one, and init deletes that endpoint during the boot, so the answer at the
+prompt is a refusal. That refusal is true rather than a placeholder, which is this milestone's own
+standard for a recorded gap, and it is the whole of what keeps the status PARTIAL.
 
 **Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
 entire authority; a nife command line is a **grant expression**: every argument that
@@ -86,5 +99,7 @@ contracts for scripts, on Capsicum) is the academic anchor; Mark Miller's object
 line (E, CapDesk, Polaris) supplies the organizing principle; Plash is the Linux attempt worth
 reading as the mistake catalog. Feeds 23 and 22 (shrinking ambient authority, met at the human
 layer); sits behind 28's terminal contract. **Effort: 2 lanes built** (the grant expression, then
-CREATE/TRUNCATE and per-file grants), **1 more estimated** for phase 3, which is one item: gating the
-interactive boot so an FS service can be wired into it.
+CREATE/TRUNCATE and per-file grants), plus phase 3's larger half landing free under milestone 50.
+**Less than 1 lane estimated** for what is left, which is init building a `fs_subtree_caretaker` per
+grant; gating the interactive boot, which this line used to name as the cost, is `script/shell-check`
+and already exists.

@@ -11,6 +11,11 @@ what that costs.
 brief, because every brief says "read `CLAUDE.md` first, in full". About a dozen lanes ran on
 2026-08-04 alone.
 
+**Re-measured 2026-08-17: 868 lines, 10,001 words** (`wc -lw AGENTS.md`), so it has grown another 130
+lines and 1,695 words in the twelve days this milestone has been open. The premise got stronger, not
+weaker, which is the argument for the budget rather than against it. The 2026-08-05 figures above are
+left as the measurement calef acted on.
+
 **It grew 336 lines in one day, across 11 commits.** Two sections are 46% of it: the roles section at
 224 lines and the naming section at 118.
 
@@ -25,8 +30,8 @@ measurement rather than an aesthetic complaint.
 ## The diagnosis: not too long, wrongly stratified
 
 Everything loads at once with equal weight, so "never `pkill` QEMU" competes for attention with the
-`snake_case` conventions table. A reader skimming 738 lines cannot tell which three rules will bite
-them this hour.
+`snake_case` conventions table. A reader skimming it cannot tell which three rules will bite them this
+hour, and there are 130 more lines of it than when that was written.
 
 **The reasoning is why the rules stick.** "The `sed` that rewrote the very row recording that the name
 had been refused" is what makes that rule memorable, and compressing it to a bullet would produce a
@@ -34,8 +39,8 @@ style guide nobody obeys. **So this milestone stratifies rather than compresses*
 finds itself deleting arguments has taken the wrong turn.
 
 There is also an uncomfortable connection to the third principle: a stranger's first encounter with
-this project is a 738-line document addressed to an agent. Milestone 117 will find that
-independently.
+this project is a document of this length addressed to an agent. Milestone 117 found that
+independently, in both of its runs.
 
 ## Three pieces
 
