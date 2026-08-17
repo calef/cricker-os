@@ -769,6 +769,13 @@ fn apropos(nav: &mut Nav, term: &[u8]) -> Say {
     });
     nav.close(store);
 
+    // **A manifest that filled the buffer is a search that did not cover the store**, and saying
+    // nothing would make "no page says that" a lie about bundles nobody looked in. Found by review
+    // rather than by running: the shipped manifest is 25 bytes and this will not fire until the
+    // store is ten times its size.
+    if got == MANIFEST_MAX {
+        print(b"  the bundle manifest filled this shell's buffer; bundles past it were not searched\n");
+    }
     if unreadable {
         print(b"  a shard in the store is not an index this reader knows\n");
     }
