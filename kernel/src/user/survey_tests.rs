@@ -450,6 +450,108 @@ fn a_resumed_walk_reports_every_member_exactly_once() {
     tidy(budget, endpoints, &[cap, sup]);
 }
 
+/// **The cursor and the tid are machine-wide slot indices, so a viewer can count threads it cannot
+/// see.** The 2026-08-17 security audit's finding, landed as the test that states the limit rather
+/// than as a claim in a report nobody runs.
+///
+/// This does not contradict the confinement claim above, and the difference is exactly what makes
+/// it worth a test of its own. A viewer still cannot **name** a thread outside its domain: no
+/// stranger's tid is ever reported, `REAP` still refuses one, and
+/// `a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted` proves both. What leaks is
+/// arithmetic on the numbers the survey hands back about the viewer's **own** members:
+///
+/// - `next_cursor` is `slots::Table` slot + 1, and that table is the whole machine's;
+/// - `tid` is the generational name over the same slot, so its low half **is** that index and its
+///   high half is the number of times that slot has been recycled machine-wide.
+///
+/// So a viewer with two members reads two cursors, and the gap between them counts the threads
+/// created in between that it is not shown. `caps ps` used to print "not learn that a process
+/// outside this domain exists"; it now says what this test asserts instead. See the `BUGS` section
+/// of notes/process-view.md for the disposition and why the fix is a milestone rather than a patch.
+#[test_case]
+fn the_survey_cursor_counts_threads_the_viewer_cannot_name() {
+    let (budget, endpoints) = arena();
+    let mine = endpoint(endpoints);
+    let theirs = endpoint(endpoints);
+    let parking = endpoint(endpoints);
+
+    // Creation order is the whole experiment: one of mine, then a stranger the viewer will never be
+    // shown, then a second of mine. `slots::Table::insert_with` takes the lowest free slot, so the
+    // three land in strictly increasing slots in this order and the stranger's is between the two
+    // the viewer can see.
+    let a = child_in(budget, REPORT_STUB, Some(parking), mine);
+    let stranger = child_in(budget, REPORT_STUB, Some(parking), theirs);
+    let b = child_in(budget, REPORT_STUB, Some(parking), mine);
+    assert!(
+        super::tests::wait_for(|| sched::endpoint_waiting_senders(parking) == 3),
+        "the three children never reached their sends",
+    );
+
+    // Held the way `ps` holds it: `ENUMERATE` alone, the narrowest thing that can look at all.
+    let cap = hold_view(mine);
+
+    let (c1, t1, _) = survey(cap, 0);
+    assert!(c1 > 0, "the viewer's own domain was refused or empty");
+    let (c2, t2, _) = survey(cap, c1 as u64);
+    assert!(
+        c2 > 0,
+        "the domain reported one member where two were built"
+    );
+    assert_eq!(
+        survey(cap, c2 as u64),
+        (abi::survey::DONE as i64, 0, 0),
+        "a third entry appeared in a domain of two",
+    );
+    assert!(
+        (t1 == a && t2 == b) || (t1 == b && t2 == a),
+        "the domain reported a thread that is not one of its two members",
+    );
+
+    // **The tid carries the machine-wide slot index**, which is an ABI fact rather than a
+    // scheduling accident: `slots::Table` packs a name as `(generation << 32) | slot` and the
+    // cursor is that same slot plus one. Asserting the identity is what makes the leak a
+    // measurement instead of an inference from reading the allocator.
+    assert_eq!(
+        (t1 & 0xffff_ffff) + 1,
+        c1 as u64,
+        "the tid's low half is no longer the slot the cursor reports",
+    );
+    assert_eq!(
+        (t2 & 0xffff_ffff) + 1,
+        c2 as u64,
+        "the tid's low half is no longer the slot the cursor reports",
+    );
+
+    // **The finding.** Two members, and the cursor advances by more than one between them. The
+    // extra step is the stranger: a thread this capability may not name, whose existence the
+    // viewer can nonetheless count by subtracting. A cursor scoped to the domain, or an opaque
+    // one, would advance by exactly one here.
+    assert!(
+        c2 - c1 >= 2,
+        "the cursor advanced by {} between two adjacent members, so this test is no longer \
+         measuring the leak it was written for (the allocator or the cursor changed shape)",
+        c2 - c1,
+    );
+
+    // The stranger is still unnameable, which is the half that must not regress. The viewer knows
+    // a thread is there and knows nothing else about it: not its tid, not its state, and REAP
+    // through this capability is not even expressible (`hold_view` withholds `READ`).
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(cap, &mut buf);
+    let found = TidSet::of(&seen);
+    assert!(
+        !found.has(stranger),
+        "the stranger became nameable, which is a different and much worse bug",
+    );
+
+    drain(parking, 3);
+    let sup_mine = hold_supervisor(mine);
+    let sup_theirs = hold_supervisor(theirs);
+    collect_all(sup_mine, &[a, b]);
+    collect_all(sup_theirs, &[stranger]);
+    tidy(budget, endpoints, &[cap, sup_mine, sup_theirs]);
+}
+
 /// A small membership check without allocating: the kernel has no heap, and these tests hold at
 /// most three tids at a time.
 struct TidSet {

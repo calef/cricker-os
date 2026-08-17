@@ -48,7 +48,10 @@ invoke(cap, SURVEY, cursor, 0, 0) -> (next_cursor, tid, state)
 - `next_cursor` returns in x0 (a0 on RISC-V), `tid` in x1, `state` in x2.
 - Start with `cursor = 0`. Feed each `next_cursor` back. `abi::survey::DONE` (zero) means finished.
 - A negative first word is an `abi::Error`.
-- **Needs `READ`**, exactly as `endpoint::REAP` does.
+- **Needs `ENUMERATE`, and pointedly not `READ`.** `READ` on a supervision endpoint is what `RECV`
+  and `endpoint::REAP` take, so a viewer holding it could reap a child; a domain names its members
+  and does not act on them (calef, 2026-08-17). See `capability::Rights::ENUMERATE` and the first
+  `BUGS` entry below, which is the finding this right came from.
 
 `state` is one of `abi::survey`'s four codes: `READY`, `RUNNING`, `BLOCKED`, `DEAD`. Only four,
 because a supervised thread cannot be found in the other two. `Embryo` has not run, so it has no
@@ -91,14 +94,27 @@ chose `EPERM` over an empty listing for the same reason (milestone 108's shape).
 
 | what the viewer holds | answer |
 |---|---|
-| the endpoint with `READ`, domain has members | the rows |
-| the endpoint with `READ`, domain is empty | `DONE` on the first call: an answer |
-| the endpoint **send-only** (`WRITE`, no `READ`) | `NotPermitted` |
+| the endpoint with `ENUMERATE`, domain has members | the rows |
+| the endpoint with `ENUMERATE`, domain is empty | `DONE` on the first call: an answer |
+| the endpoint **send-only** (`WRITE`, no `ENUMERATE`) | `NotPermitted` |
+| the endpoint with `READ` but not `ENUMERATE` (a supervisor that was never widened) | `NotPermitted` |
 | nothing in the slot | `NoSuchSlot` |
 
 The send-only case is the interesting one and it is a real relationship in this tree: a peer that
 reports *to* a supervisor holds exactly that. It may send here and it may not look, and the kernel
 says so rather than answering with a plausible nothing.
+
+The fourth row is the one the 2026-08-17 rights split added, and it is the direction a reader is
+least likely to expect: `READ` is the *stronger* right on this object (it unlocks `RECV` and `REAP`)
+and it still does not unlock the view. That is deliberate. The two are not ordered, because
+receiving deaths and naming members differ in kind rather than in degree, so a holder that wants
+both is granted both, which is what the kernel tests' `hold_supervisor` does.
+
+**Nothing this system ships holds both**, and that fell out of the split rather than being designed:
+`system_initializer` endows `job_undertaker` with `READ` on `deaths` and nothing else, and a `ps`
+with `ENUMERATE` on `deaths` and nothing else. So the program that can free a job's memory cannot
+enumerate the jobs, and the program that lists them cannot touch one. Before the split there was one
+bit and both would have held it.
 
 All four are asserted in one kernel test on both ISAs
 (`kernel/src/user/survey_tests::a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list`),
@@ -143,7 +159,7 @@ without saying so.
 person types, so there is no token to place and no refusal to write. What the field does is tell
 **init** which children to endow, and tell a person reading `caps ps` that the authority exists.
 
-Init places the endpoint in `grant_plan::DOMAIN_SLOT` (seven) with `READ`, using the same named-slot
+Init places the endpoint in `grant_plan::DOMAIN_SLOT` (seven) with `ENUMERATE`, using the same named-slot
 mechanism §67 gave the diagnostics stream, for the same reason: how many low slots a child gets
 depends on what else the line granted it, and a program that probes a fixed number needs that number
 not to move.
@@ -169,9 +185,11 @@ $ ps | wc                 the table is counted, and no /proc was read to make it
 $ caps ps                 the scope, printed before anything is spawned
   ps would grant the new process, and nothing else:
     cap 0  endpoint  result   report its answer back
-    cap 7  endpoint  domain   READ. the processes this shell's jobs are supervised
-                              by, and no others. it cannot name a process outside
-                              this domain, or learn that one exists
+    cap 7  endpoint  domain   ENUMERATE. the processes this shell's jobs are
+                              supervised by, and no others. it can name them and
+                              do nothing to them: not receive their deaths, not
+                              collect them, and not learn anything about a process
+                              outside this domain but that it exists
     ...
 ```
 
@@ -219,6 +237,47 @@ assert_eq!(survey.rows()[0].tid, 7);
   unlocked receive, reap and survey, and no grant could express any one of them. When a right
   unlocks operations that differ in kind rather than in degree, it is not a right, it is a
   category.
+
+- **The cursor and the tid are machine-wide slot indices, so a viewer can *count* threads outside
+  its domain even though it can never name one.** Found by the 2026-08-17 security audit
+  (design/audit-reports/), recorded-accepted, and the fix proposed as a milestone in that report.
+
+  The mechanism, in two lines of kernel. `sched::survey_supervised` returns `slot as u64 + 1` as
+  the `next_cursor`, where `slot` is the index into `Scheduler::threads`, which is the **whole
+  machine's** thread table. And a tid is a `slots` generational name, `(generation << 32) | slot`,
+  so the low half of every tid a survey reports *is* that same index and the high half is the
+  number of times that slot has been recycled since boot, machine-wide.
+
+  What a viewer holding `ENUMERATE` alone can therefore work out about the rest of the system:
+
+  - **that other threads exist**, from a single member, because its member's slot index is a lower
+    bound on how many slots were occupied when that member was created;
+  - **how many threads were created between two of its own members**, by subtracting their two
+    cursors. That is the `c2 - c1 >= 2` assertion in
+    `kernel/src/user/survey_tests::the_survey_cursor_counts_threads_the_viewer_cannot_name`, which
+    builds a stranger between two members and measures the gap;
+  - **machine-wide churn in a slot**, from the generation half, which counts other domains' thread
+    lifetimes in that slot and only ever increases.
+
+  Two domains that can each spawn can turn this into a **covert channel** without sharing any
+  capability: one modulates global slot allocation by spawning and exiting, the other polls its own
+  members' cursors. The bandwidth is low and nobody has measured it.
+
+  **Why accepted rather than fixed here.** The honest fix is a per-domain cursor and a domain-local
+  thread name, and both change what a tid *is*: `endpoint::REAP` takes a tid, `abi::fault`'s death
+  message carries one, and `ps` prints one. So it is a change to something two programs agree on,
+  which is the category that cannot be un-shipped by reverting a commit, and it reaches the syscall
+  surface (§16's `REAP` and §26's death message). That makes it a milestone rather than an audit
+  lane's patch. A cheaper partial exists and is worth weighing against it: return an opaque
+  cursor (the slot index XOR a per-endpoint value) and leave tids alone, which closes the
+  subtraction channel and leaves the generation half open.
+
+  **What is not affected, and it is the part that matters most.** A viewer still cannot *name* a
+  thread outside its domain, cannot learn its tid or its state, and cannot reap it. The
+  confinement claim in `a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted` is
+  intact; this is a counting channel beside it, not a hole in it. The `caps ps` line and this
+  note's example were corrected in the same lane, because "not learn that a process outside this
+  domain exists" was a stronger sentence than the mechanism delivers.
 
 - **A process has no name, so there is no `CMD` column.** This system has `arg0` in `Spawn` and no
   display name at all. A name is information rather than authority, but a confined viewer may still

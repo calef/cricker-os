@@ -1,11 +1,30 @@
 # 58. RISC-V TLB shootdown, and the flush that makes ASIDs pointless
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/58-riscv-tlb-shootdown`.
+**Status: BUILT** 2026-08-05 (pull request #124, merge `8fdf2677`). The status read
+`IN-PROGRESS since 2026-08-04, a developer holds it on milestone/58-riscv-tlb-shootdown` for twelve
+days after that merge, and the branch it named had been deleted by the merge that finished it; found
+2026-08-17 by the status-accuracy sweep, which found all six `IN-PROGRESS` rows naming branches that
+do not exist. §76's defect class again: the index row and this file agreed with each other and both
+disagreed with the tree, which is the one case `script/roadmap --check` cannot see.
 
-**Gate: NONE.** The precondition landed 2026-07-31: `mmu::asid_bits()` probes the hardware width
-and a test fails loudly below 8, which is what removing the flush has to be gated on. The order is
-per-ASID flush, then the IPI shootdown with its acknowledgement, then the removal, then a
-re-baselined `ctx_switch`.
+**What landed, against the four items the deleted gate line sequenced.** The per-ASID flush is
+`kernel/src/arch/riscv64/mmu.rs:638`, `sfence.vma zero, {asid}` for the local half. The IPI
+shootdown with its acknowledgement is `super::sbi_remote_sfence_vma_asid`
+(`kernel/src/arch/riscv64/mod.rs:292`), the ack being the return of the `ecall` into OpenSBI's
+`sbi_tlb_sync`. The removal is gated on the probe: `write_satp` (`kernel/src/arch/riscv64/mmu.rs:80`)
+now issues `sfence.vma` only when `!asid_tagging_is_trusted()`. And `bench/baseline-riscv64.txt` was
+re-saved. Two witnesses, both wired without an arch `cfg` so both run on both ISAs:
+`an_asid_flush_reaches_the_other_cores` (`kernel/src/user/tests.rs:611`), which was also the first
+coverage aarch64's `tlbi aside1is` broadcast ever had, and
+`asid_tagging_keeps_address_spaces_apart_without_flushes` (`kernel/src/user/tests.rs:523`), which was
+aarch64-only and is now the milestone-15 witness meaning something on RISC-V. See
+notes/riscv-tlb-shootdown.md.
+
+**The honest result is a small regression on icount, not a win**, recorded in
+notes/benchmarks.md:834: `ctx_switch` +1.2%, `ipc_rtt_el0` +1.6%. QEMU charges the added gate and
+credits nothing for the removed flush, because its softmmu TLB is not ASID-tagged, so the number this
+milestone was supposed to produce is not measurable on the emulator at all. The real one is milestone
+24's, on the board.
 
 **In brief.** `write_satp` follows every `csrw satp` with a bare `sfence.vma`, so **every RISC-V
 context switch throws away the entire TLB** while carrying an ASID it then gets no benefit from. The
@@ -50,7 +69,8 @@ the upside is a benchmark number, the downside is silent memory disclosure. So t
 **proven, not argued**, and it is why milestone 19's test lane correctly left this alone rather than
 taking it as a side effect of writing tests.
 
-**Sequencing.** The probe is done (2026-07-31). Next is the per-ASID flush, then the IPI shootdown
-with its acknowledgement, then removing the flush behind the probe's gate, then re-baselining
-`ctx_switch`. **Effort: not estimated**; the shootdown is the unknown, and it is the kind of unknown
-that deserves measurement before a number.
+**Sequencing, as planned and as it went.** The probe was done 2026-07-31, then the per-ASID flush,
+then the IPI shootdown with its acknowledgement, then removing the flush behind the probe's gate, then
+re-baselining `ctx_switch`. All four landed in that order in pull request #124. **Effort was
+deliberately not estimated** because the shootdown was the unknown; the note above records what it
+cost.

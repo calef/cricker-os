@@ -2,9 +2,12 @@
 
 **Status: OPTIONAL.**
 
-**Gate: MILESTONE 80, MILESTONE 88.** Stated in the block's own sequencing: 88 provides the first
-machine with enough harts for the `smp_throughput` curve to bend, and 80 provides the method,
-because a design that replaces the lock with messages wants its protocol born loom-checked.
+**Gate: MILESTONE 88.** Stated in the block's own sequencing: 88 provides the first machine with
+enough harts for the `smp_throughput` curve to bend. The other half of this gate was `MILESTONE 80`,
+for the method, because a design that replaces the lock with messages wants its protocol born
+loom-checked; 80 landed 2026-08-13 and `script/interleaving-check` is the method it left behind, so
+that half is satisfied rather than dropped. (Recorded here rather than deleted silently: the gate
+check fails a `MILESTONE` token naming a BUILT milestone, which is what surfaced this.)
 
 **In brief.** Partition the shared thread table and endpoints
 
