@@ -112,7 +112,7 @@ The argument, in one paragraph. The TX1 is the silicon under the only published 
 numbers, the very 413-plus-426-cycle pair notes/benchmarks.md already compares against, and that
 page was regenerated from CI the day before this survey, so the platform is actively benchmarked,
 not historically. Measuring nife on it retires the largest caveat in the benchmarks note ("a
-large part of the gap closing is the machine, not the kernel; the only fix is the same kernel
+large part of the gap closing is the machine, not the kernel ... the only fix is the same kernel
 measured on comparable silicon"): comparable becomes identical, and our own sel4bench run can be
 sanity-checked against the Foundation's published figures before we trust it against ourselves.
 Meanwhile the port cost is near the floor: GICv2 at a new base, a 16550 our driver already

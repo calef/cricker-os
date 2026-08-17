@@ -28,21 +28,39 @@ do).** Both are valid and they fail under different conditions.
 ## Why it matters more than "another counter"
 
 The thesis claim is a cross-OS comparison, and **the literature it is compared against is denominated
-in cycles**, not nanoseconds. notes/benchmarks.md already does the conversion by hand and draws the
-honest conclusion:
+in cycles**, not nanoseconds. notes/benchmarks.md does the conversion by hand and draws the honest
+conclusion:
 
-> At ~3.2 GHz, 350 ns is roughly 960 to 1,420 cycles round trip, against seL4's 413 + 426 = ~839 for
-> the one-way pair. Per cycle we are about 1.1x to 1.7x heavier.
+> seL4 publishes, for the same-core different-address-space path, 413 cycles for the IPC call and
+> 426 for the IPC reply, one-way each ... So the corrected figure is roughly 1.1x to 1.7x an
+> L4-lineage round trip, not 4 to 7 times.
+>
+> -- notes/benchmarks.md
 
-**That quotation was corrected on 2026-08-04 and the earlier one is retracted.** Milestone 101
-re-measured and found three errors in the old arithmetic, and this file quoted its "4 to 7 times
-heavier" conclusion as current long enough to be worth naming: a prose block quote of another
-document is a citation that no gate can check, because `script/decisions --check` only resolves
-`§N`. See notes/benchmarks.md and milestone 97.
+**This file has now quoted that paragraph wrongly twice, which is why the quote above carries an
+attribution line a gate can check.** The first version quoted the retracted arithmetic (*"At ~3.2
+GHz, 705 ns is ~2,200 cycles round trip... we are 4 to 7 times heavier"*) as the current record,
+after milestone 101 had re-measured it and found three errors. The replacement written on 2026-08-04
+was a **paraphrase presented as a quotation**: it read "At ~3.2 GHz, 350 ns is roughly 960 to 1,420
+cycles round trip", and those words appear in no note.
+
+**It also put back the one assumption the correction had removed.** The note says in as many words
+that the old paragraph's 3.2 GHz "is not this machine"; the 960-to-1,420 range is 350 ns against the
+**M3's two clocks**, 2.75 GHz on an E-core and 4.05 GHz on a P-core, and nothing pins the vCPU
+thread to either. At 3.2 GHz, 350 ns is ~1,120 cycles, a single number rather than a range. So the
+sentence attached a correct range to the clock that had just been rejected, and read as sober while
+doing it.
+
+The mechanism rather than the apology: a prose block quote of another document is a citation no gate
+resolves, and `script/citations` (milestone 97) checks one **only when it carries a `-- path`
+attribution line**. Neither wrong version had one, so both passed every gate in the tree, twice, in
+the file notes/citations.md already uses as its worked example. The binding form costs one line and
+is rung two of CLAUDE.md's ladder instead of rung four.
 
 The figure above is still arithmetic performed on a nanosecond measurement using an assumed clock
-rate, which is the whole point of this milestone. Measuring cycles directly turns the project's most-cited number from a derived figure into a
-read one, and it is the number a reader from the L4 world will look for first.
+rate, which is the whole point of this milestone. Measuring cycles directly turns the project's
+most-cited number from a derived figure into a read one, and it is the number a reader from the L4
+world will look for first.
 
 ## Two things block on it
 
