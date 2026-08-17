@@ -2186,6 +2186,24 @@ mod supervision_tests;
 #[cfg(test)]
 mod reap_tests;
 
+/// **A process listing is a capability, not a fact about the machine** (milestone 126,
+/// `endpoint::SURVEY`, notes/process-view.md). Cross-ISA for the same reason `reap_tests` is: the
+/// scope decision reads one field of a TCB and compares two generational names, so a divergence
+/// here would mean something is wrong under `arch/` rather than in this feature.
+///
+/// **The shape, and why it is this shape.** Every survey goes through the real syscall dispatcher
+/// (`syscall::invoke`), and the walk is driven by `ps::collect`, which is the loop `user/src/ps.rs`
+/// really runs: a bug in the cursor protocol therefore cannot hide in the gap between the kernel's
+/// half and the program's. The tests build real supervised children out of a real region, so the
+/// domain under test is one the kernel built rather than one a helper described.
+///
+/// The negative control is the one that matters, and it keeps milestone 108's shape: a viewer run
+/// against a domain it was not granted is **refused loudly** rather than shown an empty list, and
+/// an empty domain answers rather than refusing. Both are asserted in the same test, because
+/// neither claim means anything without the other.
+#[cfg(test)]
+mod survey_tests;
+
 /// **The directory capability, attacked** (milestone 47, notes/dir-capability.md).
 ///
 /// One module for both ISAs rather than an aarch64 test with a riscv twin, which the FS tests above

@@ -86,6 +86,11 @@ measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 # client serialised from rather than from three copies of RFC 5905 §7.3.
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 paging = { version = "0.1.0", path = "../crates/paging" }
+# The process listing (milestone 126). The kernel's survey tests drive `ps::collect`, the real
+# program's real loop, against the real `endpoint::SURVEY`, so the cursor protocol is proved end to
+# end rather than by a second copy of the walk written in a test. Same rule as `grant_plan`,
+# `sink_proto` and `calendar` above: no party has its own copy of a shared definition.
+ps = { version = "0.1.0", path = "../crates/ps" }
 regions = { version = "0.1.0", path = "../crates/regions" }
 # The byte-sink contract (milestone 50). The kernel's tests are a *sink* for every std program they
 # spawn, so the framing they decode comes from the same definition the PAL packs with rather than
