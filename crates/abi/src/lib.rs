@@ -154,8 +154,68 @@ pub mod endpoint {
     ///   own budget and those children are still live), the same refusal `DESTROY` gives.
     pub const REAP: u64 = 5;
 
+    /// `invoke(cap, SURVEY, cursor, 0, 0)` -> `(next_cursor, tid, state)`. **Read one entry of the
+    /// domain this endpoint supervises** (milestone 126). `next_cursor` returns in x0, `tid` in x1
+    /// and one of [`survey`](super::survey)'s state codes in x2.
+    ///
+    /// **The scope is the supervision subtree, because the kernel already maintains it.** A thread
+    /// is in this survey exactly when its recorded fault endpoint *is* this endpoint, which is the
+    /// same relationship [`REAP`] is authorized by and needs no second bookkeeping. So a `ps`
+    /// launched from a shell sees the shell's children and nothing else, and an operator's `ps`
+    /// sees the whole machine only because somebody handed it the endpoint that supervises the
+    /// whole machine. Authority is a subtree, not a global, and the difference between the two is
+    /// a capability a reader can point at.
+    ///
+    /// Needs `READ`, exactly as [`REAP`] does, and for the same reason: the authority to see who
+    /// may die here is the authority to *receive* deaths here. A send-only holder (a peer that
+    /// reports to this supervisor) is refused with [`crate::Error::NotPermitted`], **loudly**. It is
+    /// not shown an empty domain, because a monitor that reports nothing when it could not look is
+    /// the worst failure this tool has available; `fs_proto` chose `EPERM` over an empty listing for
+    /// the same reason.
+    ///
+    /// **The cursor is a resume point, not an index into a result.** Start at 0. Each entry returns
+    /// the `next_cursor` to pass to get the one after it, and `next_cursor` of
+    /// [`survey::DONE`](super::survey::DONE) means the survey is finished (`tid` and `state` are
+    /// then 0). An empty domain finishes on the first call, which is a different answer from the
+    /// refusal above and deliberately so.
+    ///
+    /// **It is a snapshot per call, not per survey.** The domain may change between calls: a child
+    /// that dies is simply absent from a later one, and one born into an already-passed slot is
+    /// missed until the next survey. That is `readdir`'s bargain, taken knowingly, because holding
+    /// `SCHED` across a whole survey would put a userspace program in charge of how long the
+    /// scheduler is locked.
+    pub const SURVEY: u64 = 6;
+
     /// The x1 value from [`RECV_CAP`] when the message carried no capability.
     pub const NO_CAP: u64 = u64::MAX;
+}
+
+/// What [`endpoint::SURVEY`] reports about a thread in the domain: the cursor sentinel, and the
+/// run states a supervised thread can be found in.
+///
+/// **Only four states can appear, and the two absentees say something.** `Embryo` cannot, because a
+/// thread's supervision endpoint is recorded at `START` (DECISIONS §26) and an embryo has not
+/// started: a child that is built but not yet running is not in its domain yet. `Finished` cannot
+/// either, because that is the state of a thread the reaper collects immediately, which is what
+/// *un*supervised death looks like; a supervised thread dies into [`DEAD`](self::survey::DEAD) and waits for its
+/// supervisor.
+pub mod survey {
+    /// The `next_cursor` that means the survey is complete. It is also the cursor to start one
+    /// with, which is not a collision: a caller passes it in once and stops when it comes back.
+    pub const DONE: u64 = 0;
+
+    /// On a run queue, waiting for a CPU.
+    pub const READY: u64 = 1;
+    /// On a CPU right now. On a multi-core machine this may include the surveyor's own thread, if
+    /// the surveyor is somehow its own supervisor's child.
+    pub const RUNNING: u64 = 2;
+    /// Blocked in an IPC rendezvous that has not happened.
+    pub const BLOCKED: u64 = 3;
+    /// A corpse (DECISIONS §26): it faulted or exited, its supervisor was told, and it persists
+    /// until [`endpoint::REAP`](super::endpoint::REAP) collects it. **This is the state `ps` exists to
+    /// make visible**, and
+    /// it is the one Unix cannot show you without a parent that happens to have called `wait`.
+    pub const DEAD: u64 = 4;
 }
 
 /// Methods on a `Reply` capability. **A one-shot answer to a specific caller.**

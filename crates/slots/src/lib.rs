@@ -188,10 +188,55 @@ impl<T, const N: usize> Table<T, N> {
     /// backed by a region, then remove it by name). `values`/`iter_mut` suffice when the caller
     /// only needs the entry, as a TCB carries its own name and does not need this.
     pub fn iter(&self) -> impl Iterator<Item = (u64, &T)> + '_ {
+        self.iter_from(0).map(|(_, name, t)| (name, t))
+    }
+
+    /// Every live entry from slot `from` onward, as `(slot, name, &T)`, in slot order.
+    ///
+    /// **The slot index is what makes a sweep resumable across calls**, which [`iter`](Self::iter)
+    /// cannot be: a caller that must give the lock back between entries needs somewhere to start
+    /// again, and a *position* in a filtered sequence is not that, because entries removed in the
+    /// gap move it. A slot index is stable in the only sense a resume needs: the entry that was at
+    /// slot `k` is still the only thing that can be at slot `k`, and if it died, `k` is simply
+    /// empty rather than somebody else's.
+    ///
+    /// The one caller today is `endpoint::SURVEY` (milestone 126), which reports one supervised
+    /// thread per syscall and hands the next slot back to userspace as a cursor. What it buys is
+    /// stated plainly and so is what it does not: the *set* can change between calls, so a resumed
+    /// sweep is a sequence of snapshots rather than one. It never reports an entry twice and never
+    /// resolves a cursor to the wrong thread, which is all a `readdir` shape ever promised.
+    ///
+    /// `from >= N` yields nothing, so a caller need not bound its own cursor.
+    ///
+    /// ```
+    /// use slots::Table;
+    ///
+    /// let mut t: Table<&str, 4> = Table::new();
+    /// let a = t.insert_with(|_| "a").unwrap();
+    /// let b = t.insert_with(|_| "b").unwrap();
+    ///
+    /// // Resume after the first entry's slot and the second is what comes back.
+    /// let (slot, _, _) = t.iter_from(0).next().unwrap();
+    /// let rest: Vec<_> = t.iter_from(slot + 1).map(|(_, n, v)| (n, *v)).collect();
+    /// assert_eq!(rest, vec![(b, "b")]);
+    ///
+    /// // The resumed entry is not affected by what happened to the one before it.
+    /// t.remove(a);
+    /// let rest: Vec<_> = t.iter_from(slot + 1).map(|(_, n, v)| (n, *v)).collect();
+    /// assert_eq!(rest, vec![(b, "b")], "a removal below the cursor moved the resume point");
+    ///
+    /// // And a cursor past the end is empty rather than a panic.
+    /// assert_eq!(t.iter_from(99).count(), 0);
+    /// ```
+    pub fn iter_from(&self, from: usize) -> impl Iterator<Item = (usize, u64, &T)> + '_ {
         self.slots
             .iter()
             .enumerate()
-            .filter_map(|(slot, s)| s.as_ref().map(|t| (Self::name(slot, self.gens[slot]), t)))
+            .skip(from)
+            .filter_map(|(slot, s)| {
+                s.as_ref()
+                    .map(|t| (slot, Self::name(slot, self.gens[slot]), t))
+            })
     }
 }
 

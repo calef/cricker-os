@@ -173,6 +173,24 @@ pub const fn reap_decision(fault_ep: Option<u64>, invoked_ep: u64, dead: bool) -
     }
 }
 
+/// **Is this thread inside the domain that endpoint supervises?** (milestone 126,
+/// `endpoint::SURVEY`.)
+///
+/// The whole scoping decision of a process view, as pure logic, so it is proved for every input
+/// rather than tested on the cases we thought of. The kernel walks its thread table and reports an
+/// entry exactly when this says so (`sched::survey_supervised`).
+///
+/// **It is deliberately the same predicate [`reap_decision`] authorizes with**, and that is the
+/// point rather than a saving: the set of threads a supervisor may *see* is the set whose deaths
+/// arrive on its endpoint, so a domain cannot drift out of agreement with the relationship the
+/// kernel already maintains. Two predicates would have been two things to keep in step.
+///
+/// Liveness is not an input. A corpse is still in the domain, which is what makes `ps` able to show
+/// a `Dead` child the supervisor has not collected yet.
+pub const fn survey_includes(fault_ep: Option<u64>, invoked_ep: u64) -> bool {
+    matches!(fault_ep, Some(ep) if ep == invoked_ep)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// **The slot is empty.** Note what this is *not*: it is not "permission denied." There is
@@ -522,6 +540,44 @@ mod verification {
             reap_decision(fault_ep, invoked, false),
         );
         assert_eq!(reap_decision(fault_ep, invoked, true), Reap::NotSupervised);
+    }
+
+    /// **A survey shows a thread only to the endpoint that supervises it** (milestone 126). The
+    /// scoping half of the same claim the two harnesses above make about the reap: for every pair
+    /// of endpoint names, inclusion implies the recorded fault endpoint *is* the invoked one, so
+    /// there is no input where an unsupervised thread, another supervisor's child, or a stale name
+    /// appears in somebody else's `ps`.
+    ///
+    /// The `if and only if` matters in both directions here, which it does not for the reap. One
+    /// direction is confinement (a stranger is never shown). The other is truthfulness: **every
+    /// thread that really is in the domain is reported**, so a monitor that sees an entry missing
+    /// can conclude the thread is gone rather than hidden. A view that could silently omit its own
+    /// children would be worse than no view.
+    #[kani::proof]
+    fn a_survey_shows_exactly_the_endpoints_own_children() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+
+        assert_eq!(
+            survey_includes(fault_ep, invoked),
+            fault_ep == Some(invoked)
+        );
+    }
+
+    /// **Seeing and collecting are scoped by the same relationship** (milestone 126). For every
+    /// input, a thread is in the survey exactly when a reap of it would get past the supervision
+    /// check, whatever its liveness. So the domain `ps` reports and the domain a supervisor may
+    /// reap from cannot diverge, which is the property that lets one predicate answer both.
+    #[kani::proof]
+    fn the_view_and_the_reap_have_the_same_scope() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+        let dead: bool = kani::any();
+
+        assert_eq!(
+            survey_includes(fault_ep, invoked),
+            reap_decision(fault_ep, invoked, dead) != Reap::NotSupervised,
+        );
     }
 }
 

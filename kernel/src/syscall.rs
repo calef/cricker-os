@@ -225,6 +225,28 @@ pub(crate) fn invoke(
                 sched::reap_supervised(ep, a0)?;
                 Ok(0)
             }
+
+            // **Read one entry of the domain this endpoint supervises** (milestone 126). The view
+            // half of what REAP is the control half of, and scoped by the same relationship, so a
+            // supervisor sees exactly the children whose deaths would arrive here.
+            //
+            // READ for the same reason REAP takes READ: the authority to see who may die here is
+            // the authority to receive deaths here. **A send-only holder is refused rather than
+            // shown an empty domain**, which is the whole point of the method; a monitor that
+            // reports nothing because it could not look is the worst failure this tool has, and an
+            // empty answer is reserved for a domain that really is empty.
+            //
+            // `a0` is the cursor: 0 to start, then whatever the last call returned, until a
+            // `survey::DONE` comes back. x1 carries the tid and x2 the state code.
+            abi::endpoint::SURVEY => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                let (next, tid, state) = sched::survey_supervised(ep, a0)?;
+                frame.set_arg(1, tid);
+                frame.set_arg(2, state);
+                Ok(next as i64)
+            }
             _ => Err(Error::BadMethod),
         },
 
