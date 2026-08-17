@@ -1,11 +1,40 @@
 # 126. The `procps` package: who else is running, and who is allowed to ask
 
-**Status: NOT-STARTED.** Minted 2026-08-14 by calef, from a design conversation about what ambient
+**Status: PARTIAL.** Minted 2026-08-14 by calef, from a design conversation about what ambient
 authority utilities become on this system. **Scoped to the whole package by calef the same day**, for
 consistency with milestone 123's approach to popular packages: the corpus is chosen by an external
 ordering and taken in the units that ordering uses, which is packages rather than programs we like.
 
 **Gate: NONE.** `ps` needs nothing that does not exist. The rest need work this milestone builds.
+
+## Built: the first stratum, 2026-08-16
+
+`ps` works on both ISAs, and the view it reads is `abi::endpoint::SURVEY`: **a new method on the
+supervision endpoint, no new syscall number**. Membership is `capability::survey_includes`, the same
+relationship §32 authorizes a reap with, so the domain a monitor sees and the domain a supervisor may
+collect from cannot diverge; three Kani harnesses hold that. Written up in notes/process-view.md,
+with the semantics of the new method stated there for the integrator.
+
+What the demonstration actually shows, and it is the negative control rather than the listing: a
+viewer holding the endpoint **send-only** is refused (`NotPermitted`), a viewer holding nothing is
+refused (`NoSuchSlot`), and a domain that is genuinely empty **answers**. Three distinct outcomes
+where `/proc` has one, proved in one cross-ISA kernel test whose walk is `ps::collect`, the real
+program's real loop.
+
+`Manifest::domain` is the declaration that gets the grant to a `ps` at the prompt, `clock`'s twin,
+and `caps ps` prints the scope before anything is spawned.
+
+**The honest finding this turned up, recorded rather than fixed:** a view riding on `READ` is wider
+than looking needs, because `READ` on a supervision endpoint is also what `RECV` and
+`endpoint::REAP` take. Splitting view from control changes the rights model, and it is the same
+decision the signalling stratum has to make to give `pgrep` and `pkill` genuinely different rights.
+Deciding it once, there, beats deciding it twice; notes/process-view.md's `BUGS` carries the whole
+argument.
+
+**Still to build:** the rest of the view stratum (`top`, `pgrep`, `pmap`, `pwdx`, `w`), the
+signalling stratum, the machine-wide statistics, `watch`, and the `sysctl` fork below. The package
+file list still wants a real `dpkg -L procps` before anyone counts programs; nothing built so far
+depended on it, and the next lane does.
 
 ## Why this package, and why the package rather than the program
 
