@@ -3966,29 +3966,16 @@ mod tests {
         // `reclaim_frees_a_started_then_exited_childs_regions` fix; see
         // notes/load-sensitive-assertions.md.
         //
-        // Where each thread in a batch found its own stack, **reported by the thread itself**. A
-        // test cannot read the stack out of a thread it spawned, because by the time it looks the
-        // thread may already have been reaped, which is the very thing this test waits for. A
-        // thread taking the address of one of its own locals has no such race.
-        static SP: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-        static NEXT_SP: AtomicU64 = AtomicU64::new(0);
+        // Where the reuse probe below found its own stack, **reported by the thread itself**. A test
+        // cannot read the stack out of a thread it spawned, because by the time it looks the thread
+        // may already have been reaped, which is the very thing this test waits for. A thread taking
+        // the address of one of its own locals has no such race.
+        static PROBE_SP: AtomicU64 = AtomicU64::new(0);
 
         fn batch_of_eight() {
-            NEXT_SP.store(0, Ordering::SeqCst);
-            for s in &SP {
-                s.store(0, Ordering::SeqCst);
-            }
             let mut tids = [0 as crate::thread::Tid; 8];
             for t in &mut tids {
-                *t = crate::sched::spawn(|| {
-                    let probe = 0u64;
-                    let sp = &probe as *const u64 as u64;
-                    let i = NEXT_SP.fetch_add(1, Ordering::SeqCst) as usize;
-                    if let Some(slot) = SP.get(i) {
-                        slot.store(sp, Ordering::SeqCst);
-                    }
-                })
-                .expect("spawn failed");
+                *t = crate::sched::spawn(|| {}).expect("spawn failed");
             }
             // Let them all run and exit, and let the reaper catch up. Clock-bounded, not yield-bounded:
             // §28 can place these on other cores, and a Finished thread is only removed when its own
@@ -4004,6 +3991,65 @@ mod tests {
         // table for it. Those are a one-time cost, not a leak: `unmap_page` frees the leaf
         // mapping but leaves the intermediate tables standing (see the TODO on `paging::unmap`).
         batch_of_eight();
+
+        // **Reuse is asserted directly, because the frame count below cannot do it.** Measured
+        // 2026-08-17: with the `FREE_STACK_VAS` push deleted from `KernelStack::drop`, which IS the
+        // milestone-6 bug this test is named for, the entire aarch64 leg passed, this test included.
+        // The reason is arithmetic rather than luck. A slot is `STACK_SLOT_SPAN`, 28 KiB, so eight
+        // of them consume 224 KiB of fresh address space, and a leaked page table costs a *frame*
+        // only when the bump crosses a 2 MiB L3 boundary. 224 KiB is 11% of one table's span, so
+        // the frame count can see the defect only when the batch happens to straddle a boundary,
+        // and that is worse than 11% random: where `NEXT_STACK_VA` stands here is a function of how
+        // many threads the tests BEFORE this one spawned, which is fixed for a given tree. So for
+        // any given tree the frame count either always catches the defect or always misses it, and
+        // which one is decided by unrelated code upstream. The frame assertion below is the outcome;
+        // this is the mechanism, and at that batch size only the mechanism is observable.
+        //
+        // The claim: a thread spawned after the first batch has been reaped lands BELOW the
+        // watermark that stood before it, which is what "it reused a dead thread's range" means.
+        //
+        // **ONE thread, and the count is the whole argument.** The first version of this asserted it
+        // for all eight of a batch and failed on a clean kernel, on thread 1, two slots above the
+        // watermark. That was correct behaviour and a wrong assertion: the watermark is the
+        // high-water mark of *concurrent* live threads, so a batch whose threads happen to be reaped
+        // later relative to spawning legitimately needs more slots than the previous batch did, and
+        // bumps it. Asserting over a batch conflated reuse with concurrency, which is this
+        // milestone's own defect ("a wait written against something wider than the property")
+        // committed while fixing it. Recorded in notes/load-sensitive-assertions.md rather than
+        // quietly corrected, because reproducing the family from the inside is the useful part.
+        //
+        // One thread cannot exceed a high-water mark that eight just set. `thread_present` going
+        // false already implies the push happened (`Threads::remove` runs `KernelStack::drop` before
+        // it removes the table entry), so the free list holds up to eight of the first batch's slots
+        // when this spawns, and a single pop cannot drain it. A neighbour spawning here can only
+        // RAISE the watermark, which makes the claim easier: the failure direction is one-way, which
+        // is the discipline the rest of this test was rebuilt for.
+        //
+        // It runs BEFORE the frame baseline below so that the settle loop absorbs its own stack
+        // frees, rather than leaving them in flight inside the window the frame assertion measures.
+        let watermark = crate::thread::stack_area_span().1;
+        PROBE_SP.store(0, Ordering::SeqCst);
+        let probe = crate::sched::spawn(|| {
+            let local = 0u64;
+            PROBE_SP.store(&local as *const u64 as u64, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+        assert!(
+            wait_for(|| !crate::sched::thread_present(probe)),
+            "the stack-reuse probe was never reaped"
+        );
+        let probe_sp = PROBE_SP.load(Ordering::SeqCst);
+        assert!(
+            probe_sp != 0,
+            "the stack-reuse probe never reported which stack it got"
+        );
+        assert!(
+            probe_sp < watermark,
+            "a thread spawned after eight were reaped was given FRESH stack address space: its sp \
+             {probe_sp:#x} is at or above the {watermark:#x} watermark that stood before it, so a \
+             dead thread's range was not reused and an L2 plus an L3 page table leak per 2 MiB \
+             consumed, forever"
+        );
 
         // Sample the frame baseline only once it has STOPPED MOVING: a reaped thread's stack
         // frames are freed by `finish_switch` on whatever core reaps it, a beat after the thread
@@ -4028,42 +4074,7 @@ mod tests {
         //
         // If this ever regresses, the kernel leaks two frames of page tables per 2 MiB of stack
         // address space consumed, forever, and threads come and go.
-        //
-        // **Reuse is asserted directly, because the frame count below cannot do it.** Measured
-        // 2026-08-17: with the `FREE_STACK_VAS` push deleted from `KernelStack::drop`, which IS the
-        // milestone-6 bug this test is named for, the entire aarch64 leg passed, this test included.
-        // The reason is arithmetic rather than luck. A slot is `STACK_SLOT_SPAN`, 28 KiB, so eight
-        // of them consume 224 KiB of fresh address space, and a leaked page table costs a *frame*
-        // only when the bump crosses a 2 MiB L3 boundary. 224 KiB is 11% of one table's span, so
-        // the frame count can see the defect only when the batch happens to straddle a boundary,
-        // and that is worse than 11% random: where `NEXT_STACK_VA` stands here is a function of how
-        // many threads the tests BEFORE this one spawned, which is fixed for a given tree. So for
-        // any given tree the frame count either always catches the defect or always misses it, and
-        // which one is decided by unrelated code upstream. The frame assertion is the outcome; this
-        // is the mechanism, and at this batch size only the mechanism is observable.
-        //
-        // The claim: every thread in the second batch lands BELOW the watermark that stood before
-        // the batch began, which is what "it reused a dead thread's range" means. `NEXT_STACK_VA`
-        // moves only when the free list is empty, so a neighbour spawning during the window can
-        // only RAISE the watermark, which makes this claim easier to satisfy. One-way failure
-        // direction, per object, no global count: the discipline the rest of this test was rebuilt
-        // for, applied to the half that was still a proxy. See notes/load-sensitive-assertions.md.
-        let watermark = crate::thread::stack_area_span().1;
         batch_of_eight();
-        for (i, s) in SP.iter().enumerate() {
-            let sp = s.load(Ordering::SeqCst);
-            assert!(
-                sp != 0,
-                "thread {i} of the second batch never reported which stack it got"
-            );
-            assert!(
-                sp < watermark,
-                "the second batch's thread {i} was given FRESH stack address space: its sp \
-                 {sp:#x} is at or above the {watermark:#x} watermark that stood before the batch, \
-                 so a dead thread's range was not reused and an L2 plus an L3 page table leak per \
-                 2 MiB consumed, forever"
-            );
-        }
 
         // `<=`, not `==`, and the direction is the argument: a leak leaves `used` ABOVE `before`
         // and never comes back, so the wait times out and fails. A neighbour's late teardown

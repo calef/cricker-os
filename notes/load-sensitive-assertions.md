@@ -395,6 +395,15 @@ is not an obstacle. Recommended here, not built here.
   other 34 were not audited here; the diagnostic above is the checklist for reading any of them.
   *(Rounds two, three and four took eight more between them, all found by reading rather than by
   waiting for a red run. The backlog is real and it is smaller than 34.)*
+- **The concurrency confound that broke the first reuse assertion also reaches the frame assertion
+  beside it**, and this was found by reasoning after the fact rather than by a red run, so it is
+  recorded as a fact rather than as a fix. If the second batch's peak concurrency exceeds the
+  first's, `NEXT_STACK_VA` legitimately bumps, and if that bump straddles a 2 MiB boundary a page
+  table is legitimately built and `used()` legitimately sits above `before`. A false failure, from
+  scheduling, with no leak. It is rare for the same reason the assertion is a weak detector: a
+  couple of slots is 56 KiB against a 2 MiB span, so roughly 3% of bumps land on a boundary, and a
+  bump needs the batch to be reaped later than the one before it. Both halves of that product would
+  have to fire in the same run. Worth knowing before anyone reads a red run at this site as a leak.
 - **A frame count is a weak detector of a page-table leak, and the reaper test's is the measured
   case.** Eight thread stacks are 224 KiB of address space against a 2 MiB L3 span, so a leak
   charged per 2 MiB is usually invisible; the fifth round proved it by deleting the VA push and
@@ -402,14 +411,17 @@ is not an obstacle. Recommended here, not built here.
   the frame bound is now scoped to the leak it can see. **The same question is unasked at every
   other site that infers a mechanism from a frame count**, which is the third grep the fifth round
   adds to the reading order.
-- **The reuse assertion reads a global watermark, deliberately, and the reason it is safe is the
-  direction.** `stack_area_span()`'s watermark is machine-wide, so a neighbour spawning while
-  `FREE_STACK_VAS` is empty moves it. That can only *raise* it, which makes "my batch landed below
-  it" easier, so contention cannot produce a false failure. The residual is the mirror of the
-  `<=` coincidence caveat above: a neighbour that raised the watermark by more than eight slots
-  inside the window could mask a genuine reuse failure for one run. The defect is per spawn and
-  permanent, so it fails every run regardless, and a spawn burst that large would have to land
-  inside a batch of eight.
+- **The reuse assertion reads a global watermark, deliberately, and what makes it safe is the unit
+  rather than the direction.** A one-way failure direction was not enough on its own: the first
+  version had one and was still wrong, because the watermark bounds *concurrency* and the claim was
+  about *reuse*. One thread is the unit precisely because one thread cannot exceed a high-water mark
+  eight deaths just set. Two residuals remain, both requiring a coincidence rather than mere load.
+  A neighbour that drained `FREE_STACK_VAS` to empty between the watermark read and the probe's
+  spawn would fail it falsely; nothing else spawns during this test (tests run sequentially on the
+  boot thread and the other cores are idle), and it needs the list down to its last slot. And a
+  neighbour bumping the watermark could mask a genuine reuse failure for one run, which is the
+  mirror of the `<=` coincidence caveat above; the defect is per spawn and permanent, so it fails
+  every other run regardless.
 - **The `>=` frame assertion in `kernel_stacks_do_not_touch_the_frame_allocator_in_steady_state`
   inherits the coincidence caveat above**, in the other direction of the same trade: a real
   regression of `k` frames passes if a neighbour frees at least `k` inside the same window. The
@@ -679,6 +691,38 @@ The frame assertion stays, scoped to the leak it can actually see (a per-thread 
 not return), and the comment claiming its milestone-6 sensitivity was corrected in place rather than
 deleted, because what it said was true about the arithmetic it was defending and false about the bug.
 
+#### The first version of that assertion joined the family, which is the useful part
+
+**It asserted the watermark claim for all eight threads of a batch, and failed on a clean kernel**, on
+the first full gate run: thread 1, two slots above the watermark, on a tree with nothing injected. The
+two runs before it (the defect injected, then reverted) had both agreed with it, which is exactly how
+long this family usually takes to look settled.
+
+The diagnosis is this page's own, turned on its author. **The watermark is the high-water mark of
+`FREE_STACK_VAS` running dry, which is a fact about how many threads were alive at once, not about
+whether dead ones are reused.** Eight sequential spawns need as many slots as the reaper falls behind
+by, and that number is a scheduling outcome: a batch whose threads are reaped later relative to
+spawning legitimately needs more slots than the previous batch did and bumps the watermark. So the
+assertion was written against something **wider than the property**, and load decides whether the
+extra width shows. That is the first-round diagnostic verbatim, committed while fixing the site it
+diagnoses.
+
+The fix is to make one thread the unit, because one thread cannot exceed a high-water mark that eight
+have just set. After a batch of eight has been spawned and reaped, `FREE_STACK_VAS` is provably
+non-empty: over the batch, eight pushes against eight pop-or-bump decisions leave the list at its
+starting size plus the number of bumps, and a bump only happens when it was empty. So the list holds
+at least one slot, every slot in it was handed out below the watermark, and a single pop cannot drain
+what eight deaths just stocked. The probe therefore lands below the watermark on any kernel that
+reuses at all, and at the watermark on one that does not.
+
+**Two lessons, and the second is about method rather than about stacks.** A one-way failure direction
+is necessary and not sufficient: this assertion had one (a neighbour can only raise the watermark) and
+was still wrong, because the quantity it bounded was the wrong quantity. And **an injection that fires
+proves only that the assertion can fail, never that it fails for the right reason.** The injected run
+went red and the clean run went green, and the assertion was still measuring concurrency. Only a
+second clean run under different scheduling said so, which is the argument for the load recipe in this
+note's second round, arriving from a third direction.
+
 ### Three panics that could still print the impossible quantity
 
 The three converted sites all wait on a one-directional bound and then **re-sample the allocator to
@@ -704,8 +748,10 @@ because a failed injection is how the useful facts arrived.
 | injection | what it is | result |
 |---|---|---|
 | delete the `FREE_STACK_VAS` push in `KernelStack::drop` | milestone 6's leak, exactly | **whole aarch64 leg green.** The defect is invisible to the suite |
-| the same, against the new reuse assertion | | **red on thread 0 of the second batch**, naming both addresses |
-| restore the push, keep the new assertion | | green, so the assertion is not simply always red |
+| the same, against the first (eight-thread) reuse assertion | | **red on thread 0**, naming both addresses |
+| restore the push, keep that assertion | | green, and misleading: two runs agreed with an assertion that was measuring concurrency |
+| nothing injected, full gate | the run that caught it | **red on thread 1, on a clean kernel.** The eight-thread form was wrong; see above |
+| the VA push deleted again, against the single-thread probe | | **red**, sp `…6ff80` against watermark `…69000` |
 | skip `untyped::destroy` in `AddressSpace::drop` | a dead space returns nothing | never reached the target test: exhausted memory ~370 tests in, at "no stack region for the net client" |
 | leak one frame per `AddressSpace::drop` | a dead space returns all but one frame | caught by `reclaim_frees_an_unbound_address_spaces_region` first, `left: 61501, right: 61502` |
 | leak one frame per dead user thread, in `finish_switch`'s reap arm | narrowed to the aspace test's own subject | caught by `destroy_force_kills_a_runaway_and_reclaims_its_region` first, `left: 52403, right: 52404` |
