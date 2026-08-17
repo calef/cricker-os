@@ -18,6 +18,75 @@
 //! `cargo xtask` runs it on the host to grade what QEMU is actually scanning out. Three independent
 //! witnesses, one definition, no possibility of the three agreeing on a wrong answer.
 //!
+//! # Examples
+//!
+//! Bytes in, a grid out, and the rectangle that changed. Because the engine is a value with no IO,
+//! the expected picture is computable by anyone holding the same bytes, which is what lets three
+//! independent witnesses agree about what should be on the screen.
+//!
+//! ```
+//! use video_terminal::Vt;
+//!
+//! let mut vt = Vt::new(8, 4);
+//! vt.feed(b"hello\r\nworld");
+//!
+//! let mut row = [0u8; 8];
+//! let n = vt.row_bytes(0, &mut row);
+//! assert_eq!(&row[..n], b"hello   "); // the rest of the row is blanks, not garbage
+//! vt.row_bytes(1, &mut row);
+//! assert_eq!(&row[..5], b"world");
+//! assert_eq!(vt.cursor(), (5, 1));
+//!
+//! // Damage is in cells and is taken, not read: the caller repaints exactly what changed and the
+//! // record clears. That is the whole reason the engine reports a rectangle instead of "redraw".
+//! let dirty = vt.take_damage().expect("something changed");
+//! assert!(dirty.rows >= 2, "two rows were written to");
+//! assert_eq!(vt.take_damage(), None); // taken once
+//! ```
+//!
+//! **Deferred wrap** is the one subtlety in printing, and it is the reason a line that exactly fills
+//! the width does not scroll the screen before anything asked it to:
+//!
+//! ```
+//! use video_terminal::Vt;
+//!
+//! let mut vt = Vt::new(4, 4);
+//! vt.feed(b"abcd"); // exactly fills row 0
+//!
+//! // The cursor stays on the last cell it wrote, with a wrap pending. It has NOT moved to row 1.
+//! assert_eq!(vt.cursor(), (3, 0));
+//!
+//! // A CR arriving now finds the cursor on row 0, which is where a line discipline expects it. If
+//! // the wrap had already happened it would be a row too low.
+//! vt.feed(b"\r");
+//! assert_eq!(vt.cursor(), (0, 0));
+//!
+//! // And when the next printable byte does arrive without an intervening CR, it wraps first.
+//! let mut vt = Vt::new(4, 4);
+//! vt.feed(b"abcde");
+//! assert_eq!(vt.cursor(), (1, 1));
+//! let mut row = [0u8; 4];
+//! vt.row_bytes(1, &mut row);
+//! assert_eq!(row[0], b'e');
+//! ```
+//!
+//! The escape sequences are the ones a line discipline actually emits, plus the screen verbs any
+//! program expects:
+//!
+//! ```
+//! use video_terminal::Vt;
+//!
+//! let mut vt = Vt::new(8, 4);
+//! vt.feed(b"one\r\ntwo\r\n");
+//!
+//! // CSI H homes the cursor; CSI 2J clears the screen.
+//! vt.feed(b"\x1b[2J\x1b[H");
+//! assert_eq!(vt.cursor(), (0, 0));
+//! let mut row = [0u8; 8];
+//! let n = vt.row_bytes(0, &mut row);
+//! assert_eq!(&row[..n], b"        ");
+//! ```
+//!
 //! # What it implements, and why exactly this set
 //!
 //! The escape sequences here are **the ones the line discipline already emits** (DECISIONS §21,

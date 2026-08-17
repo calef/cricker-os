@@ -24,6 +24,79 @@
 //! frames exactly as `painter` did, and `display` cannot tell the difference. Everything rung two adds
 //! is above that seam.
 //!
+//! # Examples
+//!
+//! The clipping is where the bugs are, and there are **two clips** because each catches a different
+//! one. A client reports damage in its own surface coordinates, and it may lie about them:
+//!
+//! ```
+//! use compositor::{EMPTY, Rect, SCREEN_H, SCREEN_W, Window, damage_to_screen};
+//!
+//! // A window at (8, 8), 64 by 32.
+//! let win = Window::new(8, 8, 64, 32);
+//!
+//! // Ordinary damage, placed on the screen.
+//! assert_eq!(damage_to_screen(&win, Rect::new(4, 5, 9, 7)), Rect::new(12, 13, 9, 7));
+//!
+//! // Damage past the client's OWN edge. Without the first clip the compositor would read pixels the
+//! // client does not own, so it is clipped to the surface before it is placed.
+//! let clipped = damage_to_screen(&win, Rect::new(60, 30, 100, 100));
+//! assert_eq!(clipped, Rect::new(68, 38, 4, 2));
+//!
+//! // A window hanging off the left edge, with damage in the part that is off-screen. Without the
+//! // second clip the compositor would write outside the framebuffer.
+//! let hanging = Window::new(-8, 30, 40, 40);
+//! assert_eq!(damage_to_screen(&hanging, Rect::new(0, 0, 4, 4)), EMPTY);
+//! // The part that IS on screen survives, starting at x = 0.
+//! assert_eq!(damage_to_screen(&hanging, Rect::new(0, 0, 16, 4)), Rect::new(0, 30, 8, 4));
+//!
+//! // Nothing that comes out of this function can leave the screen.
+//! let out = damage_to_screen(&hanging, Rect::new(0, 0, 999, 999));
+//! assert!(out.right() <= SCREEN_W as i32 && out.bottom() <= SCREEN_H as i32);
+//! ```
+//!
+//! Composition is checked against an **independent** definition of the finished screen, rather than
+//! against itself. [`expected_screen_pixel`] answers "which window owns this pixel" by looking down
+//! the stack; [`composite`] builds the same picture the other way round, painting the background and
+//! then blitting each window in order. They agree only if both are right:
+//!
+//! ```
+//! use compositor::{
+//!     Rect, SCENE, SCREEN_PIXELS, SCREEN_W, background_pixel, composite, expected_screen_pixel,
+//!     window_pixel,
+//! };
+//!
+//! // What each client painted into its own surface.
+//! let surfaces: Vec<Vec<u32>> = SCENE
+//!     .iter()
+//!     .enumerate()
+//!     .map(|(id, w)| {
+//!         (0..w.pixels())
+//!             .map(|i| {
+//!                 let (sx, sy) = ((i % w.w as usize) as u32, (i / w.w as usize) as u32);
+//!                 window_pixel(id as u32, sx, sy)
+//!             })
+//!             .collect()
+//!     })
+//!     .collect();
+//! let refs: Vec<&[u32]> = surfaces.iter().map(|s| s.as_slice()).collect();
+//!
+//! // Compose all three windows over the whole screen.
+//! let mut screen = vec![0u32; SCREEN_PIXELS];
+//! composite(&mut screen, &refs, SCENE.len(), Rect::screen());
+//!
+//! for i in 0..SCREEN_PIXELS {
+//!     let (x, y) = ((i % SCREEN_W as usize) as u32, (i / SCREEN_W as usize) as u32);
+//!     assert_eq!(screen[i], expected_screen_pixel(SCENE.len(), x, y), "pixel ({x}, {y})");
+//! }
+//!
+//! // Stacking order is observable, which is the point of a scene with overlap: window 1 covers part
+//! // of window 0, so the topmost one wins.
+//! assert_eq!(expected_screen_pixel(2, 45, 30), window_pixel(1, 5, 6));
+//! assert_eq!(expected_screen_pixel(1, 45, 30), window_pixel(0, 37, 22));
+//! assert_eq!(expected_screen_pixel(0, 45, 30), background_pixel(45, 30));
+//! ```
+//!
 //! # Where authority lives, and why the doorbell can be shared
 //!
 //! Every client rings **one shared endpoint** and every request on it is content-free: `HELLO` ("I
