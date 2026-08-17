@@ -119,10 +119,23 @@ protocol is proved end to end rather than by a second copy of the walk written i
 **Collect first, complain second, print third.** DECISIONS §67's rule is that a program says
 everything it has to complain about and closes its second stream before it writes a byte of output,
 because the reader drains diagnostics to end-of-stream first. A survey cannot know its complaints up
-front (an endpoint can die mid-walk), so the whole domain goes into a fixed buffer, then diagnostics,
-then the table. The buffer is `ps::MAX_ROWS`, which a compile-time assertion in the kernel's survey
-tests keeps at least as large as `sched::MAX_THREADS`, so a listing of the widest domain this system
-can express has no truncation case.
+front (an endpoint can die mid-walk), so the whole domain goes into a buffer, then diagnostics, then
+the table.
+
+**The buffer is the caller's, and that was a gate's doing.** It began as a `[Row; MAX_ROWS]` local,
+which made `collect`'s frame 4,336 bytes: larger than the 4,096-byte guard page under every kernel
+thread stack, so one call could move `sp` past the guard in a single step and land in a neighbouring
+thread's stack without ever faulting. `script/stack-frame-check` failed the build and named the
+shape, which is the second time that gate has caught a `[T; MAX]` local wearing the clothes of a
+bound. A caller-provided slice is the fix it recommends and is better anyway: a program that sizes
+its own listing knows where the memory came from, and `ps` sizes it at `MAX_ROWS` while the kernel's
+tests size it at eight.
+
+A compile-time assertion in the kernel's survey tests keeps `ps::MAX_ROWS` at least as large as
+`sched::MAX_THREADS`, so the shipped program has no truncation case. A caller with a shorter buffer
+does, and it is **not silent**: `Survey::complete` is false, nothing is printed, and diagnostics say
+the domain has more in it. Same rule as the refusal: a monitor never reports less than it saw
+without saying so.
 
 ## Where it comes from at the prompt
 

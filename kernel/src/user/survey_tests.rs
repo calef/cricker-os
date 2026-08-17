@@ -68,8 +68,19 @@ fn survey(slot: u64, cursor: u64) -> (i64, u64, u64) {
 /// `ps::collect` is what `user/src/ps.rs` runs; driving it here rather than reimplementing the
 /// cursor walk is the same discipline the `rm`, `date` and sink tests keep, and it is why a bug in
 /// the cursor protocol cannot hide between the two sides.
-fn walk(slot: u64) -> ps::Survey {
-    ps::collect(&mut |cursor| survey(slot, cursor))
+/// Eight rows, not `ps::MAX_ROWS`. **These tests run on a kernel thread stack**, under a 4,096-byte
+/// guard page, and a `[Row; 128]` local is two kilobytes; `script/stack-frame-check` is the gate
+/// that made the buffer the caller's in the first place. The widest domain any test here builds is
+/// three, so eight is slack with room to notice an unexpected member rather than truncate it.
+const TEST_ROWS: usize = 8;
+
+fn walk(slot: u64, rows: &mut [ps::Row; TEST_ROWS]) -> ps::Survey<'_> {
+    let s = ps::collect(rows, &mut |cursor| survey(slot, cursor));
+    assert!(
+        s.complete() || s.refused(),
+        "the survey outgrew this test's row buffer, so what it reported is not the domain",
+    );
+    s
 }
 
 /// `invoke(cap, REAP, tid, _, _)`, through the real dispatcher.
@@ -113,7 +124,7 @@ fn collect_all(cap: u64, tids: &[u64]) {
 }
 
 /// The tids a domain reports, in the order it reported them.
-fn tids(s: &ps::Survey) -> impl Iterator<Item = u64> + '_ {
+fn tids<'a>(s: &'a ps::Survey<'_>) -> impl Iterator<Item = u64> + 'a {
     s.rows().iter().map(|r| r.tid)
 }
 
@@ -165,7 +176,8 @@ fn a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted() {
     );
 
     let cap = hold_read(mine);
-    let seen = walk(cap);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(cap, &mut buf);
     assert!(
         !seen.refused(),
         "a supervisor could not read its own domain"
@@ -194,7 +206,8 @@ fn a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted() {
 
     // The other endpoint answers about its own child and only its own, from the same kernel walk.
     let other = hold_read(theirs);
-    let seen = walk(other);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(other, &mut buf);
     assert_eq!(seen.rows().len(), 1);
     assert_eq!(
         tids(&seen).next(),
@@ -241,7 +254,8 @@ fn a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list() {
         (Error::NotPermitted as i64, 0, 0),
         "a send-only holder was shown a domain it holds no right to look at",
     );
-    let refused = walk(peer);
+    let mut rbuf = [ps::Row::default(); TEST_ROWS];
+    let refused = walk(peer, &mut rbuf);
     assert!(refused.refused());
     assert_eq!(refused.rows().len(), 0);
 
@@ -266,7 +280,8 @@ fn a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list() {
         (abi::survey::DONE as i64, 0, 0),
         "an empty domain must answer, not refuse",
     );
-    let seen = walk(held);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(held, &mut buf);
     assert!(
         !seen.refused(),
         "an empty domain was reported as a refusal, which is the confusion this method exists to \
@@ -277,7 +292,10 @@ fn a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list() {
     // And the holder that *is* the supervisor still sees its child, so the refusals above are
     // about the rights and not about a survey that never works.
     let sup = hold_read(ep);
-    assert_eq!(tids(&walk(sup)).next(), Some(child));
+    assert_eq!(
+        tids(&walk(sup, &mut [ps::Row::default(); TEST_ROWS])).next(),
+        Some(child)
+    );
 
     drain(parking, 1);
     collect_all(sup, &[child]);
@@ -308,7 +326,8 @@ fn a_dead_child_is_still_in_the_domain_until_it_is_reaped() {
         "the child never died onto its supervision endpoint",
     );
 
-    let seen = walk(cap);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(cap, &mut buf);
     assert_eq!(seen.rows().len(), 1, "the corpse fell out of its domain");
     assert_eq!(seen.rows()[0].tid, child);
     assert_eq!(
@@ -326,7 +345,8 @@ fn a_dead_child_is_still_in_the_domain_until_it_is_reaped() {
         Ok(0),
         "the tid a survey reported was not one the same endpoint could reap",
     );
-    let seen = walk(cap);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(cap, &mut buf);
     assert!(!seen.refused());
     assert_eq!(
         seen.rows().len(),
@@ -360,7 +380,8 @@ fn a_resumed_walk_reports_every_member_exactly_once() {
     );
 
     let cap = hold_read(ep);
-    let seen = walk(cap);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(cap, &mut buf);
     assert_eq!(seen.rows().len(), 3, "the walk did not reach every member");
 
     let mut found = [0u64; 3];

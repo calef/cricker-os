@@ -40,10 +40,19 @@
 //! the two would block in a rendezvous nobody is listening for.
 //!
 //! A survey cannot know its complaints up front: an endpoint can be destroyed halfway through a
-//! walk. So [`collect`] takes the whole domain into a fixed buffer first, and the caller then emits
-//! [`Survey::write_diagnostics`] and [`Survey::write_report`] in that order. The buffer is
-//! [`MAX_ROWS`] entries, which is the kernel's whole thread table, so a survey of the entire machine
-//! cannot overflow it and there is no truncation case to explain.
+//! walk. So [`collect`] takes the whole domain into a buffer first, and the caller then emits
+//! [`Survey::write_diagnostics`] and [`Survey::write_report`] in that order.
+//!
+//! **The buffer is the caller's**, which is not ceremony. It was a `[Row; MAX_ROWS]` local until
+//! `script/stack-frame-check` failed the build: two kilobytes of rows made `collect`'s frame 4,336
+//! bytes, larger than the 4,096-byte guard page under every kernel thread stack, so one call could
+//! move `sp` past the guard in a single step and write into a neighbouring thread's stack without
+//! ever faulting. A caller-provided slice is the fix that gate recommends, and it is better anyway:
+//! a program that sizes its own listing knows where the memory came from.
+//!
+//! Sizing it at [`MAX_ROWS`] makes truncation unreachable, because that is the kernel's whole thread
+//! table. `ps` does exactly that. A shorter buffer is allowed and is **not silent**: the survey says
+//! it was truncated, on diagnostics, for the same reason a refusal is not an empty list.
 //!
 //! # EXAMPLES
 //!
@@ -67,14 +76,15 @@
 //! Driving it from a host test is the whole contract, and it needs no kernel:
 //!
 //! ```
-//! use ps::{Survey, collect};
+//! use ps::{MAX_ROWS, Row, collect};
 //!
 //! // A domain of one running thread: cursor 0 yields it, cursor 1 says done.
 //! let mut reader = |cursor: u64| match cursor {
 //!     0 => (1, 7, abi::survey::RUNNING),
 //!     _ => (abi::survey::DONE as i64, 0, 0),
 //! };
-//! let survey = collect(&mut reader);
+//! let mut rows = [Row::default(); MAX_ROWS];
+//! let survey = collect(&mut rows, &mut reader);
 //! assert_eq!(survey.rows().len(), 1);
 //! assert_eq!(survey.rows()[0].tid, 7);
 //!
@@ -113,11 +123,11 @@
 /// The widest domain a survey can produce: the kernel's entire thread table (`MAX_THREADS` in
 /// `kernel/src/sched.rs`, 128 as of milestone 126).
 ///
-/// **Sized so that truncation is unreachable rather than handled.** A `ps` holding the widest grant
-/// this system can express sees every thread on the machine, and that is still 128 rows, so the
-/// buffer is the whole answer and there is no "and N more" case to write, to test, or to get wrong.
-/// If the kernel's table grows, this is the number that moves with it; the two are checked against
-/// each other by `kernel::user::survey_tests`.
+/// **A buffer this size makes truncation unreachable rather than handled.** A `ps` holding the
+/// widest grant this system can express sees every thread on the machine, and that is still 128
+/// rows, so there is no "and N more" the shipped program can ever print. If the kernel's table
+/// grows, this is the number that moves with it, and a compile-time assertion in
+/// `kernel::user::survey_tests` is what keeps the two in step rather than a reader.
 pub const MAX_ROWS: usize = 128;
 
 /// One line of the listing: a thread and what it is doing.
@@ -135,9 +145,8 @@ pub struct Row {
 ///
 /// Built by [`collect`], which is the only constructor, so a `Survey` always describes a walk that
 /// really happened.
-pub struct Survey {
-    rows: [Row; MAX_ROWS],
-    n: usize,
+pub struct Survey<'a> {
+    rows: &'a [Row],
     /// The negated `abi::Error` that ended the walk, if one did. `Some` here means **the listing is
     /// not the domain**: it is however far the walk got, which is why the caller prints the reason
     /// rather than the partial table.
@@ -146,6 +155,9 @@ pub struct Survey {
     /// and checked anyway, because a `collect` that could loop forever on a bad reader would not be
     /// a total function and could not be fuzzed or property-tested.
     stalled: bool,
+    /// The buffer filled and the domain had more in it. Unreachable for a caller that sized its
+    /// buffer at [`MAX_ROWS`], which `ps` does; reported rather than silent for one that did not.
+    truncated: bool,
 }
 
 /// **Walk a domain to its end and keep what it says.**
@@ -161,48 +173,64 @@ pub struct Survey {
 /// The walk stops at the first refusal and reports it, rather than skipping the entry and carrying
 /// on. A survey that silently dropped an entry it could not read would be the failure this whole
 /// program exists to avoid, one row smaller.
-pub fn collect(read: &mut dyn FnMut(u64) -> (i64, u64, u64)) -> Survey {
-    let mut s = Survey {
-        rows: [Row::default(); MAX_ROWS],
-        n: 0,
-        refused: None,
-        stalled: false,
-    };
+pub fn collect<'a>(
+    rows: &'a mut [Row],
+    read: &mut dyn FnMut(u64) -> (i64, u64, u64),
+) -> Survey<'a> {
+    let mut n = 0usize;
+    let mut refused = None;
+    let mut stalled = false;
+    let mut truncated = false;
     let mut cursor = 0u64;
-    while s.n < MAX_ROWS {
+    loop {
         let (next, tid, state) = read(cursor);
         if next < 0 {
-            s.refused = Some(next);
-            return s;
+            refused = Some(next);
+            break;
         }
         let next = next as u64;
         if next == abi::survey::DONE {
-            return s;
+            break;
         }
         // A cursor that did not advance would spin here forever. The kernel is inside the trusted
         // base and does not do this; the check exists so that this function terminates for *every*
         // reader, including a test's.
         if next <= cursor {
-            s.stalled = true;
-            return s;
+            stalled = true;
+            break;
         }
-        s.rows[s.n] = Row { tid, state };
-        s.n += 1;
+        if n == rows.len() {
+            truncated = true;
+            break;
+        }
+        rows[n] = Row { tid, state };
+        n += 1;
         cursor = next;
     }
-    s
+    Survey {
+        rows: &rows[..n],
+        refused,
+        stalled,
+        truncated,
+    }
 }
 
-impl Survey {
+impl Survey<'_> {
     /// The rows, in the order the kernel reported them.
     pub fn rows(&self) -> &[Row] {
-        &self.rows[..self.n]
+        self.rows
     }
 
     /// **Was this a refusal?** True when the domain could not be read at all or not to its end. A
     /// caller must not print an empty table for this: see the crate docs.
     pub fn refused(&self) -> bool {
         self.refused.is_some() || self.stalled
+    }
+
+    /// **Is this listing the whole domain?** False when the walk was refused, stalled, or ran out of
+    /// buffer. A caller that prints the table anyway is printing something it cannot vouch for.
+    pub fn complete(&self) -> bool {
+        !self.refused() && !self.truncated
     }
 
     /// **Everything to complain about, said before a byte of output** (DECISIONS §67).
@@ -220,7 +248,11 @@ impl Survey {
             out(b"\n");
             return;
         }
-        if self.n == 0 {
+        if self.truncated {
+            out(b"ps: the listing buffer filled; this domain has more in it\n");
+            return;
+        }
+        if self.rows.is_empty() {
             // **Not an error, and it must not read like one.** The caller held the domain and was
             // allowed to look; there was nothing in it. This is the sentence that distinguishes an
             // empty answer from a refused one, which is the distinction Linux's `ps` cannot draw.
@@ -231,7 +263,7 @@ impl Survey {
     /// The table itself, on the output stream. **Nothing at all on a refusal**, so a `ps > out.txt`
     /// that was refused leaves an empty file rather than a plausible-looking listing of nothing.
     pub fn write_report(&self, out: &mut dyn FnMut(&[u8])) {
-        if self.refused() || self.n == 0 {
+        if !self.complete() || self.rows.is_empty() {
             return;
         }
         out(b"         TID  STATE\n");
@@ -322,11 +354,15 @@ mod tests {
 
     #[test]
     fn a_domain_walks_to_its_end() {
-        let s = collect(&mut domain(&[
-            (3, abi::survey::RUNNING),
-            (5, abi::survey::BLOCKED),
-            (9, abi::survey::DEAD),
-        ]));
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(
+            &mut rows,
+            &mut domain(&[
+                (3, abi::survey::RUNNING),
+                (5, abi::survey::BLOCKED),
+                (9, abi::survey::DEAD),
+            ]),
+        );
         assert!(!s.refused());
         assert_eq!(s.rows().len(), 3);
         assert_eq!(
@@ -343,8 +379,12 @@ mod tests {
     /// not look reads exactly like a quiet machine.
     #[test]
     fn an_empty_domain_and_a_refusal_are_different_answers() {
-        let empty = collect(&mut domain(&[]));
-        let refused = collect(&mut |_| (abi::Error::NotPermitted as i64, 0, 0));
+        let mut rows_a = [Row::default(); MAX_ROWS];
+        let empty = collect(&mut rows_a, &mut domain(&[]));
+        let mut rows_b = [Row::default(); MAX_ROWS];
+        let refused = collect(&mut rows_b, &mut |_| {
+            (abi::Error::NotPermitted as i64, 0, 0)
+        });
 
         assert!(!empty.refused(), "an empty domain is not a refusal");
         assert!(refused.refused());
@@ -366,7 +406,8 @@ mod tests {
     #[test]
     fn a_refusal_halfway_through_discards_the_partial_table() {
         let mut calls = 0;
-        let s = collect(&mut |cursor| {
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(&mut rows, &mut |cursor| {
             calls += 1;
             match cursor {
                 0 => (1, 3, abi::survey::RUNNING),
@@ -392,16 +433,42 @@ mod tests {
     /// arbitrary closure, which is what every test above does.
     #[test]
     fn a_cursor_that_does_not_advance_ends_the_walk() {
-        let s = collect(&mut |_| (1, 4, abi::survey::READY));
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(&mut rows, &mut |_| (1, 4, abi::survey::READY));
         assert!(s.refused());
         assert!(shown(|o| s.write_diagnostics(o)).contains("did not advance"));
+    }
+
+    /// **A short buffer is not a short listing, it is a stated one.** The whole design refuses to
+    /// let a monitor report less than it saw without saying so, and running out of room is one more
+    /// way that could happen. `ps` cannot reach this, because it sizes its buffer at [`MAX_ROWS`];
+    /// a future caller with a smaller one gets told rather than getting a plausible table.
+    #[test]
+    fn a_buffer_too_small_for_the_domain_says_so_and_prints_nothing() {
+        let mut rows = [Row::default(); 2];
+        let s = collect(&mut rows, &mut |cursor| {
+            (cursor as i64 + 1, cursor + 100, abi::survey::READY)
+        });
+        assert_eq!(s.rows().len(), 2);
+        assert!(
+            !s.complete(),
+            "a truncated listing claimed to be the whole domain"
+        );
+        assert!(!s.refused(), "running out of room is not a refusal");
+        assert!(shown(|o| s.write_diagnostics(o)).contains("more in it"));
+        assert_eq!(
+            shown(|o| s.write_report(o)),
+            "",
+            "a partial table must not be printed"
+        );
     }
 
     /// A domain as wide as the kernel's whole thread table fills the buffer exactly and needs no
     /// truncation case.
     #[test]
     fn the_widest_possible_domain_fits() {
-        let s = collect(&mut |cursor| {
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(&mut rows, &mut |cursor| {
             if (cursor as usize) < MAX_ROWS {
                 (cursor as i64 + 1, cursor + 100, abi::survey::READY)
             } else {
@@ -414,10 +481,11 @@ mod tests {
 
     #[test]
     fn the_table_has_a_header_and_one_line_per_thread() {
-        let s = collect(&mut domain(&[
-            (3, abi::survey::RUNNING),
-            (5, abi::survey::DEAD),
-        ]));
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(
+            &mut rows,
+            &mut domain(&[(3, abi::survey::RUNNING), (5, abi::survey::DEAD)]),
+        );
         let out = shown(|o| s.write_report(o));
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3, "header plus two rows: {out}");
@@ -432,7 +500,11 @@ mod tests {
     /// `REAP` accepts, so a truncated one would be a name that no longer works.
     #[test]
     fn a_wide_tid_keeps_every_digit() {
-        let s = collect(&mut domain(&[((1u64 << 32) | 6, abi::survey::DEAD)]));
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(
+            &mut rows,
+            &mut domain(&[((1u64 << 32) | 6, abi::survey::DEAD)]),
+        );
         let out = shown(|o| s.write_report(o));
         assert!(out.contains("4294967302"), "{out}");
     }
@@ -442,7 +514,8 @@ mod tests {
     #[test]
     fn an_unknown_state_is_shown_as_unknown() {
         assert_eq!(state_name(99), "?");
-        let s = collect(&mut domain(&[(3, 99)]));
+        let mut rows = [Row::default(); MAX_ROWS];
+        let s = collect(&mut rows, &mut domain(&[(3, 99)]));
         assert!(shown(|o| s.write_report(o)).contains('?'));
     }
 

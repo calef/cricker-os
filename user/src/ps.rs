@@ -104,7 +104,11 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     // the domain may be refused on the first call or vanish on the tenth, and §67's reader drains
     // diagnostics to end-of-stream *before* it reads a byte of output. So the whole domain is taken
     // into a buffer, then the second stream is said and closed, then the table goes out.
-    let found = ps::collect(&mut |cursor| survey(DOMAIN_SLOT, cursor));
+    // The buffer is this program's, and it is sized so that truncation is unreachable: `MAX_ROWS`
+    // is the kernel's whole thread table, so even a `ps` handed the widest grant this system can
+    // express has room for every row. Two kilobytes on a twelve-page stack.
+    let mut rows = [ps::Row::default(); ps::MAX_ROWS];
+    let found = ps::collect(&mut rows, &mut |cursor| survey(DOMAIN_SLOT, cursor));
 
     found.write_diagnostics(&mut |bytes| write_on(diag_slot(), bytes));
     diag_end();
