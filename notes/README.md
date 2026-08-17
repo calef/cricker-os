@@ -30,6 +30,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   happened to notice, and the steward that was supposed to cover them reported without acting. Why
   the drain is deliberately serial (`cpu matrix` is load-sensitive, so parallel updates manufacture
   their own failures), and why the prevention half is a GitHub rule rather than either script.
+- [Counted claims](counted-claims.md): a number in the prose is a claim, and unlike a name it is one
+  a machine can check. The `<!--count:NAME-->` marker, the registry of derivations in `script/lint`,
+  and why it is a ratchet rather than a sweep. Three claimed counts were tested against the tree and
+  all three were wrong, two of them disagreeing with each other as well; the gate's own first run
+  found three proof harnesses that nothing was proving. Name provisional.
+
 - [Citations that name what they cite](citations.md): why a footnote in this tree carries a name
   and not just a number, and what `script/citations` can and cannot prove about it. The two older
   gates check that `§N` resolves to *some* decision; this one checks it resolves to the one the

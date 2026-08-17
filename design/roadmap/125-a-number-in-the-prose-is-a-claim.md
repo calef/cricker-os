@@ -1,10 +1,22 @@
 # 125. A number in the prose is a claim, and nothing re-derives it
 
-**Status: NOT-STARTED.** Minted 2026-08-14 by calef, after asking whether the tree needed a milestone
-to audit its documentation for outdated content. It does not, quite: the audit is the wrong shape for
-the class of staleness that actually recurs, and this is the right one.
+**Status: BUILT** (2026-08-16). Minted 2026-08-14 by calef, after asking whether the tree needed a
+milestone to audit its documentation for outdated content. It does not, quite: the audit is the wrong
+shape for the class of staleness that actually recurs, and this is the right one.
 
-**Gate: NONE.** The mechanism is a `script/lint` check and a marker convention. Nothing blocks a start.
+**What landed.** The `<!--count:NAME-->` marker, the registry in `script/lint`'s `==> counted claims`
+block with three entries (`kani-harnesses`, `harness-crates`, `sh-scripts`), and
+[notes/counted-claims.md](../../notes/counted-claims.md). Ten markers across five files; the check
+costs about 80 ms. Every count in the table below had drifted **again** in the two days between the
+minting and the build: 119 harnesses across 21 crates, and 40 shell scripts. `AGENTS.md`'s figure is
+still unmarked, because a lane may not edit that file.
+
+**And the gate found something on its first run.** `harness-crates` is derived from the tree while
+`script/verify` proves a hand-kept list, and they disagreed by one: `mdns_proto` landed with
+milestone 55 carrying three harnesses and was never added to that list, so nothing proved them and
+the suite went green *faster* for it. That is precisely the invisible failure
+[notes/verification.md](../../notes/verification.md) warns about under sharding, arriving through the
+crate list instead. Row added, cost measured at 21 s.
 
 ## The evidence, because the answer turned on it
 
