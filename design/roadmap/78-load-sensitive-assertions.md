@@ -7,8 +7,12 @@ one that was a real bug. What is left is a family, and it is not one problem.
 **Gate: NONE.** What is left is **the icount instrument**, for the two remaining timing claims: that
 SBI fired at the riscv64 software grid's deadlines, and that the handler takes fewer than N
 instructions. Both need `-icount shift=0,sleep=off`, which today lives only on the bench paths
-(`xtask/src/main.rs:6020` and `:6075`) and nowhere on the test path. The three negative-discrepancy
-assertions this line used to send a lane at are **done**; see the table's note below.
+(`xtask/src/main.rs:6020` and `:6075`) and nowhere on the test path.
+
+**Everything in the evidence table below is closed**, and the table is history rather than a
+worklist: the disposition column says where each verdict lives. Read it for the diagnosis it
+records, not for work to pick up. The three negative-discrepancy assertions this gate line used to
+send a lane at are done.
 
 ## The day's evidence, which is history rather than a worklist
 
@@ -24,15 +28,25 @@ the clock. The timer twins were rebuilt against the re-arm law on both ISAs
 below as the record of the day that prompted the milestone; read it for the failure shapes, not for
 where the code is.
 
-| assertion | site | what it reported |
-|---|---|---|
-| reaper count | `sched.rs:2819` | `left: 5, right: 6`, message "finished threads were never reaped" |
-| frame hygiene | `user/live_swap_tests.rs:230` | `before >= free_frames()`, margin measured at 2 frames |
-| address-space frames | `user/tests.rs:1746` | "**-52** frames did not come back", and separately "-19" |
-| timer drift | `arch/riscv64/timer.rs:254` | ticks within one period either way |
-| placement probe | `smp.rs:343` | 60 s wait for work to run where it was placed |
-| handler latency | `arch/aarch64/timer.rs:323` | `left: 3, right: 2`, missed ticks rose during a quiet window |
-| round-robin fairness | `sched.rs:2709` | `thread {i} never ran`, one thread of several had not been scheduled |
+The line numbers are 2026-08-03's and every file has moved since. Find an assertion by its message
+text. The disposition column was added 2026-08-17 after this table briefed a lane at three finished
+sites: the three negative-discrepancy rows had been settled on 2026-08-03 and the block still asked
+for "three small changes with three arguments" in its own gate line, which is the stale pointer §71
+exists to catch, sitting in the paragraph a reader meets first.
+
+| assertion | site | what it reported | disposition |
+|---|---|---|---|
+| reaper count | `sched.rs:2819` | `left: 5, right: 6`, message "finished threads were never reaped" | **rescoped** 2026-08-03, per-`Tid` `thread_present` waits |
+| frame hygiene | `user/live_swap_tests.rs:230` | `before >= free_frames()`, margin measured at 2 frames | **removed** 2026-08-03 (#46), the narrower claim was already beside it |
+| address-space frames | `user/tests.rs:1746` | "**-52** frames did not come back", and separately "-19" | **rescoped** 2026-08-03, same two changes |
+| timer drift | `arch/riscv64/timer.rs:254` | ticks within one period either way | **re-aimed** at the re-arm grid law, both ISAs |
+| placement probe | `smp.rs:343` | 60 s wait for work to run where it was placed | **rescoped** 2026-08-04 after the first verdict ("leave it alone") was refuted |
+| handler latency | `arch/aarch64/timer.rs:323` | `left: 3, right: 2`, missed ticks rose during a quiet window | **taxonomy**, aarch64 2026-08-15 and riscv64 2026-08-16; the instruction-count claim still wants icount |
+| round-robin fairness | `sched.rs:2709` | `thread {i} never ran`, one thread of several had not been scheduled | **rescoped** 2026-08-03, waits on the property |
+
+**Every argument is in notes/load-sensitive-assertions.md**, one section per assertion, plus the
+four rounds of sites found by reading rather than by waiting for a red run. That note is the record;
+this block is the spec and the day's evidence.
 
 `notes/cpu-models.md` already records three of these as load-sensitive with the evidence that settles
 it, including the case where the control model `rv64` failed too, which is what proves the failures
@@ -51,6 +65,9 @@ That matters because it removes the easy explanation: this family is not an arte
 runners, and a quiet machine is not a defence against it.
 
 ## The split that makes this two problems, not one
+
+*(The diagnosis, kept in the present tense it was written in. All seven assertions it sorts have since
+been dispositioned; see the column above.)*
 
 **Two are genuinely timing.** Timer drift and the placement probe measure how fast something happened,
 and a contended runner is slower than a quiet one. Their margins are a judgement about how slow is

@@ -4015,11 +4015,24 @@ mod tests {
         // landing in this window can only FREE frames, pushing `used` below `before`, and holding
         // still is not a property this test can demand of the rest of the machine. Sensitivity to
         // the milestone-6 bug is unchanged: every leaked frame keeps `used() <= before` false.
+        //
+        // The number in the message is the one the wait DECIDED on, not a fresh sample. Re-reading
+        // `used()` to format the panic races the frames still arriving, so a genuine timeout could
+        // report a delta of zero: `saturating_sub` clamped the negative case away instead of making
+        // it impossible, and "leaked 0 frames" is the same unreadable diagnostic as the "-52" this
+        // milestone is named for, minus the sign that gave it away. `wait_for` re-evaluates the
+        // predicate once after its deadline, so a `false` return leaves `seen > before` and the
+        // count below cannot be zero. See notes/load-sensitive-assertions.md.
+        let mut seen = before;
+        let came_back = wait_for(|| {
+            seen = used();
+            seen <= before
+        });
         assert!(
-            wait_for(|| used() <= before),
+            came_back,
             "a second batch of eight threads leaked {} frames: stack address ranges are not \
              being reused, so page tables accumulate forever",
-            used().saturating_sub(before)
+            seen - before
         );
     }
 
@@ -4403,11 +4416,21 @@ mod tests {
         // `free` ABOVE the baseline, and equality additionally demanded that the rest of the
         // machine hold still for the duration, which is not a property this test is responsible
         // for. See notes/load-sensitive-assertions.md.
+        //
+        // And the number in the message is the one the wait decided on, for the reason the reaper
+        // test's frame half carries at length: a re-sampled `saturating_sub` reports zero when the
+        // frames land between the wait giving up and the panic being formatted, which is a red run
+        // whose message denies there is anything wrong with it.
+        let mut seen = free_before;
+        let recovered = wait_for(|| {
+            seen = crate::memory::stats().unwrap().free();
+            seen >= free_before
+        });
         assert!(
-            wait_for(|| crate::memory::stats().unwrap().free() >= free_before),
+            recovered,
             "six threads came and went and the frame allocator lost {} frames: a kernel stack is \
              still drawing from the allocator instead of the kernel budget",
-            free_before.saturating_sub(crate::memory::stats().unwrap().free()),
+            free_before - seen,
         );
     }
 
