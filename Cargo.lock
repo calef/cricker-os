@@ -390,6 +390,7 @@ dependencies = [
  "nvme",
  "paging",
  "pci",
+ "pgrep",
  "ps",
  "regions",
  "sink_proto",
@@ -542,6 +543,15 @@ name = "pci"
 version = "0.1.0"
 dependencies = [
  "dtb",
+]
+
+[[package]]
+name = "pgrep"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "glob",
+ "ps",
 ]
 
 [[package]]
@@ -875,6 +885,7 @@ dependencies = [
  "mdns_proto",
  "nifefs",
  "ntp_proto",
+ "pgrep",
  "ps",
  "sink_proto",
  "smb_proto",

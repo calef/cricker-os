@@ -91,6 +91,10 @@ paging = { version = "0.1.0", path = "../crates/paging" }
 # end rather than by a second copy of the walk written in a test. Same rule as `grant_plan`,
 # `sink_proto` and `calendar` above: no party has its own copy of a shared definition.
 ps = { version = "0.1.0", path = "../crates/ps" }
+# The filter over that listing (milestone 126). Driven by the same tests for the same reason, and for
+# one more: at the prompt `pgrep`'s selector cannot be typed, so the kernel test is the only thing in
+# the tree that hands the filter a real selector over a real domain.
+pgrep = { version = "0.1.0", path = "../crates/pgrep" }
 regions = { version = "0.1.0", path = "../crates/regions" }
 # The byte-sink contract (milestone 50). The kernel's tests are a *sink* for every std program they
 # spawn, so the framing they decode comes from the same definition the PAL packs with rather than

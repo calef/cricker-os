@@ -3080,6 +3080,11 @@ fn initrd_riscv() -> bool {
             // makes is about the capability model rather than about a machine.
             "--bin",
             "ps",
+            // `pgrep` (milestone 126): the same listing, filtered. Built beside `ps` because the
+            // demonstration is the pair: both hold one supervision endpoint with `ENUMERATE`, and
+            // there is no `pkill` to build alongside them.
+            "--bin",
+            "pgrep",
             // The credential pair (milestone 56). These were listed in the riscv initrd tables below
             // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
             // file the build was never asked to produce. The lane's own riscv leg went green on a
@@ -3226,6 +3231,9 @@ fn initrd_riscv() -> bool {
         // The process listing (milestone 126). Both archives: "a program cannot enumerate the
         // machine" is a claim about this system, not about an instruction set.
         ("ps", "ps"),
+        // The filter over that listing (milestone 126). Same reason, and one more: "naming a member
+        // confers nothing over it" is a property of the rights model and holds on both.
+        ("pgrep", "pgrep"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -3518,6 +3526,9 @@ fn mkinitrd() -> bool {
         // `ps` (milestone 126): the process listing over a supervision domain. Portable for the
         // same reason as `wc`.
         "ps",
+        // `pgrep` (milestone 126): that listing, filtered to the members a selector names. Portable
+        // for the same reason, and it must ship with `ps` because the two together are the claim.
+        "pgrep",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -5404,7 +5415,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 47] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 50] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5518,6 +5529,25 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 47] = [
     // way to express: there, "which processes can this see" has one answer for every program on the
     // machine and no command line chose it.
     ("caps ps", &["cap 7  endpoint  domain"]),
+    // **`pgrep`, at the real prompt** (milestone 126), and what is asserted is deliberately not the
+    // tids. `pgrep` prints nothing but names, one per line, and a tid is a generational name that
+    // moves with how many jobs ran before it; a gate that pinned one would be pinning the boot's
+    // history. So the claim is made through the **second stream**, which is the same trick the four
+    // `date 2>` lines above use: `pgrep`'s diagnostics carry a sentence in exactly three cases (the
+    // walk was refused, the selector can never match, or nothing matched), so an *empty* second
+    // stream is the assertion that none of the three happened. This one line fails if init endowed
+    // no domain, if it endowed one the kernel refuses, or if the filter came back empty.
+    ("pgrep 2> pgrep.txt", &[]),
+    ("wc < pgrep.txt", &["0 0 0"]),
+    // And the asymmetry, printed before anything is spawned, which is the whole of what milestone
+    // 126 has instead of the `pgrep`-beside-`pkill` comparison it originally promised. Two phrases:
+    // the right (`ENUMERATE`, not `READ`, so the finder cannot receive a death or collect a corpse)
+    // and the sentence that says so in English. There is no `caps pkill` line to put beneath this
+    // one, because a tid is a name and no method turns one into authority.
+    (
+        "caps pgrep",
+        &["cap 7  endpoint  domain   ENUMERATE", "do nothing to them"],
+    ),
     // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
     // whole of the decision, and only this gate runs them through the real init: the guest tests
     // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a

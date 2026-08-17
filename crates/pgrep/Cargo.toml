@@ -1,0 +1,18 @@
+[package]
+name = "pgrep"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# Milestone 126's second view-stratum program, and only the filter: a survey and a selector in, a
+# list of tids out. It walks nothing itself, because `crates/ps` already walks a domain and a second
+# cursor loop would be a second thing to keep correct. No syscall, no IO, no allocation. See
+# notes/process-view.md.
+
+[dependencies]
+abi = { version = "0.1.0", path = "../abi" }
+glob = { version = "0.1.0", path = "../glob" }
+ps = { version = "0.1.0", path = "../ps" }
+
+[lints]
+workspace = true

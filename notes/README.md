@@ -365,13 +365,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   are the authority**). Also the slot agreement that stopped being a comment, why structure is a
   compile error while provisioning is a runtime refusal, and an honest account of the wire format that
   true vendor shipping still needs and this lane deliberately did not decide.
-- [The process view](process-view.md): milestone 126's first stratum: `ps` works and cannot
-  enumerate the machine. `endpoint::SURVEY` reads one supervision subtree, which is a scope the
-  kernel already maintains and so cannot drift out of agreement with reality; a wide grant is fine
-  and `caps ps` prints it, which is the distinction `/proc` has no way to express. Also why refused,
-  empty and populated are three answers rather than two, why the walk gives `SCHED` back between
-  entries and what that costs, and the honest finding that a view riding on `READ` is wider than
-  looking needs.
+- [The process view](process-view.md): milestone 126's view stratum: `ps` and `pgrep` work and
+  neither can enumerate the machine. `endpoint::SURVEY` reads one supervision subtree, which is a
+  scope the kernel already maintains and so cannot drift out of agreement with reality; a wide grant
+  is fine and `caps ps` prints it, which is the distinction `/proc` has no way to express. Also why
+  refused, empty and populated are three answers rather than two and what `pgrep` adds as a fourth,
+  why the walk gives `SCHED` back between entries and what that costs, why a view riding on `READ`
+  was wider than looking needs and what `Rights::ENUMERATE` fixed, and **why there is no `pkill`**:
+  a tid is a name, `Tcb` has no `DESTROY`, so the demonstration is asymmetric on purpose and the
+  write-up says so rather than dropping a promised comparison.
 - [The program manifest](program-manifest.md): milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.

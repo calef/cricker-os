@@ -370,9 +370,10 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
 
     // **The programs the shell can spawn** (milestone 31), measured and parsed here rather than
     // after the giveaway: the announcement further down is the only thing init ever says, so the
-    // verdicts have to exist before it. One `Option<elf::Elf>` is five words, so moving seven of
-    // them up the frame costs a third of a kilobyte and buys a person being told at boot instead of
-    // at the prompt.
+    // verdicts have to exist before it. One `Option<elf::Elf>` is five words, so moving the whole
+    // table up the frame costs a few hundred bytes and buys a person being told at boot instead of
+    // at the prompt. (It said "seven of them" while `PROG_COUNT` was nine and then ten; a count
+    // written beside a constant that moves is a count that goes stale, so this one is not written.)
     //
     // The refusals are collected in the same pass, because a second pass would hash every program a
     // second time. Only entries the archive **has** count as refusals: `rm` is deliberately not
@@ -981,16 +982,17 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
             //
             // **Two named slots now, and they are placed the same way for the same reason.** The
             // second is a view over the domain this child is *about to be born into*: `deaths` is
-            // the endpoint every job init spawns for this shell is supervised by, so a `ps` handed
-            // it with READ sees exactly this shell's jobs, including itself, and nothing else on the
-            // machine. Init, the shell, the terminal and the filesystem server are all outside it,
-            // which is the confinement claim and is checked by `kernel::user::survey_tests`.
+            // the endpoint every job init spawns for this shell is supervised by, so a viewer handed
+            // it sees exactly this shell's jobs, including itself, and nothing else on the machine.
+            // Init, the shell, the terminal and the filesystem server are all outside it, which is
+            // the confinement claim and is checked by `kernel::user::survey_tests`.
             //
-            // **READ is wider than looking needs, and that is recorded rather than hidden**: READ on
-            // a supervision endpoint is also what `RECV` and `abi::endpoint::REAP` take, so this
-            // grant would let a viewer take a death message out from under `job_undertaker`. `ps`
-            // does neither, splitting view from control needs a rights-model decision, and
-            // notes/process-view.md carries the whole argument and what would close it.
+            // **The right is `ENUMERATE`, and it used to be `READ`** (fixed 2026-08-17). `READ` on a
+            // supervision endpoint is also what `RECV` and `abi::endpoint::REAP` take, so the old
+            // grant would have let a viewer take a death message out from under `job_undertaker` or
+            // collect a corpse, and only the viewer's own source code said it did not. A domain names
+            // its members and does not act on them (calef, 2026-08-17); `capability::Rights::ENUMERATE`
+            // is what makes that a property of the grant. notes/process-view.md carries the argument.
             let mut placed_buf = [(0u64, 0u64, 0u64); 2];
             let mut placed_n = 0usize;
             if let (Some(ep), Some(slot)) = (diagnostics.or(default_diag), diag_slot) {

@@ -156,13 +156,31 @@ pub enum Prog {
     /// no `/proc` here to name and no pid space to scan, so what `ps` can see is decided entirely
     /// by which supervision endpoint init put in its cspace, and `caps ps` prints that.
     Ps,
+    /// **Name the members of that same domain that match, and do nothing to them** (milestone 126,
+    /// `user/src/pgrep.rs`, notes/process-view.md).
+    ///
+    /// [`Prog::Ps`]'s manifest exactly, down to the field, and that is the declaration doing the
+    /// work rather than a coincidence. On Unix `pgrep` and `pkill` are one lookup with two endings,
+    /// so a program that can find a process can end it. Here the two manifests being identical is
+    /// the readable form of **a domain names its members and does not act on them** (calef,
+    /// 2026-08-17): the finding program is granted no authority the listing program lacks, and there
+    /// is no `Prog::Pkill` for it to be compared against, because a tid is a name and no method
+    /// turns one into a capability.
+    ///
+    /// `ArgSpec::Forbidden` is [`Prog::Date`]'s deliberate under-declaration, for the same reason
+    /// and with the same consequence: `pgrep` reads a state mask out of a register the shell cannot
+    /// set, so at this prompt it takes the default and names every member. Nothing in this system
+    /// delivers *bytes* from a command line to a program, so a pattern is not something the line can
+    /// carry until [`ArgSpec`] grows the positional arity milestone 47 deferred; see `crates/pgrep`'s
+    /// `BUGS`.
+    Pgrep,
 }
 
 /// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
 /// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
 /// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
 /// can be written against one number.
-pub const PROG_COUNT: usize = 9;
+pub const PROG_COUNT: usize = 10;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
@@ -183,6 +201,7 @@ impl Prog {
             b"wc" => Some(Prog::Wc),
             b"doc" => Some(Prog::Doc),
             b"ps" => Some(Prog::Ps),
+            b"pgrep" => Some(Prog::Pgrep),
             _ => None,
         }
     }
@@ -199,6 +218,7 @@ impl Prog {
             Prog::Wc => "wc",
             Prog::Doc => "doc",
             Prog::Ps => "ps",
+            Prog::Pgrep => "pgrep",
         }
     }
 
@@ -214,6 +234,7 @@ impl Prog {
             Prog::Wc => 6,
             Prog::Doc => 7,
             Prog::Ps => 8,
+            Prog::Pgrep => 9,
         }
     }
 
@@ -229,6 +250,7 @@ impl Prog {
             6 => Some(Prog::Wc),
             7 => Some(Prog::Doc),
             8 => Some(Prog::Ps),
+            9 => Some(Prog::Pgrep),
             _ => None,
         }
     }
@@ -431,6 +453,35 @@ impl Prog {
             // file empty and put the reason on the terminal, which is the whole of DECISIONS §67
             // applied to a monitor. `InputSpec::Forbidden` because a snapshot reads nothing.
             Prog::Ps => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                output: OutputSpec::BytesAndDiagnostics {
+                    slot: DIAGNOSTICS_SLOT,
+                },
+                input: InputSpec::Forbidden,
+                reports: true,
+                interruptible: false,
+                clock: false,
+                domain: true,
+            },
+            // **`pgrep`: `ps`'s manifest, field for field, and the sameness is the claim.**
+            //
+            // A reader comparing these two blocks should find nothing to compare, because the
+            // program that *finds* a process is granted exactly what the program that *lists* them
+            // is: one supervision endpoint, `ENUMERATE`, and no way to name anything outside the
+            // domain. On Unix `pgrep` and `pkill` differ only in what they do with the answer, and
+            // there is no such pair here: a tid is a name, and killing a live child is
+            // `Untyped::DESTROY` on its region, held by whoever spawned it (DECISIONS §24).
+            //
+            // `ArgSpec::Forbidden` is `date`'s deliberate under-declaration, not an oversight.
+            // `pgrep` reads a state mask out of the integer-argument register, and a *pattern* is
+            // bytes, which nothing in this system carries from a command line to a program. So the
+            // prompt sends the default and `pgrep` names every member; see `crates/pgrep`'s `BUGS`
+            // for why that is a property of the boundary rather than of this program.
+            Prog::Pgrep => Manifest {
                 arg: ArgSpec::Forbidden,
                 mem: MemSpec::Forbidden,
                 file: FileSpec::Forbidden,
@@ -3917,28 +3968,36 @@ mod tests {
         assert!(fs_proto::nameset::encode(&widest, &mut buf).is_some());
     }
 
+    /// **Every id init can index resolves, and round trips through both names.**
+    ///
+    /// The loop is over `0..PROG_COUNT` rather than over a written-out list of variants, and that is
+    /// the fix for a hazard this test had twice. The list said "every variant" in its own comment and
+    /// was short of `Wc` once; by milestone 126 it was also short of `Doc`, `Ps` and `Pgrep`, so the
+    /// three newest programs were the three nothing here checked. A list somebody has to extend is
+    /// the bottom rung of CLAUDE.md's ladder. Counting up to the constant init sizes its array with
+    /// cannot go stale: a variant added without an arm in [`Prog::from_id`] fails here, and one added
+    /// without widening [`PROG_COUNT`] fails the `from_name` sweep below.
     #[test]
     fn prog_id_round_trips() {
-        for p in [
-            Prog::Worker,
-            Prog::Budgeter,
-            Prog::Heeder,
-            Prog::Spinner,
-            Prog::Date,
-            Prog::Rm,
-            // Every variant, or the round trip proves nothing about the newest one: this list was
-            // short of `Wc` once, and `from_id(6)` could have lost its arm without a test noticing.
-            Prog::Wc,
-        ] {
-            assert_eq!(Prog::from_id(p.id()), Some(p));
-            assert_eq!(Prog::from_name(p.name().as_bytes()), Some(p));
-            assert!(
-                (p.id() as usize) < PROG_COUNT,
-                "init indexes a [_; PROG_COUNT] with this",
+        for id in 0..PROG_COUNT as u64 {
+            let p = Prog::from_id(id)
+                .unwrap_or_else(|| panic!("init indexes slot {id} and no program claims it"));
+            assert_eq!(
+                p.id(),
+                id,
+                "{p:?} does not answer to the id it decoded from"
             );
+            assert_eq!(Prog::from_name(p.name().as_bytes()), Some(p));
         }
         assert_eq!(Prog::from_id(PROG_COUNT as u64), None);
         assert_eq!(Prog::from_id(99), None);
+        // And no program is reachable by a name init cannot load it by, which is the other direction:
+        // a variant with an id and no `from_name` arm would be unspawnable and invisible above.
+        assert_eq!(
+            Prog::from_name(b"pgrep"),
+            Some(Prog::Pgrep),
+            "the newest program is not reachable from the prompt",
+        );
     }
 
     #[test]

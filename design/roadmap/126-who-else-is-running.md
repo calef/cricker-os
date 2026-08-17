@@ -39,9 +39,39 @@ built (observe a mapping without being able to map) and `Untyped` wants it when 
 pre-wired, because a right defined for hypothetical callers is the speculative abstraction this
 tree declines; the consumer that can say what it needs is the one that should extend it.
 
-**Still to build:** the rest of the view stratum (`top`, `pgrep`, `pmap`, `pwdx`, `w`), the
-machine-wide statistics, `watch`, and the `sysctl` fork below. The signalling stratum is no longer
-on this list; see the ruling below. The package
+## Built: `pgrep`, 2026-08-17
+
+**`pgrep` works on both ISAs, and it is granted exactly what `ps` is: one supervision endpoint with
+`ENUMERATE`, and not one right more.** The two manifests in `grant_plan` are identical field for
+field, which is the readable form of the ruling below rather than a redundancy to factor out. It
+filters the survey `ps` already walks (`crates/pgrep` takes a finished `ps::Survey` and never touches
+a cursor), and the selector is the run state, matched by `crates/glob` against the four state names
+`ps` prints.
+
+**What the demonstration shows, and it is one answer more than `ps` had.** A selector that **matched
+nothing** in a domain that really has members is a distinct outcome from an empty domain and from a
+refusal, and upstream `pgrep` collapses all three into printing nothing and exiting 1, so a monitor
+there cannot tell an idle machine from a closed door. Four answers, asserted in twelve host tests and
+again on a real kernel domain on both ISAs
+(`kernel::user::survey_tests::a_filter_names_members_and_tells_its_four_answers_apart`), which also
+asserts the claim the whole pair exists to make: **the capability that printed a corpse's tid is
+refused the reap.**
+
+**The limitation that shaped it, and it is a property of the boundary rather than of the program.**
+Nothing in this system delivers *bytes* from a command line to a program: `Endowment::arg` is one
+`u64`, `spawnproto` carries three words, and every string-shaped designation a person types arrives at
+the child as a **capability**, which is what `rm logs/old` and `doc notes/glob.md` both are. So a
+pattern cannot be typed at this prompt, and the shipped `pgrep` names every member, which is
+`Prog::Date`'s deliberate under-declaration verbatim. It lifts when `ArgSpec` grows milestone 47's
+deferred positional arity. Written up in notes/process-view.md, with the reason recorded where a
+reader meets the feature.
+
+**Still to build:** the rest of the view stratum (`top`, `pmap`, `pwdx`, `w`), the machine-wide
+statistics, `watch`, and the `sysctl` fork below. The signalling stratum is no longer on this list;
+see the ruling below. Each of the four remaining view programs is blocked on something real rather
+than on effort, and notes/process-view.md names what: `pmap` on extending `ENUMERATE` to `Aspace`,
+which is calef's open decision; `top` on per-thread CPU accounting that does not exist; `pwdx` and
+`w` on a process display name this system does not have. The package
 file list still wants a real `dpkg -L procps` before anyone counts programs; nothing built so far
 depended on it, and the next lane does.
 
@@ -76,7 +106,7 @@ scope.
 
 | what it actually needs | programs | state here |
 |---|---|---|
-| **read the process namespace** | `ps`, `top`, `pgrep`, `pmap`, `pwdx`, `w` | the supervision tree exists (§26's `fault_ep`); the view does not |
+| **read the process namespace** | `ps`, `top`, `pgrep`, `pmap`, `pwdx`, `w` | `ps` and `pgrep` **built**; the other four each blocked on something named above |
 | **signal a process** (control, not view) | `kill`, `pkill`, `skill`, `snice` | **mostly abolished 2026-08-17**: a domain names, never acts, and a tid is not a capability. Killing stays with whoever holds the child's region |
 | **machine-wide statistics**, no process namespace | `free`, `uptime`, `vmstat`, `slabtop`, `tload` | **a different capability entirely**, and none exists |
 | **write kernel tunables** | `sysctl` | no design, and see the fork below |
@@ -85,6 +115,12 @@ scope.
 Build in that order. `ps` first, because it is a snapshot of the domain and needs no clock and no
 accounting, so it is the whole capability argument with none of the scheduler work. Then the rest of
 the view stratum, then signalling, then statistics, then `sysctl`, then `watch` whenever.
+
+**`pgrep` came second rather than `top`, and the order turned out to matter more than expected.** It
+needs nothing that does not exist, so it was the cheapest way to find out whether the capability
+argument survives being *filtered* rather than merely listed. It did, and it also surfaced the
+boundary limitation above, which is a fact about every future program that wants an operand and not a
+fact about `pgrep`.
 
 ## The design: a view over a supervision domain
 
@@ -111,10 +147,15 @@ forcible `^C`), held by whoever spawned it. So `pkill` cannot be assembled out o
 a domain confer control would be the one place this system copied the thing it exists to refuse,
 which is Unix turning `kill(pid)` from a name into an action.
 
-What replaces the demonstration: **`caps ps` prints a scope, and there is no `caps pkill` to print
+What replaces the demonstration: **`caps pgrep` prints a scope, and there is no `caps pkill` to print
 beside it**, because the program does not exist here. That is a weaker side-by-side and a stronger
 claim, and the write-up has to make the trade explicit rather than quietly dropping a promised
 comparison. Killing stays with the shell that spawned the thing, which already holds the region.
+
+**Done, 2026-08-17.** `pgrep` is built and the trade is stated in three places a reader might arrive
+at: `crates/pgrep`'s module docs, `user/src/pgrep.rs`'s, and notes/process-view.md's own section. The
+claim is also asserted rather than argued: the kernel test filters a domain down to its corpse and
+then shows that the same capability which named the tid is refused the reap.
 
 The cost, stated plainly: `procps` gets ported without its signalling stratum, and a reader who
 expects `kill` to be a program will not find one.
