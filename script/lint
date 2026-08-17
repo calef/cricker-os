@@ -100,7 +100,9 @@ echo "==> clippy: kernel + user + user_rt (aarch64)"
 cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
 
 # The kernel's boot-mode features (shell, bench, initboot) each compile DIFFERENT code in and out:
-# `initboot` and `shell` drop the milestone tour, `bench` diverges before the boot entirely. So a
+# `initboot` and `shell` drop the milestone tour, `bench` diverges before the boot entirely, and
+# `icount` (milestone 78) parks before `bench` does, which is the one configuration where
+# `bench::run` and everything after it is unreachable. So a
 # warning that only appears in one configuration -- e.g. dead code once the tour is compiled out --
 # is invisible to the default run above. Lint each feature build on its own. (A missed initboot
 # dead-code warning is exactly why this loop exists.) Bin only: the boot code these features gate
@@ -111,7 +113,7 @@ cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloa
 # by `cargo xtask` and checked by nobody. Parity is a gate, not an aspiration (DECISIONS §19), and
 # that applies to the gate itself.
 for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
-    for feat in shell bench initboot smb_serve; do
+    for feat in shell bench initboot smb_serve icount; do
         echo "==> clippy: kernel --features $feat ($tgt)"
         cargo clippy -p kernel --features "$feat" --target "$tgt" -- -D warnings
     done

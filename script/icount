@@ -1,0 +1,35 @@
+#!/bin/sh
+# script/icount: the instruction-count instrument (milestone 78).
+#
+#   script/icount                    both ISAs
+#   script/icount --arch aarch64     one leg
+#   script/icount --arch riscv64
+#
+# Boots a `--features icount` kernel under `-icount shift=0,sleep=off`, where QEMU's virtual clock
+# advances by exactly one nanosecond per guest instruction retired and by nothing else. The guest
+# asserts two claims that no wall-clock test on either ISA can make, because from inside the guest a
+# slow handler and a descheduled emulator are the same observation:
+#
+#   1. the timer fired at the deadline the kernel armed (on riscv64, that SBI was armed with the
+#      DEADLINE word rather than with something else that keeps the array looking right), and
+#   2. the handler takes fewer than N instructions, deadline to re-armed.
+#
+# It also asserts zero missed ticks, which is only assertable here: the miss taxonomy on both ISAs
+# exists to tell a slow handler from a descheduled emulator, and virtual time has no deschedules.
+#
+# **Not part of script/test, deliberately**, and the reason is not that it is slow: an identical
+# compute-bound boot measured the same either way. It is that all vCPUs share ONE virtual clock under
+# -icount, so the instrument is single-hart and a suite run here would stop proving every cross-core
+# property it exists for; and that a clock-bound wait costs guest instructions rather than host time.
+# This is its own boot for the same reason script/bench is. See
+# design/roadmap/78-load-sensitive-assertions.md and notes/instruction-clock.md.
+#
+# Name: unrecorded. Provisional, minted by milestone 78's lane on 2026-08-17 and not yet put to
+# calef, who names things. It borrows QEMU's own flag, `-icount`, on the "standard terms are already
+# right" argument: a reader who has met the emulator knows the word, and it is a noun (an instruction
+# count). Considered and set aside: `instruction-clock`, which names the mechanism the note is named
+# for but is longer to type and does not match the flag anyone would grep for.
+
+set -e
+cd "$(dirname "$0")/.."
+exec cargo xtask icount "$@"

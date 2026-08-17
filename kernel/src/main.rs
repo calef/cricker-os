@@ -33,6 +33,8 @@ mod cap;
 mod console;
 mod cpu;
 mod drivers;
+#[cfg(feature = "icount")]
+mod icount;
 mod interrupt_stack;
 mod iommu;
 mod kmem;
@@ -85,8 +87,10 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 // full boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
 // The smb_serve boot parks before the tour the same way the riscv tour does: the code after
 // either stays compiled and is deliberately unreachable.
+// And the icount boot parks before the bench boot it implies, so `bench::run()` and everything after
+// it is deliberately unreachable in that one configuration (milestone 78).
 #[cfg_attr(
-    any(target_arch = "riscv64", feature = "smb_serve"),
+    any(target_arch = "riscv64", feature = "smb_serve", feature = "icount"),
     allow(unreachable_code)
 )]
 #[unsafe(no_mangle)]
@@ -235,6 +239,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // any path (test, shell, tour) confines a virtio-pci device. Absent, this is a no-op and the
         // kernel runs exactly as before. See kernel/src/iommu.rs, notes/iommu.md.
         pci::init_iommu();
+
+        // The instruction-count boot (milestone 78, `script/icount`) diverges here, on the ISA whose
+        // claim it was written for: SBI's `set_timer` is write-only, so this is the only place in
+        // the tree that proves the firmware was armed with the deadline the kernel recorded. Before
+        // the bench boot, whose feature it implies; see the aarch64 site for why.
+        #[cfg(feature = "icount")]
+        icount::run();
 
         // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
         // `os_primitives_benchmarker` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
@@ -702,6 +713,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
     #[cfg(test)]
     test_main();
+
+    // The instruction-count boot (milestone 78, `script/icount`): assert the two timing claims on
+    // the deterministic clock and park. **Before the bench boot, and its feature implies that one**,
+    // because the two park at the same point and therefore leave the same functions unreferenced;
+    // riding on `bench`'s existing conditions is what keeps this from duplicating a dozen `cfg`s
+    // across five files. The `bench::run` below is then unreachable, which is what this function's
+    // `allow(unreachable_code)` names.
+    #[cfg(feature = "icount")]
+    icount::run();
 
     // The benchmark boot (milestone 21, `script/bench`): run the microbenchmarks and halt,
     // instead of the tour or the shell. Diverges, so everything below is untouched by it.
