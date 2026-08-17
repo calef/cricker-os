@@ -1,11 +1,20 @@
 # 47. Navigation and naming: `cd`, `pwd`, `ls`, `mkdir`, `rm`, paths, and environment
 
-**Status: IN-PROGRESS.**
+**Status: PARTIAL.** The token read `IN-PROGRESS` with no branch anywhere and nobody holding it, found
+2026-08-17 by the status-accuracy sweep. Two claims in the "still to do" sentence below were also
+false, and both are corrected there rather than here: the glob caretaker was built 2026-07-31, and the
+`std` PAL's three namespace verbs were bound 2026-08-04. What is genuinely unbuilt is completion,
+environment and `PATH`, plus the sections further down this block that sentence never listed (`ln`,
+`touch`, absolute paths, and `bind`).
 
 **Gate: MILESTONE 64.** The navigation half is built. The namespace half (absolute paths,
 environment, `PATH`, and `bind`) has no forcing use case from the shell, and the block's own
 sequencing is to let 64 measure first, so a real crate's demands size the remaining scope. The glob
-caretaker in the same list is not gated by that.
+caretaker in the same list is not gated by that. **64's measurement has since landed** (PARTIAL since
+2026-08-04, notes/crates-io-on-nife.md) and it sized exactly one item here, `env::var` at rank 4 with
+16 direct consumers and no PAL at all. Whether that satisfies this gate or moves it to `MILESTONE 122`
+(the `OPENDIR`-reaches-the-PAL blocker, still NOT-STARTED) is a sequencing call this sweep did not
+take.
 
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
@@ -19,9 +28,26 @@ a child holds a capability to one file and cannot re-resolve anything. `rm` is `
 because the FS server's handle table is per *server* and it cannot enumerate the clients holding
 handles. The headline is proven with the real shell binary: two shells rooted in two subtrees, each
 told nothing about which it holds, and neither can name the other's files (notes/shell-navigation.md).
-**Still to do**: attaching the built `crates/glob` to an attenuated name-set caretaker, completion,
-environment, and `PATH`. The `std` PAL still answers `Unsupported` for `rename`, `unlink` and
-`rmdir`, which is now a binding gap rather than a missing verb for the first two.
+**The glob caretaker is built too**, which this sentence claimed as outstanding for seventeen days:
+built 2026-07-31 (merge `5e48826c`, branch `milestone/47-glob-wiring`, wiring commit `00f4e277`; no
+pull request, it predates the workflow), and proven end to end on both ISAs by
+`what_a_shell_shows_is_what_a_set_grant_takes_away`
+(`kernel/src/user/glob_grant_tests.rs:29`, no arch `cfg` at `kernel/src/user.rs:2259`), which runs the
+real `swish` binary expanding one pattern two ways and the real `rm` binary behind a real
+`fs_nameset_caretaker` holding only `REMOVE` over the two matched names. `rm` is then pointed at a
+name one directory entry outside the set and gets `ENOENT`. Witnessed from the host by
+`xtask::redoxfs_glob_grant_took_exactly_the_match` (`xtask/src/main.rs:4360`). See notes/glob-grant.md,
+which has said "Built 2026-07-31" the whole time, and the sections below at "Built 2026-07-31: the
+matcher, then the grant", which contradicted the sentence from inside this same file.
+
+**Still to do**: completion, environment, and `PATH`. Completion is refused by design at the layer
+below and deferred to the application (`crates/line_editor/src/lib.rs:32`), environment has no PAL and
+no shell support, and `PATH` needs `Prog` to stop being a closed enum, which this block calls half the
+mechanism. The `std` PAL's `rename`, `unlink` and `rmdir` **were** bindings rather than missing verbs,
+and milestone 64 bound all three on 2026-08-04 (pull request #113,
+`patches/std-nife/overlay/std/src/sys/fs/nife.rs:945`, `:960`, `:979`); they answer `Unsupported` now
+only when the calling process holds no FS capability at all, which is a grant that was never made
+rather than a verb that does not exist.
 
 **Why it matters.** calef's framing, and it is the governing constraint: *"I hate Windows/DOS
 specifically because they went differently than virtually every other OS I've used."* Gratuitous
@@ -355,7 +381,10 @@ did not predict, and one it did:
   the number the argument produced; the shell ran off the bottom of its stack planning one grant,
   twice. Exceeding the bound is a loud refusal at the prompt, never a truncation.
 - **Qualifiers and `**` stayed out**, for notes/glob.md's reasons, which are authority questions and
-  not scheduling ones. `xargs` is still not built: the answer at the bound is a refusal.
+  not scheduling ones. `xargs` was not built when this was written, so the answer at the bound was a
+  refusal; milestone 109 built it on 2026-08-04, as a shell prefix word rather than a program, and the
+  refusal is still what happens for `xargs <program>` because the shell cannot yet ask init to mint a
+  per-batch caretaker. That missing delegation chain is this milestone's, and 109's block says so.
 
 Tests: `grant_plan` and `fs_proto` host suites; `kernel::user::glob_grant_tests` on both ISAs (a real
 shell expanding one pattern two ways, then `rm` as its own attacker behind a real
