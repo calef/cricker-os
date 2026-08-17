@@ -20,6 +20,86 @@
 //! preserve it, now over the real intrusive queues (the `Fifo`'s own FIFO correctness is proved
 //! separately, in its crate; here we prove the *decisions* made over it).
 //!
+//! # Examples
+//!
+//! The three decisions an endpoint makes, and the invariant holding across all of them. `T` is the
+//! kernel's TCB; here it is a stand-in with the same one link, because one link is the whole reason
+//! the invariant is structural rather than remembered.
+//!
+//! ```
+//! use core::ptr::NonNull;
+//! use intrusive::Node;
+//! use ipc::{Endpoint, Recv, Send};
+//!
+//! struct Tcb {
+//!     next: Option<NonNull<Tcb>>,
+//! }
+//!
+//! // SAFETY: plain field storage, which is the whole of the `Node` contract.
+//! unsafe impl Node for Tcb {
+//!     fn next(&self) -> Option<NonNull<Self>> {
+//!         self.next
+//!     }
+//!     fn set_next(&mut self, next: Option<NonNull<Self>>) {
+//!         self.next = next;
+//!     }
+//! }
+//!
+//! // Declared before the endpoint, so they outlive it.
+//! let mut server = Tcb { next: None };
+//! let mut client = Tcb { next: None };
+//! let mut ep: Endpoint<Tcb> = Endpoint::new();
+//! assert!(ep.is_idle());
+//!
+//! // The server calls recv with nobody sending, so it queues. The caller blocks it.
+//! // SAFETY: both are live locals declared before `ep`, on no queue, and this is the only accessor.
+//! let waiting = unsafe { ep.recv(NonNull::from(&mut server)) };
+//! assert_eq!(waiting, Recv::Blocked);
+//! assert!(!ep.is_idle());
+//! assert!(ep.one_queue_invariant());
+//!
+//! // Now a client sends. There is a receiver, so it **rendezvouses instead of queueing**, which is
+//! // why at most one of the two queues is ever non-empty.
+//! // SAFETY: as above.
+//! let met = unsafe { ep.send(NonNull::from(&mut client)) };
+//! assert_eq!(met, Send::Rendezvous(NonNull::from(&mut server)));
+//! assert!(ep.is_idle()); // the receiver left the queue and the sender never joined one
+//! assert!(ep.one_queue_invariant());
+//! ```
+//!
+//! A signal is the operation that is deliberately **not** a rendezvous: it never queues the signaller
+//! and it is never lost, which is what lets an interrupt handler use one.
+//!
+//! ```
+//! # use core::ptr::NonNull;
+//! # use intrusive::Node;
+//! # use ipc::{Endpoint, Recv};
+//! # struct Tcb { next: Option<NonNull<Tcb>> }
+//! # unsafe impl Node for Tcb {
+//! #     fn next(&self) -> Option<NonNull<Self>> { self.next }
+//! #     fn set_next(&mut self, next: Option<NonNull<Self>>) { self.next = next; }
+//! # }
+//! let mut driver = Tcb { next: None };
+//! let mut ep: Endpoint<Tcb> = Endpoint::new();
+//!
+//! // Two interrupts arrive with nobody in recv. Neither is dropped; both are counted.
+//! assert!(ep.signal().is_none());
+//! assert!(ep.signal().is_none());
+//!
+//! // The driver's next two receives drain them, and it never blocks.
+//! // SAFETY: `driver` is a live local declared before `ep`, on no queue.
+//! assert_eq!(unsafe { ep.recv(NonNull::from(&mut driver)) }, Recv::Signal);
+//! // SAFETY: as above.
+//! assert_eq!(unsafe { ep.recv(NonNull::from(&mut driver)) }, Recv::Signal);
+//! // The third finds nothing left and queues.
+//! // SAFETY: as above.
+//! assert_eq!(unsafe { ep.recv(NonNull::from(&mut driver)) }, Recv::Blocked);
+//!
+//! // And a signal arriving now wakes it, already dequeued.
+//! assert_eq!(ep.signal(), Some(NonNull::from(&mut driver)));
+//! assert!(ep.is_idle());
+//! ```
+//!
 //! Name: ratified 2026-08-01 (calef, the naming tenet in CLAUDE.md). Named in the group of standard
 //! terms that are already right and must not be touched, because a name a reader knows from outside
 //! this project costs nothing to learn and renaming it would destroy the recognition the tenet

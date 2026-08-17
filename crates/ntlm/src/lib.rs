@@ -12,6 +12,70 @@
 //! crate should say *which* NTLM it implements, since it is v2 only and deliberately holds no v1
 //! path. See notes/naming.md and notes/ntlm.md.
 //!
+//! # Examples
+//!
+//! The whole server side of an NTLMv2 authentication, on [MS-NLMP] §4.2.4's published example, which
+//! is the vector this crate's *wiring* is pinned against rather than the libraries' arithmetic.
+//! Note that the presented password never appears: the server holds a key and compares a MAC.
+//!
+//! ```
+//! use ntlm::{CHALLENGE_LEN, ntowfv2, proof, session_base_key};
+//!
+//! // Provisioning time. `NTOWFv2` is what the store holds, and the account name and the domain are
+//! // inputs to it, which is why they are provisioning fields rather than request fields.
+//! let key = ntowfv2(b"Password", b"User", b"Domain").unwrap();
+//!
+//! // Authentication time. The challenge is the server's, sent in its CHALLENGE_MESSAGE.
+//! let challenge: [u8; CHALLENGE_LEN] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef];
+//!
+//! // The blob is the client's `temp` and is entirely public, so nothing here validates it: a blob
+//! // that is nonsense produces a proof that does not match, which is the correct outcome.
+//! # #[rustfmt::skip]
+//! let blob: [u8; 68] = [
+//!     0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Responserversion, Z(6)
+//!     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Time (zero in the example)
+//!     0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, // ClientChallenge
+//!     0x00, 0x00, 0x00, 0x00,
+//!     0x02, 0x00, 0x0c, 0x00, // target info: MsvAvNbDomainName = "Domain"
+//!     0x44, 0x00, 0x6f, 0x00, 0x6d, 0x00, 0x61, 0x00, 0x69, 0x00, 0x6e, 0x00,
+//!     0x01, 0x00, 0x0c, 0x00, // MsvAvNbComputerName = "Server"
+//!     0x53, 0x00, 0x65, 0x00, 0x72, 0x00, 0x76, 0x00, 0x65, 0x00, 0x72, 0x00,
+//!     0x00, 0x00, 0x00, 0x00, // MsvAvEOL
+//!     0x00, 0x00, 0x00, 0x00,
+//! ];
+//!
+//! // What the client sent, and what the server computes to compare against it.
+//! let expected = proof(&key, &challenge, &blob);
+//! assert_eq!(&expected[..4], &[0x68, 0xcd, 0x0a, 0xb8]);
+//!
+//! // A wrong password gives a proof that does not match, which is the whole verification.
+//! let wrong = ntowfv2(b"password", b"User", b"Domain").unwrap();
+//! assert_ne!(proof(&wrong, &challenge, &blob), expected);
+//!
+//! // And the one derived value the service lets out, only against a proof that verified. It is a
+//! // function of both challenges, so a key released for this session signs nothing else.
+//! let session = session_base_key(&key, &expected);
+//! assert_eq!(&session[..4], &[0x8d, 0xe4, 0x0c, 0xca]);
+//! assert_ne!(session, key); // recovering the key from it would be an HMAC key recovery
+//! ```
+//!
+//! One asymmetry in [`ntowfv2`] is the specification's and is the kind of detail a reimplementation
+//! gets wrong silently, so it is worth a line of its own: **the user is uppercased and the domain is
+//! not.**
+//!
+//! ```
+//! use ntlm::ntowfv2;
+//!
+//! let key = ntowfv2(b"Password", b"User", b"Domain").unwrap();
+//!
+//! // The user's case cannot matter, because it is folded away.
+//! assert_eq!(ntowfv2(b"Password", b"user", b"Domain").unwrap(), key);
+//!
+//! // The domain's case does matter, and a "tidier" implementation that uppercased both would fail
+//! // against every real Windows client.
+//! assert_ne!(ntowfv2(b"Password", b"User", b"DOMAIN").unwrap(), key);
+//! ```
+//!
 //! # Why this exists as a separate thing from a password verifier
 //!
 //! **NTLMv2 does not verify a presented secret.** The client never sends the password, and the

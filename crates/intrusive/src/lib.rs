@@ -31,6 +31,72 @@
 //! 3. All access to a queue and its nodes' links is serialized by the caller (the kernel: a run
 //!    queue is single-core with interrupts masked; an inbox is behind its mutex).
 //!
+//! # Examples
+//!
+//! A run queue, with the three contract rules visible in the code rather than only in the list
+//! above. Note where the nodes are declared: **before** the queue, so they outlive it, because
+//! locals drop in reverse and rule 2 is otherwise nothing but a promise.
+//!
+//! ```
+//! use core::ptr::NonNull;
+//! use intrusive::{Fifo, Node};
+//!
+//! struct Thread {
+//!     tid: u32,
+//!     next: Option<NonNull<Thread>>,
+//! }
+//!
+//! // SAFETY: `next` and `set_next` are plain field storage and touch nothing else, which is the
+//! // whole of the `Node` contract. A clever implementation here is a corrupted queue.
+//! unsafe impl Node for Thread {
+//!     fn next(&self) -> Option<NonNull<Self>> {
+//!         self.next
+//!     }
+//!     fn set_next(&mut self, next: Option<NonNull<Self>>) {
+//!         self.next = next;
+//!     }
+//! }
+//!
+//! // Rule 2, as drop order: these outlive `q`.
+//! let mut a = Thread { tid: 1, next: None };
+//! let mut b = Thread { tid: 2, next: None };
+//! let mut q: Fifo<Thread> = Fifo::new();
+//!
+//! // SAFETY: both are live locals declared before `q`, and neither is on a queue (rule 1). This
+//! // doctest is the only accessor, which is rule 3.
+//! unsafe {
+//!     q.push_back(NonNull::from(&mut a));
+//!     q.push_back(NonNull::from(&mut b));
+//! }
+//! assert_eq!(q.len(), 2);
+//! assert!(!q.is_empty());
+//!
+//! // Round robin: threads leave in the order they arrived, and a pop hands back the object rather
+//! // than a number somebody has to look up.
+//! // SAFETY: each popped pointer is one of the live locals above, and is no longer linked.
+//! let order: Vec<u32> = core::iter::from_fn(|| q.pop_front())
+//!     .map(|p| unsafe { (*p.as_ptr()).tid })
+//!     .collect();
+//! assert_eq!(order, vec![1, 2]);
+//! assert!(q.is_empty());
+//!
+//! // A drained queue takes new nodes correctly, which is where the classic tail-pointer bug lives.
+//! // SAFETY: as above; `a` was popped, so it is on no queue again.
+//! unsafe { q.push_back(NonNull::from(&mut a)) };
+//! assert_eq!(q.len(), 1);
+//! ```
+//!
+//! Nothing in the type system stops the next line from being written, and it is the whole reason the
+//! mutating half of this API is `unsafe`:
+//!
+//! ```ignore
+//! // Rule 1 broken. One link per node means `b` is now on both queues and neither is correct;
+//! // the second push silently rewrites the link the first one made. No tool in this tree catches
+//! // it, which is what the section below is honest about.
+//! unsafe { ready.push_back(NonNull::from(&mut b)) };
+//! unsafe { inbox.push_back(NonNull::from(&mut b)) };
+//! ```
+//!
 //! # What a static analyser sees here, and why it is right (DECISIONS §35)
 //!
 //! CodeQL flagged the dereferences in [`Fifo::push_back`] and [`Fifo::pop_front`] as

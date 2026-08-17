@@ -13,6 +13,41 @@
 //! is `iters` divided by the wall-clock the caller measures around it. The dataset is a few kilobytes
 //! (CoreMark's small-memory profile), so it stays cache-resident and fits a small userspace stack.
 //!
+//! # Examples
+//!
+//! How a caller scores a machine, and the two things about this crate that make the score mean
+//! anything. The CRC is the run's self-validation: it is the same on nife, macOS and Linux, so a
+//! comparison across the three is a comparison of *time* rather than of two different computations.
+//!
+//! ```
+//! use std::time::Instant;
+//!
+//! use coremark::{PINNED_CRC_64, PINNED_ITERS, run};
+//!
+//! let start = Instant::now();
+//! let crc = run(PINNED_ITERS);
+//! let seconds = start.elapsed().as_secs_f64();
+//!
+//! // The correctness check comes first: a run whose CRC is wrong has not measured the benchmark,
+//! // whatever its time says.
+//! assert_eq!(crc, PINNED_CRC_64);
+//!
+//! // And the score, which is not in this crate because the clock is not either.
+//! let score = f64::from(PINNED_ITERS) / seconds;
+//! assert!(score > 0.0);
+//! ```
+//!
+//! The CRC is what stops the optimiser deleting the work, so the property worth asserting is that it
+//! **depends on the iteration count**. A compiler that hoisted any of the three work items out of the
+//! loop would give the same answer for every count:
+//!
+//! ```
+//! use coremark::run;
+//!
+//! assert_eq!(run(50), run(50)); // deterministic in the count
+//! assert_ne!(run(50), run(51)); // and the work actually accumulates
+//! ```
+//!
 //! Name: ratified 2026-08-01 (calef, milestone 63) as a proper noun: EEMBC's industry benchmark.
 //! Recorded there as explicitly not a counter-example to the agent-noun rule that made `elbench`
 //! into `os_primitives_benchmarker`.

@@ -7,6 +7,70 @@
 //! tests run in milliseconds. The wire contract is `cred_proto`; the service is
 //! `user/src/credentialer.rs`.
 //!
+//! # Examples
+//!
+//! Provisioning two people and then checking a login. The cost here is a deliberately cheap one so
+//! the example runs in milliseconds; [`Cost::DEFAULT`] is what the service wires, and the parameters
+//! travel in the record rather than being compiled in, so raising them is a provisioning change.
+//!
+//! ```
+//! use cred::{Block, Cost, SALT_LEN, Store, TAG_LEN, Verdict};
+//!
+//! let cost = Cost::new(64, 1, 1).expect("a cheap cost, for the example only");
+//! let mut scratch: Vec<Block> = vec![Block::new(); cost.blocks()];
+//!
+//! // The decoy salt and tag must both come from the entropy service: a decoy tag of zeros would be
+//! // one an attacker could aim a preimage at.
+//! let mut store: Store<3> = Store::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+//!
+//! // Each salt is per-identity and unpredictable. Nothing in this crate invents one, because a salt
+//! // a caller chose is a salt an attacker may have chosen too.
+//! store.put(b"corinne", b"battery staple", [1u8; SALT_LEN], &mut scratch).unwrap();
+//! store.put(b"calef", b"correct horse", [2u8; SALT_LEN], &mut scratch).unwrap();
+//! assert_eq!(store.len(), 2);
+//!
+//! assert_eq!(store.verify(b"calef", b"correct horse", &mut scratch).unwrap(), Verdict::Match);
+//!
+//! // **A wrong secret and an identity nobody provisioned are the same answer.** Distinguishing them
+//! // would make this an identity oracle: ask about a thousand names and learn which three exist.
+//! // The store also spends the same work on both, so the timing does not distinguish them either.
+//! assert_eq!(store.verify(b"calef", b"hunter2", &mut scratch).unwrap(), Verdict::Mismatch);
+//! assert_eq!(store.verify(b"graeme", b"anything", &mut scratch).unwrap(), Verdict::Mismatch);
+//! ```
+//!
+//! There is no read path, and that is a property of the API rather than of anyone's discipline: a
+//! [`Record`] can be encoded and decoded, and what comes out the other side is still a tag.
+//!
+//! ```
+//! use cred::{Block, Cost, Record, SALT_LEN};
+//!
+//! let cost = Cost::new(64, 1, 1).unwrap();
+//! let mut scratch: Vec<Block> = vec![Block::new(); cost.blocks()];
+//!
+//! let rec = Record::derive(b"calef", b"correct horse", [2u8; SALT_LEN], cost, &mut scratch).unwrap();
+//! let bytes = rec.encode();
+//!
+//! // A round trip preserves the record exactly, which is what makes the sealed store loadable.
+//! let back = Record::decode(&bytes).unwrap();
+//! assert_eq!(back.identity(), b"calef");
+//! assert_eq!(back.cost(), cost);
+//!
+//! // And the encoded form does not contain the secret, in any form: recovering it means finding a
+//! // preimage, which is the guessing attack the cost parameters exist to price.
+//! assert!(!bytes.windows(13).any(|w| w == b"correct horse"));
+//! ```
+//!
+//! A cost that Argon2 will not accept is refused where it is *written*, rather than at the
+//! derivation that would have used it:
+//!
+//! ```
+//! use cred::Cost;
+//!
+//! assert!(Cost::new(4096, 3, 1).is_some());
+//! assert!(Cost::new(0, 3, 1).is_none()); // no memory is not a memory-hard KDF
+//! assert!(Cost::new(Cost::MAX_M_KIB + 1, 3, 1).is_none()); // past a gibibyte is a typo, not a policy
+//! ```
+//!
 //! # What is stored, and why it cannot be turned back into a password
 //!
 //! A [`Record`] is an identity, a random 16-byte salt, three cost parameters, and a 32-byte
