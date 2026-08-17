@@ -17,11 +17,12 @@
 # It also asserts zero missed ticks, which is only assertable here: the miss taxonomy on both ISAs
 # exists to tell a slow handler from a descheduled emulator, and virtual time has no deschedules.
 #
-# **Not part of script/test, deliberately.** `-icount` changes what QEMU is (it serializes, it gives
-# every vCPU one shared virtual clock, and it is slower), so putting it on the test path would change
-# what all ~400 tests measure in order to sharpen two of them. This is its own boot for the same
-# reason script/bench is. See design/roadmap/78-load-sensitive-assertions.md and
-# notes/instruction-clock.md.
+# **Not part of script/test, deliberately**, and the reason is not that it is slow: an identical
+# compute-bound boot measured the same either way. It is that all vCPUs share ONE virtual clock under
+# -icount, so the instrument is single-hart and a suite run here would stop proving every cross-core
+# property it exists for; and that a clock-bound wait costs guest instructions rather than host time.
+# This is its own boot for the same reason script/bench is. See
+# design/roadmap/78-load-sensitive-assertions.md and notes/instruction-clock.md.
 #
 # Name: provisional. calef names the scripts, the crates and the programs (AGENTS.md); this one
 # borrows QEMU's own flag, which is the term of art a reader already knows.

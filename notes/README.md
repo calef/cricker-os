@@ -917,6 +917,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   It also reverses round one's "left alone" verdict on the placement probe, whose 60 s wait turns
   out to be unreachable rather than merely late. What each was rescoped to, the two siblings checked
   and left, and the honest cost of the `<=` trade.
+- [The instruction clock](instruction-clock.md): milestone 78's last piece, and the answer to the two
+  claims no wall clock can make, because from inside the guest a slow handler and a descheduled
+  emulator are the same observation. Under `-icount shift=0,sleep=off` virtual time advances by one
+  nanosecond per instruction retired and by nothing else, so `script/icount` asserts that the timer
+  fired at the deadline the kernel armed (on riscv64, that SBI was armed with the `DEADLINE` word at
+  all), that the handler costs fewer than N instructions, and that no tick was missed. Why it is a
+  boot mode rather than a flag on the test path, the measurement that says the reason is **not**
+  speed, the calibration that refuses to measure without the flag, and what its 16- and
+  100-instruction resolutions can and cannot see.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the

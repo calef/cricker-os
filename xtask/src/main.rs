@@ -6208,11 +6208,12 @@ fn run_bench(
 /// asserts two claims a wall-clock test cannot make (that the timer fired at the deadline the kernel
 /// armed, and that the handler costs fewer than N instructions) and prints what it measured.
 ///
-/// **This is not on the test path and that is the design.** `-icount` changes what QEMU is: it
-/// serializes execution, it gives every vCPU one shared virtual clock, and it slows the emulator
-/// down. Putting it under `script/test` would change what all ~400 tests measure in order to sharpen
-/// two of them, so the instrument gets its own boot, exactly as `script/bench` does, and the test
-/// path is untouched.
+/// **This is not on the test path and that is the design.** `-icount` changes what QEMU is, and the
+/// two ways that matter are not the one this project's notes assumed: it is not measurably slower on
+/// compute (measured), but it gives every vCPU **one shared virtual clock**, which forces `-smp 1`
+/// and would silently retire every cross-core property the suite proves, and it makes a clock-bound
+/// wait cost instructions rather than host time. So the instrument gets its own boot, exactly as
+/// `script/bench` does, and the test path is untouched. See notes/instruction-clock.md.
 ///
 /// The verdict arrives the bench boot's way rather than through semihosting: the guest prints
 /// `icount: done` and parks in `wfi`, this owns the child and kills it. A panic (a violated claim)

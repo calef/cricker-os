@@ -39,14 +39,27 @@
 //!
 //! # Why it is opt-in, and what that costs
 //!
-//! `-icount` is not a flag that observes; it changes what QEMU is. It serializes execution, it
-//! makes every vCPU share one virtual clock (which is why the bench instrument boots `-smp 1`, and
-//! why the placement probe can never move here: notes/benchmarks.md), and it slows the emulator
-//! down. Putting it on `script/test` would change what every one of ~400 tests measures in order to
-//! sharpen two of them. So the instrument is its own boot, its own feature and its own command, on
-//! the model `script/bench` already set, and **nothing on the test path changes at all**: the
-//! `tick_trace` hooks below are `#[cfg(feature = "icount")]`, so the test and shipping builds do not
-//! contain them.
+//! `-icount` is not a flag that observes; it changes what QEMU is. Two things about it are
+//! disqualifying for a general test path, and **neither of them is speed**, which is worth saying
+//! because "icount is slower" is what this project's own notes assumed and it is not what the
+//! machine says (measured 2026-08-17: an identical compute-bound boot took 2.47-2.61 s under the
+//! instrument and 2.62-2.80 s without it, three runs each).
+//!
+//! It makes every vCPU share **one** virtual clock, so an idle hart parked in `wfi` jumps that clock
+//! forward to the next event and multi-hart timing becomes fiction. That is why this boot and the
+//! bench boot are both `-smp 1`, and why the placement probe can never move here
+//! (notes/benchmarks.md). A suite run this way would silently stop proving every cross-core property
+//! it exists to prove.
+//!
+//! And it makes a clock-bound wait cost instructions rather than host time: 0.64 s of virtual time
+//! is 6.4x10^8 guest instructions, which this instrument spends about 3 s of wall clock retiring,
+//! where a plain TCG guest reaches the same counter value in 0.64 s. The suite is full of such
+//! waits.
+//!
+//! So the instrument is its own boot, its own feature and its own command, on the model
+//! `script/bench` already set, and **nothing on the test path changes at all**: the `tick_trace`
+//! hooks below are `#[cfg(feature = "icount")]`, so the test and shipping builds do not contain
+//! them.
 //!
 //! # What the numbers are
 //!
