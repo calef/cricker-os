@@ -61,8 +61,18 @@ crates rather than in the runtime crate that documents itself as owning the two-
 The shape: a `trap()` in `user_rt`, a `user_rt::panic_handler!()` macro that expands to the
 `#[panic_handler]` in each binary, and the two `fail()`s delegating instead of duplicating. The
 macro is what preserves the per-final-binary property the original decision was right about, so
-this overturns the stale half of that note and keeps the sound half. **Both names are provisional**
-(CLAUDE.md: names are calef's).
+this overturns the stale half of that note and keeps the sound half.
+
+**Both names were shipped marked provisional, and that was wrong** (corrected 2026-08-17, on
+calef's ruling). The naming tenet scopes itself precisely, to "a crate, a program, or a shared
+module", and a function and a macro inside an existing crate are none of those. `script/names`
+implements exactly that scope in its three categories, so neither name could ever have reached the
+ratification worklist: `script/names trap` answers "neither a name in the tree nor a recorded
+refusal", and it says the same of `send`, `recv`, `exit`, `invoke` and `reap`, which have sat in
+this crate unratified since 19f.6 without anyone thinking them owed. Marking these two provisional
+promised a ruling that nothing would ever ask for, which is worse than not marking them: an
+unratified name a reader can see in a worklist is a worklist item, and one nobody can see is a
+false note in the record.
 
 This is CLAUDE.md's ladder, rung one against rung zero. The current arrangement holds only because
 forty-eight authors each remembered.
