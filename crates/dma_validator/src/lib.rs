@@ -22,6 +22,62 @@
 //! map, a test passes closures over ordinary arrays, and Kani passes closures over a symbolic memory
 //! model. No hardware, no kernel globals.
 //!
+//! # Examples
+//!
+//! The confinement, one descriptor at a time. A driver's granted DMA region is a window, and every
+//! address the device will touch has to be inside it, whichever direction the bytes move:
+//!
+//! ```
+//! use dma_validator::{Desc, check_descriptor, in_region};
+//!
+//! // One 64 KiB region, granted to a userspace virtio driver.
+//! let (base, size) = (0x4000_0000u64, 0x1_0000u64);
+//! let qsize = 8u16;
+//!
+//! // A descriptor pointing at a 1500-byte frame inside the region. Fine in either direction: the
+//! // device may read it (transmit) or write it (receive).
+//! let ok = Desc { addr: base + 0x1000, word: 1500 };
+//! assert!(check_descriptor(base, size, qsize, ok));
+//!
+//! // The same length, aimed at the kernel. Refused, and this is the whole point of the crate: a
+//! // receive buffer here would let the device overwrite the kernel, and a transmit buffer would
+//! // let it put the kernel on the wire.
+//! let escape = Desc { addr: 0xffff_0000_0000_0000, word: 1500 };
+//! assert!(!check_descriptor(base, size, qsize, escape));
+//!
+//! // A buffer that starts inside and runs off the end is refused too. One predicate closes both,
+//! // which is why there is only one.
+//! let overrun = Desc { addr: base + size - 8, word: 1500 };
+//! assert!(!check_descriptor(base, size, qsize, overrun));
+//! assert!(!in_region(base, size, base + size - 8, 1500));
+//! ```
+//!
+//! Two refusals are less obvious and are the ones that make the check total rather than merely
+//! correct on ordinary input:
+//!
+//! ```
+//! use dma_validator::{Desc, F_INDIRECT, F_NEXT, check_descriptor, in_region};
+//!
+//! let (base, size, qsize) = (0x4000_0000u64, 0x1_0000u64, 8u16);
+//!
+//! // An **indirect** descriptor names a table of further descriptors. The table is never copied
+//! // into the shadow, so the device would follow the driver's own memory unchecked. Refused
+//! // outright rather than validated, whatever it points at.
+//! let indirect = Desc { addr: base, word: 16 | ((F_INDIRECT as u64) << 32) };
+//! assert!(indirect.is_indirect());
+//! assert!(!check_descriptor(base, size, qsize, indirect));
+//!
+//! // A `next` link outside the ring would walk the chain off the end of the queue.
+//! let bad_link = Desc { addr: base, word: 16 | ((F_NEXT as u64) << 32) | ((qsize as u64) << 48) };
+//! assert!(bad_link.has_next() && bad_link.next() == qsize);
+//! assert!(!check_descriptor(base, size, qsize, bad_link));
+//!
+//! // And arithmetic that would overflow answers "refuse" rather than panicking. A wrapping region
+//! // can only ever over-reject, which is the safe direction.
+//! assert!(!in_region(base, size, u64::MAX - 4, 1500));
+//! assert!(!in_region(u64::MAX - 4, 1500, base, 16));
+//! ```
+//!
 //! Name: ratified 2026-08-01 (calef, milestone 63), replacing `dma_validate`. Refused
 //! `dma_validate` (a verb, while the crate's own first line already called itself "the
 //! DMA-confinement validator": it had named itself a noun and carried a verb).

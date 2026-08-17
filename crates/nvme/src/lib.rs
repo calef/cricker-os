@@ -18,6 +18,74 @@
 //! queue, created by registers at reset; every other pair is created by admin commands. Data moves
 //! through **PRPs**, physical page pointers carried inside the command.
 //!
+//! # Examples
+//!
+//! The phase tag is the mechanism worth demonstrating, because it is how a driver tells a fresh
+//! completion from a stale one **with no shared index and no memory the controller and driver both
+//! write**. A ring that starts zeroed reads as phase 0, the first lap writes 1s, and every lap
+//! flips:
+//!
+//! ```
+//! use nvme::{Completion, CqState};
+//!
+//! let mut cq = CqState::new(2); // a two-slot ring, so it laps quickly
+//!
+//! // The initial zeros. Phase 0 against an expected phase of 1: not ours, do not read the result.
+//! let stale = Completion::from_dwords([0, 0, 0, 0]);
+//! assert!(!cq.owned(&stale));
+//!
+//! // The controller's first completion, phase bit set, for command id 7.
+//! let fresh = Completion::from_dwords([0, 0, 0, 7 | (1 << 16)]);
+//! assert!(cq.owned(&fresh));
+//! assert_eq!(fresh.cid, 7);
+//! assert_eq!(fresh.status, 0); // 0 is success
+//! assert_eq!(cq.pop(), 1); // the value the driver writes to the completion head doorbell
+//!
+//! // Slot 1, same lap, still phase 1.
+//! assert!(cq.owned(&fresh));
+//! assert_eq!(cq.pop(), 0); // wrapped, so the expected phase flipped
+//!
+//! // Now the ring has lapped, and last lap's entries are the stale ones. This is the whole trick:
+//! // the bytes in slot 0 have not changed, and their meaning has.
+//! assert!(!cq.owned(&fresh));
+//! assert!(cq.owned(&stale));
+//! ```
+//!
+//! Doorbells are pure arithmetic over a stride the controller reports, and getting the parity wrong
+//! means ringing a completion head where a submission tail belongs:
+//!
+//! ```
+//! use nvme::{Cap, Doorbell, doorbell};
+//!
+//! // A controller reporting DSTRD 0, so doorbells are 4 bytes apart.
+//! let cap = Cap(0);
+//! assert_eq!(cap.doorbell_stride(), 0);
+//!
+//! // Admin queue (qid 0), then the one I/O queue pair this driver creates.
+//! assert_eq!(doorbell(0, Doorbell::SubmissionTail, 0), 0x1000);
+//! assert_eq!(doorbell(0, Doorbell::CompletionHead, 0), 0x1004);
+//! assert_eq!(doorbell(1, Doorbell::SubmissionTail, 0), 0x1008);
+//! assert_eq!(doorbell(1, Doorbell::CompletionHead, 0), 0x100c);
+//! ```
+//!
+//! And [`prp_pair`] answers `None` rather than guessing, which is the interesting half: a transfer
+//! that would need a PRP *list* is a bug in this driver rather than a device error, because its unit
+//! of transfer is one 4096-byte filesystem block.
+//!
+//! ```
+//! use nvme::prp_pair;
+//!
+//! // A page-aligned block: one pointer is enough.
+//! assert_eq!(prp_pair(0x4000_0000, 4096, 4096), Some((0x4000_0000, 0)));
+//!
+//! // The same block, offset half a page: it spills, so PRP2 carries the next page boundary, with
+//! // no offset of its own. That "offset-free by construction" is the spec's rule for PRP2.
+//! assert_eq!(prp_pair(0x4000_0800, 4096, 4096), Some((0x4000_0800, 0x4000_1000)));
+//!
+//! // Three pages would need a list. Not expressible, and said so.
+//! assert_eq!(prp_pair(0x4000_0000, 3 * 4096, 4096), None);
+//! ```
+//!
 //! Name: unrecorded. Introduced 2026-08-15 with milestone 53's NVMe block driver. Provisional
 //! (this lane's proposal, awaiting ratification): the specification's own name for the device
 //! family, the same claim `pci` and `virtio` make, and `crates/virtio` is precedent for naming the

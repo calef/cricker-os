@@ -15,6 +15,63 @@
 //! capability list pointer. Everything virtio-modern needs beyond that lives in **vendor
 //! capabilities** in that list. See notes/pcie.md.
 //!
+//! # Examples
+//!
+//! Enumerating a bus with no bus. Every function here takes read/write closures over
+//! `(bdf, offset)`, so the kernel passes volatile accessors into the mapped ECAM window and a test
+//! passes an array. **That inversion is why this crate is host-testable at all**, so it is what an
+//! example should show:
+//!
+//! ```
+//! use pci::{Bdf, VENDOR_ID, VIRTIO_VENDOR, enumerate};
+//!
+//! // A config space with exactly one device: modern virtio-blk at 00:01.0. Everything else reads
+//! // 0xffff, which is the bus's way of saying nobody is home.
+//! let mut read32 = |bdf: Bdf, off: u64| -> u32 {
+//!     if bdf == (Bdf { bus: 0, dev: 1, func: 0 }) && off == VENDOR_ID {
+//!         (0x1042 << 16) | VIRTIO_VENDOR as u32 // device 0x1042 in the high half
+//!     } else if off == VENDOR_ID {
+//!         0xffff_ffff
+//!     } else {
+//!         0 // header type 0: single function, so functions 1..8 are skipped
+//!     }
+//! };
+//!
+//! let mut found = Vec::new();
+//! enumerate(1, &mut read32, &mut |bdf, vendor, device| {
+//!     found.push((bdf, vendor, device));
+//! });
+//!
+//! assert_eq!(found.len(), 1);
+//! let (bdf, vendor, device) = found[0];
+//! assert_eq!((vendor, device), (VIRTIO_VENDOR, 0x1042));
+//!
+//! // ECAM addressing: 4 KB per function, `bus:8 | dev:5 | fn:3 | offset:12`. This shift-and-or is
+//! // the whole of the spec.
+//! assert_eq!(bdf.ecam_offset(), 1 << 15);
+//!
+//! // And the requester id, which is the key an IOMMU looks the device up by. Both `virt` boards
+//! // publish an identity `iommu-map`, so this number is exactly what the IOMMU sees.
+//! assert_eq!(bdf.requester_id(), 0b0000_0000_0000_1000);
+//! ```
+//!
+//! The INTx swizzle is four lines and worth pinning, because getting it wrong misroutes an interrupt
+//! to a device that will never acknowledge it:
+//!
+//! ```
+//! use pci::intx_irq;
+//!
+//! // Four devices, each on INTA, spread across four interrupt inputs rather than sharing one.
+//! let base = 32;
+//! let spread: Vec<u32> = (0..4).map(|dev| intx_irq(base, dev, 1)).collect();
+//! assert_eq!(spread, vec![32, 33, 34, 35]);
+//!
+//! // The swizzle wraps, which is what makes it a swizzle rather than an offset.
+//! assert_eq!(intx_irq(base, 4, 1), 32);
+//! // And one device's four pins also spread, so a multi-function card does not self-collide.
+//! assert_eq!(intx_irq(base, 0, 4), 35);
+//! ```
+//!
 //! Name: ratified 2026-08-01 (calef, the naming tenet in CLAUDE.md). Named in the group of standard
 //! terms that are already right and must not be touched, because a name a reader knows from outside
 //! this project costs nothing to learn and renaming it would destroy the recognition the tenet
