@@ -288,7 +288,14 @@ pub(super) fn assert_smb_held_no_key(had_fs: bool) {
                 0x2e, 0x3f,
             ],
         ),
-        // SessionBaseKey, §4.2.4.1.2. This adapter does not sign and never reads it.
+        // SessionBaseKey, §4.2.4.1.2. **This is the one the service deliberately publishes** on a
+        // match, so its absence is a fact about the *adapter* rather than about the service: the
+        // adapter wipes the page the moment the reply lands, because it does not sign and has no use
+        // for it. Note that a real run's session key is not this literal (the challenge is the
+        // connection's, not §4.2.1's), so the all-zero check below is what actually catches it; this
+        // literal stays because "does not contain the published key" is the property that must hold
+        // if the wipe is ever narrowed, and a test that only checked for zero would go green on a
+        // change that broke it. Same argument as `the_shared_frame_holds_nothing_after_an_answer`.
         (
             "the session key",
             [

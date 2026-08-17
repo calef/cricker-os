@@ -691,11 +691,12 @@ impl Share for FsShare {
 /// endpoint ends even that. Samba's `smbd` opens the password database instead, so compromising it
 /// leaks every hash: crackable offline, reusable wherever the password was reused.
 ///
-/// **The session key is not asked for and not read.** `cred_proto::verify::NTLM_PROOF` publishes
-/// [MS-NLMP] §4.2.4.1.2's `SessionBaseKey` in the shared page on a match, because a server that
-/// *signs* needs it. This one does not sign, so it never calls `cred_proto::session_key`, and the
-/// service's own wipe is what clears the page. That is asserted from outside by the kernel test that
-/// looks at the frame afterwards, which is the check this process could not make about itself.
+/// **The session key is not asked for, not read, and not left lying about.**
+/// `cred_proto::verify::NTLM_PROOF` publishes [MS-NLMP] §4.2.4.1.2's `SessionBaseKey` in the shared
+/// page on a match, because a server that *signs* needs it. This one does not sign, so it never calls
+/// `cred_proto::session_key` and wipes the page itself the moment the reply lands (the service's own
+/// wipe covers a *refusal*, not a match). That is asserted from outside by the kernel test that looks
+/// at the frame afterwards, which is the check this process could not make about itself.
 ///
 /// Name: provisional, minted by milestone 54's lane on 2026-08-17, following `FsShare`'s
 /// `<what backs it><what it is>` shape.
@@ -741,6 +742,19 @@ impl Authenticator for CredentialAuthenticator {
             return Verdict::Refused;
         };
         let (r0, _) = call(CRED, w0, 0);
+        // **Wipe the page before looking at the answer, and the reason is the whole point of this
+        // type.** On a match the service *publishes* [MS-NLMP] §4.2.4.1.2's `SessionBaseKey` here,
+        // because a server that signs needs it; this one does not sign, does not read it, and must
+        // not let it sit in a frame two processes map for the rest of the connection. The verdict
+        // rides in `r0`, a register, so nothing here needs the page at all.
+        //
+        // `cred_proto::wipe`'s own doc asks a client that keeps running to do this. The gate found
+        // out the hard way: the first version of this function skipped it, and the kernel's look at
+        // the frame afterwards found a live session key at `SESSION_KEY_OFF` (`0xbb`, not
+        // §4.2.4's `0x8d..`, because the challenge is this connection's rather than the published
+        // one). Left in the record because the failure was the assertion doing its job: a key that
+        // outlives the exchange it belongs to is exactly what milestone 65's frame check is for.
+        cred_proto::wipe(page);
         // `authenticated` collapses every failure mode to false, which is the safe direction and is
         // in the contract precisely so no caller has to remember which codes were the good ones.
         if cred_proto::authenticated(r0) {
