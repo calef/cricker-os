@@ -732,6 +732,62 @@ def _sh_scripts():
                if p.read_text(errors='replace').split('\n', 1)[0].strip() == '#!/bin/sh')
 
 
+def _abi_syscalls():
+    """`SYS_*` u64 constants in crates/abi/src/lib.rs: the width of the syscall trap.
+
+    Assumes the syscall numbers are the crate's only `SYS_`-prefixed u64 constants, which they are
+    and which the naming makes self-enforcing: every other constant in the crate is a method, a
+    right, an object type or a sentinel, and none of those is spelled `SYS_`. Optional leading
+    whitespace so a future one nested in a module still counts; a nested one that was NOT counted
+    would make this number quietly low, and a low count is no better than a high one when prose is
+    copying it (the `_sh_scripts` entry records the same hazard).
+
+    It is here because the 2026-08-17 documentation sweep found the ABI's own front page, the
+    kernel's syscall module, an `Error` variant's description and two notes all saying the surface
+    was **three** calls. `SYS_CAP_DELETE` landed 2026-07-24 and moved none of them.
+    """
+    text = pathlib.Path('crates/abi/src/lib.rs').read_text(errors='replace')
+    return len(re.findall(r'^[ \t]*pub const SYS_[A-Z_0-9]+: u64\b', text, re.M))
+
+
+def _rights_bits():
+    """Named single-bit rights in crates/capability: how many rights a capability can carry.
+
+    Counted from `capability::Rights` rather than from `abi::rights` because the prose that states
+    this number is about `Rights`, and the abi module documents itself as *matching* it. Only the
+    single-bit constants count: `NONE` is `Rights(0)` and `ALL` is a mask of the others, so the
+    shape assumed is `pub const NAME: Rights = Rights(1 << N);` and neither aggregate matches it.
+
+    That the two sides agree, and that `ALL` is exactly the union of these bits, is pinned by tests
+    rather than here (`rights_are_distinct_single_bits`, `rights_bits_are_the_wire_format`). This
+    counts; those compare.
+    """
+    text = pathlib.Path('crates/capability/src/lib.rs').read_text(errors='replace')
+    return len(re.findall(r'^[ \t]*pub const [A-Z_0-9]+: Rights = Rights\(1 << \d', text, re.M))
+
+
+def _loom_hits():
+    """(crate directory name, loom harnesses) for every crate under crates/ that runs a loom model.
+
+    A loom harness is a test that calls `loom::model`, which is the shape every one of them has and
+    the thing that makes it a harness rather than an ordinary test: the model is the search. Counted
+    that way rather than by `#[test]` inside a `#[cfg(all(test, loom))]` module, because the cfg
+    spelling is incidental and the call is the definition. The two agreed at 19 when this was
+    written, which is how the shape was checked.
+
+    Distinct from `kani-harnesses`, and the distinction is the point of having both: Kani proves
+    properties of pure logic, loom searches interleavings of hand-rolled atomics, and
+    `script/interleaving-check` runs only the second. A note that conflated them would be counting a
+    suite nobody executes.
+    """
+    hits = {}
+    for path in pathlib.Path('crates').rglob('*.rs'):
+        n = len(re.findall(r'\bloom::model\(', path.read_text(errors='replace')))
+        if n:
+            hits[path.parts[1]] = hits.get(path.parts[1], 0) + n
+    return hits
+
+
 def _longest_markdown_line():
     """The longest line, in bytes, in this repository's own markdown.
 
@@ -772,6 +828,22 @@ REGISTRY = {
         'shellcheck gates',
         _sh_scripts,
     ),
+    'syscalls': (
+        'how many syscall numbers the ABI defines, which is the whole width of the trap',
+        _abi_syscalls,
+    ),
+    'rights-bits': (
+        'how many named single-bit rights a capability can carry (capability::Rights)',
+        _rights_bits,
+    ),
+    'loom-harnesses': (
+        'how many loom harnesses the tree carries, which is what script/interleaving-check runs',
+        lambda: sum(_loom_hits().values()),
+    ),
+    'loom-crates': (
+        'how many crates carry at least one loom harness',
+        lambda: len(_loom_hits()),
+    ),
 }
 
 # --- finding the markers ------------------------------------------------------------------------
@@ -804,12 +876,55 @@ MARKER = re.compile(r'<!--count(-at-least)?:([a-z0-9-]+)-->')
 # than deleted so that column positions still line up with the number-before-marker search.
 CODE_SPAN = re.compile(r'`[^`]*`')
 
-# The number a marker vouches for is the LAST integer on the line before the marker, commas allowed
+# The number a marker vouches for is the LAST number on the line before the marker, commas allowed
 # so that `1,303 commits` works. Last rather than first, because a sentence usually reaches its
 # number at the end ("across 21 crates") and because a line with two counts wants each marker to
 # bind to the number just before it -- notes/unsafe-obligations.md is the live case, and it says
 # crates before harnesses, the opposite order to everywhere else.
-NUMBER = re.compile(r'(\d[\d,]*)(?!.*\d)')
+#
+# **A count spelled in words counts too**, added by the 2026-08-17 documentation sweep, which
+# needed it: the claim it went to gate was "the surface is three calls", and small counts in prose
+# about a design are written as words far more often than as digits. notes/counted-claims.md
+# recorded "digits or nothing" as a limitation, and this is that limitation closed rather than a
+# second mechanism -- one regex and the same opt-in marker.
+#
+# Only small cardinals, and deliberately no composition ("twenty-one" is not read). A count large
+# enough to want composing is one a person writes in digits anyway, and a parser that accepts
+# "one hundred and twenty" would be guessing at prose. If a marked word is not in this table the
+# gate says so rather than skipping the claim, which is the loud direction.
+#
+# This changes nothing about the ratchet: only a MARKED number is ever read, so admitting words
+# cannot produce a false positive on the ordinary prose that says "the three of them".
+WORD_VALUES = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8,
+    'nine': 9, 'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14,
+    'fifteen': 15, 'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+    'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70, 'eighty': 80,
+    'ninety': 90, 'hundred': 100,
+}
+# Longest first, so `fourteen` is never read as `four`. The word boundaries make that safe already;
+# the ordering means it stays safe if a boundary is ever relaxed.
+NUMBER = re.compile(
+    r'\d[\d,]*|\b(?:' + '|'.join(sorted(WORD_VALUES, key=len, reverse=True)) + r')\b',
+    re.I,
+)
+
+
+def claimed_value(text):
+    """The last number-like token in `text` as an int, or None if there is none.
+
+    Returns None for a word this table does not carry as well as for no number at all; the caller
+    reports both, because a marker whose number cannot be read is a claim nobody is checking and
+    that is the thing this gate exists to refuse.
+    """
+    token = None
+    for hit in NUMBER.finditer(text):
+        token = hit.group(0)
+    if token is None:
+        return None
+    if token[0].isdigit():
+        return int(token.replace(',', ''))
+    return WORD_VALUES.get(token.lower())
 
 grep = subprocess.run(
     ['git', 'grep', '-n', '-e', '<!--count:', '-e', '<!--count-at-least:', '--', ':!vendor'],
@@ -844,19 +959,25 @@ for line in grep.stdout.splitlines():
     if (path, int(lineno)) in fenced:
         continue
     text = CODE_SPAN.sub(lambda m: ' ' * len(m.group(0)), text)
+    # A marker's own name must not donate a numeral to the marker after it: `count:one-shot-reply`
+    # would read as the number 1 for the next claim on the line. Blanked rather than deleted, so
+    # column positions still line up with the number-before-marker search, the same trick CODE_SPAN
+    # uses. Searched from `text`, and blanked into a parallel string, so the markers are still found.
+    numbers_only = MARKER.sub(lambda m: ' ' * len(m.group(0)), text)
     for match in MARKER.finditer(text):
         at_least, name = bool(match.group(1)), match.group(2)
         seen.add(name)
         if name not in REGISTRY:
             bad.append(f'{path}:{lineno}: {match.group(0)} names no entry in the registry')
             continue
-        before = NUMBER.search(text[:match.start()])
-        if not before:
-            bad.append(f'{path}:{lineno}: {match.group(0)} has no number before it on this line')
+        claimed = claimed_value(numbers_only[:match.start()])
+        if claimed is None:
+            bad.append(f'{path}:{lineno}: {match.group(0)} has no number before it on this line '
+                       f'(digits, or a cardinal up to twenty)')
             continue
         if name not in derived:
             derived[name] = REGISTRY[name][1]()
-        claimed, actual = int(before.group(1).replace(',', '')), derived[name]
+        actual = derived[name]
         checked += 1
         if at_least:
             # A floor. Only a claim that has gone FALSE is a problem; the tree growing past it is

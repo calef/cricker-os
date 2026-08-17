@@ -61,7 +61,15 @@ and fetch-op outside test code:
 
 ## What was modelled
 
-Sixteen harnesses across three crates, run by `script/interleaving-check`.
+Nineteen harnesses <!--count:loom-harnesses--> across four crates <!--count:loom-crates-->, run by
+`script/interleaving-check`.
+
+Both numbers said sixteen and three until the 2026-08-17 documentation sweep, and this line is the
+reason the sweep's gate work happened: `notes/counted-claims.md` cited it as the case a
+`<!--count:NAME-->` marker could never help, because milestone 125's marker read digits and nothing
+else. It reads a cardinal spelled as a word now, so the sentence is re-derived on every lint. The
+count was wrong in both halves, and the note contradicted itself a few hundred lines down, where the
+timing table already said "all four crates".
 
 ### `crates/steal_request`, the pilot
 

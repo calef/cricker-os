@@ -223,7 +223,9 @@ tree, untyped memory.*
 The decision (§10) is now code. Three things landed: an ABI that is one artifact, a capability
 table, and a syscall dispatcher whose most important function is the one that says *no*.
 
-## The surface is three calls
+## 7d landed three calls; the surface is four today <!--count:syscalls-->
+
+What 7d shipped, and the numbers in this section are 7d's rather than today's:
 
 ```text
   exit(code)                          authority over yourself
@@ -240,6 +242,14 @@ This is DECISIONS §4 rule 3 ("the syscall surface stays narrow and explicit, a 
 habit") meeting §10, and §10 is what makes three enough. A monolithic kernel needs a syscall per
 verb because the verb is where the authority check lives. Here the authority is the capability,
 and there is one verb: invoke it.
+
+**One call has been added since, and it did not widen the boundary** (added by the 2026-08-17
+documentation sweep, which found this heading claiming three in the present tense). `SYS_CAP_DELETE`
+arrived on 2026-07-24 with milestone 19d: a loader retyping hundreds of frames through a 16-slot
+cspace has to recycle slots, and forgetting something in your *own* table needs no capability for
+the same reason `exit` does not. So the property this section is really about survives the count
+going up: **three of the four calls are authority over yourself, and the fourth is everything
+else.** `notes/abi.md` is the current contract and has the full table.
 
 ## The ABI is a crate, not a convention
 

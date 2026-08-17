@@ -174,6 +174,29 @@ $ script/audits --baseline     # the counts to paste into both index tables
 
 ## BUGS
 
+- **The worklist cannot see a doc comment, so it cannot see the ABI.** Added by the 2026-08-17 sweep,
+  which took its lens from the trigger instead and found five stale claims about the width of the
+  syscall surface. Not one ABI document was in the worklist's top twenty, and the reason is
+  structural: the ranking asks how much of the code a document *cites* has moved, and
+  `crates/abi/src/lib.rs` does not cite code, it **is** the code. Its doc comments are the
+  most-depended-on prose in the tree and they are invisible to the heuristic, along with every other
+  doc comment. **When the trigger is an event, the trigger is the better starting answer than the
+  worklist**: part 1 above still reads as though the worklist were the default, and for a sweep of
+  `notes/` it is.
+
+- **"Document" reads as `.md`, and the sharpest claims are in `.rs`.** Five of the 2026-08-17 sweep's
+  six fixes were in Rust source, two of them in **test** doc comments whose assertions no longer
+  honoured what the comment claimed. A test that enumerates a set is a claim about that set and rots
+  the way prose does. The corpus is prose, wherever it lives; nothing in this procedure says so
+  clearly enough, and a reader who scoped a sweep to `notes/` would be following it correctly.
+
+- **Read what a doc comment is attached to, not only what it says.** The 2026-08-17 sweep's second
+  finding was three lines of correct prose bound to the wrong item since milestone 19a: `abi::rights`
+  had no documentation and `abi::objtype`'s opened by declaring itself the rights bits. Every line
+  parses, every sentence is true of *something*, and no structural gate can see it. It is also
+  invisible to the author, because rustdoc renders prose about rights immediately above the rights
+  constants; only a reader who asks which item owns a comment will catch it.
+
 - **The worklist ranks documents that cite code in a form it can parse, and says nothing about the
   rest.** 138 of the 269 documents in its scope resolve no code path at all and are simply absent
   from the list rather than reported as clean. Many are conceptual notes that legitimately cite
