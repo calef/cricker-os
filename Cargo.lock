@@ -127,6 +127,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "component_plan"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
+
+[[package]]
 name = "compositor"
 version = "0.1.0"
 dependencies = [
@@ -694,6 +701,7 @@ name = "swap_proto"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "component_plan",
  "user_rt",
 ]
 
@@ -850,6 +858,7 @@ dependencies = [
  "c_seam",
  "calendar",
  "clock_proto",
+ "component_plan",
  "compositor",
  "coremark",
  "cred",

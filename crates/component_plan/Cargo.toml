@@ -1,0 +1,14 @@
+[package]
+name = "component_plan"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The rights bits and the mapping modes, and nothing else. They are here rather than at the
+# operator's call site on purpose: a supervisor that never spells `READ` cannot spell it wrong, and
+# a declared direction is the only thing this crate will turn into a right.
+abi = { version = "0.1.0", path = "../abi" }
