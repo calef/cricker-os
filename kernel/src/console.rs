@@ -224,11 +224,17 @@ pub fn _print(args: core::fmt::Arguments) {
     let _ = CountedWrites(&mut CONSOLE.lock()).write_fmt(args);
 }
 
+/// Write formatted text to the kernel console, `core::fmt` syntax, no newline.
+///
+/// Takes the console lock for the duration of one call, so a message cannot be interleaved with
+/// another core's. It cannot fail: a UART write has no error a kernel could act on, so the `Result`
+/// is dropped in `console::_print` rather than propagated to every call site.
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::console::_print(format_args!($($arg)*)));
 }
 
+/// [`print!`] with a trailing newline. The no-argument form writes just the newline.
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));

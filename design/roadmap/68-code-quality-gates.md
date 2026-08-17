@@ -1,11 +1,19 @@
 # 68. Code-quality gates: one lint policy, and the lints that lost
 
-**Status: PARTIAL.** Started and largely landed 2026-08-02, from an audit of what the tree checked
-and what it did not. Two halves are deliberately unfinished and scoped below rather than rushed.
+**Status: PARTIAL.** The lint policy landed 2026-08-02. The doc-example half **closed 2026-08-17**;
+the `missing_docs` half is a ratchet with a 401-item worklist and one open policy question, which is
+why the block is still PARTIAL rather than BUILT. See notes/doc-coverage.md.
 
-**Gate: NONE.** Both remaining halves are plain work with counts attached: 28 host crates with no
-doc example at all, and item coverage running from 36.4% to 100% before `missing_docs` is
-adoptable. The block asks for them in one pass.
+**Gate: DECISION.** One policy question is left, and it is the last thing between this block and
+`BUILT`: whether `missing_docs` belongs in `[workspace.lints.rust]` with a per-crate
+`#![allow(missing_docs)]` opt-*out*, instead of the per-crate `#![warn(missing_docs)]` opt-*in* this
+pass landed. The section below states both sides. **Nothing is blocked on the answer**: the 401-item
+worklist can be burned down either way and 23 crates are gated today.
+
+What is now checked rather than counted, which is the change that matters most here: **the examples
+are enforced by `cargo test --doc`** and the item docs by `script/lint`'s `-D warnings` in the crates
+that opted in. Both remaining halves used to be numbers in this file, the shape §76 warns about, and
+both numbers had moved by the time anyone acted on them.
 
 ## What landed
 
@@ -41,32 +49,59 @@ The general rule, and the reason this milestone is worth a roadmap entry at all:
 right in general can be wrong for a tree, and the way to find out is to run it and read the hits.**
 Reasoning about a lint's description predicts none of these.
 
-## What is NOT done, with counts
+## The doc-example half: closed, and the counts had moved
 
-Both remaining halves are real engineering, not mechanical, and a first attempt at automating one of
-them was reverted for producing exactly the wrong artefact.
+**Every crate under `crates/` now has a worked example**, and the workspace runs 116 doctests
+where this block recorded 23, 109 of which `script/test`'s selection actually runs. The detail, the per-crate treatment, and the honest gaps are in
+notes/doc-coverage.md; three things belong here because they are about the block rather than about the
+work.
 
-- **Doc examples.** 5 doctests in the whole host workspace became 23, and nine crates went from
-  0.0% example coverage to somewhere between 2.4% and 25%. That is a real start and explicitly not
-  the FreeBSD standard CLAUDE.md sets: **28 host crates still have no example at all.** The crates
-  done first were the ones where an example carries an argument rather than a signature (`capability`
-  showing that intersection is the only transfer operation, `measured_boot` showing that an
-  unmeasured name fails CLOSED, `regions` showing the two refusals that are not about the budget).
-  The ones left are mostly parsers that need a real fixture to demonstrate (`elf`, `dtb`,
-  `nifefs`, `gpt`), which is more work per example, not less valuable.
-- **`missing_docs`** is still not adoptable, and the number says why: item coverage runs from
-  **36.4%** (`socket_proto`) to 100%, with `pci` at 48.9% and `intrusive` at 50%. Adding it to
-  `[workspace.lints]` is a commitment to write several hundred item docs first, which is §61's rule
-  and not a formality.
-- **Doc examples: 5 doctests in the entire host workspace**, and `rustdoc --show-coverage` reports
-  0.0% examples on every crate sampled (`ipc` 94.4% of items documented, 0.0% examples; `capability`
-  67.6%/0.0%). CLAUDE.md sets the FreeBSD standard explicitly ("a page without a worked example has
-  not finished explaining itself"), so this is a stated commitment the tree does not meet. A doctest
-  is documentation and a test at once, and `cargo test` already runs them, so the harness needs no
-  work; only the examples are missing.
+**The count was 31 when someone finally measured it, not 28**, and it had moved in both directions,
+which is the interesting part. Three of the four crates this block named as the hard ones left
+(`dtb`, `nifefs`, `gpt`) got their examples in the fortnight after it was written, and `isa`,
+`manual`, `swish` and `slots` gained theirs too. Meanwhile five crates arrived carrying none: `ntlm`
+and `system_initializer`, then `nvme`, `mdns_proto` and `smb_proto`. **A count of what is missing is a
+moving target in a tree that adds a crate every few days**, and writing it into a block converts it
+into a claim that rots. The gate is `cargo test --doc`, and what it measures cannot go stale.
 
-`missing_docs` belongs with the second of those (item coverage is 67–94% and no crate warns on it),
-and is best done in the same pass as the examples rather than separately.
+**Five crates' doctests are run by nothing in CI**, which is the one gap the pass could not close.
+`user_rt`, `swap_proto`, `virtio`, `supervision_proto` and `system_initializer` take unconditional
+`user_rt` dependencies, so the host test selection excludes them. Splitting each crate's pure half
+from its syscall half is what would fix it, and that is a lane of its own.
+
+**An example that runs was preferred everywhere it was possible**, because a fenced block that never
+compiles is a comment. `elf` forges a writable-and-executable segment and watches it be refused;
+`paging` builds real aarch64 page tables on the host and shows that break-before-make is *forced*;
+`smb_proto` performs a whole SMB2 mount against the fixture share; `ntp_proto` shows an off-path spoof
+failing the origin check before any of the packet is believed. Three crates got `no_run` with the
+reason in the prose, because a `svc` on a host is a fault and a function returning `!` has nothing to
+assert.
+
+## The `missing_docs` half: a ratchet, a worklist, and one question for calef
+
+**401 undocumented public items across 32 of the 55 crates** (2026-08-17). Adopting the lint
+tree-wide is a commitment to write those 401 first, so it is not adopted tree-wide. What is adopted is
+`#![warn(missing_docs)]` in **the 23 crates that are already clean**, which under `script/lint`'s
+`-D warnings` means they cannot regress. Six of the remaining crates are one item from clean.
+
+**Two measurement traps caught this lane and are worth the paragraph**, because both make a number
+look authoritative while being wrong.
+
+`rustdoc --show-coverage` and `missing_docs` **do not measure the same thing**, and this block used
+the first to justify deferring the second. Six crates report 100% documented and still have hits, in
+one case 41 of them: `--show-coverage` does not count struct fields, type aliases or `macro_rules!`,
+and the lint does. So the coverage range quoted above was never evidence about `missing_docs` at all.
+
+And **cargo replays cached diagnostics**, so a per-package loop attributes other crates' warnings to
+the selected crate. That produced a first answer of 647 items across 38 crates, which is wrong and
+looked entirely plausible. Measure it as one workspace-wide invocation into a clean target directory.
+
+**The open question** is whether the lint should instead go in `[workspace.lints.rust]` with an
+explicit `#![allow(missing_docs)]` in each crate that is not ready. That is higher on AGENTS.md's
+ladder, since the default becomes on and the opt-out list is a worklist that can only shrink, and it
+is the only version that covers a crate created tomorrow. It also contradicts a rule written in that
+table's own comment ("adding a lint to this table is a decision to fix every existing violation
+first"), so inverting it for one lint is a policy change and not a lane's to make.
 
 ## What closing the unsafe half taught
 
