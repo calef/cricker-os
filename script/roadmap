@@ -31,6 +31,15 @@
 #     status. Added 2026-08-17 after calef found milestone 43 BUILT with an empty date by eye and
 #     the sweep behind it found 23 defective rows, every one invisible to this script because the
 #     row regex anchors on the first four fields and stopped;
+#   - **`IN-PROGRESS` names its branch, and that branch has not already merged.** Added 2026-08-17,
+#     after a sweep found that ALL SIX `IN-PROGRESS` rows were false: four had MERGED (one thirteen
+#     days earlier) and two named no branch at all. This is the only token in the vocabulary whose
+#     definition is mechanically checkable, "active work on a branch right now", and it was the only
+#     one that rotted: nine `NOT-STARTED` blocks audited the same day were all honest. The check is
+#     LOCAL, using merge-commit subjects rather than `git ls-remote`, which is deliberate: the remote
+#     needs network in a gate that otherwise only reads files, and a deleted branch cannot tell a
+#     merged lane from a dead one where a merge commit is proof. It costs nothing when no milestone
+#     is `IN-PROGRESS`, because then there is no subprocess to run;
 #   - the **readiness classification**, which is the `Gate:` line every non-BUILT milestone file
 #     carries directly under its status. It answers "what stops a lane from starting this", the
 #     question that used to be answered by asking calef, and it lives in the milestone's own file so
@@ -86,6 +95,8 @@ GATE_VOCAB = ["NONE", "DECISION", "HARDWARE", "MILESTONE"]
 STARTABLE = ["NOT-STARTED", "PARTIAL"]
 
 problems = []
+# (milestone, file, branch) for every IN-PROGRESS block, checked against merge history below.
+in_progress_branches = []
 
 # ---- the index ---------------------------------------------------------------
 rows = {}
@@ -201,6 +212,33 @@ for fname in sorted(os.listdir(d)):
         elif sm.group(1) != rows[num][0]:
             problems.append(f"milestone {num}: file says {sm.group(1)}, index says {rows[num][0]} "
                             f"(the defect the 2026-08-03 split exists to catch)")
+        # ---- IN-PROGRESS must name the branch it is held on ----------------
+        # Added 2026-08-17, after a sweep found that ALL SIX IN-PROGRESS rows were false and four
+        # of them had MERGED, one of them thirteen days earlier. This is the token with a
+        # mechanically checkable definition ("active work on a branch right now") and nothing was
+        # checking it, so it was the only token in the vocabulary that rotted: nine NOT-STARTED
+        # blocks audited in the same sweep were all honest.
+        #
+        # Naming the branch is what makes the claim falsifiable at all, which is why it is required
+        # rather than encouraged. Two of the six named no branch, and that alone is the defect: a
+        # status saying somebody is working on this, with nothing a reader can look up, is prose.
+        elif sm.group(1) == "IN-PROGRESS":
+            para = []
+            for l in lines[1:]:
+                if not l.strip():
+                    if para:
+                        break
+                    continue
+                para.append(l)
+            claimed = re.findall(r"`([a-z][a-z0-9]*(?:/[A-Za-z0-9._-]+)+)`", " ".join(para))
+            if not claimed:
+                problems.append(f"milestone {num}: IN-PROGRESS names no branch. The token means "
+                                f"'active work on a branch right now', so it must name the branch "
+                                f"in backticks; a claim with nothing to look up cannot be checked "
+                                f"and was false all six times it was made")
+            else:
+                for b in claimed:
+                    in_progress_branches.append((num, fname, b))
 
     # ---- the gate line -------------------------------------------------------
     # It sits in the paragraph directly under the status, so a reader meets "where do we stand" and
@@ -264,6 +302,34 @@ for fname in sorted(os.listdir(d)):
     gates[num] = seen
 
 # A row whose file is missing is already reported by the row's link check above.
+
+# ---- an IN-PROGRESS branch that already merged --------------------------------
+# The other half of the check above, and the one that caught real defects: a branch named by an
+# IN-PROGRESS status which this history has already MERGED is not active work, it is a milestone that
+# shipped and never had its status moved. Four of the six found on 2026-08-17 were exactly this, and
+# milestone 115 was being listed under IN-PROGRESS and under "ready to start" simultaneously, so the
+# queue was offering a lane work that had landed thirteen days earlier.
+#
+# Deliberately LOCAL and deliberately not `git ls-remote`. Asking the remote whether a branch still
+# exists is the more obvious check and it is worse on three counts: it needs network in a gate that
+# otherwise only reads files, it cannot tell a merged lane from a lane that died, and a deleted
+# branch is ambiguous where a merge commit is proof. Merge subjects are already in the history every
+# checkout has.
+#
+# The cost is zero unless the token is in use: no IN-PROGRESS block means no subprocess at all.
+if in_progress_branches:
+    log = subprocess.run(["git", "-C", root, "log", "--merges", "--format=%s"],
+                         capture_output=True, text=True)
+    subjects = log.stdout
+    for num, fname, branch in in_progress_branches:
+        # `Merge pull request #124 from calef/milestone/58-riscv-tlb-shootdown`, and the plain
+        # `Merge branch 'x'` form. Anchored at a word boundary so `milestone/58` does not match
+        # `milestone/58-something-else`.
+        if re.search(rf"(?:from [^ /]+/|branch '){re.escape(branch)}(?:'|$)", subjects, re.M):
+            problems.append(f"milestone {num}: IN-PROGRESS on {branch!r}, which this history has "
+                            f"already merged. That is a milestone that shipped and never had its "
+                            f"status moved, four of which were found stale on 2026-08-17 (one for "
+                            f"thirteen days). Set the status from the tree and give it a Built date")
 
 # ---- citations, tree-wide ----------------------------------------------------
 # `milestone 16a` must resolve as 16: sub-lettered blocks exist. Case-insensitive on the M because

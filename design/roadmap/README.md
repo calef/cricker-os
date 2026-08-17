@@ -38,7 +38,7 @@ milestones. `script/roadmap` validates this column and fails on anything outside
 |---|---|
 | `BUILT` | Complete, and proven by the gate on every supported ISA. |
 | `PARTIAL` | Some phases shipped and more remains, with nobody currently on it. The block says which phases. |
-| `IN-PROGRESS` | Active work on a branch right now. |
+| `IN-PROGRESS` | Active work on a branch right now. **The block must name the branch, in backticks**, and `script/roadmap --check` fails if that branch has already merged. |
 | `NOT-STARTED` | Specified, nothing built. |
 | `OPTIONAL` | Deliberately off the thesis path; not a backlog item. |
 | `RECORDED` | Analysis captured and the decision deliberately *not* taken. |
@@ -46,6 +46,21 @@ milestones. `script/roadmap` validates this column and fails on anything outside
 A detail block may narrate its state in prose (that is where the evidence and the dates belong), but the
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
+
+**`IN-PROGRESS` earned its extra rule by being wrong every single time it was used** (2026-08-17). A
+sweep checked all six rows carrying it and found six false: milestones 58, 80, 112 and 115 had
+**merged**, 115 thirteen days earlier, and 47 and 117 named no branch because nobody held them. The
+same sweep audited nine `NOT-STARTED` blocks against the artifacts they named and found all nine
+honest, so this is not general rot. It is one token, and the reason it rots is structural rather than
+careless: it is a manually-maintained cache of a fact that lives somewhere else and expires on its
+own. Merging a lane deletes its branch, which is exactly the moment the token becomes false, and
+nothing was watching. Naming the branch is what makes the claim falsifiable at all, which is why it is
+required rather than suggested.
+
+**The stronger fix is to retire the token, and that is calef's call rather than a lane's.** §90 made a
+lane's first act a draft pull request, so `gh pr list --draft` already answers "who is on this right
+now" and cannot go stale, because merging removes the row. A status token duplicating that fact is the
+lower rung by construction. Until that is decided, the check above is the tripwire.
 
 **The `Built` column is the date a milestone turned `BUILT`**, and it is empty for every other status. **Dates in this tree are UTC** (calef, 2026-08-04), because they arrive from three
 sources that disagree: a git author date is local to whoever committed, a lane deriving a date reads
