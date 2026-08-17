@@ -2380,7 +2380,10 @@ const SMB_ROUNDS: usize = 2;
 /// negotiate, guest session setup, tree connect, open of the file the guest's boot seeded
 /// through its FS server, a read whose bytes are asserted against `fs_proto::fixture::SMB_SEED`
 /// (the same constant the seeding client wrote, so there is no second copy of the expected
-/// contents), close, **the write leg** ([`smb_write_leg`]), and logoff. Asserting the *seeded*
+/// contents), close, **the write leg** ([`smb_write_leg`]), and logoff. That first CREATE also
+/// carries the **`AAPL` create context** and its answer is checked ([`smb_apple_leg`]), because
+/// that is where a Mac puts it: milestone 55's Time Machine negotiation rides the first open of a
+/// tree connect rather than a message of its own. Asserting the *seeded*
 /// file is what makes this the RedoxFS-to-TCP gate rather than a wire check against the adapter's
 /// baked-in fixture. Same retry discipline, including the never-abandon-a-slow-connection rule
 /// the echo prober documents: a connected stream is held until it answers, dies, or the run ends.
@@ -2447,7 +2450,9 @@ impl SmbProber {
                      (RedoxFS to TCP), a create-write-truncate-close of a second file (TCP to \
                      RedoxFS), and a subdirectory made over the wire with a file written inside \
                      it and listed back by its leaf name. The volume reported real numbers \
-                     rather than the nominal constant. The guest's own verifier reads both files \
+                     rather than the nominal constant, and the first CREATE's AAPL create context \
+                     came back claiming the Time Machine volume capability (milestone 55). The \
+                     guest's own verifier reads both files \
                      back through the FS server, descending into the directory to prove a \
                      directory is what landed. The second session is the proof the adapter \
                      re-arms."
@@ -2623,7 +2628,14 @@ fn smb_session(
         fs_proto::fixture::SMB_SEED_NAME.as_bytes(),
         fs_proto::fixture::SMB_SEED,
     );
-    smb_send(s, &client::create(5, sid, tid, name))?;
+    // **The Apple leg** (milestone 55), and it rides this create rather than one of its own
+    // because that is where a Mac puts it: macOS attaches the AAPL context to the *first* CREATE
+    // after a tree connect, whatever that CREATE happens to be opening. Everything asserted below
+    // about the seeded file is asserted about the same response.
+    let aapl_bitmap = smb_proto::apple::BIT_SERVER_CAPS
+        | smb_proto::apple::BIT_VOLUME_CAPS
+        | smb_proto::apple::BIT_MODEL_INFO;
+    smb_send(s, &client::create_aapl(5, sid, tid, name, aapl_bitmap, 0))?;
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!(
@@ -2633,6 +2645,7 @@ fn smb_session(
             status(&resp)
         ));
     }
+    smb_apple_leg(&resp, aapl_bitmap)?;
     let fid = client::create_file_id(&resp);
     let size = client::create_end_of_file(&resp);
     if size != expected.len() as u64 {
@@ -2671,6 +2684,64 @@ fn smb_session(
     let resp = smb_recv(s, stop)?;
     if status(&resp) != smb_proto::STATUS_SUCCESS {
         return Err(format!("logoff: status {:#x}", status(&resp)));
+    }
+    Ok(())
+}
+
+/// **The Apple leg** (milestone 55): check the `AAPL` create context the guest hung off its CREATE
+/// response, which is the exchange macOS negotiates Time Machine through.
+///
+/// What this proves that a host test cannot: the context survived the whole adapter. The state
+/// machine's answer had to be chunked out through the socket contract, reassembled by a real TCP
+/// stack, and arrive with its `CreateContextsOffset` still measured from the right place, on a
+/// response that also had to carry a real file's size. A host test drives the state machine
+/// directly and would not notice a framing bug between it and the wire.
+///
+/// What it cannot prove is the only thing that finally matters, which is that **macOS** accepts
+/// these bytes. This prober is a client this tree wrote, so it agrees with the server about
+/// everything by construction; see `crates/smb_proto/src/apple.rs`'s BUGS.
+fn smb_apple_leg(resp: &[u8], bitmap: u64) -> Result<(), String> {
+    use smb_proto::{apple, client, r64};
+
+    let Some(reply) = client::create_context_data(resp, apple::TAG) else {
+        return Err(String::from(
+            "the CREATE carried an AAPL create context and the answer carried none: macOS will \
+             mount this share and never offer it as a Time Machine destination",
+        ));
+    };
+    if r64(reply, 8) != bitmap {
+        return Err(format!(
+            "the AAPL reply bitmap is {:#x}, the request asked {bitmap:#x}",
+            r64(reply, 8)
+        ));
+    }
+    // Each claim named on its own, so a bit that goes missing says which one it was.
+    let server_caps = r64(reply, 16);
+    if server_caps & apple::SERVER_UNIX_BASED == 0 {
+        return Err(format!(
+            "the AAPL server capabilities {server_caps:#x} do not claim UNIX_BASED"
+        ));
+    }
+    if server_caps & apple::SERVER_READ_DIR_ATTR != 0 {
+        return Err(String::from(
+            "the AAPL server capabilities claim READ_DIR_ATTR, which promises Finder info this \
+             server has none of",
+        ));
+    }
+    let volume_caps = r64(reply, 24);
+    if volume_caps & apple::VOLUME_FULL_SYNC == 0 {
+        return Err(format!(
+            "the AAPL volume capabilities {volume_caps:#x} do not claim FULL_SYNC, which is the \
+             Time Machine bit (fruit:time machine = yes on the reference)"
+        ));
+    }
+    let mut want = [0u8; 64];
+    let n = smb_proto::ascii_to_utf16le(apple::MODEL, &mut want);
+    if apple::model_utf16le(reply) != Some(&want[..n]) {
+        return Err(format!(
+            "the AAPL model string is not {}",
+            String::from_utf8_lossy(apple::MODEL)
+        ));
     }
     Ok(())
 }

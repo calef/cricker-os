@@ -884,6 +884,11 @@ pub fn smb_serve_boot() {
              including its BUGS. The files are the RedoxFS image's (motd, scratch, doc/...) \
              unless the fixture fallback was announced above, which is read-only."
         );
+        println!(
+            "smb-serve: it answers Apple's AAPL create context claiming the Time Machine volume \
+             capability (milestone 55). Whether macOS accepts that is untested; nothing here has \
+             met a Mac's Time Machine UI, and durability stops at the block server (notes/smb.md)."
+        );
     } else {
         println!("smb-serve: the adapter failed to bind its port (code {word:#x})");
     }

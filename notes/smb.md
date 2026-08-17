@@ -25,7 +25,7 @@ filesystem.
 
 | Piece | Where | What it is |
 |---|---|---|
-| `smb_proto` | `crates/smb_proto/` | The whole wire format: framing, header, every command (both directions since 2026-08-16), NTLMSSP, minimal SPNEGO, and the per-connection state machine. Pure logic over byte slices, host-tested, `no_std`. Client-side builders live in the same crate so tests and the prober share every offset with the server. |
+| `smb_proto` | `crates/smb_proto/` | The whole wire format: framing, header, every command (both directions since 2026-08-16), NTLMSSP, minimal SPNEGO, create contexts including Apple's `AAPL` (2026-08-17), and the per-connection state machine. Pure logic over byte slices, host-tested, `no_std`. Client-side builders live in the same crate so tests and the prober share every offset with the server. |
 | `smb_server` | `user/src/smb_server.rs` | The adapter program: listen/accept through the socket contract (milestone 107), reassemble direct-TCP framing from bounded `RECV` chunks, hand messages to the state machine, chunk the answers back out. |
 | The SMB prober | `xtask/src/main.rs` | The host side of the QEMU gate: a real SMB2 client that negotiates, sets up a guest session, connects the share, opens the seeded file and asserts its bytes, then writes a second file it never reads back, twice over two connections. |
 
@@ -148,6 +148,15 @@ so review can happen where the cost is:
   at once.
 - Compounds (macOS stats files as CREATE + QUERY_INFO + CLOSE related chains) are implemented;
   credits are granted as asked and never accounted.
+- **The `AAPL` create context is answered, and the bits it claims are the table above** (milestone
+  55). The chain is walked generically, the tag is matched, and the answer echoes the request
+  bitmap and carries exactly the answers it asked for. **A context this server does not implement
+  is walked past in silence, never refused**, because an unanswered context is how this mechanism
+  says "not implemented" and refusing would trade a working mount for a diagnosis nobody reads. A
+  malformed chain is the same: the open still succeeds with no context back.
+- **`FLUSH` resolves its file id** before answering. The success is truthful (see the Apple section
+  on where the durability actually stops), but it is a success about a file rather than a blanket
+  yes, so a stale handle is `STATUS_FILE_CLOSED`.
 - **The SMB1 probe.** The machine overruled the assumption that a modern client opens with SMB2:
   macOS's `mount_smbfs` still opens with an **SMB1** multi-protocol NEGOTIATE (`\xFFSMB`,
   command `0x72`, dialect strings `NT LM 0.12`, `SMB 2.002`, `SMB 2.???`), and the first cut of
@@ -157,6 +166,53 @@ so review can happen where the cost is:
   `0x02FF`, after which the client negotiates properly. The captured bytes are pinned as a host
   test in `smb_proto::server`, so the message a real client actually sends is now part of the
   gate. An SMB1-only client (no SMB2 dialect strings) is still dropped.
+
+## The Apple half: the `AAPL` create context (milestone 55, 2026-08-17)
+
+macOS mounts a plain SMB2 share and **never offers one as a Time Machine destination**. What it
+looks for is a create context: it hangs an `AAPL`-tagged blob off the first CREATE of a tree
+connect and reads the server's answering context off the response. That is the whole of
+`fruit:aapl = yes` on the reference implementation, and it is the first line of the working
+configuration design/roadmap/55-time-machine.md records.
+
+Two modules, because they are two things:
+
+- **`crates/smb_proto/src/create_context.rs`** is the chain ([MS-SMB2] §2.2.13.2): generic, and
+  reusable because a real macOS CREATE also carries `DHnQ` (durable handle), `MxAc` (maximal
+  access), `QFid` (on-disk id) and `RqLs` (lease), and the server has to walk past them to find
+  the one it answers.
+- **`crates/smb_proto/src/apple.rs`** is what the `AAPL` tag means. There is **no public
+  specification**: [MS-SMB2] defines the container and says nothing about this tag, so the layout
+  is the one Samba's `vfs_fruit` puts on the wire and macOS has been talking to for a decade. That
+  file says so at the top, and every constant in it is there because the reference emits it.
+
+**What this server claims, and it is the expensive half**, because a claim is something a client
+acts on:
+
+| word | set | left clear, and why |
+|---|---|---|
+| server capabilities | `UNIX_BASED` | `READ_DIR_ATTR` would promise Apple's extended listing (Finder info and fork sizes inside the dirinfo) and there is no Finder info here; `OSX_COPYFILE` would promise a server-side copy that arrives as an `FSCTL` this server refuses; `NFS_ACE` is off on the reference too (`fruit:nfs_aces = no`) |
+| volume capabilities | **`FULL_SYNC`** | `CASE_SENSITIVE` would be untrue in the other direction: the backing filesystem is case-sensitive but this server folds every name to lower case at the wire, so what a client can observe is a share that is not. `RESOLVE_ID` would promise resolving a file by an on-disk id nothing here mints |
+| model | `TimeCapsule` | matching `fruit:model = TimeCapsule`. **Not** the `_device-info` mDNS model, which the reference sets to `MacSamba`; notes/mdns.md's capture found the working reference running with the two disagreeing, so they are two knobs and not one |
+
+**`FULL_SYNC` is `fruit:time machine = yes`**, and it is the single bit on the SMB side that makes
+macOS willing to hold a backup here. It is also the one claim in the table that reaches past what
+the stack backs, so it is stated plainly rather than buried:
+
+- **True**: the FS server puts every `fs_proto` write through one RedoxFS transaction that commits
+  to the header ring *before* the reply. There is no write-back cache above the block device for a
+  flush to push, so SMB2's `FLUSH` genuinely has nothing to do and answering it with success is not
+  a courtesy.
+- **Not true**: the block server issues no `VIRTIO_BLK_T_FLUSH`, so the durability of the last
+  acknowledged write is the device's word rather than ours. notes/fs-server.md's crash-injection
+  table records the same gap from the other side ("a lying device"). A host that loses power can
+  lose a write this server acknowledged.
+
+Closing that is a device flush in the block server and a sync verb in `fs_proto`, and it is the
+piece of milestone 55 that should land before anybody's real backup does.
+
+`FLUSH` also stopped being a blanket yes: it resolves the file id first, so a client flushing a
+handle it already closed gets `STATUS_FILE_CLOSED` rather than a success about nothing.
 
 ## How it is tested
 
@@ -185,6 +241,14 @@ so review can happen where the cost is:
 
    The prober also asserts `FileFsFullSizeInformation` is **not** the nominal constant, which is the
    `STATFS` half arriving where Time Machine will read it.
+
+   **The Apple leg rides the first CREATE**, because that is where a Mac puts it: the prober's open
+   of the seeded file carries the `AAPL` context, and the same response that has to report the
+   file's real size has to carry the answering context. What that proves over a host test is the
+   whole adapter: the context had to be chunked out through the socket contract, reassembled by a
+   real TCP stack, and arrive with its `CreateContextsOffset` still measured from the right place.
+   The prober names each claim separately, so a bit that goes missing says which one it was rather
+   than "the bytes differ".
 
    The adapter rides the milestone-107 inbound test's spawn
    (`a_host_process_connects_to_the_guest_and_is_answered`) as a **second client of the same
@@ -237,6 +301,31 @@ for a while.
   classes. Non-guest accounts are untested and would meet signing expectations; connect as Guest.
 - **Guest means everyone.** Every AUTHENTICATE is accepted. Do not put anything on the share the
   local network may not read. There is also no rate limiting and no credit accounting.
+- **No Mac has seen the `AAPL` answer.** The context is gated by host tests and by the QEMU prober,
+  and the prober is a client this tree wrote against the same constants the server answers with, so
+  it agrees by construction. Whether macOS's `smbfs` accepts these bytes, and whether the Time
+  Machine UI then offers the share, is unproven and needs the kernel on hardware on the family
+  network (the discovery half needs that too; slirp carries no multicast).
+- **`FULL_SYNC` is claimed further than the block layer backs it.** See the Apple section above:
+  every write commits to the RedoxFS header ring before the reply, and the block server issues no
+  `VIRTIO_BLK_T_FLUSH` underneath that. A host that loses power can lose an acknowledged write.
+- **Apple metadata is not implemented at all.** No alternate data streams, so no `AFP_AfpInfo` and
+  no `AFP_Resource`: Finder labels, resource forks and the extended-listing capability
+  (`READ_DIR_ATTR`, deliberately not claimed) all rest on that surface. The layer under them is not
+  missing: milestone 57 added the four extended-attribute verbs to `fs_proto`, ops 14-17. What does
+  not exist is the **SMB** half, which is a stream name in a CREATE path, `FileStreamInformation`
+  in `QUERY_INFO`, and
+  `FILE_NAMED_STREAMS` in the volume attributes. The stream-versus-sidecar decision milestone 55's
+  block frames is therefore still open, and it is now a smaller question than that block assumed:
+  the layer that was missing when it was written is not missing any more.
+- **`ReplaceIfExists = 0` is ignored: a rename always replaces.** `FileRenameInformation`'s first
+  byte says whether the client will accept clobbering the destination, and this server does not
+  read it, because `fs_proto::fs::RENAME` replaces an existing name of the same kind and offers no
+  way to say no (its own doc refuses `renameat2`'s `NOREPLACE` on §42 grounds: emulating it with
+  link-then-unlink is racy and it is not portable). So a client that asked for a rename to fail on
+  a collision gets a silent overwrite. That is the wrong direction to fail in and it is the one
+  thing in this area worth fixing next; the fix is a `NOREPLACE` question in `fs_proto`, not
+  something this layer can answer.
 - **The write path has never met a real Mac.** The 2026-08-15 mount was against a read-only
   share; the write half is gated by host tests and by the QEMU prober, which is a conforming
   client this tree wrote, and a conforming client is not the same thing as `smbfs`. Expect the
@@ -315,6 +404,15 @@ for a while.
 4. ~~Subdirectories~~ **Done** (2026-08-16): `smb_proto::path`, the `Share` seam's directory ids
    and its `mkdir`/`rmdir`/`open_dir` verbs, and the adapter's per-component walk. Gated on both
    ISAs by a directory the host makes over SMB2 and a different in-guest process descends into.
-5. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
+5. ~~`fruit:posix_rename`~~ **Already true, checked 2026-08-17 rather than built.** The two
+   behaviours Samba's `fruit:posix_rename` switches on are renaming onto an existing name and
+   renaming a file that is open. The first is `fs_proto::fs::RENAME`'s documented semantics
+   already ("if the destination name exists it is replaced, provided it is the same kind"). The
+   second cannot fail here because this server enforces no share modes at all: `ShareAccess` is
+   never consulted, there are no oplocks and no leases, so there is no sharing violation for POSIX
+   semantics to be an exception to. Milestone 55's block listed this as work; it is not, and the
+   real gap next door is `ReplaceIfExists` in the BUGS section above.
+
+6. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
    be more than guest-readable. The seam is marked in `smb_proto::ntlmssp`. **Writes raised the
    stakes**: guest means everyone, and on a writable share that means everyone may change it.

@@ -5,10 +5,7 @@ program binds UDP 5353 through a grant, announces `_smb._tcp`, `_adisk._tcp` and
 `_device-info._tcp` from a configuration document carrying the values measured off calef's router,
 and answers browses and legacy one-shot queries per RFC 6762 §6.7, gated on both ISAs. It holds a
 report endpoint, the stack endpoint and a budget and **nothing else**: no share, no file, no TCP
-port, where the reference implementation is one process with one config file. What remains of this
-milestone is the SMB side, which is the large half: the `AAPL` create context, Time Machine's own
-flags, Apple metadata (xattrs down the stack or AppleDouble sidecars), `posix_rename`, and the
-durability macOS trusts.
+port, where the reference implementation is one process with one config file.
 
 **Gate: NONE.** The scoping decision is made: **the subset of SMB3 that Time Machine needs**, not
 a general server (calef, 2026-08-15). Decided on the ranking principle: every part of a general
@@ -22,6 +19,45 @@ names was recorded here as unowned: `RENAME`. **That is no longer true** (correc
 `fs_proto::fs::RENAME` is op 11, fully specified with its rights (`REMOVE` on the source directory,
 `CREATE` on the destination) and its atomicity, and the std PAL implements `rename` against it. So
 this block's third gate has closed and only the decision, 65 and 107 remain.
+
+**The `AAPL` create context and the Time Machine flag landed 2026-08-17** (pull request #292), which
+is the piece macOS refuses the share without. `crates/smb_proto` grew the create-context chain
+([MS-SMB2] §2.2.13.2) and the `AAPL` tag's meaning as two modules, host-tested, and the QEMU gate's
+prober now hangs the context off its first CREATE the way a Mac does and checks each claim
+separately, on both ISAs. What the server claims is `UNIX_BASED`, **`FULL_SYNC`** (which is
+`fruit:time machine = yes`, the one bit that makes macOS willing to hold a backup) and the model
+string `TimeCapsule`; what it declines to claim, with a reason each, is `READ_DIR_ATTR`,
+`OSX_COPYFILE`, `NFS_ACE`, `CASE_SENSITIVE` and `RESOLVE_ID`. notes/smb.md's Apple section is the
+table.
+
+**Two of this block's five remaining items changed shape on inspection**, which is worth more than
+the code was:
+
+- **`posix_rename` is not work.** The two behaviours Samba's `fruit:posix_rename` switches on are
+  renaming onto an existing name and renaming a file that is open. The first is already
+  `fs_proto::fs::RENAME`'s documented semantics; the second cannot fail here because this server
+  enforces no share modes at all, so there is no sharing violation for POSIX semantics to be an
+  exception to. The real defect next door is that `ReplaceIfExists = 0` is ignored, which is a
+  rename that clobbers when the client asked it not to.
+- **The metadata fork is a smaller question than this block assumed.** "We have no extended
+  attributes at all" was true when it was written and is not now: milestone 57 built xattrs into
+  `fs_proto` (ops 14-17), the FS server and the store. So the layer that made `streams_xattr` look
+  expensive exists, and what is missing is the **SMB** half of alternate data streams (a stream name
+  in a CREATE path, `FileStreamInformation`, `FILE_NAMED_STREAMS` in the volume attributes). The
+  stream-versus-sidecar choice is still open and still a decision about what lands on disk; it is
+  just no longer a stack-deep one.
+
+What remains of this milestone: Apple metadata (the choice above, then the SMB stream surface), the
+durability macOS trusts (below), and the first contact with a real Mac.
+
+**The durability gap is named where a reader meets the claim, and it is the piece that should land
+before anybody's real backup does.** `FULL_SYNC` is claimed further than the stack currently backs
+it. True: the FS server puts every `fs_proto` write through one RedoxFS transaction that commits to
+the header ring before the reply, so there is no write-back cache above the block device and SMB2's
+`FLUSH` genuinely has nothing to do. Not true: the block server issues no `VIRTIO_BLK_T_FLUSH`, so
+the durability of the last acknowledged write is the device's word rather than ours
+(notes/fs-server.md's crash-injection table records the same gap from the other side). Closing it is
+a device flush in the block server and a sync verb in `fs_proto`.
 
 **Nothing here has met a Mac.** QEMU's user-mode networking cannot carry multicast to the host, so
 `dns-sd -B` finds nothing under the emulator by construction; IGMP snooping, forwarding TTLs, a
@@ -61,7 +97,16 @@ That is a measured feature list rather than a guess, and it decodes into these r
 
 ## The discovery that changes scope: we have no extended attributes at all
 
-Verified, not assumed: **no xattr support in `fs_proto`, in the FS server, or in vendored RedoxFS.**
+**Stale as of 2026-08-17, and left standing because the argument below is still the argument.**
+Milestone 57 built xattrs into `fs_proto` (`GETXATTR`/`SETXATTR`/`LISTXATTR`/`REMOVEXATTR`, ops
+14-17), the FS server and the store, so the sentence this section is named after is no longer true
+and the choice it frames is no longer a stack-deep one. What is still missing is the **SMB** half:
+alternate data streams, which is a stream name in a CREATE path, `FileStreamInformation` in
+`QUERY_INFO`, and `FILE_NAMED_STREAMS` in the volume attributes. The stream-versus-sidecar decision
+is still open and still a decision about what lands on disk.
+
+Verified, not assumed (**when this was written**): **no xattr support in `fs_proto`, in the FS
+server, or in vendored RedoxFS.**
 `streams_xattr` stores Apple metadata in NTFS-style alternate data streams backed by filesystem
 xattrs, and we have neither layer.
 
@@ -72,6 +117,15 @@ has xattrs. So this is a **design choice between adding xattrs down the whole st
 server, RedoxFS) and accepting sidecar files**, not the hard blocker it first appears to be.
 
 ## `fruit:posix_rename` lands squarely on work already scoped
+
+**Corrected again, 2026-08-17: it is not work at all.** The two behaviours Samba's
+`fruit:posix_rename` switches on are renaming onto an existing name (already
+`fs_proto::fs::RENAME`'s documented semantics) and renaming a file that is open (which cannot fail
+here, because the SMB server consults `ShareAccess` nowhere and has neither oplocks nor leases, so
+there is no sharing violation for POSIX semantics to be an exception to). This section's remaining
+value is the correction below and §42's atomicity split, which is still exactly what Time Machine's
+durability expectations will test.
+
 
 Rename over an open file, which is precisely the territory of §42 (a filesystem declares what it
 offers and must be truthful) and milestone 47's `mv` section.

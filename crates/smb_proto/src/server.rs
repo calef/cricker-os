@@ -32,9 +32,9 @@ use crate::{
     STATUS_INVALID_PARAMETER, STATUS_MORE_PROCESSING_REQUIRED, STATUS_NO_MORE_FILES,
     STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION,
     STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_SUCCESS, STATUS_UNEXPECTED_IO_ERROR, STATUS_USER_SESSION_DELETED, ascii_to_utf16le,
-    is_smb2, ntlmssp, r16, r32, r64, spnego, utf16le_to_ascii_lower, w16, w32, w64,
-    write_response_header,
+    STATUS_SUCCESS, STATUS_UNEXPECTED_IO_ERROR, STATUS_USER_SESSION_DELETED, apple,
+    ascii_to_utf16le, create_context, is_smb2, ntlmssp, r16, r32, r64, spnego,
+    utf16le_to_ascii_lower, w16, w32, w64, write_response_header,
 };
 
 /// How many files (and the root) one connection may hold open at once. macOS keeps a handful open
@@ -340,7 +340,20 @@ impl Connection {
             CMD_SET_INFO => self.set_info(req, out, share, chain_fid, err),
             CMD_QUERY_DIRECTORY => self.query_directory(req, out, share, chain_fid, err),
             CMD_QUERY_INFO => self.query_info(req, out, share, chain_fid, err),
-            CMD_ECHO | CMD_FLUSH => simple_ok(out, cmd, msg_id, sid, tid, credits),
+            CMD_ECHO => simple_ok(out, cmd, msg_id, sid, tid, credits),
+            // FLUSH succeeds, but it succeeds **about a file**: it resolves the handle first, so a
+            // client flushing something it already closed learns that rather than being told yes.
+            // The success itself is truthful rather than polite, and this is the one place to
+            // record why, because "the server said the data was safe" is what a backup depends on:
+            // the FS server puts every write through one RedoxFS transaction that commits before
+            // the reply, so there is no cache above the block device for a flush to push and
+            // nothing for this command to do. What is *not* covered is one layer down, where the
+            // block server issues no `VIRTIO_BLK_T_FLUSH`; see `crate::apple`'s BUGS, which is
+            // where a reader meets the Time Machine durability claim this backs.
+            CMD_FLUSH => match self.resolve_fid(req, 72, chain_fid) {
+                Ok(_) => simple_ok(out, cmd, msg_id, sid, tid, credits),
+                Err(status) => err(out, status),
+            },
             // The not-heres. DFS referrals get the status Windows uses for "no DFS here" so
             // clients fall back to the plain path.
             CMD_IOCTL => err(out, STATUS_FS_DRIVER_REQUIRED),
@@ -697,7 +710,9 @@ impl Connection {
         w64(out, b + 48, size); // EndOfFile
         w32(out, b + 56, attrs);
         out[b + 64..b + 80].copy_from_slice(&fid);
-        b + 88
+        // The Apple half arrives here: macOS hangs an `AAPL` context off its first CREATE and reads
+        // the server's answer off this response. Nothing above this point knows about it.
+        RESP_CONTEXTS_AT + answer_contexts(req, out, RESP_CONTEXTS_AT)
     }
 
     fn close(
@@ -1459,6 +1474,57 @@ fn is_smb1_negotiate(msg: &[u8]) -> bool {
 /// user. The strings cannot appear in an SMB1 negotiate except as dialect names.
 fn smb1_offers_smb2(msg: &[u8]) -> bool {
     msg.windows(8).any(|w| w == b"SMB 2.??" || w == b"SMB 2.00")
+}
+
+/// Where a CREATE **request** carries `CreateContextsOffset` and `CreateContextsLength`. Both are
+/// measured from the start of the SMB2 header rather than from the body, which is why these are
+/// written as absolute offsets: the slice a request and a response are built in starts at their
+/// own header, in a compound chain as much as alone.
+const REQ_CONTEXTS_OFF: usize = HDR_LEN + 48;
+const REQ_CONTEXTS_LEN: usize = HDR_LEN + 52;
+/// The same pair in a CREATE **response**.
+const RESP_CONTEXTS_OFF: usize = HDR_LEN + 80;
+const RESP_CONTEXTS_LEN: usize = HDR_LEN + 84;
+/// Where a response's contexts start: straight after the 88-byte fixed body. The protocol requires
+/// that offset to be 8-byte aligned and it happens to be, so no padding is written; this is the
+/// assertion that keeps that true if the body ever moves.
+const RESP_CONTEXTS_AT: usize = HDR_LEN + 88;
+const _: () = assert!(RESP_CONTEXTS_AT.is_multiple_of(8));
+
+/// **Answer the create contexts a CREATE request carried**, writing the response chain at `out[at]`
+/// and returning its length (0 when there is nothing to answer).
+///
+/// One context is answered, `AAPL` ([`crate::apple`]), which is what macOS negotiates its Time
+/// Machine extensions through. Everything else in the chain is walked past: a durable-handle or
+/// lease request gets no answering context, which is how this protocol says "not implemented" and
+/// what lets a client fall back instead of failing its mount.
+///
+/// **Every failure here is silence**, never a refused CREATE. A malformed chain, a context this
+/// server does not know, a request of the wrong length: all of them leave the response's
+/// `CreateContextsOffset` and `CreateContextsLength` at zero and the open succeeds. An extension a
+/// client offered and the server ignored is exactly the case the mechanism exists to handle.
+fn answer_contexts(req: &[u8], out: &mut [u8], at: usize) -> usize {
+    let off = r32(req, REQ_CONTEXTS_OFF) as usize;
+    let len = r32(req, REQ_CONTEXTS_LEN) as usize;
+    if len == 0 {
+        return 0;
+    }
+    let Some(blob) = off.checked_add(len).and_then(|end| req.get(off..end)) else {
+        return 0;
+    };
+    let Some(request) = create_context::find(blob, apple::TAG) else {
+        return 0;
+    };
+    let mut payload = [0u8; apple::MAX_RESPONSE];
+    let Some(n) = apple::server_query(request, &mut payload) else {
+        return 0;
+    };
+    let Some(written) = create_context::write_one(&mut out[at..], apple::TAG, &payload[..n]) else {
+        return 0;
+    };
+    w32(out, RESP_CONTEXTS_OFF, at as u32);
+    w32(out, RESP_CONTEXTS_LEN, written as u32);
+    written
 }
 
 /// The 4-byte "structure size 4" success body ECHO, FLUSH, LOGOFF and `TREE_DISCONNECT` share.
@@ -2530,5 +2596,145 @@ mod tests {
         }
         let resp = rt(&mut c, &client::create(99, sid, tid, b"hello.txt"));
         assert_eq!(status(&resp), STATUS_INSUFFICIENT_RESOURCES);
+    }
+
+    /// FLUSH is a success **about a file**, so a handle that is not open is refused rather than
+    /// told yes. The success itself is what milestone 55's Time Machine claim rests on; see
+    /// `crate::apple`'s BUGS for how far down the stack it is currently backed.
+    #[test]
+    fn a_flush_of_a_closed_handle_is_refused_rather_than_humoured() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(&mut c, &client::create(5, sid, tid, b"hello.txt"));
+        let fid = client::create_file_id(&resp);
+        let resp = rt(&mut c, &client::close(6, sid, tid, &fid));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let resp = rt(&mut c, &client::flush(7, sid, tid, &fid));
+        assert_eq!(status(&resp), STATUS_FILE_CLOSED);
+    }
+
+    // --------------------------------------------------------------------------------------
+    // The Apple half (milestone 55): the `AAPL` create context, which is what macOS negotiates
+    // its Time Machine extensions through. See `crate::apple` for what each claimed bit means.
+    // --------------------------------------------------------------------------------------
+
+    /// What a Mac's first CREATE after a tree connect looks like, end to end through the machine.
+    #[test]
+    fn a_create_carrying_the_apple_context_is_answered_with_one() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let all = apple::BIT_SERVER_CAPS | apple::BIT_VOLUME_CAPS | apple::BIT_MODEL_INFO;
+        // macOS asks about the share root, which is also the one node no backing has to mint.
+        let resp = rt(&mut c, &client::create_aapl(5, sid, tid, b"", all, 0));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+
+        let reply = client::create_context_data(&resp, apple::TAG).expect("an AAPL context back");
+        assert_eq!(r32(reply, 0), apple::CMD_SERVER_QUERY);
+        assert_eq!(r64(reply, 8), all, "the reply bitmap echoes the request's");
+        assert_eq!(r64(reply, 16), apple::SERVER_CAPS);
+        assert_eq!(
+            r64(reply, 24) & apple::VOLUME_FULL_SYNC,
+            apple::VOLUME_FULL_SYNC,
+            "the Time Machine bit: without it macOS mounts the share and never offers it"
+        );
+        let mut want = [0u8; 64];
+        let n = crate::ascii_to_utf16le(apple::MODEL, &mut want);
+        assert_eq!(apple::model_utf16le(reply), Some(&want[..n]));
+
+        // The open is a real open: the context rides along, it does not replace anything.
+        let fid = client::create_file_id(&resp);
+        let resp = rt(&mut c, &client::close(6, sid, tid, &fid));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+    }
+
+    /// The context works on a file open too, which is where the QEMU gate sends it: macOS attaches
+    /// it to the first CREATE of the tree connect, whatever that CREATE is opening.
+    #[test]
+    fn the_apple_context_rides_an_ordinary_file_open() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(
+            &mut c,
+            &client::create_aapl(5, sid, tid, b"hello.txt", apple::BIT_VOLUME_CAPS, 0),
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(client::create_end_of_file(&resp), 16);
+        let reply = client::create_context_data(&resp, apple::TAG).expect("an AAPL context back");
+        assert_eq!(reply.len(), 24, "one word asked for, one word answered");
+        assert_eq!(r64(reply, 16), apple::VOLUME_CAPS);
+    }
+
+    /// A CREATE with no contexts at all must answer with none, which is every request the rest of
+    /// this suite and every non-Apple client sends.
+    #[test]
+    fn a_create_with_no_contexts_answers_with_none() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(&mut c, &client::create(5, sid, tid, b"hello.txt"));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(r32(&resp, HDR_LEN + 80), 0, "CreateContextsOffset");
+        assert_eq!(r32(&resp, HDR_LEN + 84), 0, "CreateContextsLength");
+        assert_eq!(client::create_context_data(&resp, apple::TAG), None);
+    }
+
+    /// **A context this server does not implement must not cost the client its open.** A real
+    /// macOS CREATE carries a durable-handle request and a lease request beside the `AAPL` one;
+    /// silence is how the protocol says "not implemented", and a refusal here would be a failed
+    /// mount over an optional extension.
+    #[test]
+    fn contexts_this_server_does_not_know_are_walked_past_and_the_open_succeeds() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+
+        // A well-formed context with a tag nothing here answers.
+        let mut req = client::create(5, sid, tid, b"hello.txt");
+        let at = req.len().next_multiple_of(8);
+        let mut whole = req.to_vec();
+        whole.resize(at + 64, 0);
+        let n = create_context::write_one(&mut whole[at..], b"DHnQ", &[0; 16]).unwrap();
+        whole.truncate(at + n);
+        w32(&mut whole, HDR_LEN + 48, at as u32);
+        w32(&mut whole, HDR_LEN + 52, n as u32);
+        let resp = rt(&mut c, &whole);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(client::create_context_data(&resp, apple::TAG), None);
+
+        // And a chain whose offsets point off the end of the message: still an open, still no
+        // context. A malformed extension is not a reason to refuse a file.
+        w32(&mut req, HDR_LEN + 48, 0xFFFF);
+        w32(&mut req, HDR_LEN + 52, 0x100);
+        let resp = rt(&mut c, &req);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(client::create_context_data(&resp, apple::TAG), None);
+    }
+
+    /// The context survives a compound chain, which is how macOS opens everything (CREATE +
+    /// `QUERY_INFO` + CLOSE). The response's context offset is measured from **its own** header,
+    /// so
+    /// a chain is exactly where an off-by-the-preceding-response would show up.
+    #[test]
+    fn the_apple_context_survives_being_the_first_of_a_compound() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let all = apple::BIT_SERVER_CAPS | apple::BIT_VOLUME_CAPS | apple::BIT_MODEL_INFO;
+
+        // A CREATE carrying the context, then an ECHO after it, so the CREATE's response is not
+        // the last thing in the buffer and its own offsets have to be self-relative.
+        let mut chain = client::create_aapl(5, sid, tid, b"hello.txt", all, 0).to_vec();
+        let next = chain.len().next_multiple_of(8);
+        chain.resize(next, 0);
+        w32(&mut chain, H_NEXT_COMMAND, next as u32);
+        chain.extend_from_slice(&client::echo(6));
+
+        let resp = rt(&mut c, &chain);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let reply = client::create_context_data(&resp, apple::TAG).expect("an AAPL context back");
+        assert_eq!(r64(reply, 8), all);
+        // The second response is really there and really an ECHO, so the chain was not truncated
+        // by the context that was appended to the first.
+        let second = r32(&resp, H_NEXT_COMMAND) as usize;
+        assert_ne!(second, 0);
+        assert_eq!(r16(&resp[second..], H_COMMAND), CMD_ECHO);
+        assert_eq!(status(&resp[second..]), STATUS_SUCCESS);
     }
 }
