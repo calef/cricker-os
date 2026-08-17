@@ -110,15 +110,46 @@ shape of the thing it dispatches.
 reason is now recorded here and the experiment does not need repeating. If someone wants this
 split later, the thing to solve first is the early-park pattern, not the function.
 
-### Fourth: `xtask` has no error type
+### Fourth: `xtask`'s `-> bool`, and a finding that did not survive being checked
 
-6,785 lines in a single `main.rs` with no module structure, forty-eight functions returning bare
-`bool`, and a hundred and thirteen `return false` sites each preceded by an `eprintln!`. Every
-failure is printed and flattened where it happens, so nothing composes and no caller can branch on
-why a step failed.
+**Mostly withdrawn.** The survey ranked this on counts, and the counts were real while the defect
+they implied was not. Recorded in full rather than quietly dropped, because a wrong finding that
+gets checked is worth as much as a right one and this file is the only place that record can live.
 
-Largest item, and it loses the ranking function's tiebreak: it is build tooling, not the
-demonstrator, so it goes last and may well be split into its own milestone.
+The claim was: forty-eight functions returning bare `bool` and a hundred and thirteen `return
+false` sites each preceded by an `eprintln!`, so every failure is printed and flattened where it
+happens, nothing composes, and no caller can branch on why a step failed. What reading the sites
+showed:
+
+- **The message prefixes are consistent and correct.** Every command prefixes with its own name
+  (`std-src:`, `mkinitrd:`, `bench:`), so a failure says which step failed. That is the thing an
+  error type would have been introduced to buy.
+- **Most bare `return false` sites are correct propagation, not silence.** Of the twenty-five with
+  no adjacent `eprintln!`, nearly all are `if !build() { return false; }` or `if !cargo(...) {
+  return false; }`, where the callee has already reported. Re-reporting would be worse.
+- **The one that looked silent is deliberate.** `screendump` returns `false` when the QEMU monitor
+  socket is not there, and its doc comment says so: the caller treats it as "try again", so it is
+  a retry signal rather than an error. `kernel_test_elf` prints on every failure path it has,
+  including the one where cargo's JSON schema changes under it.
+
+So converting forty-eight signatures to `Result` would add an error type, a conversion at every
+boundary and roughly ninety edits, to reproduce diagnostics the tree already emits. That is the
+"more abstraction, more machinery" that CLAUDE.md's elegance tenet explicitly refuses, and the
+honest reason to want it was that it looks tidier.
+
+Nineteen of the hundred and thirteen sites are gone anyway, as a side effect of the `mkinitrd`
+work above; the count stands at ninety-four.
+
+**What survives, and it is the half that was never about `bool`:** 6,785 lines in a single
+`main.rs` with no module structure. That is a real navigability cost and a mechanical fix, since
+the compiler verifies a module split completely.
+
+**It should be its own milestone, and it should be scheduled rather than taken by a passing lane.**
+`xtask/src/main.rs` is one of the three named merge hotspots where every lane wires its test, and
+CLAUDE.md's lane-count rule is built on the measurement that collisions scale through files rather
+than through lane count. A wholesale restructure of this file conflicts with every lane in flight,
+so it wants a quiet queue and a maintainer sequencing it, which is exactly the call this lane
+cannot make for itself.
 
 ## Scope note
 
