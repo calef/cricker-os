@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(target_arch = "aarch64")]
 use super::std_tests::{
     assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
-    assert_smb_write_landed, assert_std_transcript, std_fs_expected,
+    assert_smb_held_no_key, assert_smb_write_landed, assert_std_transcript, std_fs_expected,
 };
 use super::*;
 use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
@@ -1706,11 +1706,19 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 ///
 /// **Milestone 54 rides the same spawn, for the same reason.** The SMB adapter (`smb_server`) is
 /// a second client of this stack, granted the neighbouring port, and xtask's SMB prober drives a
-/// real SMB2 exchange (negotiate, guest session setup, tree connect, create, and a read whose
-/// bytes the prober asserts, twice over two connections) through a second `hostfwd` while the
-/// echo exchange runs. Two verdicts come back and both gate. See
-/// `virtio_service::start_net_stack_with_smb` for why they share a NIC, and notes/smb.md for the
-/// protocol's scope.
+/// real SMB2 exchange (negotiate, session setup, tree connect, create, and a read whose bytes the
+/// prober asserts, twice over two connections) through a second `hostfwd` while the echo exchange
+/// runs. Two verdicts come back and both gate. See `virtio_service::start_net_stack_with_smb` for
+/// why they share a NIC, and notes/smb.md for the protocol's scope.
+///
+/// **And the session is authenticated** (milestone 54's identity item): the share is wired
+/// `SMB_SHARE_FS_AUTHENTICATED`, so the adapter admits nobody without an NTLMv2 proof that
+/// milestone 65's credential service accepts. That makes this the first boot holding the block
+/// server, the FS server, `net_stack`, the SMB adapter **and** the credential service at once, and
+/// it puts four processes on the path of one `ls`: a host client proves who it is to a program that
+/// holds no key, which asks a program that holds no filesystem, over a share whose bytes come from a
+/// program that holds no network. The prober's refusal legs are what prove the gate is a gate, and
+/// [`assert_smb_held_no_key`] is what proves the adapter came away with nothing.
 ///
 /// **And the share is the real filesystem** (the milestone's second act): this test first wires
 /// the FS service and runs `fs_test_client`'s seed role, which writes
@@ -1747,9 +1755,11 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
             program("fs_server").expect("no fs_server program in the initrd archive"),
         )
         .expect("the FS service was wired a moment ago");
-        // Read-write: the write half of the gate needs the adapter to accept a write, and the
-        // read-only refusals are proven by `smb_proto`'s host tests against a share that says no.
-        (ep, shared, virtio_service::SMB_SHARE_FS_READ_WRITE)
+        // Read-write **and authenticated**: the write half of the gate needs the adapter to accept
+        // a write, the read-only refusals are proven by `smb_proto`'s host tests against a share
+        // that says no, and since milestone 54's identity item the prober has to prove who it is
+        // before it may do either.
+        (ep, shared, virtio_service::SMB_SHARE_FS_AUTHENTICATED)
     });
     if fs.is_none() {
         crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
@@ -1761,6 +1771,16 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // Taken before `fs` is handed to the spawn below: the write verifier needs to know whether
     // there was a filesystem at all, and the spawn consumes the capability.
     let had_fs = fs.is_some();
+    // **The credential service, milestone 65's, sealed** (milestone 54's identity item). The same
+    // wiring the credential tests use, latched once per boot, so this is the *real* service holding
+    // the *real* key: the adapter below gets its verify endpoint and nothing else, and xtask's
+    // prober computes a proof on the host over the password nobody in the guest has. Wired only
+    // when there is a filesystem to authenticate access to, because the authenticated share mode is
+    // an fs-backed mode.
+    let cred = had_fs.then(|| {
+        let (w, _, _) = super::credential_tests::provisioned();
+        (w.verify, super::credential_service::verify_frame())
+    });
     let Some((report, smb_report, mdns_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -1771,6 +1791,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         SMB_ROUNDS,
         MDNS_QUERIES,
         fs,
+        cred,
         socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_GRANT_TOP),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
@@ -1807,6 +1828,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // Before the release: the verifier spawns a fresh FS client, and reclaiming the net
     // service's regions is the last thing this test should do.
     assert_smb_write_landed(had_fs);
+    assert_smb_held_no_key(had_fs);
     net.release_or_fail("a net test's net_stack");
 }
 

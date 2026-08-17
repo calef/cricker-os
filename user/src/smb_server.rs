@@ -22,6 +22,21 @@
 //!
 //! All protocol code is indifferent to which one it is serving; see notes/smb.md.
 //!
+//! # Identity (milestone 54's last item)
+//!
+//! `arg2` also says **who may connect**, and [`CredentialAuthenticator`] is the answer that is not
+//! "everyone": a session must present an NTLMv2 proof that milestone 65's credential service
+//! accepts. This program holds one more endpoint for that and no key at all; read that type's doc
+//! for what it can and cannot do, and `smb_proto::authenticator` for why the seam carries no key
+//! material in either direction.
+//!
+//! **Where access control lives, and it is one place.** A [`Verdict`] decides whether a session
+//! exists. It does not decide what the session may do: the share's rights are the rights of the one
+//! directory capability in slot [`FS`], identical for every session, enforced by the FS server.
+//! Per-user rights therefore mean per-user adapters, one directory capability each, which
+//! milestone 47's rights split already expresses. A share whose rights lived both here and in the
+//! grant would be a share whose rights can disagree with themselves.
+//!
 //! # Capability contract
 //! - slot 0: the report endpoint (WRITE)
 //! - slot 1: the `Stack` endpoint (WRITE), shared with the stack's other client if any
@@ -29,13 +44,17 @@
 //! - slot 3: the file-service endpoint (WRITE), the directory capability the share serves.
 //!   Present only when `arg2` says fs-backed, along with [`FS_VA`] mapped to the page shared
 //!   with the FS server.
+//! - slot 4: the credential service's **verify** endpoint (WRITE), present only when `arg2` says
+//!   authenticated, along with [`CRED_VA`] mapped to the page shared with that service. Not the
+//!   provision endpoint, which does not exist any more by the time this program runs.
 //! - arg0: connections to serve before reporting OK; 0 means serve forever (the demo boot)
 //! - arg1: the TCP port to listen on (445 in the demo boot; the test grants a neighbour of the
 //!   echo gate's port instead, see the kernel test)
-//! - arg2: which share, and in which direction. 0 is the fixture, 1 the fs_proto-backed share
-//!   read-only, 2 the fs_proto-backed share read-write ([`SHARE_FIXTURE`] and its two
-//!   neighbours). The write path split this from a flag, because a **read-only view of the real
-//!   filesystem** is a thing a boot should be able to wire and a boolean could not say.
+//! - arg2: which share, in which direction, and to whom. 0 is the fixture, 1 the fs_proto-backed
+//!   share read-only, 2 read-write to guests, 3 read-write to a proven identity
+//!   ([`SHARE_FIXTURE`] and its three neighbours). The write path split this from a flag because a
+//!   **read-only view of the real filesystem** is a thing a boot should be able to wire and a
+//!   boolean could not say; identity added a third question a boolean could not say either.
 //!
 //! # Socket ids
 //!
@@ -74,9 +93,28 @@
 //! - **A dropped connection costs a 15 s stall**: `RECV` on a dead connection runs into
 //!   `net_stack`'s bounded wait before it reports failure, and only then does this server re-arm.
 //!   A clean unmount (LOGOFF) is detected and costs nothing.
-//! - The protocol-level limitations (guest-only auth, ASCII names, discarded timestamps,
-//!   nominal free space) are `smb_proto`'s and are listed in that crate's header. **Guest means
-//!   everyone, and on a writable share that means everyone may change it.**
+//! - **The demo boot still serves guests, and so the thing a person actually runs is still open to
+//!   everyone who can reach the port.** `--features smb_serve` wires `SHARE_FS_READ_WRITE`, not
+//!   [`SHARE_FS_AUTHENTICATED`], because there is no way to *tell* that boot a password: the only
+//!   thing in the tree that provisions the credential store is a test program with a published
+//!   fixture in it, and shipping a demo whose password Microsoft printed would be worse than a
+//!   labelled guest share. The gate is authenticated; the demo says guest in its own banner. What
+//!   closes this is a provisioning path, not a flag.
+//! - **An authenticated share authenticates exactly one account**, because it is configured with one
+//!   resource ([`CredentialAuthenticator::resource`], which also records why that configuration is
+//!   in the wrong place). Several accounts mean several adapters today.
+//! - **Sessions are not signed.** A proven session is proven at setup and unprotected afterwards, so
+//!   an attacker on the path can inject into it. That is `smb_proto`'s scope note as much as this
+//!   program's, and it is what `SessionBaseKey` exists for: the credential service publishes one and
+//!   this adapter does not ask for it. Nothing here is worse than the guest share it replaces, and
+//!   the honest reading is that identity buys authentication of the *client*, not integrity of the
+//!   *stream*.
+//! - **The server challenge is `now()`**, a clock this program holds rather than entropy it does not.
+//!   Two connections in the same tick would repeat a challenge, and a repeated challenge is what
+//!   makes a captured proof replayable. It is a real gap: the fix is an entropy capability, which is
+//!   milestone 56's service and one more slot.
+//! - The remaining protocol-level limitations (ASCII names, discarded timestamps) are `smb_proto`'s
+//!   and are listed in that crate's header.
 //!
 //! Name: unrecorded. Provisional, minted by milestone 54's lane on 2026-08-15: the program is the
 //! server half of SMB, and `fs_server` set the `<protocol>_server` shape. Expect ratification to
@@ -87,6 +125,7 @@
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use fs_proto::{dir, dirent, fs, xattr};
+use smb_proto::authenticator::{Attempt, Authenticator, NoIdentity, Verdict};
 use smb_proto::path::Path;
 use smb_proto::server::Connection;
 use smb_proto::share::{DirId, Entry, Error, FIXTURE, FileId, ROOT_DIR, Share, Volume};
@@ -103,18 +142,32 @@ const UNTYPED: u64 = 2;
 /// The file-service endpoint: the share's whole authority to the filesystem (see the module
 /// header; present only in the fs-backed wiring).
 const FS: u64 = 3;
+/// **The credential service's verify endpoint** (milestone 65), present only in the authenticated
+/// wiring. It is the whole of this program's authority over identity, and what it is *not* is the
+/// point: there is no message on it that yields a key, so revoking it ends the ability to
+/// authenticate and no compromise of this process yields the ability to forge.
+const CRED: u64 = 4;
 
 /// Where the page shared with the FS server is mapped (a name out, file bytes and directory
 /// listings back). Must match the kernel-side wiring in `kernel/src/user/virtio_service.rs`.
 const FS_VA: u64 = 0x0000_0000_00B0_0000;
 
-/// **What `arg2` says the share is.** Three values rather than a flag, because the write path
-/// made "which backing" and "which direction" two separate questions, and a boolean answering
-/// both would have made a read-only real share unwireable. The `Share` seam is what enforces the
-/// direction; this is only how the boot says which it wants.
+/// Where the page shared with the **credential** service is mapped. A different frame from
+/// [`FS_VA`]'s and from the network one, because it is shared with a different process; must match
+/// the kernel-side wiring like every VA here.
+const CRED_VA: u64 = 0x0000_0000_00C0_0000;
+
+/// **What `arg2` says the share is.** Four values rather than a flag: the write path made "which
+/// backing" and "which direction" two separate questions, and identity made "who may connect" a
+/// third. A boolean answering all three would have made a read-only real share unwireable and an
+/// authenticated one unsayable. The seams are what enforce these; this is only how the boot says
+/// which it wants.
 const SHARE_FIXTURE: u64 = 0;
 const SHARE_FS_READ_ONLY: u64 = 1;
 const SHARE_FS_READ_WRITE: u64 = 2;
+/// The fs-backed share, read-write, **and no guests**: a session must present an NTLMv2 proof that
+/// the credential service accepts. Needs slot [`CRED`] and the page at [`CRED_VA`].
+const SHARE_FS_AUTHENTICATED: u64 = 3;
 
 /// See the module header on why these are 2 and 3.
 const LISTEN_SID: u64 = 2;
@@ -616,6 +669,92 @@ impl Share for FsShare {
     }
 }
 
+// ============================================================================================
+// Identity (milestone 54's last item). Everything below and nothing above touches the credential
+// endpoint; the protocol machine sees only the `Authenticator` trait.
+// ============================================================================================
+
+/// **The share's authenticator: one endpoint, no key.**
+///
+/// The whole implementation is "put the public parts of the client's claim in a page, `CALL`, and
+/// believe the answer". That is the shape milestone 65 built the credential service for, and the
+/// kernel suite has asserted since then that a program in exactly this position authenticates a
+/// session without ever holding the key
+/// (`an_smb_server_authenticates_a_session_without_ever_holding_the_key`). This is that program,
+/// arrived at from the other direction.
+///
+/// **What this process can do, exhaustively.** Ask whether a proof matches the key stored under one
+/// resource. It cannot read that key (`cred_proto` has no message that returns one), cannot write it
+/// (the provision endpoint was deleted at both ends before this process existed), and cannot ask
+/// about any other resource (the name is [`Self::resource`], not a wire field). Compromising it
+/// yields an oracle that answers questions its own clients were already asking, and revoking the
+/// endpoint ends even that. Samba's `smbd` opens the password database instead, so compromising it
+/// leaks every hash: crackable offline, reusable wherever the password was reused.
+///
+/// **The session key is not asked for and not read.** `cred_proto::verify::NTLM_PROOF` publishes
+/// [MS-NLMP] §4.2.4.1.2's `SessionBaseKey` in the shared page on a match, because a server that
+/// *signs* needs it. This one does not sign, so it never calls `cred_proto::session_key`, and the
+/// service's own wipe is what clears the page. That is asserted from outside by the kernel test that
+/// looks at the frame afterwards, which is the check this process could not make about itself.
+///
+/// Name: provisional, minted by milestone 54's lane on 2026-08-17, following `FsShare`'s
+/// `<what backs it><what it is>` shape.
+struct CredentialAuthenticator;
+
+impl CredentialAuthenticator {
+    /// **The resource whose key this share's sessions are proved against.**
+    ///
+    /// # BUGS
+    ///
+    /// **This names a test fixture, and a deployment must not.** It is
+    /// `cred_proto::fixture::SMB_RESOURCE`, which is [MS-NLMP] §4.2.1's published account, because
+    /// the only boot that wires [`SHARE_FS_AUTHENTICATED`] today is the gate and the store it talks
+    /// to is provisioned by a test program. A real share's resource is somebody's and arrives
+    /// through a provisioning path that does not exist yet.
+    ///
+    /// **The right fix is not a configuration string, it is a narrower capability.** A request that
+    /// names its resource is this program choosing which record to ask about, which is one authority
+    /// more than it needs; the endpoint should *be* the credential for one resource, so the name is
+    /// implied and unforgeable. That is DECISIONS §27's argument ("the endpoint IS the capability")
+    /// applied to `cred_proto`, and it is a change to a contract two programs agree on, so it is
+    /// calef's rather than this lane's. Until then this constant is the exception, and it says so.
+    const fn resource() -> &'static [u8] {
+        cred_proto::fixture::SMB_RESOURCE
+    }
+}
+
+impl Authenticator for CredentialAuthenticator {
+    fn authenticate(&self, a: &Attempt<'_>) -> Verdict {
+        // The blob is the client's and is bounded by the contract, not by hope: a longer one cannot
+        // be laid out, and `place_ntlm_proof` says so rather than truncating into a wrong answer.
+        if a.blob.len() > cred_proto::MAX_BLOB {
+            return Verdict::Refused;
+        }
+        // SAFETY: the wiring mapped one page read/write at CRED_VA before this program ran, shared
+        // with the credential service and with nothing else. One thread per address space
+        // (DECISIONS §33), so there is no second borrow.
+        let page = unsafe { core::slice::from_raw_parts_mut(CRED_VA as *mut u8, cred_proto::PAGE) };
+        let Some(w0) =
+            cred_proto::place_ntlm_proof(page, Self::resource(), a.challenge, a.blob, a.proof)
+        else {
+            // A request the contract will not build is a refusal, not a guess. Nothing was sent.
+            return Verdict::Refused;
+        };
+        let (r0, _) = call(CRED, w0, 0);
+        // `authenticated` collapses every failure mode to false, which is the safe direction and is
+        // in the contract precisely so no caller has to remember which codes were the good ones.
+        if cred_proto::authenticated(r0) {
+            Verdict::Authenticated
+        } else {
+            Verdict::Refused
+        }
+    }
+
+    // `anonymous` is not overridden: the trait's default refuses, which is the whole difference
+    // between this share and a guest one. Spelled as a comment rather than as a method that returns
+    // the default, because a method here would have to be read to find out it changed nothing.
+}
+
 /// Report `code` and stop. One-shot roles must exit, not spin (see `socket_test_client`).
 fn done(code: u64) -> ! {
     send(REPORT, code, 0, 0);
@@ -698,7 +837,9 @@ fn recv_into(at: usize) -> Option<usize> {
 
 /// Serve one accepted connection until the client logs off or the connection dies. Returns true
 /// if at least one SMB message was answered (what "served" means for the test's rounds).
-fn serve_connection(share: &impl Share) -> bool {
+fn serve_connection(share: &impl Share, auth: &impl Authenticator) -> bool {
+    // The NTLMSSP server challenge, and it must differ per connection or a captured proof replays.
+    // `now()` is the clock the adapter holds; see the module BUGS on what that is worth.
     let mut conn = Connection::new(now().to_le_bytes());
     let mut fill = 0usize;
     let mut served = false;
@@ -725,7 +866,8 @@ fn serve_connection(share: &impl Share) -> bool {
 
         let logoff = is_logoff(&rx()[XPORT_LEN..total]);
         let out = tx();
-        let Some(n) = conn.handle(&rx()[XPORT_LEN..total], &mut out[XPORT_LEN..], share) else {
+        let Some(n) = conn.handle(&rx()[XPORT_LEN..total], &mut out[XPORT_LEN..], share, auth)
+        else {
             return served; // not SMB2: drop the connection
         };
         xport_write(out, n);
@@ -767,21 +909,29 @@ pub extern "C" fn _start(rounds: u64, port: u64, fs_backed: u64) -> ! {
     // Dispatched once, here, so the serve loops stay monomorphic over the trait and no protocol
     // code asks again.
     match fs_backed {
-        SHARE_FIXTURE => serve(rounds, &FIXTURE),
-        SHARE_FS_READ_ONLY => serve(rounds, &FsShare { writable: false }),
-        SHARE_FS_READ_WRITE => serve(rounds, &FsShare { writable: true }),
+        SHARE_FIXTURE => serve(rounds, &FIXTURE, &NoIdentity),
+        SHARE_FS_READ_ONLY => serve(rounds, &FsShare { writable: false }, &NoIdentity),
+        SHARE_FS_READ_WRITE => serve(rounds, &FsShare { writable: true }, &NoIdentity),
+        // The only mode that admits nobody by default. It is a separate arm rather than a flag on
+        // the one above so that a boot has to *say* it wants identity, and so that a reader of a
+        // `Spawn` literal can see which it got.
+        SHARE_FS_AUTHENTICATED => serve(
+            rounds,
+            &FsShare { writable: true },
+            &CredentialAuthenticator,
+        ),
         _ => done(0xE130), // an arg2 nobody defined: a wiring bug, named rather than guessed
     }
 }
 
-/// The accept loops, over whichever share the boot wired.
-fn serve(rounds: u64, share: &impl Share) -> ! {
+/// The accept loops, over whichever share and authenticator the boot wired.
+fn serve(rounds: u64, share: &impl Share, auth: &impl Authenticator) -> ! {
     if rounds == 0 {
         // The serve-forever boot: say we are listening, then serve until the machine stops.
         send(REPORT, OK, 0, 0);
         loop {
             if call(STACK, req(OP_ACCEPT, LISTEN_SID), CONN_SID).0 == REP_OK {
-                serve_connection(share);
+                serve_connection(share, auth);
                 let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);
             }
         }
@@ -799,7 +949,7 @@ fn serve(rounds: u64, share: &impl Share) -> ! {
         if !accepted {
             done(0xE120); // nobody connected: is the runner's SMB hostfwd there, and the prober?
         }
-        let served = serve_connection(share);
+        let served = serve_connection(share, auth);
         let _ = call(STACK, req(OP_CLOSE, CONN_SID), 0);
         if !served {
             done(0xE121); // a connection arrived but no SMB message was answered on it

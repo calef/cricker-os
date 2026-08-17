@@ -234,6 +234,27 @@ pub const fn verify_page_va() -> u64 {
     VERIFY_VA
 }
 
+/// **The physical frame behind the verify page**, for wiring a client this module does not spawn
+/// itself (milestone 54's SMB adapter, which is spawned by [`super::virtio_service`] along with a
+/// network stack and a filesystem).
+///
+/// # BUGS
+///
+/// **There is one verify frame, so there can be one verify client at a time.** Two clients mapping
+/// it would interleave requests in one page and read each other's answers, which the service cannot
+/// see and nothing would catch. That is fine as it stands: the SMB adapter and
+/// `credentialer_test_client` are alive in different tests, and the test runner is single-threaded
+/// and waits for each one's report. It is a real limit on a real deployment (two shares means two
+/// adapters means two verify clients), and the fix is a frame per client, which is a change to how
+/// the service is wired rather than to the contract.
+///
+/// Panics if the service was never wired, which is a wiring bug in the caller rather than a
+/// condition to handle: there is no useful behaviour for "authenticate against a service that does
+/// not exist" other than saying so at the spawn.
+pub fn verify_frame() -> u64 {
+    page_for(VERIFY_VA)
+}
+
 /// Unpack the `k`th reply code from a `credentialer_test_client` report's second word. One byte per code; see
 /// `user/src/credentialer_test_client.rs` `Codes`.
 pub const fn nth(packed: u64, k: u32) -> u64 {

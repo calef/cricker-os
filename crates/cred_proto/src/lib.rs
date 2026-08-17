@@ -581,6 +581,38 @@ pub const fn authenticated(r0: u64) -> bool {
     matches!(code(r0), Some(MATCH))
 }
 
+/// **The one login the gates share**, in `fs_proto::fixture`'s shape and for its reason: several
+/// programs have to agree on an account down to the byte, and a second copy of it somewhere would
+/// drift silently into a wrong answer that looks like a bug in the code under test.
+///
+/// Four readers as of milestone 54's identity item: `credentialer_test_client`'s provisioner role
+/// (which stores the key), the SMB adapter (which names the resource it authenticates against),
+/// xtask's SMB prober (which computes a real proof over this password on the host), and the kernel
+/// test that asserts no key material was left in the frame the adapter and the credential service
+/// share.
+///
+/// **It is [MS-NLMP] §4.2.1's published account on purpose.** Microsoft prints every intermediate
+/// value for `Domain\User` with password `Password`, so a gate built on it asserts against numbers
+/// somebody else published rather than against arithmetic this tree performed. `ntlm`'s own tests
+/// pin those numbers; this is the same account, reachable by the programs that need it.
+///
+/// **And it is a fixture, not a deployment.** A real share's account and password are somebody's,
+/// arrive through a provisioning path that does not exist yet, and must never be these. See
+/// notes/smb.md's BUGS.
+pub mod fixture {
+    /// The resource the SMB gate's share authenticates against: the name its NTLM key is stored
+    /// under. A *resource* rather than an account, which is milestone 65's model
+    /// (design/roadmap/65-secrets-service.md): a secret is scoped to the thing it opens.
+    pub const SMB_RESOURCE: &[u8] = b"backups-chris";
+    /// The password behind it. Published by Microsoft; secret to nobody.
+    pub const SMB_PASSWORD: &[u8] = b"Password";
+    /// The account name bound into the stored key at provisioning time.
+    pub const SMB_USER: &[u8] = b"User";
+    /// The domain bound into it. **Not** uppercased anywhere, which is [MS-NLMP] §3.3.2's asymmetry
+    /// and the detail a reimplementation gets wrong silently.
+    pub const SMB_DOMAIN: &[u8] = b"Domain";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

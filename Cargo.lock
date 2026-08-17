@@ -981,6 +981,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "compositor",
+ "cred_proto",
  "fs_proto",
  "gfx_proto",
  "gpt",
@@ -988,6 +989,7 @@ dependencies = [
  "mdns_config",
  "measured_boot",
  "nifefs",
+ "ntlm",
  "smb_proto",
  "video_terminal",
 ]

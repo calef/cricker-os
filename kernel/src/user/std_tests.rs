@@ -249,6 +249,70 @@ pub(super) fn assert_smb_write_landed(had_fs: bool) {
     );
 }
 
+/// **The kernel looks at the frame the SMB adapter and the credential service share**, after two
+/// authenticated SMB sessions have completed through it.
+///
+/// This is the check the adapter could not make about itself, and it is the same one milestone 65's
+/// `no_ntlm_key_material_survives_in_the_shared_frame` makes one layer down: a program can only see
+/// what it was given, and the claim here is about what the service did *not* put in a page two
+/// processes map, and about what the adapter did not keep.
+///
+/// **It is what makes `an_smb_server_authenticates_a_session_without_ever_holding_the_key` a claim
+/// about the real SMB server rather than about a stand-in.** That test spawns
+/// `credentialer_test_client` in a role shaped like an SMB server; this one has the actual adapter,
+/// which has just authenticated a real macOS-shaped NTLMv2 exchange from a host process, and looks
+/// for the three byte strings an attacker would want. The `NTOWFv2` is the one that must never
+/// exist outside the service at all; the `SessionBaseKey` is allowed to cross but only for the
+/// exchange it belongs to, and this adapter never asks for it, so finding it would mean the service
+/// published it into a page that then outlived the session.
+///
+/// The values are [MS-NLMP] §4.2.4's, for `cred_proto::fixture`'s account, and they are the same
+/// literals the milestone-65 test carries. Duplicated rather than shared because they are what a
+/// published specification prints: a constant naming them would let one edit move both, and the
+/// point of a pinned vector is that it cannot be edited into agreement with the code.
+pub(super) fn assert_smb_held_no_key(had_fs: bool) {
+    if !had_fs {
+        return; // no filesystem means no authenticated share and no credential service wired
+    }
+    let mut page = [0u8; 4096];
+    crate::user::credential_service::peek(
+        crate::user::credential_service::verify_page_va(),
+        &mut page,
+    );
+    for (what, bytes) in [
+        // NTOWFv2, §4.2.4.1.1: the stored key, which must never leave the credential service.
+        (
+            "the stored NTLM key",
+            [
+                0x0c, 0x86, 0x8a, 0x40, 0x3b, 0xfd, 0x7a, 0x93, 0xa3, 0x00, 0x1e, 0xf2, 0x2e, 0xf0,
+                0x2e, 0x3f,
+            ],
+        ),
+        // SessionBaseKey, §4.2.4.1.2. This adapter does not sign and never reads it.
+        (
+            "the session key",
+            [
+                0x8d, 0xe4, 0x0c, 0xca, 0xdb, 0xc1, 0x4a, 0x82, 0xf1, 0x5c, 0xb0, 0xad, 0x0d, 0xe9,
+                0x5c, 0xa3,
+            ],
+        ),
+    ] {
+        assert!(
+            !page.windows(bytes.len()).any(|s| s == bytes),
+            "{what} is still in the frame the SMB adapter and the credential service share, after \
+             the adapter authenticated a session through it",
+        );
+    }
+    if let Some(i) = page.iter().position(|&b| b != 0) {
+        panic!(
+            "byte {i} of the SMB adapter's credential frame is {:#04x} after its last exchange: \
+             something the adapter presented, or something of the store's, is still sitting in a \
+             page two processes map",
+            page[i],
+        );
+    }
+}
+
 /// Build the exact bytes `std_exerciser` prints when it is granted a directory capability, into
 /// `buf`; returns the length. Not a `const` because the motd's contents are spliced in from the
 /// shared fixture, and that is the load-bearing part: those bytes came off the RedoxFS image,
