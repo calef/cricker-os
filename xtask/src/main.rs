@@ -3026,6 +3026,10 @@ fn initrd_riscv() -> bool {
             "wc",
             "--bin",
             "doc",
+            // `ps` (milestone 126): the process listing. Both archives, because the claim it
+            // makes is about the capability model rather than about a machine.
+            "--bin",
+            "ps",
             // The credential pair (milestone 56). These were listed in the riscv initrd tables below
             // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
             // file the build was never asked to produce. The lane's own riscv leg went green on a
@@ -3169,6 +3173,9 @@ fn initrd_riscv() -> bool {
         // claim about how the streams compose, and a claim that holds on one instruction set is not
         // one.
         ("doc", "doc"),
+        // The process listing (milestone 126). Both archives: "a program cannot enumerate the
+        // machine" is a claim about this system, not about an instruction set.
+        ("ps", "ps"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -3458,6 +3465,9 @@ fn mkinitrd() -> bool {
         // `doc` (milestone 40): the documentation viewer, a filter from markdown to styled text.
         // Portable for the same reason as `wc`.
         "doc",
+        // `ps` (milestone 126): the process listing over a supervision domain. Portable for the
+        // same reason as `wc`.
+        "ps",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -5344,7 +5354,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 45] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 47] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5438,6 +5448,26 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 45] = [
     // make that claim false. Its wording is host-tested; this proves the wording is about a
     // capability the boot really moves.
     ("caps date", &["cap 1  frame     clock"]),
+    // **`ps`, at the real prompt** (milestone 126). The listing itself: a header, and at least the
+    // row for `ps` itself, which is a member of the domain init spawned it into. Asserting the
+    // header rather than a tid is deliberate: a tid is a generational name that moves with how many
+    // jobs ran before it, and a gate that pinned one would be pinning the boot's history.
+    ("ps", &["TID  STATE"]),
+    // **`ps` cannot see the machine, and this is the shape of the evidence at the prompt.** The
+    // listing above is short: at this line the shell's domain holds `ps` itself and whatever else
+    // the shell has running, which is nothing. A `/proc`-shaped `ps` would be listing init, the
+    // shell, the terminal, the FS server, the compositor, the net stack and every driver.
+    //
+    // **The count is deliberately not asserted here.** `ps | wc` answered three lines on one run
+    // and two on the next, because a pipeline spawns both stages into the same domain and whether
+    // `ps` walks before or after `wc` exists is a race. That is truthful (a survey is a snapshot,
+    // notes/process-view.md) and it makes a count a bad gate. The confinement claim is asserted
+    // deterministically and on both ISAs in `kernel::user::survey_tests`, which builds the domain
+    // it measures instead of inheriting one.
+    // And `caps ps` prints the scope **before** anything is spawned, which is the half Linux has no
+    // way to express: there, "which processes can this see" has one answer for every program on the
+    // machine and no command line chose it.
+    ("caps ps", &["cap 7  endpoint  domain"]),
     // **`2>`, at the one interface a human touches** (DECISIONS §67). The four lines below are the
     // whole of the decision, and only this gate runs them through the real init: the guest tests
     // wire the shell from the kernel, whose `Spawn` fills a cspace from zero and cannot place a
