@@ -599,9 +599,9 @@ pub fn exit() -> ! {
 /// turn an impossible situation into a clean-looking death, which is precisely the confusion the
 /// paragraph above exists to prevent.
 ///
-/// Name provisional (milestone 130). It is a verb, which is right for a function here: `send`,
-/// `recv`, `reap` and `exit` are all verbs, and the naming tenet's noun rule is about crates,
-/// programs and modules rather than about the things they do.
+/// A verb, which is right for a function here: `send`, `recv`, `reap` and `exit` are all verbs, and
+/// the naming tenet's noun rule is about crates, programs and modules rather than about the things
+/// they do.
 pub fn trap() -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill. The options promise
@@ -666,7 +666,7 @@ pub fn trap() -> ! {
 /// print one. A program that *can* print (it holds a terminal endpoint) and wants the message on
 /// the way down still writes its own handler; this macro is the default, not a mandate.
 ///
-/// Name provisional (milestone 130).
+/// Named for the item it expands to, which is the one thing a reader needs it to say.
 #[macro_export]
 macro_rules! panic_handler {
     () => {
