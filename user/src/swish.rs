@@ -1437,6 +1437,24 @@ fn refuse(spec: RunSpec, refusal: Refusal) {
     swish::write_refusal(&spec, refusal, &mut print);
 }
 
+/// One process's three `START` argument words, packed by this shell and forwarded by init without
+/// being read. `fs_proto::grant`'s layout: two words of name, and a spec carrying the length plus
+/// either a rights mask (a caretaker's) or an option mask (a program's).
+type StartWords = (u64, u64, u64);
+
+/// **What a directory grant travels as**: one process's `START` words each, for the two processes a
+/// grant is made of.
+///
+/// Named rather than a bare pair of tuples because the order is the wire's, and getting it backwards
+/// would start `rm` with a directory's name and a caretaker with a file's, which comes up serving a
+/// namespace nobody meant. `spawnproto::GRANT_WORDS` is the count on the other side.
+struct DirWords {
+    /// The `fs_subtree_caretaker`'s: the granted directory, and the rights to ask for.
+    caretaker: StartWords,
+    /// The confined program's: the operand inside that directory, and the options typed with it.
+    child: StartWords,
+}
+
 /// **Turn a planned directory grant into the two triples init needs**, or into the sentence that
 /// says why this one cannot be delivered (milestone 31 phase 3).
 ///
@@ -1469,10 +1487,7 @@ fn refuse(spec: RunSpec, refusal: Refusal) {
 /// **A set of more than one name.** That grant is a `fs_nameset_caretaker`, which is a different
 /// program taking its set in a frame; init builds the subtree one today. `rm *.txt` is planned,
 /// previewed by `caps`, and refused at the point of delivery.
-fn dir_grant(
-    g: &GrantDir,
-    flags: u64,
-) -> Result<((u64, u64, u64), (u64, u64, u64)), &'static [u8]> {
+fn dir_grant(g: &GrantDir, flags: u64) -> Result<DirWords, &'static [u8]> {
     // The directory the caretaker descends into. One component, because that is one `OPENDIR`; a
     // deeper path is a *chain* of caretakers (DECISIONS §92 names it as the case supervision was
     // chosen for) and init builds one.
@@ -1506,13 +1521,13 @@ fn dir_grant(
     };
     let (dir_lo, dir_hi) = fs_proto::grant::pack_name(dir);
     let (name_lo, name_hi) = fs_proto::grant::pack_name(name);
-    Ok((
+    Ok(DirWords {
         // `fs_subtree_caretaker::_start(name_lo, name_hi, spec)`.
-        (dir_lo, dir_hi, fs_proto::grant::spec(dir.len(), rights)),
+        caretaker: (dir_lo, dir_hi, fs_proto::grant::spec(dir.len(), rights)),
         // `rm::_start(spec, name_lo, name_hi)`, whose spec carries the options where a caretaker's
         // carries rights: both are "what this process was started with".
-        (fs_proto::grant::spec(name.len(), flags), name_lo, name_hi),
-    ))
+        child: (fs_proto::grant::spec(name.len(), flags), name_lo, name_hi),
+    })
 }
 
 /// Grant and spawn. The one moment authority moves: split any memory grant off our own budget,
@@ -1585,8 +1600,8 @@ fn spawn(e: Endowment) {
     // **The grant's two data messages, before any delegation** (`spawnproto::GRANT_WORDS`): the
     // caretaker's three `START` words, then the confined program's. They go first because they are
     // data and the delegation is capabilities, and both sides read the order off the one wiring word.
-    if let Some((care, child)) = dir_words {
-        send(SPAWN, care.0, care.1, care.2);
+    if let Some(DirWords { caretaker, child }) = dir_words {
+        send(SPAWN, caretaker.0, caretaker.1, caretaker.2);
         send(SPAWN, child.0, child.1, child.2);
     }
 

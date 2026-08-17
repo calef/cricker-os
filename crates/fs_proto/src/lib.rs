@@ -2579,6 +2579,12 @@ pub mod fixture {
     /// **What the `rm` program reports, and how a diagnostic is told from the verdict**
     /// (milestone 47's `rm -r`, `user/src/rm.rs`).
     ///
+    /// **Where these two words travel** (corrected 2026-08-17). `rm` declares the sink contract
+    /// (`grant_plan::OutputSpec::Bytes`), so its report is framed text and then `sink_proto`'s
+    /// `OP_EOF`; the status and the removal count ride in the two words that end-of-stream message
+    /// leaves free. They used to ride on [`VERDICT`], a word the sink contract has no meaning for,
+    /// which no reader but a guest test could have decoded.
+    ///
     /// `rm` is a **program**, not a shell builtin, so it holds a report endpoint and nothing that
     /// names a terminal. Two kinds of message go out on it, and they are told apart by the first
     /// word, which is what makes "silent on success" checkable from the far end:
@@ -2594,12 +2600,6 @@ pub mod fixture {
     /// nothing, which is `rm(1)`'s default behaviour asserted rather than assumed: a `SEND` blocks
     /// until somebody receives it, so a line that was emitted cannot be missed by looking later.
     pub mod rm {
-        //! **Where these two words travel** (corrected 2026-08-17). `rm` declares the sink contract
-        //! (`grant_plan::OutputSpec::Bytes`), so its report is framed text and then `sink_proto`'s
-        //! `OP_EOF`; the status and the removal count ride in the two words that end-of-stream
-        //! message leaves free. They used to ride on [`super::VERDICT`], a word the sink contract has
-        //! no meaning for, which no reader but a guest test could have decoded.
-
         /// The exit status of a run in which everything named was removed. `rm(1)`: "exits 0 if all
         /// of the named files or file hierarchies were removed".
         pub const OK: u64 = 0;

@@ -183,6 +183,15 @@
 //! has cost were that, once when the kernel grew two grants and once when a boot component was built
 //! one step too early. The order below is load-bearing and the comments say where.
 //!
+//! **It is now nine at rest and fifteen at peak, which is one slot from the wall** (milestone 31
+//! phase 3, 2026-08-17). Keeping the file service and its shared page for the life of the boot took
+//! the resting endowment from seven to nine, and a directory-granted spawn adds the job region, the
+//! narrowed endpoint, the readiness endpoint, and a `build_child` retyping an address space and a
+//! TCB. Anything that wants a tenth permanent capability here has to buy it from something, and the
+//! honest candidates are the readiness endpoint (it could be retyped after the caretaker's build
+//! rather than before, if the caretaker learned to take it another way) and the file page (nothing
+//! but a second frame per grant retires it, which is `notes/shared-page-audit.md`'s proposed lane).
+//!
 //! Name: ratified 2026-08-04 (calef, milestone 96), and it is the ratification that raised
 //! milestone 115. Refused `system_builder` (milestone 63 had already refused it, for a reason still
 //! true: `builder.rs` calls itself "a minimal init: the system builder", so two programs would

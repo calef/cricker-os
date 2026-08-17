@@ -1,13 +1,15 @@
 # 31. A capability shell: designation is authorization
 
-**Status: BUILT.**
+**Status: BUILT.** Closed 2026-08-17 by the lane that built phase 3's last item, init building a
+`fs_subtree_caretaker` per grant. The gate is `script/shell-check` on both ISAs: it types `caps rm
+rmtree/rm-solo`, `rm -v rmtree/rm-solo` and `ls rmtree | wc` at the real prompt, so the authority is
+previewed, the name the command line designated is removed, and the two names beside it inside the
+same capability are still there. `rm gate.txt` beside them is the one grant shape that is still a
+refusal, and it is a refusal about what a name *is* rather than about a missing feature; see "The two
+shapes a grant cannot take" below, which names the design fork it waits on.
 
-**Gate: `script/shell-check` (both ISAs).** It types `caps rm rmtree/rm-solo`, `rm -v
-rmtree/rm-solo` and `ls rmtree | wc` at the real prompt: the authority is previewed, the name the
-command line designated is removed, and the two names beside it inside the same capability are
-still there. `rm gate.txt` beside them is the one grant shape that is still a refusal, and it is a
-refusal about what a name *is* rather than about a missing feature; see "The two shapes a grant
-cannot take" below.
+(The Gate paragraph that stood here said `NONE`, and then named the one remaining item; a BUILT
+milestone gates nothing, so it is gone rather than stale.)
 
 **In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `grant_plan` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note, **retired 2026-08-16**: the interactive shell used to refuse a named file because its boot wired no FS service. Milestone 50 wired it, and `wc gate.txt` at the real prompt is gated on both ISAs; what remains is init building a caretaker per grant. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
