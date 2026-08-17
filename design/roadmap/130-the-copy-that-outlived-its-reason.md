@@ -76,16 +76,39 @@ cost of adding a user program from four edits to two.
 survey checked for drift between them and found none. The smell is the three mechanisms, not the
 contents.
 
-### Third: two functions past the point comments rescue
+### Third: two long functions, and the length turns out to be load-bearing
 
-`kernel_main` is 908 lines (`kernel/src/main.rs:93`), of which 281 are comments, leaving roughly
-six hundred lines of boot sequence in one frame. `syscall::invoke` is 581
-(`kernel/src/syscall.rs:97`). The comment density is this project's style and is not counted
-against them; the boot phases and the per-object dispatch arms are natural seams regardless.
+**Tried, measured, and deliberately not done.** This is the finding, rather than a thing left
+undone, and it is worth more written down than the refactor would have been.
 
-Lowest-value item here, and the one most likely to be left alone: splitting a boot sequence for
-its own sake risks trading a long readable function for several short ones a reader has to
-reassemble. Only split where the seam is real.
+`kernel_main` is 908 lines (`kernel/src/main.rs:93`), of which 281 are comments.
+`syscall::invoke` is 581 (`kernel/src/syscall.rs:97`). The obvious seams in `kernel_main` are
+already marked by `cfg` blocks: a 515-line `#[cfg(target_arch = "riscv64")]` boot report, and a
+285-line `#[cfg(not(any(test, feature = "bench")))]` banner and init handoff. Both capture nothing
+from the enclosing scope but `dtb`, so extracting them is mechanically trivial, and the lane did
+it: the two bodies came out **byte-identical**, and `kernel_main` dropped to 112 lines.
+
+**It broke the build, in a way that is a real property rather than a lint being fussy.** With the
+blocks inline, all four features (`bench`, `shell`, `smb_serve`, `initboot`) compile with **zero
+warnings on both architectures**. Extracted, `bench` and `shell` warn on riscv64 and `smb_serve`
+warns on both. The cause is that these features park early: each is a `cfg`-gated block ending in
+`arch::halt()` or `bench::run()`, and everything after it is unreachable in that configuration.
+One divergent function absorbs that; two functions do not, and `-D warnings` is a gate.
+
+The code already said so, and nobody had connected it to the length. `kernel/src/main.rs:768`
+explains that `smb_serve` parks in place "instead of compiling the tour and the init handoff out,
+so this feature manufactures no dead code for the lint to chase". That property holds **because**
+`kernel_main` is one function with one divergent tail. Both candidate splits were tried, and both
+signatures for the extracted function (`-> !` and `-> ()`); the unit return was worse. Extracting
+either block breaks a different feature, so there is no version of this split that is free.
+
+So `kernel_main` is long because it is the single divergent boot path, and that is a design, not a
+defect. `syscall::invoke` was not touched: its length is one arm per object method, which is the
+shape of the thing it dispatches.
+
+**What this costs, honestly:** a reader still meets a 908-line function. The mitigation is that the
+reason is now recorded here and the experiment does not need repeating. If someone wants this
+split later, the thing to solve first is the early-park pattern, not the function.
 
 ### Fourth: `xtask` has no error type
 
