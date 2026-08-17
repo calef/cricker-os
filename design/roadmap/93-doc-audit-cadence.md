@@ -1,11 +1,22 @@
 # 93. Documentation audits as a mechanism: the docs stay true to the tree
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by calef, as milestone 92's sibling: 92 keeps the
+**Status: BUILT** 2026-08-16. The mechanism is one row in milestone 92's cadence table, not a second
+machine: `documentation` is a kind `script/audits` evaluates, `script/audits --worklist` answers the
+scope question this block left open (a heuristic, not a signal, and the reasoning is in
+[notes/documentation-audit.md](../../notes/documentation-audit.md)), and the procedure is written
+down where a stranger can run it. **The first sweep ran in the same lane**, because a cadence whose
+first run has never happened is a plan: it found thirteen environment variables in prose that name
+nothing, nine backticked paths that resolve to nothing, a rotted line count, and, most instructively,
+a rotted *justification* (`script/lint`'s recorded reason for not gating backticked paths had grown
+from 8-of-95 to 31-of-379). Part 3's compounding half is real rather than aspirational: the first
+class is now gated by `script/lint`'s `==> environment names in prose` and cannot rot again. Report:
+[design/audit-reports/2026-08-16-docs-versus-reality.md](../audit-reports/2026-08-16-docs-versus-reality.md).
+Raised 2026-08-03 by calef, as milestone 92's sibling: 92 keeps the
 security story from rotting; this keeps every other documented claim from rotting. A
 demonstrator's docs are part of the deliverable (CLAUDE.md), so a doc describing a system that no
 longer exists is a defect in the deliverable, not a cosmetic lag.
 
-**Gate: NONE.** The cadence was decided 2026-08-16 (§74) and this milestone shares it: the same triggers read the same tree, because a documentation sweep's input is what changed since the last one.
+The cadence was decided 2026-08-16 (§74) and this milestone shares it rather than proposing its own: the same triggers read the same tree, because a documentation sweep's input is what changed since the last one. (This block carried **Gate: NONE** until it was built; the gate line is dropped rather than kept, because `script/roadmap` is right that nothing gates finished work.)
 
 **The evidence that rot is real here, all found in one day (2026-08-03):** notes/verification.md
 said the proof suite ran in "a few minutes" a month after that stopped being true; two roadmap
