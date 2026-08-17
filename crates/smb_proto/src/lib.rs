@@ -23,9 +23,13 @@
 //! guest without checking anything, which is what "anonymous first, identity later" means
 //! concretely (the `cred`/`ntlm` machinery from milestone 65 is the recorded next step; nothing
 //! here stores or checks a secret, per DECISIONS §79's constraints on credential material). The
-//! share is readable always and writable when its backing says so
-//! ([`share::Share::writable`]); a read-only share refuses every mutating command **at this
+//! share is a **tree** of directories and files, readable always and writable when its backing says
+//! so ([`share::Share::writable`]); a read-only share refuses every mutating command **at this
 //! layer**, before the backing is asked. See the `BUGS` section at the bottom of this header.
+//!
+//! **Paths are parsed here, once, at the edge** ([`path`]). A traversal is a wire attack, so `..`
+//! is refused where the bytes arrive rather than wherever a backing happens to look at it, and the
+//! [`share::Share`] seam takes a [`path::Path`] that cannot be constructed without that check.
 //!
 //! # BUGS
 //!
@@ -33,10 +37,22 @@
 //!   guest session. There is no user database, no proof check, and no signing. Do not put anything
 //!   on a share this serves that the local network may not read, **and now that writes exist,
 //!   nothing you would mind the local network changing.**
-//! - **Free space is nominal.** `FileFsSizeInformation` reports
-//!   [`share::NOMINAL_VOLUME_BYTES`] because `fs_proto` has no `statfs` verb, so a client that
-//!   sizes its work against the answer (Time Machine does) is sizing it against a constant. A
-//!   write past the real end of the image fails with [`STATUS_DISK_FULL`] at the write.
+//! - **Free space is nominal only when the backing has no volume to ask.** A backing that can
+//!   answer [`share::Share::statfs`] is reported verbatim (the fs-backed share does, through
+//!   `fs_proto::fs::STATFS`); [`share::FixtureShare`] is files baked into a binary and has no
+//!   volume, so it falls back to [`share::NOMINAL_VOLUME_BYTES`]. The number is a **forecast**
+//!   either way: a write past the real end of the image still fails with [`STATUS_DISK_FULL`] at
+//!   the write, because free space is not a reservation.
+//! - **A read-only share reports zero free space**, whatever its backing says. That matches
+//!   `READ_ONLY_VOLUME` one field over, and a client that believed the real count would try a write
+//!   this server refuses anyway.
+//! - **Timestamps on a directory are the epoch too**, for the file case's reason below, so a
+//!   listing sorted by date is sorted by nothing.
+//! - **Nothing enforces a depth limit**, only the total path length ([`path::MAX_PATH`]). A deep
+//!   path costs the fs-backed share one descent per component, so it is slow rather than refused.
+//! - **`SET_INFO`'s `FileRenameInformation` ignores a nonzero `RootDirectory`** and answers
+//!   [`STATUS_NOT_SUPPORTED`]. The destination is a share-relative path, which is what every client
+//!   sends.
 //! - **Timestamps are accepted and discarded.** `SET_INFO`'s `FileBasicInformation` succeeds and
 //!   changes nothing, because this server holds no clock capability and `fs_proto`'s `FSTAT`
 //!   carries no times. A client that sets a modification time and reads it back gets the epoch.
@@ -59,6 +75,7 @@
 
 pub mod client;
 pub mod ntlmssp;
+pub mod path;
 pub mod server;
 pub mod share;
 pub mod spnego;
@@ -213,6 +230,12 @@ pub const STATUS_DISK_FULL: u32 = 0xC000_007F;
 /// The backing failed in a way the share model has no word for. Better than a short read a client
 /// would take for end of file.
 pub const STATUS_UNEXPECTED_IO_ERROR: u32 = 0xC000_00E9;
+/// A path component before the last is a file, or a directory verb met a file. The mirror of
+/// [`STATUS_FILE_IS_A_DIRECTORY`], and the pair a tree needs that a flat share did not.
+pub const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
+/// `RMDIR` met a directory with something in it. Refused rather than emptied; the recursion belongs
+/// in the client, one refusable step at a time.
+pub const STATUS_DIRECTORY_NOT_EMPTY: u32 = 0xC000_0101;
 
 /// The one dialect this server offers and accepts: SMB 2.1. See the crate header for why.
 pub const DIALECT_0210: u16 = 0x0210;
