@@ -48,9 +48,16 @@
 //! all six. Milestone 64's measurement found them by asking fifty crates.io crates what they
 //! needed; see notes/crates-io-on-nife.md.
 //!
+//! **And since milestone 64's second pass:** `File::set_len` (`TRUNCATE` again, with the size in the
+//! second word instead of 0) and [`copy`] (no verb, and none needed: it is an open, a read/write
+//! loop and two closes).
+//!
 //! Still Unsupported, each because no verb in the contract backs it: symlinks and hard links,
-//! `canonicalize`, `copy`, `remove_dir_all`, permissions, file times, locks, and `duplicate` (a
-//! handle is a token the server minted; there is no dup verb).
+//! `canonicalize`, `remove_dir_all`, permissions, file times, locks, and `duplicate` (a handle is a
+//! token the server minted; there is no dup verb). `modified`/`accessed`/`created` are the ones to
+//! watch: the server keeps an mtime and §43 gave us a clock to read it against, so the only missing
+//! piece is a **wire-format change** to `FSTAT`'s reply, which is the expensive kind of decision
+//! (two programs have to agree) and is not a lane's to make.
 //!
 //! See notes/std.md for the full list with reasons.
 
@@ -77,9 +84,7 @@ use crate::sys::{unsupported, unsupported_err};
 #[expect(dead_code)]
 #[path = "unsupported.rs"]
 mod unsupported_fs;
-pub use unsupported_fs::{
-    Dir, FileTimes, canonicalize, copy, link, readlink, remove_dir_all, symlink,
-};
+pub use unsupported_fs::{Dir, FileTimes, canonicalize, link, readlink, remove_dir_all, symlink};
 
 /// The FS-service endpoint: this process's entire authority over files. Naming a file over it is a
 /// request the server resolves under the one directory the endpoint is bound to.
@@ -688,8 +693,17 @@ impl File {
         unsupported()
     }
 
-    pub fn truncate(&self, _size: u64) -> io::Result<()> {
-        unsupported()
+    /// **`File::set_len`** (milestone 64, rank 8). The contract's `TRUNCATE` is POSIX `ftruncate` in
+    /// both directions already (`fs_proto::fs::TRUNCATE` says so and the server implements it), and
+    /// the size rides in the second word. This was refused here for the same reason the five verbs
+    /// in milestone 64's first pass were: the binding was never written, not the verb missing.
+    ///
+    /// `File::open` already sends this verb with a size of 0 for `OpenOptions::truncate`, so the one
+    /// difference between "the file was emptied" and "the file is now n bytes" was the word this
+    /// function passes.
+    pub fn truncate(&self, size: u64) -> io::Result<()> {
+        request(proto::req(proto::TRUNCATE, self.handle, 0), size)?;
+        Ok(())
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -996,6 +1010,58 @@ pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
         proto::rename_dst(proto::ROOT, dst.len() as u64),
     )?;
     Ok(())
+}
+
+/// **Copy a file's contents** (milestone 64, rank 26), as an open, a read/write loop, and two
+/// closes. No verb backs this and none needs to: unlike `rename`, which has to be atomic and
+/// therefore has to be the server's job, a copy is exactly "read all of one, write all of the
+/// other", and doing it here costs the same messages doing it in the caller would.
+///
+/// Both names resolve under the granted directory, so this cannot copy across a capability boundary;
+/// a program holding two directories needs the namespace milestone 47 owns.
+///
+/// **What it does not copy is permissions**, which every other platform's `fs::copy` does. There are
+/// none to copy (§27 has no mode bits), so the usual caveat is inverted: nothing is silently lost,
+/// because there was never anything there.
+pub fn copy(from: &Path, to: &Path) -> io::Result<u64> {
+    let mut reader = OpenOptions::new();
+    reader.read(true);
+    let src = File::open(from, &reader)?;
+
+    // Refuse a directory before creating anything, so a mistaken `copy("dir", "x")` does not leave
+    // an empty `x` behind. `File::open` already answers `EISDIR` for a directory source, so reaching
+    // here means the source is a file.
+    let mut writer = OpenOptions::new();
+    writer.write(true);
+    writer.create(true);
+    writer.truncate(true);
+    let dst = File::open(to, &writer)?;
+
+    let mut buf = [0u8; PAGE];
+    let mut copied: u64 = 0;
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let mut written = 0;
+        while written < n {
+            // A short write is not an error and not a loop-exit: the contract's `WRITE` is capped at
+            // one page and may return less, so the only correct read of `Ok(0)` here is a full disk,
+            // which would otherwise spin.
+            match dst.write(&buf[written..n])? {
+                0 => {
+                    return Err(io::const_error!(
+                        io::ErrorKind::WriteZero,
+                        "the FS server accepted no bytes; the destination cannot grow"
+                    ));
+                }
+                k => written += k,
+            }
+        }
+        copied += n as u64;
+    }
+    Ok(copied)
 }
 
 pub fn set_perm(_p: &Path, _perm: FilePermissions) -> io::Result<()> {
