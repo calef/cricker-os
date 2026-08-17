@@ -780,7 +780,23 @@ REGISTRY = {
 # binaries and anything ignored, so target/ and a stray build directory cannot slow it down or
 # confuse it. vendor/ is excluded for the reason the rest of this script excludes it -- it is not
 # our prose.
-MARKER = re.compile(r'<!--count:([a-z0-9-]+)-->')
+# Two relations, and the second exists because equality is the wrong one for a growing quantity.
+#
+#   <!--count:NAME-->           the number must EQUAL the tree. A census.
+#   <!--count-at-least:NAME-->  the number must be a FLOOR. Fires only when the claim goes FALSE.
+#
+# Why (2026-08-17): `kani-harnesses` was marked in four claim sites and the count moved three times
+# in one day, so every lane that added a harness had to edit four files, one of them README.md,
+# which nearly every other lane touches too. That is a merge hotspot manufactured by the convention
+# rather than by the tree. Reading what each site actually claimed split them cleanly: two are a
+# census and want equality; two were conveying **scale** ("121 Kani harnesses across 21 crates: the
+# capability model, IPC, MMU isolation, ..."), and for a monotonically growing quantity a floor is
+# the *true* claim while an exact equality is a maintenance tax that buys nothing.
+#
+# The ratchet is intact, which is the only test that matters here: a floor that goes false still
+# fails the build. Deleting harnesses below a stated floor is exactly the event worth catching, and
+# it is the one an equality check would have drowned in noise.
+MARKER = re.compile(r'<!--count(-at-least)?:([a-z0-9-]+)-->')
 
 # Prose explaining this convention has to be able to spell it, which is the same exemption the
 # "daemon" check below carries for the documents that argue about the word. A marker inside a
@@ -796,7 +812,7 @@ CODE_SPAN = re.compile(r'`[^`]*`')
 NUMBER = re.compile(r'(\d[\d,]*)(?!.*\d)')
 
 grep = subprocess.run(
-    ['git', 'grep', '-n', '-e', '<!--count:', '--', ':!vendor'],
+    ['git', 'grep', '-n', '-e', '<!--count:', '-e', '<!--count-at-least:', '--', ':!vendor'],
     capture_output=True, text=True,
 )
 # git grep exits 1 for "no matches", which is a legitimate state for a ratchet that starts empty.
@@ -829,20 +845,27 @@ for line in grep.stdout.splitlines():
         continue
     text = CODE_SPAN.sub(lambda m: ' ' * len(m.group(0)), text)
     for match in MARKER.finditer(text):
-        name = match.group(1)
+        at_least, name = bool(match.group(1)), match.group(2)
         seen.add(name)
         if name not in REGISTRY:
-            bad.append(f'{path}:{lineno}: <!--count:{name}--> names no entry in the registry')
+            bad.append(f'{path}:{lineno}: {match.group(0)} names no entry in the registry')
             continue
         before = NUMBER.search(text[:match.start()])
         if not before:
-            bad.append(f'{path}:{lineno}: <!--count:{name}--> has no number before it on this line')
+            bad.append(f'{path}:{lineno}: {match.group(0)} has no number before it on this line')
             continue
         if name not in derived:
             derived[name] = REGISTRY[name][1]()
         claimed, actual = int(before.group(1).replace(',', '')), derived[name]
         checked += 1
-        if claimed != actual:
+        if at_least:
+            # A floor. Only a claim that has gone FALSE is a problem; the tree growing past it is
+            # the expected case and must stay silent, which is the whole point of the relation.
+            if claimed > actual:
+                bad.append(f'{path}:{lineno}: claims at least {claimed}, the tree has {actual} '
+                           f'({name}: {REGISTRY[name][0]}). A floor is only wrong when it stops '
+                           f'being true, so this means the count went DOWN')
+        elif claimed != actual:
             bad.append(f'{path}:{lineno}: says {claimed}, the tree says {actual} '
                        f'({name}: {REGISTRY[name][0]})')
 
