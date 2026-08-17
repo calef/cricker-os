@@ -414,9 +414,59 @@ fn std_apply_overlay() -> bool {
     true
 }
 
+/// Remove `# Examples` sections from the doc comments of a file about to be copied into the patched
+/// std sysroot.
+///
+/// A doctest in one of these crates says `use entropy_proto::...`, and in the copy there is no such
+/// crate: the file arrives as `sys/pal/nife/entropyproto.rs`, an inner module of `std`. So the
+/// example is *false* in its destination, in the specific way milestone 68 cares about, which is
+/// that it teaches a reader of the PAL something that is not true of the code they are reading.
+/// Nothing runs std's doctests here, so this is a documentation fix rather than a build fix; it is
+/// done at the copy because the alternative is refusing the workspace crates real examples, and the
+/// workspace is where the example is checked.
+///
+/// Prose and `text` blocks survive: this drops a `# Examples` heading and everything under it, up to
+/// the next heading at the same level or the end of the doc block. Fence state is tracked, so a
+/// hidden doctest line (`# use ...`) inside a code block is not mistaken for that next heading.
+fn strip_doc_examples(body: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    let mut in_fence = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let Some(content) = trimmed
+            .strip_prefix("//!")
+            .or_else(|| trimmed.strip_prefix("///"))
+        else {
+            // Any non-doc line ends the doc block, and with it the section being skipped.
+            skipping = false;
+            in_fence = false;
+            out.push(line);
+            continue;
+        };
+        let content = content.trim();
+        if skipping {
+            if content.starts_with("```") {
+                in_fence = !in_fence;
+            } else if !in_fence && content.starts_with("# ") {
+                skipping = false;
+                out.push(line);
+            }
+            continue;
+        }
+        if content == "# Examples" || content == "# Example" {
+            skipping = true;
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 /// Generate `abi.rs` and `user_heap.rs` verbatim from the host-tested crates, so the ABI numbers and
 /// the heap algorithm have exactly one definition. The transform strips crate-level inner
-/// attributes (`#![no_std]`, illegal in a non-root module) and any trailing `#[cfg(test)]` module.
+/// attributes (`#![no_std]`, illegal in a non-root module), any trailing `#[cfg(test)]` module, and
+/// any `# Examples` section (see [`strip_doc_examples`] for why that last one).
 fn std_generate_modules() -> bool {
     let root = workspace_root();
     let jobs = [
@@ -477,7 +527,7 @@ fn std_generate_modules() -> bool {
         if let Some(idx) = body.find("\n#[cfg(test)]\nmod tests") {
             body.truncate(idx);
         }
-        let body = format!("{}\n", body.trim_end());
+        let body = format!("{}\n", strip_doc_examples(&body).trim_end());
         if let Some(parent) = dst.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -6489,6 +6539,57 @@ fn run(program: &str, args: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The copy into the patched std sysroot must drop a `# Examples` section and keep everything
+    /// else, including the `text` diagrams the protocol crates lead with. The two cases worth
+    /// pinning are the ones a naive line filter gets wrong: a hidden doctest line (`# use ...`)
+    /// looks exactly like a heading, and a section that runs to the end of the doc block has no
+    /// following heading to stop at.
+    #[test]
+    fn the_std_copy_drops_doc_examples_and_keeps_the_prose() {
+        let src = "\
+//! A contract.
+//!
+//! ```text
+//!   a diagram
+//! ```
+//!
+//! # Examples
+//!
+//! ```
+//! # use entropy_proto::GET;
+//! assert_eq!(GET, 1);
+//! ```
+//!
+//! # Nothing here transforms a byte
+//!
+//! Prose that must survive.
+
+/// An item.
+///
+/// # Examples
+///
+/// ```
+/// let x = 1;
+/// ```
+pub const GET: u64 = 1;
+";
+        let got = strip_doc_examples(src);
+        assert!(got.contains("a diagram"), "text blocks are documentation");
+        assert!(got.contains("# Nothing here transforms a byte"));
+        assert!(got.contains("Prose that must survive."));
+        assert!(got.contains("/// An item."));
+        assert!(got.contains("pub const GET: u64 = 1;"));
+        assert!(!got.contains("# Examples"));
+        assert!(
+            !got.contains("entropy_proto"),
+            "the copy is an inner module of std, where that crate does not exist"
+        );
+        assert!(
+            !got.contains("let x = 1;"),
+            "a trailing section, with no heading after it to stop at"
+        );
+    }
 
     /// Build a P6 PPM of the surface's geometry from a per-pixel function, the way QEMU's
     /// `screendump` writes one.
