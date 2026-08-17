@@ -1,7 +1,7 @@
 # 40. Documentation as a system service: searchable, rendered, and installed by packages
 
-**Status: PARTIAL.** Phase 1 is built and the status said NOT-STARTED until calef noticed the tree
-had moved past it (2026-08-16, the week's fifth §76-shaped misrecording). What exists:
+**Status: PARTIAL.** Phases 1 and 2 are built and the status said NOT-STARTED until calef noticed
+the tree had moved past it (2026-08-16, the week's fifth §76-shaped misrecording). What exists:
 `crates/manual` (a streaming markdown renderer, the byte layout of a search index, and the query
 that reads one, all pure and host-tested in `tests/render.rs`), and `user/src/doc.rs`, the viewer
 program, which the shell can spawn as `Prog::Doc`. The renderer was written against
@@ -10,12 +10,22 @@ the alternative and which the crate's header records.
 
 **Gate: NONE.** Its one stated prerequisite, milestone 31's phase 2 per-file grants, is built.
 
+**Phase 2 landed 2026-08-16.** The store is built on the host from the `DOC_BUNDLES` table
+(`cargo xtask manual`), installed into the filesystem image as `doc/<bundle>/` with `doc/bundles`
+naming what is there, and searched from the prompt by **`apropos <word>`**, a shell builtin. The
+whole of it is gated by `script/shell-check` on both architectures: `apropos capability` names the
+pages, and the line after it grants `wc` exactly one of them. Search produces **names, never
+capabilities**, which is why it may be a builtin: a searching *program* would have to be handed the
+whole store to read every shard in it, which is more authority than the answer needs. See
+notes/manual.md.
+
 **What remains, and phase 1 is not wholly done either.** There is **no pager**, and `doc.rs`'s
 header records why in terms this project cares about: paging needs a keypress, so it needs input
 authority the viewer deliberately does not hold. That is a design point rather than a gap to
-close carelessly. Phase 2's host-built per-package index shards are partly present as a format
-(`crates/manual/src/index.rs`) with no builder shipping them, and phase 3, the graphical viewer,
-waits on the display ladder as the block says below.
+close carelessly. **Nor is there yet a line a person can type that renders a page**, which is now
+the biggest gap and is three shell limitations rather than a viewer one (notes/manual.md's `BUGS`).
+It matters more since phase 2: `apropos` hands a reader a page name and the next thing they type
+does not work. Phase 3, the graphical viewer, waits on the display ladder as the block says below.
 
 **In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
@@ -66,15 +76,20 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
 - **A doc bundle is part of a package**: rendered-source markdown plus a small index shard, installed
   into a documentation store when the component is installed. This is where milestone 39's packaging
   observation pays: manifest, hash, version, and now a doc bundle.
-- **The viewer holds a directory capability to the doc store** and nothing else. It cannot read the
-  rest of the filesystem, which is the point, and it does not need to because the index tells it what
-  exists.
+- ~~**The viewer holds a directory capability to the doc store** and nothing else.~~ **It should
+  not, and does not** (phase 1's finding, notes/manual.md): `doc`'s manifest is byte-identical to
+  `wc`'s, its cspace holds two endpoints, and the shell is what resolves a page name. A viewer that
+  could open the page it renders could open any page. Phase 2 kept that true by making search a
+  builtin rather than a program, for the same reason `ls` is one.
 - **The index is a merge of shards**, one per installed package, so installing a component makes its
   documentation searchable without a reindex pass and without any component being able to see
   another's files.
-- **`doc search <term>`** and **`doc view <topic>`**, shell verbs. Milestone 31's grant expression
-  makes this a demonstration rather than a convenience: `doc notes/ipc-naming.md` passes exactly one
-  readable file capability, and a viewer invoked with no argument can read nothing.
+- **`apropos <word>`** and `doc <page>`, shell verbs. (Written as `doc search` / `doc view` when
+  this was scoped; phase 2 split them because `doc` is a program and a builtin sharing its first
+  word would make the parse ambiguous.) Milestone 31's grant expression makes this a demonstration
+  rather than a convenience: `doc notes/ipc-naming.md` passes exactly one readable file capability,
+  a viewer invoked with no argument can read nothing, and `apropos` in front of it passes nothing at
+  all.
 
 ## Phasing
 
@@ -82,7 +97,12 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
   headings, emphasis, lists, block quotes, code blocks, and a pager. Works on the serial console
   today and inherits the display terminal for free when 29's glyph work lands. Host-tested in
   milliseconds like every other pure-logic piece: markdown in, styled bytes out.
-- **Phase 2, search.** The host-built index, the shard merge, and `doc search`.
+- **Phase 2, search. BUILT** (2026-08-16). The host-built index, the shard merge, and the search
+  verb, which is **`apropos <word>`** rather than the `doc search` proposed above: `doc` is a
+  program and a builtin sharing its first word would make the parse ambiguous, and `man`/`apropos`
+  is the split this design already borrowed everywhere else. The merge is
+  `manual::index::Ranked`, a fixed sixteen-result table with no allocator, so a shell with one
+  stack page can hold it.
 - **Phase 3, the graphical viewer.** Rides the display ladder: needs 29's font rendering and sits as a
   client of 33's compositor. Rung three of the ladder is where this becomes a real application.
 

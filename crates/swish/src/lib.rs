@@ -541,11 +541,19 @@ pub fn write_num(mut v: u64, out: &mut dyn FnMut(&[u8])) {
 
 // ---- `apropos`: what a search of the documentation store says (milestone 40 phase 2) ----
 
-/// The column the store location starts in, so the counts line up on their right edge.
+/// How wide the count column is, so the numbers line up on their right edge. Four digits, because
+/// the strongest term in the shipped store occurs 32 times and a page mentioning one nine thousand
+/// times is a page with a different problem.
 const APROPOS_COUNT: usize = 4;
-/// The column the title starts in. Wide enough for `doc/swish/line-discipline.md`, which is the
-/// longest location the shipped store produces, plus two spaces.
-const APROPOS_LOCATION: usize = 30;
+
+/// **The column a title starts in**, counted from the start of the line.
+///
+/// Two spaces of indent, the count, two spaces, then the widest location the shipped store
+/// produces (`doc/swish/line-discipline.md`, twenty-eight bytes) and two more. A longer location
+/// pushes its title right rather than being truncated: losing the name a reader is meant to type
+/// would defeat the whole line. See `BUGS` in notes/manual.md for what that costs at eighty
+/// columns.
+const APROPOS_TITLE: usize = 2 + APROPOS_COUNT + 2 + 28 + 2;
 
 /// **Render one search result**: how strongly it matched, the name a reader can type, and the
 /// page's title.
@@ -556,24 +564,21 @@ const APROPOS_LOCATION: usize = 30;
 /// nearly the location again, and a second path on the line would compete with the one the reader
 /// is meant to type.
 pub fn write_found(f: &manual::index::Found, out: &mut dyn FnMut(&[u8])) {
-    let mut n = 0usize;
-    out(b"  ");
     let mut digits = 1;
     let mut v = f.count as u64 / 10;
     while v > 0 {
         digits += 1;
         v /= 10;
     }
+    out(b"  ");
     pad(APROPOS_COUNT.saturating_sub(digits), out);
     write_num(f.count as u64, out);
-    n += APROPOS_COUNT.max(digits);
     out(b"  ");
-    n += 2;
     out(f.location());
-    n += f.location().len();
+    let n = 2 + APROPOS_COUNT.max(digits) + 2 + f.location().len();
     // A location that ran past its column still gets one space, because a title jammed against a
     // path reads as one word.
-    pad(APROPOS_LOCATION.saturating_sub(n).max(1), out);
+    pad(APROPOS_TITLE.saturating_sub(n).max(1), out);
     out(f.title());
     out(b"\n");
 }
@@ -1215,6 +1220,13 @@ mod tests {
         let ipc = s.find("ipc-naming.md").expect("the second result");
         assert!(pipes < ipc, "{s}");
         assert!(!s.contains("notes/pipes.md"), "{s}");
+        // The titles line up, which is what makes a list of five scannable rather than ragged.
+        let cols: Vec<usize> = s
+            .lines()
+            .map(|l| l.find("Pipes").or_else(|| l.find("Who")).unwrap_or(0))
+            .filter(|&c| c > 0)
+            .collect();
+        assert_eq!(cols, [APROPOS_TITLE, APROPOS_TITLE], "{s}");
     }
 
     #[test]

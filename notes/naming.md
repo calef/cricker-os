@@ -75,6 +75,35 @@ program on the native ABI whose three behaviours are chosen by the authority it 
 unqualified names (`fs_client`, `socket_client`, `credentialer_client`) belong to the real clients
 milestones 54 and 55 will need, and giving them to test programs squats them.
 
+## Shell builtins
+
+A builtin is a word the shell answers itself, and it is the most reader-facing name in the tree
+after a program's: it is typed, and nothing but this file records why it is spelled the way it is.
+`script/lint` cannot check them, because a builtin is a match arm in `grant_plan::parse` rather than
+a file.
+
+The rule is the one the crates already follow with the guard rail intact: **a term of art a reader
+already knows from outside this project is the best name available**, so `cd`, `pwd`, `ls`, `mkdir`,
+`echo`, `time` and `xargs` are Unix's and were never candidates for renaming. `caps` is ours.
+
+- **`apropos`** (milestone 40 phase 2, 2026-08-16). **Provisional.** Search the installed
+  documentation store: `apropos capability` names the pages that mention the word. It is Unix's, and
+  it is the same word for the same job in the same architecture (`man` plus `apropos` plus `mandb`
+  is the split this whole milestone borrowed), so a reader arriving from anywhere else already knows
+  what it does before they run it.
+
+  The roadmap block proposed **`doc search <term>`**, and it was refused for a mechanical reason
+  rather than a stylistic one: `doc` is a **program** and builtins are matched before program names,
+  so a builtin whose first word is `doc` would shadow the viewer for every line beginning with it.
+  A shell where `doc search` and `doc page.md` take different paths through the parser is one where
+  a person has to know which class a command is in before they can type it, which is the thing
+  milestone 47 deleted the `run` verb to avoid.
+
+  `search` alone was refused as a generic word that could name almost anything in an operating
+  system (crates §"generic words", where `compose` and `measure` were caught by the same test), and
+  `find` because it is Unix's name for walking a directory tree, which is the one thing this system
+  cannot do and this milestone exists because it cannot.
+
 ## Crates
 
 ### The one rule, and who applies it (2026-08-01)

@@ -46,16 +46,19 @@
 //!
 //! # EXAMPLES
 //!
-//! On the host, where the same renderer runs over the same bytes:
+//! **Finding a page is `apropos`'s job, not this program's** (milestone 40 phase 2). That split is
+//! the same one Unix makes between `man` and `apropos`, and here it is a capability split too: a
+//! search has to read the store's index, so it is a shell builtin, and what it hands back is a
+//! *name* this program never sees.
 //!
 //! ```text
-//! $ cargo xtask manual capability
-//! search: capability
-//!      7  The manual: documentation as a system service  notes/manual.md
-//!     31  Pipes and redirection: `>`, `<` and `|` are one   notes/pipes.md
+//! $ apropos capability
+//!     32  doc/swish/pipes.md            Pipes and redirection: `>`, `<` and `|` are one
+//!     11  doc/kernel/ipc-naming.md      Who does IPC name?
 //! ```
 //!
-//! At the prompt, this is the whole of what works today, and `BUGS` says why:
+//! At the prompt, this is the whole of what *this* program can be made to do today, and `BUGS`
+//! says why:
 //!
 //! ```text
 //! $ doc
@@ -79,6 +82,10 @@
 //!   deadlocks. So today there is no line a person can type that shows a rendered page. All three
 //!   limitations are the shell's, they are one lane's work, and the renderer underneath is proven
 //!   on this repository's own pages by `every_character_survives`.
+//!
+//!   **Phase 2 made this sharper without touching it.** `apropos` now hands a reader the name of a
+//!   page, and the very next thing they type is the line that does not work. It is the same lane
+//!   and it is now the milestone's biggest gap.
 //! - **No pager, and the reason is authority rather than effort.** Paging needs a keypress, a
 //!   keypress needs `line_editor::proto::OP_READLINE`, and that opcode rides on the terminal
 //!   endpoint whose read side *is* the keyboard. The spawn protocol has no way to hand a child the
