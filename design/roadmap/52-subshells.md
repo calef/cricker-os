@@ -75,7 +75,7 @@ Three production examples, all doing the same thing:
 
 **What these want is not a process.** Build-from-parts already makes processes, and makes them
 faster than `fork` does: `spawn_el0` is ~7.7 µs against Linux `fork`+`exit` at ~19.7 µs
-(notes/benchmarks.md). What these want is **a copy of a running address space** — frozen for the
+(notes/benchmarks.md). What these want is **a copy of a running address space**: frozen for the
 snapshot case, warm for the zygote case. This kernel constructs a child from an ELF image and a list
 of grants; **nothing anywhere copies a live heap.** There is no copy-on-write in the kernel at all
 (checked 2026-08-17: no CoW machinery in `kernel/src` or `crates/`, and no aspace-copy method on the
@@ -137,7 +137,7 @@ the first thing to test in the design conversation.
 duplication; what happens when an endowment contains a non-duplicable capability; is the isolation
 case common enough to build for at all once 50 lands; does `( ... )` keep its Unix spelling if it
 means something materially different; and, from the section above, **is address-space duplication
-this milestone's problem or its own** — it is a kernel question that would exist with no shell in the
+this milestone's problem or its own**, since it is a kernel question that would exist with no shell in the
 tree, and answering it here risks designing a shell feature around a mechanism the shell does not
 need.
 
