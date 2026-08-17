@@ -500,6 +500,16 @@ path = "src/ps.rs"
 test = false
 bench = false
 
+# `pgrep` (milestone 126): the same domain, filtered, with the matching tids as its whole answer. It
+# holds exactly `ps`'s three capabilities and not one right more, which is the argument: it can name
+# the domain's members and there is no `pkill` beside it, because a tid is a name and not a
+# capability. The filter is crates/pgrep, host-tested. Portable for `ps`'s reason.
+[[bin]]
+name = "pgrep"
+path = "src/pgrep.rs"
+test = false
+bench = false
+
 [lints]
 workspace = true
 
@@ -540,6 +550,7 @@ cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 compositor = { version = "0.1.0", path = "../crates/compositor" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 nifefs = { version = "0.1.0", path = "../crates/nifefs" }
+pgrep = { version = "0.1.0", path = "../crates/pgrep" }
 ps = { version = "0.1.0", path = "../crates/ps" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }

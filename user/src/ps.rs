@@ -31,7 +31,7 @@
 //! | slot | what | why |
 //! |---|---|---|
 //! | 0 | the output sink, `WRITE` | where the table goes |
-//! | 7 | the process domain, `READ` | the supervision endpoint whose members it may see |
+//! | 7 | the process domain, `ENUMERATE` | the supervision endpoint whose members it may **name** |
 //! | 8 | the diagnostics sink, `WRITE` | where a refusal goes, so `>` cannot swallow it |
 //!
 //! Three capabilities, and **none of them names a process**. No memory grant, no file, no directory,
@@ -63,15 +63,18 @@
 //!
 //! # BUGS
 //!
-//! - **Holding the domain with `READ` is more authority than looking needs.** `READ` on a
-//!   supervision endpoint is also what `RECV` and `abi::endpoint::REAP` take, so a `ps` endowed a
-//!   view could in principle take a death message out from under the real supervisor or collect a
-//!   corpse. This binary does neither and its source is the whole argument that it does not, which
-//!   is exactly the kind of argument this system exists to replace with a mechanism. Splitting view
-//!   from control needs a rights-model decision (a right of its own, or a narrower object), and that
-//!   is the same decision the signalling stratum has to make to put `pgrep` beside `pkill`. Recorded
-//!   in full in notes/process-view.md.
+//! - **Holding the domain with `READ` was more authority than looking needs. Fixed 2026-08-17**, and
+//!   the entry is kept because the shape recurs. `READ` on a supervision endpoint is also what `RECV`
+//!   and `abi::endpoint::REAP` take, so a `ps` endowed a view could have taken a death message out
+//!   from under the real supervisor or collected a corpse, and this binary's own source was the whole
+//!   argument that it did not. `abi::rights::ENUMERATE` is the right it holds now, and the lane that
+//!   deferred the fix was waiting on a decision the signalling stratum never needed: calef's ruling
+//!   that a domain names its members and does not act on them abolished `pkill` rather than
+//!   answering it. notes/process-view.md carries the argument.
 //! - **The listing has no `CMD` column**, because a process here has no name (see `crates/ps`).
+//! - **`pgrep` is this program filtered**, and it is granted the same three capabilities and not one
+//!   right more (`crates/pgrep`, `user/src/pgrep.rs`). There is no `pkill` beside it and there cannot
+//!   be, which is the whole point of the pair.
 //! - **`ps` lists itself**, as `running`, because it is a member of the domain it was spawned into.
 //!   That is truthful rather than a bug in the walk, and Unix's `ps` does the same; it is recorded
 //!   because the first thing a reader counts is one more than they expected.

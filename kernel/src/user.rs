@@ -2201,6 +2201,12 @@ mod reap_tests;
 /// against a domain it was not granted is **refused loudly** rather than shown an empty list, and
 /// an empty domain answers rather than refusing. Both are asserted in the same test, because
 /// neither claim means anything without the other.
+///
+/// `pgrep`'s filter is driven here too, and this is the only place in the tree that can be: the
+/// selector arrives in a register, and the prompt cannot spell one (`crates/pgrep`'s `BUGS`). The
+/// negative control gains a fourth answer with it, which is a selector that **matched nothing** in a
+/// domain that really has members: distinct from an empty domain and from a refusal, where upstream
+/// `pgrep` collapses all three into printing nothing.
 #[cfg(test)]
 mod survey_tests;
 

@@ -550,6 +550,198 @@ fn the_survey_cursor_counts_threads_the_viewer_cannot_name() {
     collect_all(sup_mine, &[a, b]);
     collect_all(sup_theirs, &[stranger]);
     tidy(budget, endpoints, &[cap, sup_mine, sup_theirs]);
+
+/// **`pgrep`: the filter over the same domain, and the fourth answer it adds** (milestone 126).
+///
+/// This is the only place in the tree that can drive the filter with a real selector over a real
+/// kernel domain. At the prompt the selector arrives in a register and nothing carries bytes from a
+/// command line to a program, so a shell-spawned `pgrep` always takes the default and names every
+/// member (`crates/pgrep`'s `BUGS`). Here a selector can be handed over directly.
+///
+/// Four answers, all distinct, all over one endpoint the kernel really built:
+///
+/// - **members matched**: `pgrep dead` names the corpse and neither live child;
+/// - **nothing matched**: `pgrep ready` over a domain of three says so, and it is *not* the empty
+///   answer and *not* a refusal. Upstream `pgrep` cannot tell these apart, because there all three
+///   are "print nothing, exit 1", so a monitor cannot distinguish an idle machine from a closed
+///   door;
+/// - **the domain is empty**: `crates/ps`'s sentence, reused rather than restated;
+/// - **refused**: a send-only holder, loudly, keeping milestone 108's shape.
+///
+/// And the claim the whole pair exists to make, asserted rather than promised: **the tid `pgrep`
+/// printed cannot be reaped through the capability that printed it.** That is why there is no
+/// `pkill` here. A domain names its members and does not act on them (calef, 2026-08-17).
+#[test_case]
+fn a_filter_names_members_and_tells_its_four_answers_apart() {
+    let (budget, endpoints) = arena();
+    let ep = endpoint(endpoints);
+    let parking = endpoint(endpoints);
+
+    // Two live members blocked in a send, and one corpse. Three states in one domain is what makes a
+    // selector's verdict mean anything: a filter over a uniform domain cannot be wrong.
+    let live_a = child_in(budget, REPORT_STUB, Some(parking), ep);
+    let live_b = child_in(budget, REPORT_STUB, Some(parking), ep);
+    let corpse = child_in(budget, FAULT_STUB, None, ep);
+    assert!(
+        super::tests::wait_for(|| sched::endpoint_waiting_senders(parking) == 2),
+        "the two live children never reached their sends",
+    );
+    assert!(
+        super::tests::wait_for(|| sched::endpoint_waiting_senders(ep) == 1),
+        "the third child never died onto its supervision endpoint",
+    );
+
+    let viewer = hold_view(ep);
+    let mut buf = [ps::Row::default(); TEST_ROWS];
+    let seen = walk(viewer, &mut buf);
+    assert_eq!(seen.rows().len(), 3, "the domain lost a member");
+
+    // **The filter is over exactly the survey `ps` walked**, so an unfiltered selector and the
+    // listing cannot disagree about how many members there are.
+    let all = pgrep::select(&seen, pgrep::Selector::EVERY);
+    assert_eq!(all.matched(), 3);
+    assert_eq!(all.members(), seen.rows().len());
+
+    // `pgrep dead` names the corpse and nothing else. This is the state Unix cannot show without a
+    // parent that happened to call `wait`, and here it is a one-word selector.
+    let dead = pgrep::select(&seen, pgrep::Selector::from_pattern(b"dead"));
+    assert_eq!(dead.matched(), 1, "the corpse was not the only dead member");
+    let mut printed = [0u8; 64];
+    let n = render(&mut printed, |o| dead.write_report(o));
+    assert!(
+        is_the_one_tid(&printed[..n], corpse),
+        "`pgrep dead` printed something other than the corpse's tid",
+    );
+    assert_eq!(
+        render_len(|o| dead.write_diagnostics(o)),
+        0,
+        "a filter that matched said something on its second stream",
+    );
+
+    // **The fourth answer**: nothing is `ready`, and saying so is not the same as an empty domain
+    // and not the same as a refusal.
+    let missed = pgrep::select(&seen, pgrep::Selector::from_pattern(b"ready"));
+    assert_eq!(missed.matched(), 0);
+    let mut missed_diag = [0u8; 128];
+    let missed_n = render(&mut missed_diag, |o| missed.write_diagnostics(o));
+    assert!(
+        contains(&missed_diag[..missed_n], b"none of the 3 processes"),
+        "a selector that matched nothing did not say how many it looked at",
+    );
+    assert_eq!(
+        render_len(|o| missed.write_report(o)),
+        0,
+        "nothing matched and something was printed anyway",
+    );
+
+    // The empty domain, from a second endpoint nobody's child is under.
+    let vacant = hold_view(endpoint(endpoints));
+    let mut vbuf = [ps::Row::default(); TEST_ROWS];
+    let vacant_walk = walk(vacant, &mut vbuf);
+    let empty = pgrep::select(&vacant_walk, pgrep::Selector::EVERY);
+    let mut empty_diag = [0u8; 128];
+    let empty_n = render(&mut empty_diag, |o| empty.write_diagnostics(o));
+    assert!(
+        contains(&empty_diag[..empty_n], b"holds no processes"),
+        "an empty domain was not reported as an empty domain",
+    );
+
+    // The refusal, from a send-only holder: a real relationship in this tree, a peer that reports to
+    // this supervisor and may not look at it.
+    let peer = hold_write(ep);
+    let mut pbuf = [ps::Row::default(); TEST_ROWS];
+    let denied = walk(peer, &mut pbuf);
+    assert!(denied.refused());
+    let refused = pgrep::select(&denied, pgrep::Selector::EVERY);
+    let mut refused_diag = [0u8; 128];
+    let refused_n = render(&mut refused_diag, |o| refused.write_diagnostics(o));
+    assert!(
+        contains(&refused_diag[..refused_n], b"not looked at"),
+        "a refused walk was not reported as a refusal",
+    );
+    assert_eq!(
+        render_len(|o| refused.write_report(o)),
+        0,
+        "a refused filter printed a list",
+    );
+
+    // **The three sentences are three sentences.** Without this, "nothing matched", "nothing is
+    // here" and "you may not look" could share a code path and every assertion above would still
+    // pass.
+    assert!(
+        missed_diag[..missed_n] != empty_diag[..empty_n]
+            && empty_diag[..empty_n] != refused_diag[..refused_n]
+            && missed_diag[..missed_n] != refused_diag[..refused_n],
+        "two of the four answers produced the same bytes",
+    );
+
+    // **And naming the corpse bought no authority over it.** The viewer that just printed this tid
+    // is refused the reap, so the answer `pgrep` gives is a name and not a handle. This is the whole
+    // reason `pkill` is not a program in this system: there is nothing to point at the output.
+    assert_eq!(
+        reap(viewer, corpse),
+        Err(Error::NotPermitted),
+        "the capability that named a corpse could also collect it, so a domain confers control",
+    );
+
+    // Cleanup, through a supervisor capability rather than the viewer, which is the point restated
+    // as a chore: every walk above was made by a holder that could not have collected what it saw.
+    drain(parking, 2);
+    let sup = hold_supervisor(ep);
+    let mut frame = TrapFrame::for_user_entry(0, 0, [0, 0, 0]);
+    invoke(&mut frame, sup, abi::endpoint::RECV, 0, 0, 0).expect("the death message never arrived");
+    collect_all(sup, &[corpse, live_a, live_b]);
+    tidy(budget, endpoints, &[viewer, vacant, peer, sup]);
+}
+
+/// Render a writer's bytes into `buf` and return how many landed. The kernel has no heap, so the
+/// buffer is the caller's, which is `ps::collect`'s rule for the same reason.
+///
+/// Bytes past the end are **dropped and counted**, so a sentence that outgrew the buffer shows up as
+/// a length equal to `buf.len()` rather than as a silently shorter string that a `contains` might
+/// still match.
+fn render(buf: &mut [u8], f: impl FnOnce(&mut dyn FnMut(&[u8]))) -> usize {
+    let mut n = 0usize;
+    f(&mut |bytes| {
+        for &b in bytes {
+            if n < buf.len() {
+                buf[n] = b;
+            }
+            n += 1;
+        }
+    });
+    assert!(n <= buf.len(), "a diagnostic outgrew this test's buffer");
+    n
+}
+
+/// How many bytes a writer would write, for the assertions that only care whether it said anything.
+fn render_len(f: impl FnOnce(&mut dyn FnMut(&[u8]))) -> usize {
+    let mut n = 0usize;
+    f(&mut |bytes| n += bytes.len());
+    n
+}
+
+/// `haystack.contains(needle)` for bytes, because the kernel has no `str` machinery to lean on here.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Whether `printed` is exactly `tid` and a newline, which is `pgrep`'s whole output format: a name
+/// per line, no header and no padding.
+fn is_the_one_tid(printed: &[u8], tid: u64) -> bool {
+    let mut want = [0u8; 21];
+    let mut i = want.len() - 1;
+    want[i] = b'\n';
+    let mut v = tid;
+    loop {
+        i -= 1;
+        want[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    printed == &want[i..]
 }
 
 /// A small membership check without allocating: the kernel has no heap, and these tests hold at
