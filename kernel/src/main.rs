@@ -240,16 +240,16 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // kernel runs exactly as before. See kernel/src/iommu.rs, notes/iommu.md.
         pci::init_iommu();
 
-        // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
-        // `os_primitives_benchmarker` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
-        // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
-        // The instruction-count boot (milestone 78, `script/icount`) diverges here too, on the ISA
-        // whose claim it was written for: SBI's `set_timer` is write-only, so this is the only place
-        // in the tree that proves the firmware was armed with the deadline the kernel recorded.
-        // Before the bench boot, whose feature it implies; see the aarch64 site for why.
+        // The instruction-count boot (milestone 78, `script/icount`) diverges here, on the ISA whose
+        // claim it was written for: SBI's `set_timer` is write-only, so this is the only place in
+        // the tree that proves the firmware was armed with the deadline the kernel recorded. Before
+        // the bench boot, whose feature it implies; see the aarch64 site for why.
         #[cfg(feature = "icount")]
         icount::run();
 
+        // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
+        // `os_primitives_benchmarker` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
+        // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
         #[cfg(feature = "bench")]
         bench::run();
 

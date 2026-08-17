@@ -6209,11 +6209,11 @@ fn run_bench(
 /// armed, and that the handler costs fewer than N instructions) and prints what it measured.
 ///
 /// **This is not on the test path and that is the design.** `-icount` changes what QEMU is, and the
-/// two ways that matter are not the one this project's notes assumed: it is not measurably slower on
-/// compute (measured), but it gives every vCPU **one shared virtual clock**, which forces `-smp 1`
-/// and would silently retire every cross-core property the suite proves, and it makes a clock-bound
-/// wait cost instructions rather than host time. So the instrument gets its own boot, exactly as
-/// `script/bench` does, and the test path is untouched. See notes/instruction-clock.md.
+/// two ways that matter are not the one the milestone block gave: it is **not** measurably slower on
+/// compute (measured, 2026-08-17), but it gives every vCPU **one shared virtual clock**, which forces
+/// `-smp 1` and would silently retire every cross-core property the suite proves, and it makes a
+/// clock-bound wait cost instructions rather than host time. So the instrument gets its own boot,
+/// exactly as `script/bench` does, and the test path is untouched. See notes/instruction-clock.md.
 ///
 /// The verdict arrives the bench boot's way rather than through semihosting: the guest prints
 /// `icount: done` and parks in `wfi`, this owns the child and kills it. A panic (a violated claim)
@@ -6295,11 +6295,57 @@ fn icount_leg(arch: &str, runner: &str, target: &str) -> bool {
         }
     };
 
+    // **A deadline, on a thread, because the guest is not obliged to say anything.**
+    //
+    // The read below blocks, and a QEMU that has wedged before printing (or after panicking, since
+    // this kernel's panic handler halts rather than exiting) never closes the pipe. This lane leaked
+    // two emulators learning that, at 80% of a core each, on a laptop already carrying four other
+    // lanes' gates. AGENTS.md's rule is that every unattended QEMU run is bounded, and a bound that
+    // depends on the guest reaching a marker is not a bound.
+    //
+    // Generous on purpose: the instrument's own work is a few seconds, so this only ever fires on a
+    // machine that is not making progress at all.
+    const DEADLINE_SECS: u64 = 300;
+    const PANIC_GRACE_SECS: u64 = 3;
+    let pid = child.id();
+    let finished = std::sync::Arc::new(AtomicBool::new(false));
+    let panicked = std::sync::Arc::new(AtomicBool::new(false));
+    let watchdog = {
+        let finished = std::sync::Arc::clone(&finished);
+        let panicked = std::sync::Arc::clone(&panicked);
+        std::thread::spawn(move || {
+            // Woken in slices so a normal run's thread goes away promptly rather than sleeping out
+            // the whole deadline after everything else is done.
+            let mut grace: Option<u64> = None;
+            for _ in 0..DEADLINE_SECS {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if finished.load(Ordering::Relaxed) {
+                    return;
+                }
+                // A panic shortens the fuse rather than taking a path of its own. The reader below
+                // keeps printing for a few seconds, however many lines the message runs to, and then
+                // this kill closes the pipe and ends the read. Counting lines instead was the first
+                // attempt and it hung: the panic printed two and the reader waited forever for a
+                // third that a halted guest was never going to send.
+                match grace {
+                    _ if !panicked.load(Ordering::Relaxed) => {}
+                    None => grace = Some(PANIC_GRACE_SECS),
+                    Some(0) => break,
+                    Some(n) => grace = Some(n - 1),
+                }
+            }
+            if grace.is_none() {
+                eprintln!("icount: no verdict in {DEADLINE_SECS}s; killing QEMU (pid {pid})");
+            }
+            // `kill(1)` rather than the `Child`, which the reading thread owns.
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+        })
+    };
+
     use std::io::BufRead;
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::io::BufReader::new(stdout);
     let mut done = false;
-    let mut panicked = false;
     for line in reader.lines() {
         let Ok(line) = line else { break };
         // The guest's own lines, verbatim: the numbers are the deliverable, not a summary of them.
@@ -6311,17 +6357,20 @@ fn icount_leg(arch: &str, runner: &str, target: &str) -> bool {
             }
             continue;
         }
-        // A violated claim is a panic in the guest. Print the whole panic, since its message is
-        // written to say which claim moved and by how much.
-        if line.contains("[PANIC]") {
-            panicked = true;
-        }
-        if panicked {
+        // A violated claim is a panic in the guest, and its message is written to say which claim
+        // moved and by how much. Print it and everything after it; the watchdog's grace period ends
+        // the read, because this kernel's panic handler halts rather than exiting and the pipe would
+        // otherwise never close.
+        if panicked.load(Ordering::Relaxed) || line.contains("[PANIC]") {
             eprintln!("  {line}");
+            panicked.store(true, Ordering::Relaxed);
         }
     }
+    finished.store(true, Ordering::Relaxed);
     let _ = child.kill();
     let _ = child.wait();
+    let _ = watchdog.join();
+    let panicked = panicked.load(Ordering::Relaxed);
 
     if panicked {
         eprintln!("icount: {arch} FAILED a claim (the panic above says which)");

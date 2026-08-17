@@ -341,6 +341,14 @@ there.
   wired into CI beside the bench tripwire, which shares its QEMU cache and its path filter. A
   developer who never runs `script/icount` locally will find out in CI rather than before pushing,
   which is the cost of not putting `-icount` on the test path.
+- **The failure path had to be bounded on the host, and finding that out leaked two emulators.**
+  The guest's panic handler halts rather than exiting, so a violated claim prints its message and
+  then the pipe never closes: `xtask` blocked on the read forever and QEMU stayed alive at ~80% of a
+  core, twice, on a laptop already carrying four other lanes' gates. Counting "a few more lines"
+  after the panic was the first fix and it hung for the same reason, one line further on. The
+  mechanism now is a watchdog thread with a 300 s deadline that a seen panic shortens to three
+  seconds, and killing QEMU is what closes the pipe and ends the read. `run_bench` has the same
+  shape and the same exposure, and was not changed here.
 - **Numbers are from one QEMU.** icount counts guest instructions, so the emulator's version is part
   of what they mean, exactly as `bench/baseline-*.txt` records for itself. `script/qemu-check` warns
   when the QEMU on PATH is not the pinned one.
