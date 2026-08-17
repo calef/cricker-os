@@ -1,19 +1,26 @@
 # 94. The untracked-work sweep, and the convention that ends the category
 
-**Status: PARTIAL** since 2026-08-04 (PR #91, with the minting in PR #94). Deliverable one is
-**done**, in all three of its parts: the sweep ran, the TODO lint landed, the inventory is
+**Status: BUILT** 2026-08-18. Deliverable one landed 2026-08-04 (PR #91, with the minting in PR #94)
+in all three of its parts: the sweep ran, the TODO lint landed, the inventory is
 notes/untracked-work-sweep.md, and each of the nine recorded-accepted findings carries its blessing
-in the paragraph a reader meets the limitation in. **One thing is outstanding, and it is calef's**:
-deliverable two's conventions, drafted below and never landed in AGENTS.md/CLAUDE.md, because a lane
-does not edit that file. Raised 2026-08-03 by calef, completing 92 and 93's family: those keep
+in the paragraph a reader meets the limitation in. **Deliverable two waited fourteen days for one
+edit a lane may not make.** Its conventions were drafted in this block on 2026-08-04 and could not be
+landed from a lane, because a lane does not edit AGENTS.md; nobody staged them for calef until
+2026-08-18, when the maintainer put the drafted text up as a pull request and he approved it. The
+text below is what landed, verbatim.
+
+**That delay is this milestone's own failure mode, for the second time.** Deliverable one's inventory
+sat in a pull request body for twelve days until the item-level list was gone and had to be
+re-derived; deliverable two sat in a roadmap block for fourteen, correctly filed and unactionable,
+because the block recorded *what to do* and nothing recorded *who could do it*. A proposal that only
+its author may enact is one assignment short of tracked. Raised 2026-08-03 by calef, completing 92 and 93's family: those keep
 claims true; this one finds the work the tree has already identified but never gave a home, and
 then changes the working conventions so the category stops refilling.
 
-**Gate: NONE.** Deliverable one, the sweep, needs nothing: 11 TODO-class markers and 29 notes with
-deferral phrasing were the block's predicted floor, and the sweep corrected it (11 hits, 2 real
-markers; `git grep -w TODO` is 82% false positives on this tree, which is what shaped the lint).
-Deliverable two is proposed text only, because a lane does not edit CLAUDE.md; calef lands the
-conventions and places their numbers.
+**What the sweep measured, kept because the numbers are the argument:** 11 TODO-class markers and 29
+notes with deferral phrasing were this block's predicted floor, and the sweep corrected it to 11 hits
+of which 2 were real markers. `git grep -w TODO` is 82% false positives on this tree, which is what
+shaped the lint rather than a threshold anyone chose.
 
 **Two of the three parts of deliverable one were finished twelve days late, by this milestone's own
 failure mode.** The inventory sat in PR #91's description and the nine blessings sat in a lane
