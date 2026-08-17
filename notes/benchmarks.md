@@ -930,3 +930,73 @@ Milestone 21's stated purpose for the tripwire is catching "the *introduction* o
 problems proximate to the changes that introduce them". This is the same mechanism catching
 something better, and the case is worth citing the next time the job's five minutes come up for
 debate.
+
+## 2026-08-17: the RFENCE probe was built, and it refuted the reading above
+
+The section above ends by naming what would settle its inference: "count RFENCE issues on a
+single-hart boot, or print `online_harts_mask()` at bench time on both trees and compare. Neither is
+built, and this is recorded as a reading rather than a mechanism until one of them is." Both are
+built now (`arch::riscv64::remote_fence_count`, the `bench-probe:` lines beside `map_new`, and
+`rfence_self`), and the answer is not the one the reading predicted.
+
+### What the probe measures
+
+| tree | `map_new` | remote fences in the timed window | `online_harts_mask` | `rfence_self` |
+|---|---|---|---|---|
+| `main` (53ca491) | 2362 | **0** | `0x1` | 9.81 ticks/call |
+| pre-fix (593c00e) | 2361 | **0** | `0x1` | 8.91 ticks/call |
+| **PR #176's head** (f601c6b) | **2362** | **0** | `0x1` | 8.91 ticks/call |
+
+The third row is the one that matters. **That is the tree CI measured at 2731**, fetched from
+`pull/176/head` and run with the probe cherry-picked onto it, and here it measures the baseline
+exactly, issues **zero** remote RFENCEs across `map_new`, and reports a mask with one bit set. The
+mask does not over-report and there are no fences to be the cost.
+
+### The arithmetic error that made the wrong reading plausible
+
+The section above computes "+370 ticks over 64 iterations is **5.8 instructions per map**". **A tick
+is not an instruction.** The bench counter is `rdtime` at the machine's timebase, which on QEMU's
+`virt` is ~10 MHz, and `-icount shift=0` makes one instruction one nanosecond of virtual time. So
+one tick is **~100 instructions**, and the delta was ~577 instructions per map, not 5.8.
+
+That kills the reading the section called "the plausible one" from the other direction than it
+thought. Consulting a mask instead of a count is a handful of instructions, which is ~0.05 ticks and
+invisible at this resolution; it was never a candidate for a 5.8-tick move. The section rejected it
+for the right reason (a cost cannot be absent from a tree containing the same code) while its stated
+arithmetic was two orders of magnitude out.
+
+### What one RFENCE actually costs, and why it does not fit either
+
+`rfence_self` prices the firmware path by naming this hart in the SBI hart mask, a legal call the
+firmware serves with a local fence. It costs **8.9 to 9.8 ticks**, so one extra remote RFENCE per
+map would have moved `map_new` by ~570 ticks over 64 iterations. The observed move was 369, or
+**0.65 fences per map**, which is not a whole number of anything.
+
+### What is proven, what is not, and what to run next
+
+**Proven.** Three trees, including the accused one, issue zero remote RFENCEs during `map_new` and
+carry a correct single-bit mask. One RFENCE costs ~9 ticks. The 2026-08-15 inference, that the delta
+was remote RFENCEs fired against an over-reporting mask, **is refuted for PR #176's tree.**
+
+**Not proven, and this is the live confound.** These runs are on **QEMU 8.2.2 with
+`-device riscv-iommu-pci` removed**, because the QEMU available here is not the pinned 11.0.2 and
+does not implement that device. CI measured 2731 on QEMU 11.0.2 with the IOMMU present. So the
+regression may be a property of the machine rather than of the branch, and **the IOMMU is now the
+prime suspect precisely because it is the part of the machine this run deleted.** That fits the
+shape of the original observation better than the mask ever did: the four failing branches were the
+VisionFive 2 lane family, whose subject is per-cpu enumeration, and `pci::init_iommu` runs at boot.
+
+**What to run next**, in order: this probe on the pinned QEMU 11.0.2 **with** the IOMMU present, on
+`main` (CI does this on every pull request now that the probe is in the tree, and the `bench` job
+prints the `bench-probe:` lines); then the same on `pull/176/head`, which is the experiment that
+turns "refuted here" into "refuted". If the fences are still zero there, the cause is elsewhere
+entirely and the 2026-08-15 section should be rewritten rather than amended.
+
+### The part of the old section that survives intact
+
+**Rebaselining would still have been the expensive mistake.** Everything above changes what the
+delta *was*; nothing changes that writing 2731 into the baseline would have silenced a real
+difference nobody had explained. The tripwire's value here was never the diagnosis, which was wrong.
+It was that the number moved, refused to be quiet about it, and stayed unexplained until somebody
+measured. That is what a tripwire is for, and it is the reading in the section above, not the
+instrument, that this correction lands on.
