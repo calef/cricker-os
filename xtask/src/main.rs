@@ -6062,6 +6062,15 @@ fn run_bench(
     let mut done = false;
     for line in reader.lines() {
         let Ok(line) = line else { break };
+        // **Diagnostics pass straight through, and deliberately do not become rows.** A probe
+        // reports a count or a bitmask, not a duration, so putting it in the table would invite
+        // `--check` to police an exact value with a 10% tolerance and would print a meaningless
+        // ns/iter beside it. Echoed instead, so a reader of a bench run sees it and the baseline
+        // never grows a line that is not a measurement. See `bench::map_new`'s shootdown probe.
+        if let Some(probe) = line.strip_prefix("bench-probe: ") {
+            eprintln!("  probe: {probe}");
+            continue;
+        }
         let Some(rest) = line.strip_prefix("bench: ") else {
             continue;
         };
