@@ -2221,10 +2221,24 @@ fn a_dead_user_thread_frees_its_whole_address_space() {
     // aarch64 dev machine, as "-19 frames did not come back", frames arriving from outside the
     // measured window. A leak still fails identically: every frame the outlaws keep holds
     // `used()` above `before` forever. See notes/load-sensitive-assertions.md.
+    //
+    // The count in the message is the one the wait DECIDED on, not a fresh sample, and this site is
+    // why the distinction is worth code. `used() as i64 - before as i64` re-reads the allocator
+    // after the wait has already given up, so frames arriving in that gap make a genuine timeout
+    // print zero or a NEGATIVE count: the exact "-19 frames did not come back" that cost this
+    // family three separate diagnoses, now emitted by a form that can no longer fail for that
+    // reason. A reader who trusts the sign would re-run the old investigation from the top.
+    // `wait_for` re-evaluates the predicate once past its deadline, so a `false` return leaves
+    // `seen > before` and the count below is positive by construction, no cast required.
+    let mut seen = before;
+    let came_back = wait_for(|| {
+        seen = used();
+        seen <= before
+    });
     assert!(
-        wait_for(|| used() <= before),
+        came_back,
         "four user address spaces came and went and {} frames did not come back",
-        used() as i64 - before as i64,
+        seen - before,
     );
 }
 

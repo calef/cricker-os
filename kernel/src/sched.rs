@@ -3965,6 +3965,13 @@ mod tests {
         // produce but one baseline-counted thread exiting mid-test does. Same shape as the
         // `reclaim_frees_a_started_then_exited_childs_regions` fix; see
         // notes/load-sensitive-assertions.md.
+        //
+        // Where the reuse probe below found its own stack, **reported by the thread itself**. A test
+        // cannot read the stack out of a thread it spawned, because by the time it looks the thread
+        // may already have been reaped, which is the very thing this test waits for. A thread taking
+        // the address of one of its own locals has no such race.
+        static PROBE_SP: AtomicU64 = AtomicU64::new(0);
+
         fn batch_of_eight() {
             let mut tids = [0 as crate::thread::Tid; 8];
             for t in &mut tids {
@@ -3984,6 +3991,65 @@ mod tests {
         // table for it. Those are a one-time cost, not a leak: `unmap_page` frees the leaf
         // mapping but leaves the intermediate tables standing (see the TODO on `paging::unmap`).
         batch_of_eight();
+
+        // **Reuse is asserted directly, because the frame count below cannot do it.** Measured
+        // 2026-08-17: with the `FREE_STACK_VAS` push deleted from `KernelStack::drop`, which IS the
+        // milestone-6 bug this test is named for, the entire aarch64 leg passed, this test included.
+        // The reason is arithmetic rather than luck. A slot is `STACK_SLOT_SPAN`, 28 KiB, so eight
+        // of them consume 224 KiB of fresh address space, and a leaked page table costs a *frame*
+        // only when the bump crosses a 2 MiB L3 boundary. 224 KiB is 11% of one table's span, so
+        // the frame count can see the defect only when the batch happens to straddle a boundary,
+        // and that is worse than 11% random: where `NEXT_STACK_VA` stands here is a function of how
+        // many threads the tests BEFORE this one spawned, which is fixed for a given tree. So for
+        // any given tree the frame count either always catches the defect or always misses it, and
+        // which one is decided by unrelated code upstream. The frame assertion below is the outcome;
+        // this is the mechanism, and at that batch size only the mechanism is observable.
+        //
+        // The claim: a thread spawned after the first batch has been reaped lands BELOW the
+        // watermark that stood before it, which is what "it reused a dead thread's range" means.
+        //
+        // **ONE thread, and the count is the whole argument.** The first version of this asserted it
+        // for all eight of a batch and failed on a clean kernel, on thread 1, two slots above the
+        // watermark. That was correct behaviour and a wrong assertion: the watermark is the
+        // high-water mark of *concurrent* live threads, so a batch whose threads happen to be reaped
+        // later relative to spawning legitimately needs more slots than the previous batch did, and
+        // bumps it. Asserting over a batch conflated reuse with concurrency, which is this
+        // milestone's own defect ("a wait written against something wider than the property")
+        // committed while fixing it. Recorded in notes/load-sensitive-assertions.md rather than
+        // quietly corrected, because reproducing the family from the inside is the useful part.
+        //
+        // One thread cannot exceed a high-water mark that eight just set. `thread_present` going
+        // false already implies the push happened (`Threads::remove` runs `KernelStack::drop` before
+        // it removes the table entry), so the free list holds up to eight of the first batch's slots
+        // when this spawns, and a single pop cannot drain it. A neighbour spawning here can only
+        // RAISE the watermark, which makes the claim easier: the failure direction is one-way, which
+        // is the discipline the rest of this test was rebuilt for.
+        //
+        // It runs BEFORE the frame baseline below so that the settle loop absorbs its own stack
+        // frees, rather than leaving them in flight inside the window the frame assertion measures.
+        let watermark = crate::thread::stack_area_span().1;
+        PROBE_SP.store(0, Ordering::SeqCst);
+        let probe = crate::sched::spawn(|| {
+            let local = 0u64;
+            PROBE_SP.store(&local as *const u64 as u64, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+        assert!(
+            wait_for(|| !crate::sched::thread_present(probe)),
+            "the stack-reuse probe was never reaped"
+        );
+        let probe_sp = PROBE_SP.load(Ordering::SeqCst);
+        assert!(
+            probe_sp != 0,
+            "the stack-reuse probe never reported which stack it got"
+        );
+        assert!(
+            probe_sp < watermark,
+            "a thread spawned after eight were reaped was given FRESH stack address space: its sp \
+             {probe_sp:#x} is at or above the {watermark:#x} watermark that stood before it, so a \
+             dead thread's range was not reused and an L2 plus an L3 page table leak per 2 MiB \
+             consumed, forever"
+        );
 
         // Sample the frame baseline only once it has STOPPED MOVING: a reaped thread's stack
         // frames are freed by `finish_switch` on whatever core reaps it, a beat after the thread
@@ -4013,13 +4079,35 @@ mod tests {
         // `<=`, not `==`, and the direction is the argument: a leak leaves `used` ABOVE `before`
         // and never comes back, so the wait times out and fails. A neighbour's late teardown
         // landing in this window can only FREE frames, pushing `used` below `before`, and holding
-        // still is not a property this test can demand of the rest of the machine. Sensitivity to
-        // the milestone-6 bug is unchanged: every leaked frame keeps `used() <= before` false.
+        // still is not a property this test can demand of the rest of the machine.
+        //
+        // **This comment used to end "sensitivity to the milestone-6 bug is unchanged: every
+        // leaked frame keeps `used() <= before` false", and that was true of the arithmetic and
+        // false about the bug.** It is unchanged from the `==` form, which is what it was written
+        // to defend, and both forms are near-blind: the defect leaks page tables per 2 MiB of
+        // address space and eight threads consume 224 KiB, so there is usually no leaked frame for
+        // either form to see. Corrected 2026-08-17 by deleting the VA push and watching the leg go
+        // green. What this assertion is genuinely responsible for is the leak that *does* show at
+        // this batch size, a per-thread frame the reaper failed to return; the reuse claim above is
+        // what covers the defect in the test's name.
+        //
+        // The number in the message is the one the wait DECIDED on, not a fresh sample. Re-reading
+        // `used()` to format the panic races the frames still arriving, so a genuine timeout could
+        // report a delta of zero: `saturating_sub` clamped the negative case away instead of making
+        // it impossible, and "leaked 0 frames" is the same unreadable diagnostic as the "-52" this
+        // milestone is named for, minus the sign that gave it away. `wait_for` re-evaluates the
+        // predicate once after its deadline, so a `false` return leaves `seen > before` and the
+        // count below cannot be zero. See notes/load-sensitive-assertions.md.
+        let mut seen = before;
+        let came_back = wait_for(|| {
+            seen = used();
+            seen <= before
+        });
         assert!(
-            wait_for(|| used() <= before),
+            came_back,
             "a second batch of eight threads leaked {} frames: stack address ranges are not \
              being reused, so page tables accumulate forever",
-            used().saturating_sub(before)
+            seen - before
         );
     }
 
@@ -4403,11 +4491,21 @@ mod tests {
         // `free` ABOVE the baseline, and equality additionally demanded that the rest of the
         // machine hold still for the duration, which is not a property this test is responsible
         // for. See notes/load-sensitive-assertions.md.
+        //
+        // And the number in the message is the one the wait decided on, for the reason the reaper
+        // test's frame half carries at length: a re-sampled `saturating_sub` reports zero when the
+        // frames land between the wait giving up and the panic being formatted, which is a red run
+        // whose message denies there is anything wrong with it.
+        let mut seen = free_before;
+        let recovered = wait_for(|| {
+            seen = crate::memory::stats().unwrap().free();
+            seen >= free_before
+        });
         assert!(
-            wait_for(|| crate::memory::stats().unwrap().free() >= free_before),
+            recovered,
             "six threads came and went and the frame allocator lost {} frames: a kernel stack is \
              still drawing from the allocator instead of the kernel budget",
-            free_before.saturating_sub(crate::memory::stats().unwrap().free()),
+            free_before - seen,
         );
     }
 
