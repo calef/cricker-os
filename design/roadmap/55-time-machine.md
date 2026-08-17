@@ -59,6 +59,16 @@ the durability of the last acknowledged write is the device's word rather than o
 (notes/fs-server.md's crash-injection table records the same gap from the other side). Closing it is
 a device flush in the block server and a sync verb in `fs_proto`.
 
+**The identity substrate arrived 2026-08-17** (milestone 54, pull request #274), which was this
+block's other SMB-side prerequisite and the reason a Time Machine target could not have been serious
+before: a backup share that admits guests is a share anyone on the segment can rewrite. What this
+milestone inherits is a share that requires an NTLMv2 proof, an `Authenticator` seam in `Share`'s
+shape, and a server that authenticates while holding no key. What it inherits as a *problem* is that
+the boot a person runs still admits guests, because nothing can tell a running system a password: a
+Time Machine target is the first thing in this tree that genuinely needs a **provisioning path**, and
+that is milestone 56's shape rather than either of these two blocks'. See notes/smb.md's BUGS.
+
+
 **Nothing here has met a Mac.** QEMU's user-mode networking cannot carry multicast to the host, so
 `dns-sd -B` finds nothing under the emulator by construction; IGMP snooping, forwarding TTLs, a
 live segment's mDNS traffic and a real querier all need hardware on the family network. The

@@ -506,8 +506,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
-- [SMB: the network file service a Mac can mount](smb.md): milestone 54, the head of the customer
-  path. The `smb_proto` wire crate (SMB 2.1, guest sessions, NTLMSSP under minimal SPNEGO, the
+- [SMB: the network file service a Mac can mount](smb.md): milestone 54, **BUILT 2026-08-17** and the
+  head of the customer path. The `smb_proto` wire crate (SMB 2.1, NTLMSSP under minimal SPNEGO, the
   per-connection state machine as host-testable pure logic), the `smb_server` adapter holding one
   network endpoint and one share, the wire decisions listed for review, the two-prober QEMU gate
   that rides milestone 107's spawn, and the mount instructions a real macOS `mount_smbfs` has
@@ -515,7 +515,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   own dialog has not yet exercised. Since 2026-08-16 the share is a **tree** and the volume's
   numbers are the image's: `smb_proto::path` parses a share-relative path once at the wire's edge
   so `..` dies where the bytes arrive, and `fs_proto`'s `STATFS` reaches the volume classes a
-  Time Machine sparsebundle is sized against.
+  Time Machine sparsebundle is sized against. And since 2026-08-17 a share can require an **NTLMv2
+  proof** while the server holds no key: the `authenticator` seam carries only public bytes and a
+  MAC, `ntlm` is a *dev*-dependency of the protocol crate so the shipping code cannot compute a
+  proof, and the gate has a host process authenticate for real over the challenge the guest chose
+  while the kernel checks the page between the adapter and the credential store. The BUGS section is
+  blunt that the *demo* boot still admits guests, because nothing can yet tell a running system a
+  password.
 - [mDNS/DNS-SD: the Time Machine advertisement](mdns.md): milestone 55's second protocol. The
   reference router's actual `_smb`/`_adisk`/`_device-info` records, captured 2026-08-15 and decoded
   (one `_adisk` instance with the disks inside its TXT, SRV port 0 on the flag services, and a

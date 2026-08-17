@@ -21,13 +21,25 @@ end-of-file, rename, disposition and basic classes, delete-on-close, and a share
 writable or not **by declaration**, refusing at the protocol layer rather than at the
 filesystem.
 
+**Identity landed on 2026-08-17**, which was the last item on this milestone's list. A share can
+now require an NTLMv2 proof that milestone 65's credential service accepts, and **the SMB server
+never holds the key that verifies it**: it holds one endpoint to a sealed store, and `smb_proto`
+takes the `ntlm` crate as a *dev*-dependency, so the shipping protocol code cannot compute a proof
+at all. Both ISAs' gates now run an authenticated share, with a host process computing a real proof
+over the challenge the guest issued, and the kernel then reads the page between the adapter and the
+store and requires it to be empty. **The demo boot (`smb-serve`) still admits guests and still says
+so**, for a reason worth knowing before you read further: there is no way to *tell* it a password.
+See BUGS.
+
 ## The pieces
 
 | Piece | Where | What it is |
 |---|---|---|
 | `smb_proto` | `crates/smb_proto/` | The whole wire format: framing, header, every command (both directions since 2026-08-16), NTLMSSP, minimal SPNEGO, create contexts including Apple's `AAPL` (2026-08-17), and the per-connection state machine. Pure logic over byte slices, host-tested, `no_std`. Client-side builders live in the same crate so tests and the prober share every offset with the server. |
 | `smb_server` | `user/src/smb_server.rs` | The adapter program: listen/accept through the socket contract (milestone 107), reassemble direct-TCP framing from bounded `RECV` chunks, hand messages to the state machine, chunk the answers back out. |
-| The SMB prober | `xtask/src/main.rs` | The host side of the QEMU gate: a real SMB2 client that negotiates, sets up a guest session, connects the share, opens the seeded file and asserts its bytes, then writes a second file it never reads back, twice over two connections. |
+| The SMB prober | `xtask/src/main.rs` | The host side of the QEMU gate: a real SMB2 client that negotiates, **authenticates with a real NTLMv2 proof it computes itself**, connects the share, opens the seeded file and asserts its bytes, then writes a second file it never reads back, twice over two connections. It is the only party anywhere that knows the password. |
+| The authenticator seam | `crates/smb_proto/src/authenticator.rs` | `Share`'s sibling: a trait with no IO, three verdicts, and an `Attempt` carrying only public bytes and a MAC. `NoIdentity` is the guest policy, spelled as a value so a boot has to *say* it wants guests. |
+| `CredentialAuthenticator` | in `smb_server` | The implementation that does the IO: one `CALL` on the credential service's verify endpoint. Holds no key and asks for no session key. |
 
 The share behind the adapter is the `Share` trait in `crates/smb_proto/src/share.rs`, with a
 boot-time choice between its implementations (`smb_server`'s `arg2`, which since the write path
@@ -71,12 +83,35 @@ so review can happen where the cost is:
 - **SMB 2.1 (`0x0210`), only.** 2.0.2 predates features macOS wants; the 3.x family drags in
   signing enforcement, encryption and `VALIDATE_NEGOTIATE_INFO`, none needed for a first mount.
   macOS negotiates 2.1 happily (it is the dialect of a decade of NAS boxes).
-- **Guest sessions, NTLMSSP-shaped.** The server answers the NTLMSSP dance (raw or wrapped in
-  SPNEGO, which is how macOS sends it) so a conforming client can finish it, then admits everyone
-  as guest and says so (`SESSION_FLAG_IS_GUEST`). Nothing is verified, no secret is stored
-  anywhere (DECISIONS §79's constraint), and no session is signed. Identity later means wiring
-  the proof check to milestone 65's `cred`/`ntlm` machinery at the one marked point in
-  `smb_proto::ntlmssp`.
+- **NTLMv2, and guest only when a boot asks for it.** The server answers the NTLMSSP dance (raw or
+  wrapped in SPNEGO, which is how macOS sends it), takes the AUTHENTICATE apart, and asks the
+  `smb_proto::authenticator::Authenticator` seam whether the proof checks out. Three answers, three
+  wire outcomes: `Authenticated` is `STATUS_SUCCESS` with `SessionFlags` **clear**, `Guest` is
+  `STATUS_SUCCESS` with `SESSION_FLAG_IS_GUEST` set (the honest label for "nothing was verified"),
+  and `Refused` is `STATUS_LOGON_FAILURE` with the connection left open so a client can retry, which
+  macOS does after prompting.
+- **`STATUS_LOGON_FAILURE` (`0xC000006D`) for a bad proof *and* for an anonymous client**, and it is
+  one status on purpose: distinguishing them would make session setup an oracle for which accounts a
+  store holds. It is what Windows and Samba answer, so a real client's retry logic already knows it.
+- **An anonymous AUTHENTICATE is a distinct thing from a failed one.** `Authenticator::anonymous`
+  answers it, defaulting to a refusal, and that default is the entire difference between a guest
+  share and an authenticated one. It matters because `mount_smbfs -N` and this tree's own prober both
+  send an AUTHENTICATE with every field empty: a server that read "no proof" as "nothing to check,
+  therefore fine" would admit exactly the caller identity exists to shut out.
+- **The seam carries no key material in either direction, and `SessionBaseKey` is deliberately not
+  in it.** An `Attempt` is the server challenge, the presented account and domain (UTF-16LE, as they
+  arrived), the `NTProofStr`, and the client's blob: all public, or a MAC that is worthless without
+  the key. [MS-NLMP] §4.2.4.1.2's session key is what a *signing* server would need, this one does
+  not sign, so the adapter never asks the credential service for it. Adding it later is a widening
+  with a stated reason rather than a field somebody has to justify removing.
+- **The presented account name is not a lookup key.** `cred_proto::verify::NTLM_PROOF` names a
+  *resource*, which the adapter is configured with, so the wire's only contribution is challenge,
+  blob and proof. The account is bound **cryptographically** instead: the stored `NTOWFv2` was
+  derived over the account that owns the resource, so a client claiming a different name derives
+  under a different key and fails, and nothing anywhere compares strings. See BUGS on why the
+  resource being a *constant* rather than an implication of the endpoint is the part that is wrong.
+- **Sessions are still not signed.** A session is proven at setup and unprotected afterwards.
+  Identity buys authentication of the client, not integrity of the stream; that is in BUGS.
 - **`MaxTransactSize`/`MaxReadSize`/`MaxWriteSize` = 65536**, the floor mainstream clients are
   written against, and exactly the static buffer the allocator-less server carries.
 - **One share, named `share`**, a **tree** of directories and files, **writable when the boot says
@@ -219,6 +254,15 @@ handle it already closed gets `STATUS_FILE_CLOSED` rather than a success about n
 1. **Host tests** (`cargo test -p smb_proto`): the state machine driven through a full client
    session, the compound path, the read-only refusals with their statuses, the listing walk,
    SPNEGO round trips, and the transport framing.
+
+   **Identity's nine are in there too**, against a `#[cfg(test)]` authenticator that holds the
+   password (which is the *credential service's* position, and the one the SMB server is never in).
+   Two of them are the ones that would go green on a decorative implementation and so are worth
+   naming: an anonymous AUTHENTICATE must be refused by a share with an authenticator, and a refused
+   session must leave the share *unreachable* rather than merely answer a status. The others pin the
+   guest label being clear on a proven session and set on an unproven one, a retry succeeding on the
+   same connection after a refusal, a captured proof failing against the next connection's challenge,
+   a proof derived over a different domain failing, and `LOGOFF` forgetting that anybody was named.
 2. **The QEMU gate**, both ISAs, and it now proves bytes crossing in **both** directions with a
    different process witnessing each. The read leg asserts a file `fs_test_client`'s seed role
    put on the filesystem; the write leg has xtask's prober create a file over SMB2, write it in
@@ -250,17 +294,37 @@ handle it already closed gets `STATUS_FILE_CLOSED` rather than a success about n
    The prober names each claim separately, so a bit that goes missing says which one it was rather
    than "the bytes differ".
 
+   **The identity leg is three AUTHENTICATE messages down one connection**, in the order that makes
+   each one mean something: an anonymous login (which is what this prober itself sent until identity
+   landed, and what the guest used to admit) refused, a real proof with one bit flipped refused, and
+   the real thing accepted and **not** flagged guest. After each refusal it tries a `TREE_CONNECT`
+   and requires `STATUS_USER_SESSION_DELETED`, because a refusal that only changes a status word is
+   not a gate.
+
+   What that arrangement proves, and no unit test could: **the password exists only on the host.**
+   Inside the guest it exists only as an `NTOWFv2` inside a sealed credential store held by a process
+   with no network; the adapter that answers the exchange holds one endpoint to that store and cannot
+   compute any of the three proofs; the bytes it then serves come from a third process that holds no
+   network either. Four processes, four authorities, one `ls`. And the kernel closes it from the
+   outside: `assert_smb_held_no_key` reads the frame the adapter and the store share **through the
+   direct map**, which no userspace program could do, and requires the published `NTOWFv2`, the
+   published `SessionBaseKey`, and every other nonzero byte to be absent. That is the check the
+   adapter could not make about itself, and it is what turns milestone 65's
+   `an_smb_server_authenticates_a_session_without_ever_holding_the_key` from a claim about a
+   stand-in into a claim about the real SMB server.
+
    The adapter rides the milestone-107 inbound test's spawn
    (`a_host_process_connects_to_the_guest_and_is_answered`) as a **second client of the same
    `Stack` endpoint**, because a second `net_stack` does not fit the test boot (its 192-page
    region is never reclaimed; see `virtio::MAX_DEVICES` for the recorded failure). The test
-   wires the FS service, seeds the gate's file through it, and grants the adapter the directory
-   capability; the runner adds a second `hostfwd` (`NIFE_SMB_HOSTFWD_PORT`) and xtask's SMB
-   prober performs the mount-shaped exchange end to end (asserting the seeded file's bytes)
-   while the echo prober runs beside it. Both verdicts gate. This is the first boot that holds
-   the block server, the FS server, `net_stack` and the SMB adapter at once, so the test prints
-   the free-frame count where it wires them; the day the budget stops fitting, the number is
-   already in the transcript.
+   wires the FS service, seeds the gate's file through it, grants the adapter the directory
+   capability, **and hands it the credential service's verify endpoint** (the same sealed store the
+   milestone-56 tests use, latched once per boot); the runner adds a second `hostfwd`
+   (`NIFE_SMB_HOSTFWD_PORT`) and xtask's SMB prober performs the mount-shaped exchange end to end
+   (asserting the seeded file's bytes) while the echo prober runs beside it. Both verdicts gate.
+   This is the first boot that holds the block server, the FS server, `net_stack`, the SMB adapter
+   **and the credentialer** at once, so the test prints the free-frame count where it wires them;
+   the day the budget stops fitting, the number is already in the transcript.
 
 ## EXAMPLES
 
@@ -291,6 +355,20 @@ change the image; on loopback that is this machine, and on a real network it wou
 fixture-fallback line instead (no RedoxFS disk), the files are `hello.txt` and `readme.md`,
 baked into the adapter. Unmount before stopping QEMU, or Finder will beat against a dead forward
 for a while.
+
+**Why this says Guest when the milestone shipped identity.** The demo boot has no way to be told a
+password (BUGS, first entry), so it wires the guest share on purpose and its banner says so. The
+authenticated share is what both ISAs' gates run, and the way to watch it work is the gate's own
+transcript:
+
+```sh
+script/test 2>&1 | grep -A3 'smb check'
+```
+
+which reports the anonymous login refused, the one-bit forgery refused, and a real NTLMv2 proof
+accepted. If you want to try an authenticated mount by hand today you would have to boot the gate's
+wiring rather than `smb-serve`, and the account would be the published fixture in
+`cred_proto::fixture`, which is exactly why the demo does not ship it.
 
 ## BUGS
 
@@ -326,6 +404,37 @@ for a while.
   a collision gets a silent overwrite. That is the wrong direction to fail in and it is the one
   thing in this area worth fixing next; the fix is a `NOREPLACE` question in `fs_proto`, not
   something this layer can answer.
+
+- **The demo boot still admits guests, so the thing a person actually runs is still open to
+  everyone who can reach the port.** `--features smb_serve` wires `SHARE_FS_READ_WRITE`, not
+  `SHARE_FS_AUTHENTICATED`, and its banner says so. The reason is not laziness and not a flag: there
+  is no way to *tell* that boot a password. The only thing in the tree that provisions the credential
+  store is `credentialer_test_client`'s provisioner role, carrying [MS-NLMP] §4.2.1's published
+  fixture, and a demo whose password Microsoft printed would be worse than a labelled guest share.
+  **What closes this is a provisioning path**, which is milestone 56's territory, and it is the
+  entry on the list below.
+- **An authenticated share authenticates exactly one account**, because it is configured with one
+  resource. Several accounts mean several adapters, one directory capability each. That fits Time
+  Machine (one share per Mac) and it is a real limit on anything else.
+- **The adapter's resource name is a constant naming a test fixture**, in
+  `smb_server::CredentialAuthenticator::resource`. The right fix is not a configuration string, it is
+  a **narrower capability**: a request that names its resource is the adapter choosing which record to
+  ask about, which is one authority more than it needs, and the endpoint should *be* the credential
+  for one resource so the name is implied and unforgeable. That is DECISIONS §27's argument applied
+  to `cred_proto`, and it is a change to a contract two programs agree on.
+- **Sessions are not signed.** A proven session is unprotected once established, so an attacker on
+  the path can inject into it. Nothing here is worse than the guest share it replaces, and the honest
+  reading is that identity buys authentication of the *client*, not integrity of the *stream*.
+- **The server challenge is the adapter's `now()`**, a clock rather than entropy. Two connections in
+  the same tick would repeat a challenge, and a repeated challenge is what makes a captured proof
+  replayable. The fix is an entropy capability (milestone 56's service) and one more slot.
+- **There is one verify page, so one verify client.** The credential service maps a single frame for
+  its client side, so two SMB adapters would interleave requests in one page and read each other's
+  answers. The gates are fine (one adapter, a single-threaded runner) and a deployment with two
+  shares is not. The fix is a frame per client, in the service's wiring rather than in the contract.
+- **No rate limiting and no credit accounting.** Nothing costs an attacker anything to retry, and
+  an Argon2id verification is deliberately expensive, so a login flood is a denial of service against
+  the credential service that every other client shares.
 - **The write path has never met a real Mac.** The 2026-08-15 mount was against a read-only
   share; the write half is gated by host tests and by the QEMU prober, which is a conforming
   client this tree wrote, and a conforming client is not the same thing as `smbfs`. Expect the
@@ -416,3 +525,25 @@ for a while.
 6. **Identity**: the NTLMSSP proof check against milestone 65's `cred` service, so a share can
    be more than guest-readable. The seam is marked in `smb_proto::ntlmssp`. **Writes raised the
    stakes**: guest means everyone, and on a writable share that means everyone may change it.
+
+5. ~~Identity~~ **Done** (2026-08-17): `smb_proto::authenticator`, the AUTHENTICATE parse in
+   `smb_proto::ntlmssp`, and `smb_server::CredentialAuthenticator` over milestone 65's verify
+   endpoint. Gated on both ISAs by a host process computing a real NTLMv2 proof over the guest's own
+   challenge, with the two refusals asserted beside it and the kernel checking the frame afterwards.
+   The wire decisions are in the section above and in pull request #274.
+
+## What remains after milestone 54, in order
+
+1. **A provisioning path**, and it is the one that matters, because until it exists the boot a person
+   actually runs (`smb-serve`) admits guests to a writable share. Nothing in the tree can tell a
+   running system a password: the only provisioner is a test program with a published fixture in it.
+   That is milestone 56's shape (design/roadmap/56-secrets-and-entropy.md), and identity landing has
+   made it the head of this path rather than a supporting item.
+2. **The resource should be implied by the capability, not named in the request.** The adapter is
+   configured with a resource name, which is one authority more than it needs; the endpoint should
+   *be* the credential for one resource. DECISIONS §27's argument applied to `cred_proto`, and a
+   change to a contract two programs agree on, so it is calef's.
+3. **Signing**, which is what `SessionBaseKey` is for and the reason the credential service publishes
+   one. A proven session is currently unprotected once established.
+4. **An entropy capability for the server challenge**, which is `now()` today.
+5. **A frame per verify client**, so two shares can be two adapters.

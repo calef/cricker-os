@@ -45,14 +45,16 @@
 //!
 //! ```
 //! use smb_proto::{
-//!     H_SESSION_ID, H_STATUS, H_TREE_ID, MAX_MESSAGE, STATUS_SUCCESS, client, r32, r64,
-//!     server::Connection, share::FIXTURE,
+//!     H_SESSION_ID, H_STATUS, H_TREE_ID, MAX_MESSAGE, STATUS_SUCCESS, authenticator::NoIdentity,
+//!     client, r32, r64, server::Connection, share::FIXTURE,
 //! };
 //!
 //! // One request through the state machine, the way a socket loop would drive it.
 //! fn exchange(c: &mut Connection, request: &[u8]) -> Vec<u8> {
 //!     let mut out = vec![0u8; MAX_MESSAGE];
-//!     let n = c.handle(request, &mut out, &FIXTURE).expect("SMB2 in, SMB2 out");
+//!     let n = c
+//!         .handle(request, &mut out, &FIXTURE, &NoIdentity)
+//!         .expect("SMB2 in, SMB2 out");
 //!     out.truncate(n);
 //!     out
 //! }
