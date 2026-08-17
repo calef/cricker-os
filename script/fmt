@@ -54,3 +54,19 @@ cargo fmt --manifest-path fs_server/Cargo.toml "$@"
 # this costs a rustfmt pass over four small files and closes the hole before it opens: the lesson
 # above is that a gate does not reach across a workspace boundary, and this is a new boundary.
 cargo fmt --manifest-path fuzz/Cargo.toml "$@"
+
+# `std_exerciser` is a fifth, and finding it unformatted is the third time this exact lesson has been
+# learned in this file. It has been its own workspace since milestone 27 and this gate has never
+# reached it, so the file it holds had a rustfmt diff sitting in a CI-green tree, exactly as
+# `fs_server` did. Nothing about `std_exerciser` needs the `nife-dev` toolchain to be *formatted*:
+# rustfmt parses, it does not build, so no target spec and no build-std are involved.
+cargo fmt --manifest-path std_exerciser/Cargo.toml "$@"
+
+# And the `getrandom` backend (milestone 64), a sixth. It lives under `patches/` and is the one thing
+# there that this gate SHOULD reach, which is worth saying out loud because `script/lint` excludes
+# `patches/` wholesale and a reader will notice the disagreement. The rest of that directory is
+# upstream's own source, patched (`patches/std-nife/overlay` is rustc's `std`), and reformatting
+# somebody else's code would make every future rebase a conflict. `patches/getrandom-nife` is ours,
+# written here, and the only reason it sits under `patches/` at all is that it exists to patch a hole
+# in a crates.io crate.
+cargo fmt --manifest-path patches/getrandom-nife/Cargo.toml "$@"
