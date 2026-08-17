@@ -10,7 +10,8 @@ designing a target. All three are fixed and pinned by host tests.
 
 ## What fuzzing finds that Kani does not
 
-This project has **107 Kani harnesses across 19 crates**, and DECISIONS §14 says the proofs are the
+This project has **119 Kani harnesses** <!--count:kani-harnesses--> **across 21 crates** <!--count:harness-crates-->,
+and DECISIONS §14 says the proofs are the
 thesis. Adding a fuzzer only earns its place if it answers a question the proofs cannot, so that is
 the first thing to settle.
 

@@ -78,6 +78,22 @@ clone should be one command from working, but it is also why `script/test` does 
 trade. `setup`/`update` do the heavy dependency work; `test` stays fast; `ci-build` provisions
 because CI has nothing to start with.
 
+## Counted claims, one of `script/lint`'s checks
+
+Milestone 125 added a check that does not fit the table above, because what it gates is the prose
+rather than the code. A number carrying a `<!--count:NAME-->` marker is re-derived from the tree on
+every build, and `script/lint` fails on a mismatch, naming both values and the line. Three registry
+entries so far (`kani-harnesses`, `harness-crates`, `sh-scripts`); an unmarked number stays
+unchecked, which is the ratchet working as designed. See [counted-claims.md](counted-claims.md) for
+how to add one, and for the honest limits.
+
+**This section is prose and not a row in that table on purpose**, and the reason is worth knowing
+before you edit either. `script/lint`'s row is the longest line in the repository's markdown at
+1835 bytes <!--count:longest-markdown-line-->, and `manual`'s renderer sizes `LINE_MAX` at 2048
+against exactly that measurement. Extending
+that row by a sentence overflows the buffer, and the way you find out is a `manual` render test
+failing while pointing at text three hundred lines further down the file.
+
 ## CI leverages them
 
 `.github/workflows/ci.yml` runs seven jobs whose actual work is a script: the test job runs

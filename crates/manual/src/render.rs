@@ -9,8 +9,15 @@
 use crate::Sink;
 
 /// The longest source line the renderer holds. The longest line in this repository's markdown is
-/// 1835 bytes; this is the next power of two above it, so the corpus fits with room and a document
-/// from elsewhere fails loudly through [`Renderer::truncated`] rather than quietly.
+/// 1835 bytes <!--count:longest-markdown-line-->; this is the next power of two above it, so the
+/// corpus fits with room and a document from elsewhere fails loudly through
+/// [`Renderer::truncated`] rather than quietly.
+///
+/// That measurement is re-derived by `script/lint` on every build (see `notes/counted-claims.md`),
+/// because it is a **margin** and not a description: a lane that grows the longest line spends
+/// headroom nobody is watching. Milestone 125 did exactly that while documenting the check,
+/// pushing the line to 2108 and breaking a render test whose message pointed at unrelated text
+/// three hundred lines away.
 pub const LINE_MAX: usize = 2048;
 
 /// How deep inline markup may nest before the renderer stops descending and emits the rest

@@ -649,6 +649,218 @@ for name in $(grep -oE "script/[a-z-]+" "$(dirname "$0")/../README.md" | sort -u
 done
 echo "script docs: every script documented, every README reference resolves"
 
+# Counted claims (milestone 125). DECISIONS §39 says a name is a claim; so is a number, and a number
+# is the kind of claim a machine can check, which is what makes this a gate rather than an audit.
+#
+# The evidence it was needed: three claimed counts were tested against the tree on 2026-08-14 and
+# **all three were wrong**, two of them disagreeing with each other as well as with the tree. Every
+# one had been correct when it was written. Nobody re-derives a number, so every number in this tree
+# is a snapshot of whenever somebody last counted.
+#
+# The convention is one HTML comment sitting after the number it vouches for:
+#
+#     **119 harnesses** <!--count:KANI-HARNESSES--> across 21 crates <!--count:HARNESS-CRATES-->
+#
+# (spelled in capitals here ONLY so this example is not itself a claim the gate then has to keep
+# true; a real marker is lower case. The names below are the real ones.)
+#
+# and the registry below is the other half: one entry per name, each saying in the prose's own words
+# WHICH QUESTION IT ANSWERS, and deriving the answer from the tree. See notes/counted-claims.md.
+#
+# **It is a ratchet, not a sweep.** An unmarked number stays unchecked and the gate says nothing
+# about it; the population grows as people touch numbers. That is the honest boundary of what this
+# buys, and it is the same restraint `script/names --check` keeps: insist a marked number be right,
+# never that every number be marked.
+echo "==> counted claims"
+python3 - <<'PYEOF' || exit 1
+import pathlib
+import re
+import subprocess
+import sys
+
+# --- the registry -------------------------------------------------------------------------------
+#
+# One entry per count name. `question` is the sentence the prose asks, in the prose's own words,
+# because the failure this gate is most likely to have is answering a subtly different question than
+# a human would and so failing a correct document. "How many `#!/bin/sh` scripts" has at least three
+# defensible answers (`ls script/` gives 37; the shellcheck glob is wider), so the entry has to say
+# which one it means and the prose has to mean the same one.
+#
+# `derive` returns an int and must be CHEAP and DETERMINISTIC: lint runs on every build, and a gate
+# that is slow or flaky is a gate people route around. Anything needing a build (the frame numbers
+# from script/stack-frame-check, say) does not belong here. Each derivation's comment states the
+# SHAPE IT ASSUMES, because this tree already recorded a count that was wrong for exactly that
+# reason: the grep behind it matched only single-line `#[path]` includes while several sites were
+# two lines, and the resulting "three modules" went into AGENTS.md as fact.
+
+# A proof harness: the attribute alone on its line, indented or not. Anchoring to the whole line is
+# what keeps prose ABOUT the attribute out of the count -- scripts/kani-lint-shim/ spells
+# `#[kani::proof]` twice inside doc comments, and neither is a harness. The `\b.*` tail admits
+# `#[kani::proof_for_contract(...)]`, which the tree does not use today; matching only the bare form
+# would give a count that is quietly low the day somebody does, and a low count is no better than a
+# high one when the prose is copying it.
+HARNESS = re.compile(r'^[ \t]*#\[kani::proof\b.*\][ \t]*$', re.M)
+
+
+def _harness_hits():
+    """(crate directory name, number of harnesses) for every crate under crates/ that has any.
+
+    Scoped to `crates/` because that is where `cargo kani` can reach: script/verify proves
+    packages, and the kernel, the user programs and xtask are not packages it compiles. The
+    vendored RedoxFS carries two harnesses of its own that this suite has never run, and counting
+    them would make the number describe a suite nobody executes.
+    """
+    hits = {}
+    for path in pathlib.Path('crates').rglob('*.rs'):
+        n = len(HARNESS.findall(path.read_text(errors='replace')))
+        if n:
+            hits[path.parts[1]] = hits.get(path.parts[1], 0) + n
+    return hits
+
+
+def _sh_scripts():
+    """Files under script/ and scripts/*.sh whose first line is exactly `#!/bin/sh`.
+
+    Assumes script/ is flat (it is: every entry is an executable, no subdirectories) and that
+    scripts/ mixes .sh files with directories, which is why only *.sh is globbed there. Deriving
+    from the shebang rather than from the glob is what makes the NAME true: the prose says
+    "`#!/bin/sh` scripts", so the gate counts files that start with `#!/bin/sh`.
+    """
+    files = [p for p in pathlib.Path('script').iterdir() if p.is_file()]
+    files += [p for p in pathlib.Path('scripts').glob('*.sh') if p.is_file()]
+    return sum(1 for p in files
+               if p.read_text(errors='replace').split('\n', 1)[0].strip() == '#!/bin/sh')
+
+
+def _longest_markdown_line():
+    """The longest line, in bytes, in this repository's own markdown.
+
+    Tracked .md files, vendor excluded, because that is the corpus `manual`'s renderer is sized
+    against. **This one has a consumer rather than only a reader**: `manual::render::LINE_MAX` is
+    2048, chosen as the next power of two above this measurement, and a document that exceeds
+    LINE_MAX is truncated. So the number is a safety margin, and letting it drift silently spends
+    the margin.
+
+    It is here because this gate's own author spent it. Documenting the counted-claims check in
+    notes/scripts.md's `script/lint` row, which IS the longest line, took it to 2108 and broke a
+    `manual` render test whose message pointed three hundred lines away at unrelated text. Bytes
+    rather than characters, matching what LINE_MAX bounds.
+    """
+    files = subprocess.run(['git', 'ls-files', '*.md', ':!vendor'],
+                           capture_output=True, text=True, check=True).stdout.split()
+    return max(len(line.encode())
+               for f in files
+               for line in pathlib.Path(f).read_text(errors='replace').split('\n'))
+
+
+REGISTRY = {
+    'longest-markdown-line': (
+        "how long the repository's longest markdown line is, in bytes, which is what "
+        'manual::render::LINE_MAX is sized against',
+        _longest_markdown_line,
+    ),
+    'kani-harnesses': (
+        'how many Kani proof harnesses the tree carries, which is what script/verify proves',
+        lambda: sum(_harness_hits().values()),
+    ),
+    'harness-crates': (
+        'how many crates carry at least one Kani proof harness',
+        lambda: len(_harness_hits()),
+    ),
+    'sh-scripts': (
+        'how many `#!/bin/sh` scripts there are under script/ and scripts/, which is the set '
+        'shellcheck gates',
+        _sh_scripts,
+    ),
+}
+
+# --- finding the markers ------------------------------------------------------------------------
+#
+# `git grep` rather than a walk: it is one process, it reads only tracked files, and it skips
+# binaries and anything ignored, so target/ and a stray build directory cannot slow it down or
+# confuse it. vendor/ is excluded for the reason the rest of this script excludes it -- it is not
+# our prose.
+MARKER = re.compile(r'<!--count:([a-z0-9-]+)-->')
+
+# Prose explaining this convention has to be able to spell it, which is the same exemption the
+# "daemon" check below carries for the documents that argue about the word. A marker inside a
+# backtick span is being QUOTED, not asserted, so blank the spans before looking. Blanked rather
+# than deleted so that column positions still line up with the number-before-marker search.
+CODE_SPAN = re.compile(r'`[^`]*`')
+
+# The number a marker vouches for is the LAST integer on the line before the marker, commas allowed
+# so that `1,303 commits` works. Last rather than first, because a sentence usually reaches its
+# number at the end ("across 21 crates") and because a line with two counts wants each marker to
+# bind to the number just before it -- notes/unsafe-obligations.md is the live case, and it says
+# crates before harnesses, the opposite order to everywhere else.
+NUMBER = re.compile(r'(\d[\d,]*)(?!.*\d)')
+
+grep = subprocess.run(
+    ['git', 'grep', '-n', '-e', '<!--count:', '--', ':!vendor'],
+    capture_output=True, text=True,
+)
+# git grep exits 1 for "no matches", which is a legitimate state for a ratchet that starts empty.
+if grep.returncode not in (0, 1):
+    sys.stderr.write(grep.stderr)
+    sys.exit(1)
+
+bad, checked, seen = [], 0, set()
+derived = {}
+# Markdown fences: a marker inside ``` is an EXAMPLE of the convention, not a claim about the tree.
+# The roadmap block and notes/counted-claims.md both show one, and both would otherwise be checked
+# against numbers they were never asserting. Fenced blocks only; an indented code block is not
+# recognised, which is a limitation notes/counted-claims.md records rather than hides.
+fenced = set()
+for path in {line.split(':', 1)[0] for line in grep.stdout.splitlines() if line}:
+    if not path.endswith('.md'):
+        continue
+    inside = False
+    for n, text in enumerate(pathlib.Path(path).read_text(errors='replace').split('\n'), 1):
+        if text.lstrip().startswith('```'):
+            inside = not inside
+        elif inside:
+            fenced.add((path, n))
+
+for line in grep.stdout.splitlines():
+    if not line:
+        continue
+    path, lineno, text = line.split(':', 2)
+    if (path, int(lineno)) in fenced:
+        continue
+    text = CODE_SPAN.sub(lambda m: ' ' * len(m.group(0)), text)
+    for match in MARKER.finditer(text):
+        name = match.group(1)
+        seen.add(name)
+        if name not in REGISTRY:
+            bad.append(f'{path}:{lineno}: <!--count:{name}--> names no entry in the registry')
+            continue
+        before = NUMBER.search(text[:match.start()])
+        if not before:
+            bad.append(f'{path}:{lineno}: <!--count:{name}--> has no number before it on this line')
+            continue
+        if name not in derived:
+            derived[name] = REGISTRY[name][1]()
+        claimed, actual = int(before.group(1).replace(',', '')), derived[name]
+        checked += 1
+        if claimed != actual:
+            bad.append(f'{path}:{lineno}: says {claimed}, the tree says {actual} '
+                       f'({name}: {REGISTRY[name][0]})')
+
+if bad:
+    print('lint: a counted claim disagrees with the tree:', file=sys.stderr)
+    for entry in bad:
+        print(f'  {entry}', file=sys.stderr)
+    print('', file=sys.stderr)
+    print('Fix the number, or fix the derivation in script/lint if the tree is right and the gate '
+          'is asking the wrong question. See notes/counted-claims.md.', file=sys.stderr)
+    sys.exit(1)
+
+unused = sorted(set(REGISTRY) - seen)
+extra = f'; {len(unused)} registered and unmarked ({", ".join(unused)})' if unused else ''
+print(f'counted claims: {checked} markers over {len(derived)} counts, all agreeing with the tree'
+      f'{extra}')
+PYEOF
+
 # The naming conventions, for the ones a machine can check (milestone 46, DECISIONS §39). The rest of
 # them -- "name a component for what it is", "prefer a word a reader can parse without prior Unix
 # exposure" -- need judgement and stay prose, in notes/naming.md. These four do not.

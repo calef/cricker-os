@@ -214,6 +214,15 @@ set -- -j "${VERIFY_JOBS:-4}" --output-format=terse
 # than its sibling still proves exactly the same harnesses, so this table can never make the proofs
 # wrong. Re-measure by reading the `==> kani:` timestamps out of a CI log, which is what produced
 # these, rather than by running the suite locally for half an hour.
+#
+# **A MISSING ROW is the one way this table can make the proofs wrong**, and it happened. `mdns_proto`
+# landed with milestone 55 carrying three harnesses and was not added here, so nothing proved them and
+# nothing said so: the suite went green faster, which is exactly the invisible failure the sharding
+# comment below warns about, arriving through the crate list instead of through the packer. Found on
+# 2026-08-16 by milestone 125, whose `harness-crates` count is derived from the tree and so could not
+# agree with a list that was one crate short. Its 21 seconds are measured on the dev Mac rather than
+# from a CI log, which is the wrong machine for this column and is why the row is a slight
+# underestimate; replace it from the first CI run that includes it.
 CRATES="$(cat <<'TABLE'
 capability	8	the capability model
 paging	9	the address arithmetic, and the IOMMU domain's page set
@@ -235,6 +244,7 @@ calendar	600	the civil-date arithmetic, and the parser on hostile text
 glob	902	matching is total, and a hostile pattern cannot be made to blow up
 fs_proto	1	a directory capability's child never exceeds its parent, at any depth
 cred_proto	4	no request word reads outside the page; nothing but MATCH authenticates
+mdns_proto	21	the name decoder terminates and stays in bounds on every byte string
 TABLE
 )"
 
