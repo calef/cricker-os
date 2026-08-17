@@ -2,11 +2,16 @@
 
 **Status: PARTIAL.**
 
-**Gate: NONE.** The mechanism is built and the block names nothing that blocks a start on the
-**three** remaining residuals: state handoff, dependency-aware orchestration, and the hung-component
-case. Each is a lane or more. The fourth, **the component manifest, is built** (2026-08-17,
+**Gate: DECISION.** For one of the two residuals that remain. State handoff needs a serialise-old /
+absorb-new protocol, which is a wire format and so calef's. Dependency-aware orchestration needs no
+decision but does need a manifest extension first: a component declares what it *needs*, not that
+another component *supplies* it, so there is no dependency graph to orchestrate against yet.
+
+The other two residuals are done. **The component manifest is built** (2026-08-17,
 `crates/component_plan`, notes/component-manifest.md), which is the piece milestone 39's packaging
-analysis leans on.
+analysis leans on. **The hung-component case is demonstrated** (2026-08-17,
+notes/hung-component.md), and it took a decision *out* of this milestone rather than adding one: see
+the section below.
 
 **In brief.** Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency)
 
@@ -46,11 +51,40 @@ other, without noticing. What is **not** done is shipping a manifest with a bina
 compiling it in, which is a wire format and so calef's call; the options and their costs are in that
 note's `BUGS`.
 
+**The hung component was demonstrated 2026-08-17, and it corrects a sentence this block and two
+DECISIONS sections all repeat.** §32 declined the case with "a supervisor that must restart a *hung*
+child still needs the stronger right", and §41 and notes/live-replacement.md both cite that. It is
+right about **reclaiming the hung component's memory** and wrong about **restarting its service**,
+and those are different acts. `swapper` grew a third role that runs the four steps against an
+incumbent which swallows one request and stops answering, and three of the four are unchanged: the
+one that needs the incumbent's cooperation (`OP_QUIESCE`) is the one a hang makes **redundant**,
+because quiescing exists to make a component stop receiving and a hung component already has. The
+device comes back from a live, wholly uncooperative holder by §41's `GRANT`-gated take-back, and the
+replacement drains what queued behind the silence. So a service is restored with no authority the
+operator did not already hold.
+
+The harder half is now measured rather than asserted, and it is three findings. **The domain does not
+report a hang**: `abi::endpoint::SURVEY` (milestone 126) says `BLOCKED`, which is byte for byte what a
+healthy server parked in `RECV_CAP` says, and no death message ever arrives. **`Endpoint::REAP` is
+refused for every member**, `StillAlive`, which is §32 working as designed and leaving a supervisor
+with a verb and nothing to apply it to. And **`abi::Error::Gone` does not reach a caller stranded
+mid-`CALL`**: it is woken by `ipc_reply` and by nothing else, the one-shot Reply capability naming it
+is `WRITE` without `GRANT` inside the hung component's own cspace, so freeing it needs the cooperation
+whose absence *is* the hang. Two decisions are named and not taken (how a supervisor notices, which is
+milestone 106's timed wait; and what may be done to a component that never cooperates, where the
+finding is that the stronger right is not merely large but **insufficient**, since a permanently
+blocked thread never reaches `schedule()` to spend the kill a `DESTROY` arms). No watchdog program was
+built, deliberately: both its halves are behind those decisions.
+
 **What remains, and it is the part the block itself calls the real engineering:** state handoff
-(the component here is near-stateless, which is what makes kill-and-replace sufficient),
+(the component here is near-stateless, which is what makes kill-and-replace sufficient) and
 dependency-aware orchestration (which will need the manifest to carry a dependency graph, and it
-does not yet: a component declares what it needs, not that another component supplies it), and the
-hung-component case (§32's watchdog). Also the console proper: the component swapped owns the real
+does not yet: a component declares what it needs, not that another component supplies it). The
+hung-component work sharpens both: a hung component cannot be asked to serialise its state, so a
+handoff protocol that needs the outgoing instance's cooperation recovers a planned swap and not the
+failure it is most wanted for; and the quiescence protocol orchestration needs is exactly the step a
+hang makes unavailable, so a dependency-aware supervisor needs a non-cooperative fallback for every
+edge in its graph. Also the console proper: the component swapped owns the real
 UART and is shaped like a console server, but `line_editor`/`display_terminal`/`compositor` are not themselves swapped,
 because the interactive stack is not running under the test harness.
 
@@ -122,7 +156,10 @@ ring variant is io_uring, DPDK, and virtio.
   protocol over a supervisor-brokered channel. Prior art: Erlang/OTP `code_change`, VM live
   migration, CRIU checkpoint/restore. This is where the real engineering is.
 - **Dependency-aware orchestration.** If B is a client of A, swapping A means quiesce B, swap,
-  resume; the supervisor (22) needs the dependency graph and a quiescence protocol.
+  resume; the supervisor (22) needs the dependency graph and a quiescence protocol. And a fallback
+  for when a node will not quiesce, per notes/hung-component.md.
+- ~~**The hung component.**~~ **Demonstrated 2026-08-17**, notes/hung-component.md, with the two
+  decisions it cannot pass without stated there rather than in a chat message.
 
 **The fixed core, stated honestly.** Two things are deliberately *not* hot-swapped this way, and
 that boundary is a feature. The **kernel** is the verified TCB enforcing everything; you do not
