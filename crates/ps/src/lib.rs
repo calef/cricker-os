@@ -233,30 +233,45 @@ impl Survey<'_> {
         !self.refused() && !self.truncated
     }
 
-    /// **Everything to complain about, said before a byte of output** (DECISIONS §67).
+    /// **What there is to complain about, as a clause a program name prefixes**, or `None` when the
+    /// walk succeeded and found processes.
     ///
-    /// Writes nothing at all when the walk succeeded and found processes, which is the common case
-    /// and the one where a second stream should stay silent.
-    pub fn write_diagnostics(&self, out: &mut dyn FnMut(&[u8])) {
+    /// Split out of [`write_diagnostics`](Survey::write_diagnostics) so that a *second* program over
+    /// the same survey reuses these sentences instead of writing a parallel catalogue: `crates/pgrep`
+    /// filters this listing and has to describe a refusal in the same words, or the two programs
+    /// drift into disagreeing about what one refusal means. The clause carries no program name and no
+    /// newline for exactly that reason.
+    ///
+    /// The order is the order [`write_diagnostics`](Survey::write_diagnostics) has always used, and
+    /// the empty domain is last because it is the only one of the four that is **not** a failure.
+    pub fn complaint(&self) -> Option<&'static str> {
         if self.stalled {
-            out(b"ps: the survey did not advance; the listing is incomplete\n");
-            return;
+            return Some("the survey did not advance; the listing is incomplete");
         }
         if let Some(code) = self.refused {
-            out(b"ps: ");
-            out(refusal(code).as_bytes());
-            out(b"\n");
-            return;
+            return Some(refusal(code));
         }
         if self.truncated {
-            out(b"ps: the listing buffer filled; this domain has more in it\n");
-            return;
+            return Some("the listing buffer filled; this domain has more in it");
         }
         if self.rows.is_empty() {
             // **Not an error, and it must not read like one.** The caller held the domain and was
             // allowed to look; there was nothing in it. This is the sentence that distinguishes an
             // empty answer from a refused one, which is the distinction Linux's `ps` cannot draw.
-            out(b"ps: this domain holds no processes\n");
+            return Some("this domain holds no processes");
+        }
+        None
+    }
+
+    /// **Everything to complain about, said before a byte of output** (DECISIONS §67).
+    ///
+    /// Writes nothing at all when the walk succeeded and found processes, which is the common case
+    /// and the one where a second stream should stay silent.
+    pub fn write_diagnostics(&self, out: &mut dyn FnMut(&[u8])) {
+        if let Some(clause) = self.complaint() {
+            out(b"ps: ");
+            out(clause.as_bytes());
+            out(b"\n");
         }
     }
 
