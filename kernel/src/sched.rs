@@ -4035,9 +4035,12 @@ mod tests {
         // The reason is arithmetic rather than luck. A slot is `STACK_SLOT_SPAN`, 28 KiB, so eight
         // of them consume 224 KiB of fresh address space, and a leaked page table costs a *frame*
         // only when the bump crosses a 2 MiB L3 boundary. 224 KiB is 11% of one table's span, so
-        // the frame count notices at best one run in nine, and on a suite that spawns the same
-        // threads in the same order every time it notices never. The frame assertion is the
-        // outcome; this is the mechanism, and only the mechanism is observable at this batch size.
+        // the frame count can see the defect only when the batch happens to straddle a boundary,
+        // and that is worse than 11% random: where `NEXT_STACK_VA` stands here is a function of how
+        // many threads the tests BEFORE this one spawned, which is fixed for a given tree. So for
+        // any given tree the frame count either always catches the defect or always misses it, and
+        // which one is decided by unrelated code upstream. The frame assertion is the outcome; this
+        // is the mechanism, and at this batch size only the mechanism is observable.
         //
         // The claim: every thread in the second batch lands BELOW the watermark that stood before
         // the batch began, which is what "it reused a dead thread's range" means. `NEXT_STACK_VA`

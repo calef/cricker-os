@@ -395,6 +395,21 @@ is not an obstacle. Recommended here, not built here.
   other 34 were not audited here; the diagnostic above is the checklist for reading any of them.
   *(Rounds two, three and four took eight more between them, all found by reading rather than by
   waiting for a red run. The backlog is real and it is smaller than 34.)*
+- **A frame count is a weak detector of a page-table leak, and the reaper test's is the measured
+  case.** Eight thread stacks are 224 KiB of address space against a 2 MiB L3 span, so a leak
+  charged per 2 MiB is usually invisible; the fifth round proved it by deleting the VA push and
+  watching the leg go green. The reuse assertion added beside it covers that defect directly, and
+  the frame bound is now scoped to the leak it can see. **The same question is unasked at every
+  other site that infers a mechanism from a frame count**, which is the third grep the fifth round
+  adds to the reading order.
+- **The reuse assertion reads a global watermark, deliberately, and the reason it is safe is the
+  direction.** `stack_area_span()`'s watermark is machine-wide, so a neighbour spawning while
+  `FREE_STACK_VAS` is empty moves it. That can only *raise* it, which makes "my batch landed below
+  it" easier, so contention cannot produce a false failure. The residual is the mirror of the
+  `<=` coincidence caveat above: a neighbour that raised the watermark by more than eight slots
+  inside the window could mask a genuine reuse failure for one run. The defect is per spawn and
+  permanent, so it fails every run regardless, and a spawn burst that large would have to land
+  inside a batch of eight.
 - **The `>=` frame assertion in `kernel_stacks_do_not_touch_the_frame_allocator_in_steady_state`
   inherits the coincidence caveat above**, in the other direction of the same trade: a real
   regression of `k` frames passes if a neighbour frees at least `k` inside the same window. The
@@ -609,3 +624,120 @@ backlog is a sharper reading order than "check them against the same question": 
 here were all found by grepping the allowed files for a **global count taken as a baseline**
 (`thread_count()`, `free_frames()`, `stats().free()`) and for a **loop with no clock in it**. Those
 two greps are cheap, and between them they caught every site this round changed.
+
+## The fifth round, 2026-08-17: the assertion that could not catch the bug in its own name
+
+This round was briefed on the block's three negative-discrepancy assertions, which the fourth round
+had already found finished and said so on this page. The brief was written from the **block**, whose
+gate line still asked for "three small changes with three arguments" and whose evidence table still
+read as a worklist. So the fourth round's own complaint (a reader coming to the block first is sent
+to three finished sites) had a second victim, and the fix this time went into the table rather than
+onto this page: the block's evidence rows now carry a **disposition column**, and its gate line names
+the icount instrument, which is what is actually left. A note saying the table is stale does not stop
+the table being read.
+
+Checking the three a second time produced one record correction and **one defect**, and the defect is
+the more interesting half.
+
+### The reaper test could not catch milestone 6's leak, and an injection proves it
+
+`a_finished_thread_is_reaped_and_its_memory_returned` exists for one defect: stack address ranges
+that are not reused, so an L2 and an L3 page table accumulate per 2 MiB of address space consumed,
+forever. It asserted that a second batch of eight threads costs zero extra frames, and the first
+round re-aimed that assertion from `==` to a waited `<=` on the argument that "sensitivity to the
+milestone-6 bug is unchanged".
+
+**The sensitivity was unchanged and it was never there.** Deleting the `FREE_STACK_VAS` push from
+`KernelStack::drop`, which is that defect exactly, passed the **entire aarch64 leg** including this
+test. The arithmetic says why, and it is not luck:
+
+- a slot is `STACK_SLOT_SPAN`, 7 pages, 28 KiB;
+- eight of them consume 224 KiB of fresh address space;
+- a leaked page table costs a *frame* only when the bump crosses a 2 MiB L3 boundary;
+- 224 KiB is 11% of one table's span.
+
+So the frame count can see the defect only when the batch happens to straddle a boundary. **And it is
+worse than 11% random.** Where `NEXT_STACK_VA` stands when this test runs is a function of how many
+threads the tests before it spawned, which is fixed for a given tree, so for any given tree the
+assertion either always catches the defect or always misses it, and which one is decided by unrelated
+code upstream. That is a detector whose sensitivity is set by its neighbours, which is the family's
+own theme arriving from a direction this page had not recorded: not a neighbour causing a false
+failure, a neighbour deciding whether a real failure is visible at all.
+
+The frame count was always a **proxy** for reuse. The fix is to assert the mechanism: every thread in
+the second batch must land **below the watermark that stood before the batch began**, which is what
+reusing a dead thread's range means. Each thread reports its own `sp`, because a test cannot read the
+stack out of a thread it is simultaneously waiting to see reaped, and a local's address is a stack
+address with no race in it.
+
+**The failure direction is one-way, so this is not a new global exposure.** `NEXT_STACK_VA` moves only
+when the free list is empty, so a neighbour spawning inside the window can only *raise* the watermark,
+and raising it makes the claim easier to satisfy. Contention cannot fail it; that is the same test the
+first round applied to `used() <= before`, applied to the half that was still a proxy.
+
+The frame assertion stays, scoped to the leak it can actually see (a per-thread frame the reaper did
+not return), and the comment claiming its milestone-6 sensitivity was corrected in place rather than
+deleted, because what it said was true about the arithmetic it was defending and false about the bug.
+
+### Three panics that could still print the impossible quantity
+
+The three converted sites all wait on a one-directional bound and then **re-sample the allocator to
+format the panic**. The measurement was re-aimed in the first round; the message was not, and it is
+the message a person reads at 2 a.m. deciding "known or real".
+
+- `user/tests.rs` prints `used() as i64 - before as i64`, so a genuine timeout whose frames land in
+  the gap between the wait giving up and the panic being formatted still prints **"-19 frames did not
+  come back"**: the exact string this milestone is named for, now emitted by a form that can no longer
+  fail for that reason. A reader who trusts the sign re-runs the whole 2026-08-03 investigation.
+- the two `sched.rs` sites use `saturating_sub`, which is worse rather than better. It clamps the
+  impossible quantity to **"leaked 0 frames"** and removes the sign that gave the original bug away.
+
+All three now report the observation the predicate actually decided on. `wait_for` re-evaluates once
+past its deadline, so a `false` return leaves the captured sample strictly on the failing side of the
+bound: the printed count is positive by construction, with no cast and no clamp.
+
+### The injections, and what each one settled
+
+Every injection was reverted. Recorded in full, including the two that did not reach their target,
+because a failed injection is how the useful facts arrived.
+
+| injection | what it is | result |
+|---|---|---|
+| delete the `FREE_STACK_VAS` push in `KernelStack::drop` | milestone 6's leak, exactly | **whole aarch64 leg green.** The defect is invisible to the suite |
+| the same, against the new reuse assertion | | **red on thread 0 of the second batch**, naming both addresses |
+| restore the push, keep the new assertion | | green, so the assertion is not simply always red |
+| skip `untyped::destroy` in `AddressSpace::drop` | a dead space returns nothing | never reached the target test: exhausted memory ~370 tests in, at "no stack region for the net client" |
+| leak one frame per `AddressSpace::drop` | a dead space returns all but one frame | caught by `reclaim_frees_an_unbound_address_spaces_region` first, `left: 61501, right: 61502` |
+| leak one frame per dead user thread, in `finish_switch`'s reap arm | narrowed to the aspace test's own subject | caught by `destroy_force_kills_a_runaway_and_reclaims_its_region` first, `left: 52403, right: 52404` |
+| leak four frames inside the aspace test's measured window | the defect arranged where only this assertion can see it | **red**, "four user address spaces came and went and **4** frames did not come back" |
+
+Three things worth keeping from the misses, and they are worth more than the hit.
+
+**The whole-region injection is too coarse to test anything downstream of it**, so a leak injection
+aimed at a late test has to be one frame wide.
+
+**The exact-equality frame assertions the fourth round deliberately left alone are genuinely
+sensitive.** Two of them (`reclaim_frees_an_unbound_address_spaces_region` and
+`destroy_force_kills_a_runaway_and_reclaims_its_region`) each caught a **one-frame** leak, ahead of
+the target test both times. That is the measurement behind that round's argument that a synchronous
+bracket keeps its `==`, which until now was only an argument.
+
+**And it says something about the aspace test that three rounds of prose did not.** A leak in the
+kernel path it guards is caught by an earlier, exact, synchronous assertion before this test runs, in
+both narrowings tried. Its `used() <= before` is not the tree's first line of defence against that
+defect and probably never was; what it uniquely covers is a leak that only appears after a *user*
+thread has faulted and been reaped four times over, which no `reclaim_frees_*` bracket stages. Worth
+knowing before anyone spends another round on it. The final row is that assertion proven directly:
+the defect arranged inside its own window, the wait timing out, and the new message naming the
+injected count exactly rather than a figure re-sampled after the fact.
+
+### What this round did not do
+
+**The icount instrument is still recommended and still not built.** Unchanged from the fourth round,
+and it remains the whole of the block's "What is left".
+
+**The other sites in the scope note were not audited**, again. What this round adds to the reading
+order is a third grep beside the fourth round's two: a **frame count standing in for a mechanism**.
+The two greps for a global baseline and for a clockless loop find assertions that fail when they
+should not. This one finds assertions that pass when they should not, and nothing on this page had
+looked for those.
