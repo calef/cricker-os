@@ -7,7 +7,7 @@
 //! that needs no construction authority (§32), and revocation (§13, §16, and §41's device
 //! take-back). Everything else is code here.
 //!
-//! # Two roles, two rungs of the latency ladder
+//! # Three roles: two rungs of the latency ladder, and one component that stops answering
 //!
 //! - [`ROLE_DIRECT`](swap_proto::ROLE_DIRECT): the default rung. The stable name a client holds is the
 //!   endpoint object itself, and the swap changes who is parked in `RECV_CAP` on it. **No process
@@ -15,6 +15,11 @@
 //! - [`ROLE_QUEUED`](swap_proto::ROLE_QUEUED): the opt-in rung. A `broker` stands between producer and
 //!   backend so the producer never blocks on an absent consumer. One extra hop, priced by the
 //!   `broker_rtt` benchmark, and chosen per channel rather than imposed on every IPC.
+//! - [`ROLE_HUNG`](swap_proto::ROLE_HUNG): the same system as the direct rung, against an incumbent
+//!   that **stops answering without dying** (milestone 23's third residual). Step 2 of the four is
+//!   unavailable, because draining needs the incumbent's cooperation and that is exactly what is
+//!   missing; the interesting result is that the other three steps do not. See
+//!   notes/hung-component.md, and read its two open decisions before extending this role.
 //!
 //! # The direct swap, step by step, and why the order is this
 //!
@@ -108,6 +113,7 @@ pub extern "C" fn _start(role: u64, initrd_len: u64, _a2: u64) -> ! {
 
     match role {
         swap_proto::ROLE_QUEUED => queued(&fs, &w),
+        swap_proto::ROLE_HUNG => hung(&fs, &w),
         _ => direct(&fs, &w),
     }
 }
@@ -469,7 +475,287 @@ fn queued(fs: &nifefs::Fs, w: &Wiring) -> ! {
 }
 
 // ===============================================================================================
-// The pieces both roles share.
+// The third residual: a component that stops answering **without dying**.
+//
+// Every failure the rest of this program handles is a death. The incumbent quiesces because it was
+// asked to, or it faults on a device it no longer has, and either way the kernel sends a
+// five-word message to the supervision endpoint, `Endpoint::REAP` collects the corpse, and the
+// region comes home. A component that simply stops answering produces none of that: it holds its
+// endpoint, holds its device, sits `Blocked`, and is indistinguishable from a healthy server waiting
+// for work, because that is what a healthy server waiting for work is.
+//
+// This role runs the swap against one, and reports three things a supervisor learns the hard way.
+// See notes/hung-component.md; the two questions this run does **not** answer (how a supervisor
+// notices, and what it may do about a component that will not cooperate at all) are decisions rather
+// than code, and that note states them.
+// ===============================================================================================
+
+fn hung(fs: &nifefs::Fs, w: &Wiring) -> ! {
+    let v1 = image(fs, "rust_swappable", 2);
+    let v2 = image(fs, "c_swappable", 3);
+    let client_img = image(fs, "chatty", 4);
+
+    // Identical to the direct channel's routing: same declarations, same objects, same rights.
+    // Nothing about the wiring says this channel is different, which is the point. What differs is
+    // one start argument, and a start argument carries no authority.
+    let to_component = Provisions {
+        held: &[
+            ("service", w.svc),
+            ("report", REPORT),
+            ("operator", w.note),
+            ("control", w.poke),
+            ("witness", w.logframe),
+            ("uart", DEVICE),
+        ],
+    };
+    let to_client = Provisions {
+        held: &[("service", w.svc), ("report", REPORT), ("operator", w.note)],
+    };
+    let Ok(component) = component_plan::plan(&swap_proto::CONSOLE, &to_component) else {
+        bail(70)
+    };
+    let Ok(client) = component_plan::plan(&swap_proto::CLIENT, &to_client) else {
+        bail(71)
+    };
+
+    // The incumbent, told which one request it will never answer.
+    start_child(
+        &v1,
+        &component,
+        w.faultep,
+        [1, 0, swap_proto::WEDGE_SEQ],
+        72,
+    );
+
+    // The replacement, built and endowed with everything except the device, and **not configured**,
+    // exactly as on the direct channel and for the same measured reason: a build is a few hundred
+    // syscalls, and doing it after the trigger loses the race against a conversation already in
+    // flight. Here it matters more, not less: a hung component gives the operator no drain to hide
+    // the build behind.
+    let Ok(b_region) = supervision_proto::untyped_split(ROOT_UT, component.pages()) else {
+        bail(75)
+    };
+    let Ok((b_tcb, b_aspace)) = supervision_proto::build_child_space(
+        ROOT_UT,
+        b_region,
+        &v2,
+        &ChildEndowment {
+            caps: component.caps(),
+            maps: component.maps_without_devices(),
+            blobs: &[],
+            fault: Some(w.faultep),
+            ..ChildEndowment::new()
+        },
+    ) else {
+        bail(76)
+    };
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::BUILT,
+        swap_proto::V2,
+    );
+
+    start_child(
+        &client_img,
+        &client,
+        w.faultep,
+        [swap_proto::ROLE_CLIENT, 0, 0],
+        77,
+    );
+    expect_note(w.note, swap_proto::NOTE_SWAP_NOW, 80);
+
+    // ------------------------------------------------------------------------------------------
+    // The hang. Served with `RECV_CAP` rather than `RECV`, because the incumbent announced it with a
+    // `CALL`: taking the reply capability and never using it is what keeps that component parked,
+    // and holding it is the only handle anything in this system has on a wedged process.
+    // ------------------------------------------------------------------------------------------
+
+    let (kind, release, served) = user_rt::recv_cap(w.note);
+    if kind != swap_proto::NOTE_WEDGED || release == abi::endpoint::NO_CAP {
+        bail(81)
+    }
+    send(REPORT, swap_proto::RPT_WEDGED, swap_proto::V1, served);
+
+    // ------------------------------------------------------------------------------------------
+    // **What the supervisor can see.** Two reports, and both of them are negative results.
+    //
+    // The domain, through `abi::endpoint::SURVEY` (milestone 126), which is the only view of its own
+    // children this operator has: every member `BLOCKED`, none `DEAD`. That is also what a healthy
+    // idle system looks like from here, and no amount of looking again changes it.
+    //
+    // Then `Endpoint::REAP` on every member, which is the supervisor's entire vocabulary over its
+    // domain since DECISIONS §32: refused, every one, `StillAlive`. Asking about all of them rather
+    // than about the one suspect is both easier (a survey returns tids and nothing that says which
+    // is which) and the stronger claim.
+    // ------------------------------------------------------------------------------------------
+
+    let (members, states) = survey_domain(w.faultep);
+    send(REPORT, swap_proto::RPT_SURVEY, members, states);
+    let (asked, refused) = ask_the_domain_to_be_collected(w.faultep);
+    send(REPORT, swap_proto::RPT_UNCOLLECTABLE, asked, refused);
+
+    // ------------------------------------------------------------------------------------------
+    // **Recovery, with no authority this operator did not already hold.** DECISIONS §32 records that
+    // a supervisor which must restart a *hung* child "still needs the stronger right", meaning the
+    // construction authority reaping was moved off. For restarting the **service**, that is not so,
+    // and these four syscalls are the argument:
+    //
+    //   - The device comes back with `Frame::REVOKE`, which is `GRANT`-gated take-back (§41) and
+    //     asks the current holder for nothing. It works on a live, wedged, wholly uncooperative
+    //     holder exactly as it works on a quiesced one.
+    //   - There is nothing to drain, and nothing to drain it *for*: a component that is not
+    //     receiving has already achieved what `OP_QUIESCE` exists to achieve. The step that needs
+    //     the incumbent's cooperation is the one step the hang makes unnecessary.
+    //   - The replacement parks in `RECV_CAP` on the same endpoint and picks up whatever queued
+    //     behind the silence, because the stable name is the endpoint object and the kernel's sender
+    //     queue is the buffer (§41).
+    //
+    // What still needs the stronger right is **reclaiming the hung component's memory**, which is a
+    // different thing from restarting its service and is not attempted here. notes/hung-component.md
+    // has the argument and the reason it is a decision rather than a task.
+    // ------------------------------------------------------------------------------------------
+
+    // SAFETY: plain syscall on the device capability the kernel granted us at spawn.
+    if unsafe { invoke(DEVICE, abi::frame::REVOKE, 0, 0, 0) } != 0 {
+        bail(82)
+    }
+    send(REPORT, swap_proto::RPT_STEP, swap_proto::step::REVOKED, 0);
+
+    for &(va, slot, mode) in component.devices() {
+        // SAFETY: plain syscall; the aspace capability is still ours until CONFIGURE consumes it.
+        if unsafe { invoke(b_aspace, abi::aspace::MAP_INTO, va, slot, mode) } != 0 {
+            bail(83)
+        }
+    }
+    if supervision_proto::configure_child(b_tcb, b_aspace, v2.entry()).is_err() {
+        bail(84)
+    }
+    if !supervision_proto::tcb_start(b_tcb, 1, 0, 0) {
+        bail(85)
+    }
+    cap_delete(b_tcb);
+    cap_delete(b_region);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::STARTED,
+        swap_proto::V2,
+    );
+
+    // ------------------------------------------------------------------------------------------
+    // **The one thing only the hung component can do.** The service is back, and the caller whose
+    // request the incumbent swallowed is still parked inside its `CALL`: restoring a service does
+    // not recover a caller, and nothing above went anywhere near it.
+    //
+    // So the operator answers the incumbent's own `CALL`, which is the handle it has been holding
+    // since the hang. The incumbent wakes, uses the reply capability it took from that caller, and
+    // then reads the register it no longer owns. **In this run the wedge is deliberate and it
+    // cooperates.** A real one does not, and then that caller waits for the life of the machine,
+    // which is what makes this line the shape of the gap rather than its cure.
+    // ------------------------------------------------------------------------------------------
+
+    user_rt::reply(release, swap_proto::NOTE_RELEASE, 0);
+
+    let mut corpses = 0u64;
+    let revoke_enforced = wait_for_fault(w.faultep, &mut corpses, swap_proto::DEV_VA);
+    expect_note(w.note, swap_proto::NOTE_CLIENT_DONE, 86);
+    reap_to(w.faultep, &mut corpses, 2); // the incumbent and the client
+    retire(w, &mut corpses, 3, 87); // and the replacement
+
+    send(
+        REPORT,
+        swap_proto::RPT_LOG,
+        verdict_from_log(0, revoke_enforced),
+        changed_at(0),
+    );
+    user_rt::exit()
+}
+
+/// **Walk the supervision domain and count what state its members are in** (milestone 126's
+/// `abi::endpoint::SURVEY`). Returns `(members, states)`, the second packed by
+/// `swap_proto::survey_counts`.
+///
+/// A refusal is reported as `(u64::MAX, error)` rather than as an empty domain, for the reason
+/// milestone 126 built the method with: a monitor that reports nothing because it could not look is
+/// the worst failure it has available. This operator holds the endpoint it retyped itself, so it
+/// holds `ENUMERATE` and cannot be refused; saying so in code is cheaper than assuming it.
+fn survey_domain(faultep: u64) -> (u64, u64) {
+    let mut counts = [0u64; 5];
+    let mut members = 0u64;
+    let mut cursor = abi::survey::DONE;
+    loop {
+        let (next, _tid, state) = user_rt::survey(faultep, cursor);
+        if next < 0 {
+            return (u64::MAX, (-next) as u64);
+        }
+        let next = next as u64;
+        if next == abi::survey::DONE {
+            break;
+        }
+        // A cursor that did not advance would spin here forever. The kernel does not do this; the
+        // check is here so this loop terminates for every reader, which is `ps::collect`'s rule too.
+        if next <= cursor {
+            break;
+        }
+        if (state as usize) < counts.len() {
+            counts[state as usize] += 1;
+        }
+        members += 1;
+        cursor = next;
+    }
+    (
+        members,
+        swap_proto::survey_counts(
+            counts[abi::survey::READY as usize],
+            counts[abi::survey::RUNNING as usize],
+            counts[abi::survey::BLOCKED as usize],
+            counts[abi::survey::DEAD as usize],
+        ),
+    )
+}
+
+/// **Ask the kernel to collect every member of the domain, and count the refusals.** Returns
+/// `(asked, refused_still_alive)`.
+///
+/// This is not a reap loop that happens to fail. It is the assertion that a supervisor's whole
+/// vocabulary over a live domain is empty: `Endpoint::REAP` (DECISIONS §32) authorizes *collecting a
+/// corpse* and refuses a thread that is still alive, deliberately, because killing is the stronger
+/// act and lives elsewhere. Against a hung component, "collect the corpse" is the only verb a
+/// supervisor has and there is no corpse.
+///
+/// It is side-effect free by construction: `reap_supervised` decides `StillAlive` before it looks up
+/// a region, so a refused reap moves nothing and frees nothing.
+fn ask_the_domain_to_be_collected(faultep: u64) -> (u64, u64) {
+    // The raw syscall return, which is the **negative** discriminant: `abi::Error`'s variants are
+    // already negative (`StillAlive = -9`) and `invoke` hands them back unchanged. Programs that
+    // report an error upward negate it to get a positive code (`chatty`'s attack report does), and
+    // comparing against a negated constant here was this lane's one wrong line: it made every
+    // refusal look like a success and the test said 0 of 2.
+    let still_alive = abi::Error::StillAlive as i64;
+    let mut asked = 0u64;
+    let mut refused = 0u64;
+    let mut cursor = abi::survey::DONE;
+    loop {
+        let (next, tid, _state) = user_rt::survey(faultep, cursor);
+        if next < 0 {
+            break;
+        }
+        let next = next as u64;
+        if next == abi::survey::DONE || next <= cursor {
+            break;
+        }
+        asked += 1;
+        if user_rt::reap(faultep, tid) == still_alive {
+            refused += 1;
+        }
+        cursor = next;
+    }
+    (asked, refused)
+}
+
+// ===============================================================================================
+// The pieces every role shares.
 // ===============================================================================================
 
 /// Split a region, build a child in it, start it, and drop both capabilities. Neither is the thing

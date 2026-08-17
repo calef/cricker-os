@@ -14,6 +14,9 @@ const RPT_DEATH: u64 = 8;
 const RPT_SITE: u64 = 9;
 const RPT_DRAINED: u64 = 10;
 const RPT_REFUSED: u64 = 11;
+const RPT_SURVEY: u64 = 12;
+const RPT_UNCOLLECTABLE: u64 = 13;
+const RPT_WEDGED: u64 = 14;
 const RPT_FAILED: u64 = 99;
 
 /// `component_plan::Refusal::Unprovided`'s wire code: the supervisor routes nothing to a role the
@@ -26,6 +29,7 @@ const STEP_BUILT: u64 = 1;
 const STEP_DRAINED: u64 = 2;
 const STEP_REVOKED: u64 = 3;
 const STEP_STARTED: u64 = 4;
+const STEP_REAPED: u64 = 5;
 
 /// The operator's verdict bits (`swap::log_checks`).
 const LOG_NO_GAP: u64 = 1 << 0;
@@ -41,13 +45,19 @@ const CL_ONE_TRANSITION: u64 = 1 << 3;
 const CL_SPANNED_SWAP: u64 = 1 << 4;
 const CL_WAS_BUFFERED: u64 = 1 << 5;
 const CL_NONE_REFUSED: u64 = 1 << 6;
+const CL_WAS_RELEASED: u64 = 1 << 7;
 
 /// The roles, and the two versions.
 const ROLE_DIRECT: u64 = 0;
 const ROLE_QUEUED: u64 = 1;
+const ROLE_HUNG: u64 = 2;
 const V1: u64 = 1;
 const V2: u64 = 2;
 const REQUESTS: u64 = 64;
+
+/// The request a wedging instance swallows (`swap_proto::WEDGE_SEQ`). The test asserts the swap
+/// landed here, so both sides name one constant.
+const WEDGE_SEQ: u64 = 24;
 
 /// The device's virtual address in every component, matching `swap::DEV_VA`. The test asserts
 /// the kernel's reported fault address against this, which is why both sides name one constant.
@@ -73,8 +83,9 @@ const SWAPPER_BUDGET_PAGES: u64 = 224;
 /// How many reports one run can make before the test gives up waiting for the operator's final
 /// verdict. Generous: the loop stops at `RPT_LOG`, and this is only the tripwire for a run that
 /// never gets there. Raised from 24 with milestone 23's manifest, which adds one `RPT_REFUSED` per
-/// run; a run that overflows this loses the operator's verdict and fails for the wrong reason.
-const MAX_REPORTS: usize = 28;
+/// run, and from 28 with the hung-component role, which adds three; a run that overflows this loses
+/// the operator's verdict and fails for the wrong reason.
+const MAX_REPORTS: usize = 40;
 
 /// **Spawn the operator the way the kernel spawns init**, and return the report endpoint every
 /// process in the run holds a WRITE view of.
@@ -167,7 +178,9 @@ fn run_swap(role: u64) -> ([[u64; 5]; MAX_REPORTS], usize) {
             "the swap system could not be built: stage {}. Stages 1-4 are the archive and the \
              four program images, 5-10 the endpoints and the witness page, 11-16 the incumbent \
              and the client, 20-27 the swap itself, 30-33 the attacker, 40-51 the queued rung, \
-             60-63 the component manifests (60 means an unsatisfiable declaration was WIRED).",
+             60-63 the component manifests (60 means an unsatisfiable declaration was WIRED), \
+             70-87 the hung-component rung (81 means the incumbent did not announce its hang \
+             with a CALL, so nothing held a reply capability on it).",
             msg[1],
         );
         assert_ne!(
@@ -502,5 +515,265 @@ fn a_producer_never_blocks_on_an_absent_consumer_and_loses_nothing() {
         log[1] & LOG_NO_GAP != 0,
         log[1] & LOG_MONOTONE != 0,
         log[1] & LOG_BOTH_VERSIONS != 0,
+    );
+}
+
+// ===============================================================================================
+// Milestone 23's third residual: a component that stops answering **without dying**.
+// ===============================================================================================
+
+/// `abi::survey`'s state codes, unpacked from `RPT_SURVEY` by `swap_proto::survey_counts`'s layout.
+/// Mirrored here for the reason every other constant in this file is: userspace owns the definition.
+fn survey_blocked(w: u64) -> u64 {
+    (w >> 16) & 0xff
+}
+fn survey_dead(w: u64) -> u64 {
+    (w >> 24) & 0xff
+}
+fn survey_awake(w: u64) -> u64 {
+    (w & 0xff) + ((w >> 8) & 0xff)
+}
+
+/// **A component that stops answering without dying is invisible to its supervisor, and the service
+/// can be restored anyway** (milestone 23's third residual; notes/hung-component.md).
+///
+/// Every failure this system handles elsewhere is a *death*: the kernel witnesses a fault or an exit,
+/// stamps a five-word message onto the supervision endpoint (DECISIONS §26), `Endpoint::REAP`
+/// collects the corpse (§32), and the region comes home. A component that merely stops answering
+/// produces none of it, and this test is the machine saying so rather than a paragraph claiming it.
+///
+/// **Four results, and the first two are negative.**
+///
+/// 1. **The domain does not report a hang.** Every member of the survey is `BLOCKED`, none is `DEAD`,
+///    and that is byte for byte what a healthy idle system reads as: `abi::survey::BLOCKED` is the
+///    state of a server parked in `RECV_CAP`, which is every healthy server between requests. The
+///    view milestone 126 built is the widest one a supervisor has and it cannot tell the difference.
+/// 2. **The supervisor's whole vocabulary over its domain is refused.** `Endpoint::REAP` is asked
+///    about every member and answers `StillAlive` every time, on purpose: §32 authorizes collecting a
+///    corpse and not killing. Against a hung component there is no corpse, so there is nothing to
+///    say.
+/// 3. **The service is restored with no authority the operator did not already hold**, which
+///    contradicts §32's sentence that a supervisor restarting a hung child "still needs the stronger
+///    right". The device comes back by `Frame::REVOKE` take-back, which asks the holder for nothing;
+///    the replacement parks on the stable endpoint and drains what queued behind the silence; the
+///    client's stream closes over the hang. §32 is right about *reclaiming the hung component's
+///    memory* and wrong about restarting its service, and those are different acts.
+/// 4. **Restoring the service does not recover the caller that was mid-`CALL`.** That caller is
+///    parked awaiting a reply, and a caller awaiting a reply is woken by `sched::ipc_reply` and by
+///    nothing else in the kernel: `abi::Error::Gone` reaches a caller whose *endpoint* died and never
+///    one whose *server is alive and silent*. The one-shot `Reply` capability naming it is `WRITE`
+///    without `GRANT`, inside the hung component's cspace, so the operator cannot answer on its
+///    behalf, forge one, or revoke its way to it. In this run the wedge is deliberate and lets go
+///    when asked. A real one does not, and `CL_WAS_RELEASED` is the bit that marks which of the two
+///    this was.
+///
+/// **Nothing here waits on a clock**, and that is deliberate rather than incidental: the wedge fires
+/// on the identity of one request, the hang is a `CALL` whose parked state is established inside the
+/// same critical section that wakes the operator, and every assertion below is about program order.
+/// A watchdog that decided "hung" from elapsed time would need the timed wait milestone 106 has not
+/// decided, and a *test* that did would be the next load-sensitive assertion (milestone 62, 78).
+#[test_case]
+fn a_component_that_stops_answering_without_dying_is_invisible_to_its_supervisor() {
+    let (msgs, n) = run_swap(ROLE_HUNG);
+    let msgs = &msgs[..n];
+
+    // The hang landed inside a real conversation. A component that stopped answering before anyone
+    // was talking, or after everyone had finished, would make the rest of this vacuous.
+    let wedged = of_kind(msgs, RPT_WEDGED)
+        .next()
+        .expect("the incumbent never stopped answering, so this run tested the healthy path");
+    assert_eq!(wedged[1], V1, "the wrong instance wedged");
+    assert!(
+        wedged[2] > 0 && wedged[2] < REQUESTS,
+        "the incumbent had served {} of {REQUESTS} requests when it stopped answering: the hang \
+         did not land inside the conversation",
+        wedged[2],
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // Result 1: the domain does not report a hang.
+    // ---------------------------------------------------------------------------------------
+
+    let survey = of_kind(msgs, RPT_SURVEY)
+        .next()
+        .expect("the operator never surveyed its domain");
+    assert_ne!(
+        survey[1],
+        u64::MAX,
+        "the operator was refused its own domain (error {}): it retyped this endpoint out of its \
+         own budget, so it holds ENUMERATE and this is a bug in the survey rather than a finding",
+        survey[2],
+    );
+    assert_eq!(
+        survey[1], 2,
+        "the domain should hold exactly the incumbent and the client ({} reported). The \
+         replacement is built but never started, and a thread's supervision endpoint is recorded \
+         at START, so an embryo is not yet a member.",
+        survey[1],
+    );
+    assert_eq!(
+        survey_blocked(survey[2]),
+        2,
+        "the survey found {} blocked members and {} awake, of 2. **This assertion is the finding**: \
+         the hung component and the caller it stranded both read as BLOCKED, which is exactly what \
+         a healthy server waiting for work and a client waiting for its answer read as. If this \
+         ever fails because a member read READY or RUNNING, the wedge stopped being a CALL and the \
+         test is measuring a race instead of a state.",
+        survey_blocked(survey[2]),
+        survey_awake(survey[2]),
+    );
+    assert_eq!(
+        survey_dead(survey[2]),
+        0,
+        "the survey reported {} dead members: a hang is not a death, and if the kernel is calling \
+         it one then the rest of this test is asserting the wrong thing",
+        survey_dead(survey[2]),
+    );
+
+    // No death message had arrived by then either, which is the other half of "nothing noticed":
+    // the operator reports every death it collects, and the first of those must come after the
+    // survey. A supervisor blocked in RECV on its supervision endpoint would simply never wake.
+    let at_survey = msgs.iter().position(|m| m[0] == RPT_SURVEY).unwrap();
+    let first_death = msgs
+        .iter()
+        .position(|m| m[0] == RPT_DEATH)
+        .unwrap_or(usize::MAX);
+    assert!(
+        at_survey < first_death,
+        "a death reached the operator (report {first_death}) before it surveyed the hang (report \
+         {at_survey}): something died, so this was not the hung case",
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // Result 2: every member refuses to be collected.
+    // ---------------------------------------------------------------------------------------
+
+    let uncollectable = of_kind(msgs, RPT_UNCOLLECTABLE)
+        .next()
+        .expect("the operator never tried to collect its domain");
+    assert_eq!(
+        uncollectable[1], 2,
+        "the operator asked about {} members, expected 2",
+        uncollectable[1],
+    );
+    assert_eq!(
+        uncollectable[2], uncollectable[1],
+        "{} of {} members refused collection with StillAlive. Every one must: Endpoint::REAP \
+         authorizes collecting a corpse and refuses a live thread (DECISIONS §32), so a supervisor \
+         facing a hang holds a verb with nothing to apply it to. A member that was collectable \
+         here would mean something had died.",
+        uncollectable[2], uncollectable[1],
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // Result 3: the service comes back, and step 2 of the four never happened.
+    // ---------------------------------------------------------------------------------------
+
+    for (step, what) in [
+        (STEP_BUILT, "build the replacement"),
+        (
+            STEP_REVOKED,
+            "take the device back from the live, wedged holder",
+        ),
+        (STEP_STARTED, "start the replacement on the stable endpoint"),
+        (STEP_REAPED, "collect the incumbent once it finally died"),
+    ] {
+        assert!(
+            had_step(msgs, step),
+            "the operator never got as far as: {what}"
+        );
+    }
+    assert!(
+        !had_step(msgs, STEP_DRAINED),
+        "the operator reported a drain: OP_QUIESCE needs the incumbent to answer, which is the one \
+         thing a hung component does not do. A run that drained did not test a hang.",
+    );
+
+    // Both instances ran and both reached the device, so the registers were where the swap thinks
+    // they were on each side of a revoke that the outgoing holder never consented to.
+    let mut ups = of_kind(msgs, RPT_UP);
+    let first = ups.next().expect("the incumbent never started");
+    let second = ups.next().expect("the replacement never started");
+    assert_eq!(first[1], V1);
+    assert_eq!(second[1], V2);
+    assert!(
+        first[2] == 1 && second[2] == 1,
+        "an instance could not read the device it was endowed with",
+    );
+
+    // The client's own verdict, from its own replies, in its own address space. Every check the
+    // healthy channel makes still holds: a hang cost this client nothing but a detour.
+    let client = of_kind(msgs, RPT_CLIENT)
+        .next()
+        .expect("the client never reported a verdict, so it is still parked inside its call");
+    const CLIENT_UNBROKEN: u64 =
+        CL_ALL_REPLIED | CL_SEQ_ECHOED | CL_DIGEST_CORRECT | CL_ONE_TRANSITION | CL_SPANNED_SWAP;
+    assert_eq!(
+        client[1] & CLIENT_UNBROKEN,
+        CLIENT_UNBROKEN,
+        "the client's stream was broken across the hang (verdict {:#x}): missing {:#x}",
+        client[1],
+        CLIENT_UNBROKEN & !client[1],
+    );
+
+    // The operator's independent witness: the shared page, read after every writer is dead.
+    let log = of_kind(msgs, RPT_LOG)
+        .next()
+        .expect("the operator never reported its verdict");
+    const LOG_CLEAN: u64 = LOG_NO_GAP | LOG_MONOTONE | LOG_BOTH_VERSIONS | LOG_REVOKE_ENFORCED;
+    assert_eq!(
+        log[1] & LOG_CLEAN,
+        LOG_CLEAN,
+        "the hung channel's log is not clean (verdict {:#x}): NO_GAP={} (a request nobody ever \
+         served, so the swallowed one was never re-asked), MONOTONE={} (the wedged instance \
+         answered after the replacement had, so there were two owners), BOTH_VERSIONS={}, \
+         REVOKE_ENFORCED={} (the wedged instance's post-revoke device read did not fault, so the \
+         take-back did not reach a live holder)",
+        log[1],
+        log[1] & LOG_NO_GAP != 0,
+        log[1] & LOG_MONOTONE != 0,
+        log[1] & LOG_BOTH_VERSIONS != 0,
+        log[1] & LOG_REVOKE_ENFORCED != 0,
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // Result 4: the caller was stranded, and only the component that stranded it could let go.
+    // ---------------------------------------------------------------------------------------
+
+    assert_ne!(
+        client[1] & CL_WAS_RELEASED,
+        0,
+        "the client never saw WEDGE_RELEASED (verdict {:#x}), so its call was answered normally \
+         and it was never stranded. Without that bit this run is indistinguishable from an \
+         ordinary swap that happened between two calls, which proves nothing about a hang.",
+        client[1],
+    );
+    // The swap landed exactly at the swallowed request, on both witnesses. Not a coincidence and
+    // not a range: the request the incumbent took and never answered is the first one the
+    // replacement served, because it is the one the client asked again for.
+    assert_eq!(
+        client[2], WEDGE_SEQ,
+        "the client says the version changed at request {}, but the incumbent swallowed request \
+         {WEDGE_SEQ}",
+        client[2],
+    );
+    assert_eq!(
+        log[2], client[2],
+        "the operator's log and the client's replies disagree about where the replacement took \
+         over ({} vs {})",
+        log[2], client[2],
+    );
+    // And the release came after the service was already back, which is what makes the two
+    // recoveries separable rather than one act: restoring a service and recovering a caller are
+    // different problems, and only the second needed the hung component's cooperation.
+    let at_started = msgs
+        .iter()
+        .position(|m| m[0] == RPT_STEP && m[1] == STEP_STARTED)
+        .unwrap();
+    let at_client = msgs.iter().position(|m| m[0] == RPT_CLIENT).unwrap();
+    assert!(
+        at_started < at_client,
+        "the client finished (report {at_client}) before the replacement was started (report \
+         {at_started}): the hang did not actually block it",
     );
 }
