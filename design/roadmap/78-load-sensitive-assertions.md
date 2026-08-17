@@ -5,13 +5,13 @@ failed on pull requests that changed no executable code, two of them documentati
 fixed the one that was a real bug. What followed was a family rather than one problem, and it took
 five rounds and an instrument.
 
-**Gate: `script/icount`**, both ISAs, and it is green. The two claims this block was last left
-holding are asserted there: that the timer fired at the deadline the kernel armed (on riscv64, that
-SBI was armed with the `DEADLINE` word rather than with something else that leaves the array looking
-right), and that the handler costs fewer than N instructions. A third came free and closed a `BUGS`
-entry: **zero missed ticks**, which is only assertable on this instrument, because the miss taxonomy
-on both ISAs exists to tell a slow handler from a descheduled emulator and virtual time has no
-deschedules. See notes/instruction-clock.md.
+**What closed it: `script/icount`**, on both ISAs. The two claims this block was last left holding
+are asserted there: that the timer fired at the deadline the kernel armed (on riscv64, that SBI was
+armed with the `DEADLINE` word rather than with something else that leaves the array looking right),
+and that the handler costs fewer than N instructions. A third came free and closed a `BUGS` entry:
+**zero missed ticks**, which is only assertable on this instrument, because the miss taxonomy on both
+ISAs exists to tell a slow handler from a descheduled emulator and virtual time has no deschedules.
+CI runs it beside the bench tripwire. See notes/instruction-clock.md.
 
 **Everything in the evidence table below is closed**, and the table is history rather than a
 worklist: the disposition column says where each verdict lives. Read it for the diagnosis it

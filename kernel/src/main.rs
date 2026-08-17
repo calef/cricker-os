@@ -26,18 +26,6 @@
 // *only* on riscv64, so the aarch64 build keeps full dead-code checking; it goes away if the RISC-V
 // boot is ever wired into the shared path instead of halting. See notes/riscv-port.md.
 
-// **The instruction-count boot compiles the whole kernel and runs the timer** (milestone 78,
-// `script/icount`). Like the bench boot it diverges before the tour, so the tour, the userspace
-// bring-up and everything reachable only from them are genuinely unreferenced in this one
-// configuration.
-//
-// One crate-level allow rather than a `cfg_attr` at each of the dozen sites the bench feature marks
-// individually. That is a deliberate trade and it is the smaller half: those sites are in
-// `sched.rs`, `user.rs` and `main.rs`, which every lane touches, and an allow that is scoped to a
-// single boot mode costs nothing anywhere else. The normal, test, shell, initboot and bench builds
-// keep full dead-code checking, so nothing this hides can reach a build anyone ships or gates on.
-#![cfg_attr(feature = "icount", allow(dead_code))]
-
 mod arch;
 #[cfg(feature = "bench")]
 mod bench;
@@ -99,8 +87,10 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 // full boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
 // The smb_serve boot parks before the tour the same way the riscv tour does: the code after
 // either stays compiled and is deliberately unreachable.
+// And the icount boot parks before the bench boot it implies, so `bench::run()` and everything after
+// it is deliberately unreachable in that one configuration (milestone 78).
 #[cfg_attr(
-    any(target_arch = "riscv64", feature = "smb_serve"),
+    any(target_arch = "riscv64", feature = "smb_serve", feature = "icount"),
     allow(unreachable_code)
 )]
 #[unsafe(no_mangle)]
@@ -253,14 +243,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
         // `os_primitives_benchmarker` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
         // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
-        #[cfg(feature = "bench")]
-        bench::run();
-
         // The instruction-count boot (milestone 78, `script/icount`) diverges here too, on the ISA
         // whose claim it was written for: SBI's `set_timer` is write-only, so this is the only place
         // in the tree that proves the firmware was armed with the deadline the kernel recorded.
+        // Before the bench boot, whose feature it implies; see the aarch64 site for why.
         #[cfg(feature = "icount")]
         icount::run();
+
+        #[cfg(feature = "bench")]
+        bench::run();
 
         // A `shell` build hands the machine to userspace init here and parks, instead of the tour.
         // The kernel loads `system_initializer` from the initrd, grants it the NS16550 and the UART interrupt,
@@ -723,17 +714,21 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     #[cfg(test)]
     test_main();
 
+    // The instruction-count boot (milestone 78, `script/icount`): assert the two timing claims on
+    // the deterministic clock and park. **Before the bench boot, and its feature implies that one**,
+    // because the two park at the same point and therefore leave the same functions unreferenced;
+    // riding on `bench`'s existing conditions is what keeps this from duplicating a dozen `cfg`s
+    // across five files. The `bench::run` below is then unreachable, which is what this function's
+    // `allow(unreachable_code)` names.
+    #[cfg(feature = "icount")]
+    icount::run();
+
     // The benchmark boot (milestone 21, `script/bench`): run the microbenchmarks and halt,
     // instead of the tour or the shell. Diverges, so everything below is untouched by it.
     #[cfg(feature = "bench")]
     bench::run();
 
-    // The instruction-count boot (milestone 78, `script/icount`): assert the two timing claims on
-    // the deterministic clock and park. Diverges, like the bench boot beside it.
-    #[cfg(feature = "icount")]
-    icount::run();
-
-    #[cfg(not(any(test, feature = "bench", feature = "icount")))]
+    #[cfg(not(any(test, feature = "bench")))]
     {
         use aarch64_cpu::registers::CurrentEL;
         use tock_registers::interfaces::Readable;
@@ -1020,8 +1015,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         }
     }
 
-    // bench::run and icount::run both diverged above; this is everyone else's parking.
-    #[cfg(not(any(feature = "bench", feature = "icount")))]
+    #[cfg(not(feature = "bench"))] // bench::run diverged above; this is everyone else's parking
     arch::halt()
 }
 

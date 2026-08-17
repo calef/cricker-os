@@ -169,10 +169,19 @@ two of them. So this is its own boot mode, its own feature and its own command, 
 `#[cfg(feature = "icount")]`, so the test and shipping builds do not contain them, and what this
 boot measures is therefore the handler that ships rather than a handler carrying an instrument.
 
-Its own feature rather than a phase of the bench boot, for a second reason worth stating because it
-is not obvious: icount counts drift with codegen (±5%, `notes/benchmarks.md`), so folding another
-instrument into the benchmark binary would move both baselines and cost the tripwire its history for
-no gain.
+**Its own feature, which implies `bench` rather than extending it.** The two boots park at the same
+point, so they leave exactly the same set of functions unreferenced, and `bench` already carries that
+set spelled out one `cfg` at a time across five files. Declaring `icount` independent means writing
+every one of those conditions again, in `main.rs`, `sched.rs` and `user.rs`, to describe a fact
+already described; the other way out is a crate-level `allow(dead_code)`, and DECISIONS §38 refuses
+that, correctly, and `script/lint` enforces the refusal. (It refused this lane's first attempt, which
+is the mechanism working.)
+
+What that costs is that the icount kernel carries the benchmark code, compiled and never run.
+Nothing measures *this* binary against a baseline, so the ±5% codegen drift that makes `bench --check`
+a coarse tripwire is not a cost here. The property that mattered is kept: **`script/bench`'s own
+binary is untouched**, so no baseline had to be re-saved to admit an unrelated instrument, which is a
+tripwire losing its history for nothing.
 
 **What it costs to run:** 7.0 s wall for both ISAs including two kernel builds (2026-08-17, same
 conditions).

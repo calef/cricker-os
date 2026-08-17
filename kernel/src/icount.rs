@@ -62,6 +62,11 @@
 //! hooks below are `#[cfg(feature = "icount")]`, so the test and shipping builds do not contain
 //! them.
 //!
+//! The feature **implies `bench`** rather than standing alone, and kernel/Cargo.toml carries the
+//! reason: both boots park at the same point, so both leave the same functions unreferenced, and
+//! `bench` already spells that set out across five files. `script/bench`'s own binary is untouched
+//! either way, which is the property that mattered.
+//!
 //! # What the numbers are
 //!
 //! Every quantity here is reported in **instructions**, converted from the counter the arch layer
