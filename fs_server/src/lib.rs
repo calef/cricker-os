@@ -671,6 +671,37 @@ impl<D: Disk> Server<D> {
         Ok(())
     }
 
+    /// **How much room the image has** ([`fs_proto::fs::STATFS`], milestone 54), as
+    /// `(block_size, total_blocks, free_blocks)`.
+    ///
+    /// The handle is validated and then not used, which looks odd and is the point: it is the
+    /// qualification rather than the subject. Holding any handle this server minted is what
+    /// entitles a caller to ask, and the answer is about the one image behind all of them, so
+    /// `EBADF` for a handle that was never minted is the whole of the check. No right is demanded;
+    /// [`fs_proto::fs::STATFS`] argues that at length.
+    ///
+    /// **Where the two numbers come from, and why one is not read inside a transaction.**
+    /// `header.size()` is the filesystem's size in bytes as the newest committed header records it,
+    /// and `allocator.free()` counts free level-0 blocks in the *committed* allocator. Both are
+    /// read outside `fs.tx`, deliberately: opening a transaction to answer a question changes
+    /// nothing and would put a commit in the path of a read-only verb. RedoxFS's own `clone`
+    /// computes free space from exactly this pair.
+    ///
+    /// A transaction in flight elsewhere would move `free`, and there is none: this server runs one
+    /// request to completion before it receives the next, which is the same property
+    /// [`fs_proto::fs::RENAME`]'s concurrency atomicity rests on.
+    pub fn statfs(&mut self, handle: u32) -> Result<(u64, u64, u64)> {
+        self.entry(handle)?;
+        let block = redoxfs::BLOCK_SIZE;
+        // Integer division, so a size that is not a whole number of blocks reports the blocks that
+        // exist rather than a fraction the caller would round the wrong way.
+        Ok((
+            block,
+            self.fs.header.size() / block,
+            self.fs.allocator().free(),
+        ))
+    }
+
     /// Install an entry in the handle table, reusing a freed slot before growing. Returns the
     /// handle. Slot 0 is never free, so a minted handle is never 0 and never shadows the root.
     fn install(&mut self, entry: Entry) -> u32 {
@@ -2206,6 +2237,68 @@ mod tests {
         let n = srv.read(f, 0, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"written two levels down");
     }
+    // --- STATFS (milestone 54) ---
+
+    /// **The volume's numbers are the image's, and writing to it moves the free count.**
+    ///
+    /// The moving part is what makes this a test rather than a tautology: a `statfs` that returned
+    /// a constant would pass every assertion about units and totals, and it is exactly the constant
+    /// this verb exists to replace (`smb_proto::share::NOMINAL_VOLUME_BYTES`). So the free count is
+    /// read, a megabyte is written, and it must have gone down.
+    #[test]
+    fn statfs_reports_the_image_and_a_write_takes_space_out_of_it() {
+        let mut srv = server_with(&[("small", b"x")]);
+
+        let (block, total, free) = srv.statfs(fs_proto::fs::ROOT as u32).unwrap();
+        assert_eq!(
+            block,
+            redoxfs::BLOCK_SIZE,
+            "the unit is RedoxFS's own block"
+        );
+        // `server_with` builds a 16 MiB DiskMemory; the filesystem is that minus the reservation
+        // RedoxFS makes at the front, so the assertion is a range rather than an equality.
+        let bytes = fs_proto::statfs::total_bytes(block, total);
+        assert!(
+            (8 * 1024 * 1024..=16 * 1024 * 1024).contains(&bytes),
+            "a 16 MiB image reported {bytes} bytes",
+        );
+        assert!(free > 0 && free < total, "free {free} of {total} blocks");
+
+        let h = srv.create_file("big").unwrap();
+        srv.write(h, 0, &[7u8; 1024 * 1024]).unwrap();
+        let (_, after_total, after_free) = srv.statfs(fs_proto::fs::ROOT as u32).unwrap();
+        assert_eq!(after_total, total, "the image did not change size");
+        assert!(
+            after_free < free,
+            "a megabyte was written and free went {free} -> {after_free}",
+        );
+
+        // Any handle qualifies, file or directory, because the answer is about the image behind
+        // both. A handle nobody minted does not.
+        assert_eq!(srv.statfs(h).unwrap().0, block);
+        assert_eq!(srv.statfs(9999).err().map(|e| e.errno), Some(EBADF));
+    }
+
+    /// **No right is demanded**, which is the row `fs_proto::verb::TABLE` carries and the thing a
+    /// narrowed capability depends on: a grant that may write but not read still has to be able to
+    /// find out whether its next write fits.
+    #[test]
+    fn statfs_answers_through_a_capability_that_carries_nothing() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        // A child directory holding one right, and not one of the ones a read would need.
+        let narrow = srv.open_dir(root, "sub", dir::DESCEND).unwrap();
+        assert!(
+            srv.read_dir(narrow, 0, &mut [0u8; 64]).is_err(),
+            "the fixture is only meaningful if this capability cannot enumerate",
+        );
+        assert_eq!(
+            srv.statfs(narrow).unwrap().0,
+            redoxfs::BLOCK_SIZE,
+            "STATFS asks for no right; see fs_proto::fs::STATFS",
+        );
+    }
+
     // --- CREATE and TRUNCATE (milestone 31 phase 2) ---
 
     #[test]

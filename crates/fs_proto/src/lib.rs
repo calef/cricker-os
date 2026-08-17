@@ -388,6 +388,39 @@ pub mod fs {
     /// Needs [`super::dir::WRITE`], refused with [`super::dir::EROFS`].
     pub const REMOVEXATTR: u64 = 17;
 
+    /// **How much room the store behind this capability has** (milestone 54). POSIX's `statfs`, cut
+    /// down to the three numbers a client actually decides with.
+    ///
+    /// [`req_len`] and the second word are both 0; [`req_handle`] is **any handle this server
+    /// minted**, file or directory, [`ROOT`] included. Reply `r0` = how many bytes of the shared
+    /// page were filled, which is [`super::statfs::LEN`], or an error; the record itself is
+    /// [`super::statfs`]. `EBADF` for a handle the server did not mint.
+    ///
+    /// # Why any handle, and why no right
+    ///
+    /// The answer is a fact about the **storage behind the capability**, not about anything the
+    /// capability names, and every handle in one server is on one image. So this takes a handle the
+    /// way [`FSTAT`] and [`CLOSE`] do, for the same reason: holding one is the whole
+    /// qualification, and a caller with no handle asks nothing. Demanding [`super::dir::READ`]
+    /// would have made a write-only grant unable to find out whether its next write fits, which is
+    /// the one question it has.
+    ///
+    /// The handle is still checked, and that is the capability part: a client that holds no
+    /// endpoint into this server cannot ask, and one whose endpoint is a caretaker asks through the
+    /// caretaker's own table. There is no ambient "how full is the disk" call.
+    ///
+    /// # BUGS
+    ///
+    /// - **It answers about the whole image, never about a subtree.** A holder of a narrow subtree
+    ///   capability learns the volume's free space, which is more than its own namespace tells it.
+    ///   There are no quotas in this filesystem, so there is no smaller number that would be true;
+    ///   reporting the subtree's own usage as a "size" would be the silent degradation DECISIONS
+    ///   §42 forbids. If quotas ever exist, this verb reports the quota and this note goes away.
+    /// - **The numbers are a snapshot with no lock behind it.** Two clients writing concurrently
+    ///   both see a free count that was true when it was read; the store's own `ENOSPC` at write
+    ///   time is the authority, and this is a forecast. That is what `statfs` is everywhere.
+    pub const STATFS: u64 = 18;
+
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
     /// guards the bit-packing.
@@ -792,7 +825,7 @@ pub mod verb {
     pub const FIRST: u64 = fs::OPEN;
     /// The highest opcode in the contract, and the last row's. Raising it without adding a row is a
     /// compile error.
-    pub const LAST: u64 = fs::REMOVEXATTR;
+    pub const LAST: u64 = fs::STATFS;
 
     /// **Every verb the file-service contract carries, in opcode order.**
     ///
@@ -923,6 +956,10 @@ pub mod verb {
             false,
             dir::WRITE,
         ),
+        // STATFS names a handle and nothing else: no operand, no second word, no right. The reply
+        // fills the shared page, which costs a proxy nothing because the page is the one all three
+        // parties already share (see `fs_subtree_caretaker`'s `PAGE_VA`).
+        row(fs::STATFS, "STATFS", Operand::None, false, false, 0),
     ];
 
     /// **The row for an opcode, or `None` if the contract does not carry it.**
@@ -1031,6 +1068,11 @@ pub mod verb {
             Policy::Forward, // SETXATTR, EROFS without the direction
             Policy::Forward, // LISTXATTR
             Policy::Forward, // REMOVEXATTR, EROFS without the direction
+            // STATFS is forwarded rather than refused, and it is the one directory-shaped question
+            // that means something through a file capability: a program granted one file to write
+            // still has to know whether its next write fits. The server takes any handle it minted,
+            // so the caretaker's substituted file handle answers it.
+            Policy::Forward, // STATFS
         ];
 
         /// `EBADF`: no such handle, and only that since 2026-08-01 (see [`POLICY`]'s BUGS).
@@ -1112,6 +1154,84 @@ pub mod dirent {
             self.at += record_len(len);
             Some((name, flags & IS_DIR != 0))
         }
+    }
+}
+
+/// **How [`fs::STATFS`] packs the volume's numbers into the shared page** (milestone 54).
+///
+/// Three little-endian `u64`s, in this order: the allocation unit in bytes, the volume's size in
+/// those units, and how many of them are free. Nothing else, because nothing else changes a
+/// caller's decision: a client asks this to find out whether what it is about to write will fit,
+/// and macOS asks it to size a Time Machine sparsebundle against the volume it is landing on.
+///
+/// # The three choices worth arguing with
+///
+/// **A record in the page rather than a packed reply word.** A reply carries one `i64`, and two
+/// 64-bit counts do not fit in one however they are packed. Every other verb that answers with more
+/// than a number ([`fs::READDIR`], [`fs::LISTXATTR`]) fills the page and returns its length, so this
+/// is the contract's existing shape rather than a new one.
+///
+/// **The unit is a field, not [`PAGE`].** They are the same number today (4096) and they are not the
+/// same *thing*: one is the filesystem's allocation granularity and the other is the IPC transfer
+/// unit. A client that assumed they were equal would silently mis-size a volume the day a
+/// filesystem with 64 KiB records is served through the same contract.
+///
+/// **The reply's length is the version.** `r0` is [`LEN`] today; a future field extends the record
+/// and raises [`LEN`], and a client written against this version reads its prefix correctly because
+/// it checks `r0 >= LEN` for the fields it knows rather than `r0 == LEN`. [`decode`] is written that
+/// way on purpose. There is deliberately **no version word**: the length already is one, and a
+/// second one would be a thing to keep in sync.
+///
+/// # BUGS
+///
+/// - **Free space is a forecast, not a reservation.** See [`fs::STATFS`]'s own BUGS: the store's
+///   `ENOSPC` at write time is the authority.
+/// - **There is no inode count.** POSIX `statfs` carries `f_files`/`f_ffree`, and SMB's volume
+///   classes carry neither, so nothing above this contract has asked. Adding them extends the
+///   record by the paragraph above rather than changing it.
+pub mod statfs {
+    /// Bytes one record takes. Also the value [`fs::STATFS`] answers with on success; see the
+    /// module header on why the length is the version.
+    pub const LEN: usize = 24;
+
+    /// Write a record at the start of `out`, returning its length, or `None` if it does not fit.
+    pub fn encode(
+        out: &mut [u8],
+        block_size: u64,
+        total_blocks: u64,
+        free_blocks: u64,
+    ) -> Option<usize> {
+        if out.len() < LEN {
+            return None;
+        }
+        out[0..8].copy_from_slice(&block_size.to_le_bytes());
+        out[8..16].copy_from_slice(&total_blocks.to_le_bytes());
+        out[16..24].copy_from_slice(&free_blocks.to_le_bytes());
+        Some(LEN)
+    }
+
+    /// Read a record from the start of `buf` (the `r0` bytes a [`fs::STATFS`] reply filled), as
+    /// `(block_size, total_blocks, free_blocks)`. `None` if the reply is shorter than this version
+    /// of the record, which is what a truncated reply looks like and must not be read as zeroes.
+    ///
+    /// [`fs::STATFS`]: super::fs::STATFS
+    pub fn decode(buf: &[u8]) -> Option<(u64, u64, u64)> {
+        if buf.len() < LEN {
+            return None;
+        }
+        let w = |at: usize| u64::from_le_bytes(buf[at..at + 8].try_into().unwrap());
+        Some((w(0), w(8), w(16)))
+    }
+
+    /// The volume's size in bytes, saturating rather than wrapping: the numbers come off a disk and
+    /// a corrupt pair must not become a small plausible answer.
+    pub const fn total_bytes(block_size: u64, total_blocks: u64) -> u64 {
+        block_size.saturating_mul(total_blocks)
+    }
+
+    /// The free bytes, saturating for [`total_bytes`]'s reason.
+    pub const fn free_bytes(block_size: u64, free_blocks: u64) -> u64 {
+        block_size.saturating_mul(free_blocks)
     }
 }
 
@@ -2559,6 +2679,65 @@ mod tests {
         assert_eq!(mints, ["OPEN", "CREATE", "OPENDIR", "MKDIR"]);
     }
 
+    /// **The `statfs` record survives a round trip and refuses a short one.**
+    ///
+    /// The refusal is the half worth having: a truncated reply read as zeroes would tell a client
+    /// the volume is empty and zero bytes big, which is a lie in the direction that loses data.
+    #[test]
+    fn the_statfs_record_round_trips_and_a_short_reply_is_not_zeroes() {
+        let mut page = [0u8; 64];
+        assert_eq!(
+            statfs::encode(&mut page, 4096, 16384, 9001),
+            Some(statfs::LEN)
+        );
+        assert_eq!(statfs::decode(&page), Some((4096, 16384, 9001)));
+        // Exactly the record is enough; one byte less is not readable at all.
+        assert_eq!(
+            statfs::decode(&page[..statfs::LEN]),
+            Some((4096, 16384, 9001))
+        );
+        assert_eq!(statfs::decode(&page[..statfs::LEN - 1]), None);
+        assert_eq!(statfs::decode(&[]), None);
+        // A page too small to hold the record refuses rather than writing a partial one.
+        let mut tiny = [0u8; statfs::LEN - 1];
+        assert_eq!(statfs::encode(&mut tiny, 4096, 1, 1), None);
+
+        // The length is the version: a longer reply is a later version, and this version reads its
+        // own prefix out of it rather than refusing.
+        let mut longer = [0u8; statfs::LEN + 8];
+        statfs::encode(&mut longer, 512, 2, 1).unwrap();
+        longer[statfs::LEN..].copy_from_slice(&7u64.to_le_bytes());
+        assert_eq!(statfs::decode(&longer), Some((512, 2, 1)));
+
+        assert_eq!(statfs::total_bytes(4096, 16384), 64 * 1024 * 1024);
+        assert_eq!(statfs::free_bytes(4096, 0), 0);
+        // Saturating, because these numbers come off a disk: a corrupt pair must stay obviously
+        // wrong instead of wrapping into a small plausible answer.
+        assert_eq!(statfs::total_bytes(u64::MAX, 2), u64::MAX);
+    }
+
+    /// **`STATFS` asks for no right and mints no handle**, which is the whole of its row and the
+    /// part a caretaker acts on. Spelled out rather than derived, for [`verb::TABLE`]'s reason: a
+    /// row that grew a rights requirement would silently make a write-only grant unable to ask
+    /// whether its next write fits.
+    #[test]
+    fn statfs_names_a_handle_and_nothing_else() {
+        let v = verb::of(fs::STATFS).unwrap();
+        assert_eq!(v.name, "STATFS");
+        assert_eq!(v.needs_all, 0);
+        assert_eq!(v.needs_any, 0);
+        assert!(!v.carries_len(), "STATFS's length field counts nothing");
+        assert!(!v.carries_w1, "STATFS has no second word");
+        assert!(!v.mints_handle);
+        assert!(!v.mutates(), "asking how full a disk is changes nothing");
+        assert!(!v.takes_name(), "a name filter has nothing to filter here");
+        // Forwarded through a per-file grant: see the policy row's own comment.
+        assert_eq!(
+            verb::file_grant::of(fs::STATFS),
+            Some(verb::file_grant::Policy::Forward)
+        );
+    }
+
     /// **A name filter must see every verb that names a directory entry, and no others.**
     ///
     /// This is the row that decides a security property rather than a formatting one:
@@ -3898,7 +4077,14 @@ mod tests {
     #[test]
     fn the_verb_predicates_partition_the_table_as_documented() {
         // Operand::None: the length field means nothing.
-        let no_len = ["CLOSE", "FSTAT", "TRUNCATE", "READDIR", "LISTXATTR"];
+        let no_len = [
+            "CLOSE",
+            "FSTAT",
+            "TRUNCATE",
+            "READDIR",
+            "LISTXATTR",
+            "STATFS",
+        ];
         // needs_all intersects WRITE | CREATE | REMOVE.
         let mutating = [
             "WRITE",
