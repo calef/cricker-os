@@ -17,6 +17,58 @@
 //! it is trivial and it keeps the linking simple. Device helpers (a UART `putc`, echo logic) also
 //! stay in the drivers that own them: those are not runtime, they are the program.
 //!
+//! # Examples
+//!
+//! **This crate is the one place in the tree where an example genuinely cannot run**, and the reason
+//! is worth stating rather than hiding behind a fence marker. Every function here traps to the kernel
+//! from EL0: `svc`/`ecall` on a machine with no nife kernel under it is a fault, not a syscall, and
+//! `script/test`'s host pass excludes this crate and everything that depends on it (the exclusion set
+//! is derived and checked by `script/lint`). So the examples below are `no_run`: they are type-checked
+//! against the real signatures on an aarch64 host and are **not executed anywhere**. The things that
+//! *can* be checked are the wire contracts layered over them, which is where those crates put their
+//! examples (`sink_proto`, `fs_proto`, `entropy_proto`).
+//!
+//! A program's whole life, in the four calls that make up this crate. Note what is absent: there is
+//! no `open`, no path, and no way to name anything that was not handed over.
+//!
+//! ```no_run
+//! use user_rt::{exit, recv, send};
+//!
+//! /// A pipeline stage: read three words off the endpoint in slot 0, pass them to slot 1.
+//! fn relay() -> ! {
+//!     const IN: u64 = 0;
+//!     const OUT: u64 = 1;
+//!     loop {
+//!         // `recv` blocks until a sender rendezvouses. The rendezvous IS the flow control: there
+//!         // is no buffer to fill and no back-pressure to invent.
+//!         let (w0, w1, w2) = recv(IN);
+//!         if send(OUT, w0, w1, w2) < 0 {
+//!             // A negative return is an `abi::Error`. `Gone` here means the reader exited, which
+//!             // is this system's SIGPIPE, arriving as a return code rather than as a signal.
+//!             exit();
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! A client of a service uses [`call`], which blocks until the reply lands. The reply arrives through
+//! a one-shot capability the kernel mints, so the client never names the server and the server never
+//! names the client:
+//!
+//! ```no_run
+//! use user_rt::call;
+//!
+//! # fn ask() {
+//! const SERVICE: u64 = 2;
+//! let (r0, r1) = call(SERVICE, 0x0100_0000_0000_0008, 0);
+//!
+//! // Negative-as-u64 is enormous, which is how a wire contract tells "no capability in that slot"
+//! // from an answer without a probe request. See `entropy_proto::delivered`.
+//! assert!((r0 as i64) >= 0 || abi::Error::from_ret(r0 as i64).is_some());
+//! # let _ = r1;
+//! # }
+//! ```
+//!
 //! # Two ABIs, one surface
 //!
 //! The syscall instruction and the register file differ by architecture, and this is the one place

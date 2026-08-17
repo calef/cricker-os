@@ -16,6 +16,37 @@
 //! descriptor table and the two rings, negotiated through the registers below. See the virtio
 //! 1.x spec, sections 4.2 (MMIO) and 5.2 (block).
 //!
+//! # Examples
+//!
+//! **Nothing here can run off a machine, and the reason is the whole point of the crate.** Every
+//! entry point below writes device registers through a mapping the kernel handed this process and
+//! returns `!`: there is no virtio device on a host, `script/test`'s host pass excludes this crate
+//! (it depends on `user_rt`'s EL0 `asm!`, an exclusion `script/lint` derives and checks), and a
+//! function that never returns has no assertion to make. So the example is `no_run`: type-checked
+//! against the real signatures, executed by the QEMU boot and by nothing else. The parts of this
+//! subsystem that *are* checkable are in `dma_validator` and `fs_proto`, which is where their
+//! examples live.
+//!
+//! What a driver's `_start` looks like, and it is the shortest interesting program in the tree,
+//! because the interesting part is what it is holding rather than what it does:
+//!
+//! ```no_run
+//! # use user_rt::exit;
+//! /// The kernel starts this thread with the DMA page's **physical** address in the first argument
+//! /// register. It has to: descriptors speak physical addresses and a process knows only virtual
+//! /// ones, and there is no syscall that would translate one, deliberately.
+//! ///
+//! /// Everything else this process holds arrived at spawn: a device-typed mapping of the registers,
+//! /// the DMA page, and an `Irq` capability in slot 1 so the interrupt reaches it as a message. It
+//! /// holds no filesystem, no console, and no way to name a physical address other than this one.
+//! fn start(dma_phys: u64) -> ! {
+//!     virtio::run(dma_phys)
+//! }
+//! ```
+//!
+//! If any of the register programming below is wrong, **this process faults and the kernel does
+//! not**, which is milestone 9's headline and the thing a reader should take from the crate.
+//!
 //! Name: unrecorded, and the tree comes one clause short of recording it. notes/naming.md's BUGS
 //! says "the crate keeps its name, which is right, but the sentence under it is wrong", which
 //! asserts the conclusion and never gives the reason, so a reader learns that somebody agreed
