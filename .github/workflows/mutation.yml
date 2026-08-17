@@ -74,7 +74,7 @@ jobs:
       - name: Read the pinned cargo-mutants version
         id: mutants
         run: echo "version=$(cat .cargo-mutants-version)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2.85.12
+      - uses: taiki-e/install-action@v2.85.13
         with:
           tool: cargo-mutants@${{ steps.mutants.outputs.version }}
 

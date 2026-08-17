@@ -327,7 +327,7 @@ jobs:
       - name: Read the pinned cargo-deny version
         id: deny
         run: echo "version=$(cat .cargo-deny-version)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2.85.12
+      - uses: taiki-e/install-action@v2.85.13
         with:
           tool: cargo-deny@${{ steps.deny.outputs.version }}
       # The published .crate tarballs script/vendor-verify hashes. Keyed on the pin files, so
@@ -441,7 +441,7 @@ jobs:
       - name: Install llvm-tools (pinned nightly)
         if: steps.scope.outputs.needed == 'true'
         run: rustup toolchain install nightly --profile minimal --component llvm-tools
-      - uses: taiki-e/install-action@v2.85.12
+      - uses: taiki-e/install-action@v2.85.13
         if: steps.scope.outputs.needed == 'true'
         with:
           tool: cargo-llvm-cov
