@@ -124,6 +124,14 @@ media are unreadable a fortnight later. The tree keeps records; GitHub keeps cor
 The rung to have reached for was the third one, a written record at the thing itself. That is what
 the nine blessings are now, and what this note is for the inventory around them.
 
+**It repeated once more on the way out, one level up.** The commit that landed this note and the
+nine blessings did not touch milestone 94's roadmap block or the index, so both records went on
+saying the work was outstanding while agreeing with each other. That is §76's shape and
+`script/roadmap --check` cannot see it: the gate compares the index against the block, never either
+against the tree. A second lane corrected the record. The general lesson is the narrow one: **the
+commit that does the work is the commit that moves the record**, because a follow-up nobody is
+assigned is the same rung-zero "somebody will notice" this whole family exists to retire.
+
 ## BUGS
 
 - **The original nine are not recoverable, and the nine above are a re-derivation.** Pull request
