@@ -68,7 +68,24 @@ fn converse() -> ! {
     let mut changed_at = 0u64;
 
     for seq in 0..swap_proto::REQUESTS {
-        let (got, tag) = call(SVC, swap_proto::OP_PUT, seq);
+        let (mut got, mut tag) = call(SVC, swap_proto::OP_PUT, seq);
+
+        // **We were stranded inside this call, and the thing that stranded us let go** (milestone
+        // 23's hung-component channel). A component took this request and then stopped answering
+        // without dying, so nothing in the kernel could wake us: a caller awaiting a reply is woken
+        // by the reply and by nothing else, and `abi::Error::Gone` reaches a caller whose *endpoint*
+        // died, never one whose *server is alive and silent*.
+        //
+        // So this arm is not error handling. It is the tail of a request that took a detour through
+        // the operator's recovery, and the only honest thing to do with it is ask again: a released
+        // caller has learned that its request was never served, not that it failed. On the healthy
+        // channels this value never arrives and this branch is dead.
+        if got == swap_proto::WEDGE_RELEASED {
+            bits |= ck::WAS_RELEASED;
+            let again = call(SVC, swap_proto::OP_PUT, seq);
+            got = again.0;
+            tag = again.1;
+        }
 
         // Did somebody answer at all, and was it an answer to *this* question? A reply carrying
         // another request's sequence number would mean the kernel's one-shot Reply capability had
