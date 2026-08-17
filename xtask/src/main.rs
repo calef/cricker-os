@@ -3247,261 +3247,121 @@ fn initrd_riscv() -> bool {
 /// rest by name. Generated, not checked in, exactly like the disk and the flat kernel image: a blob
 /// in git is a blob nobody can review.
 fn mkinitrd() -> bool {
-    let hello = match read_stripped(&user_elf()) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", user_elf());
-            return false;
-        }
-    };
-    let worker = match read_stripped(&bin_elf("worker")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("worker"));
-            return false;
-        }
-    };
-    let console = match read_stripped(&bin_elf("console")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("console"));
-            return false;
-        }
-    };
-    let input = match read_stripped(&bin_elf("input")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("input"));
-            return false;
-        }
-    };
-    let swish = match read_stripped(&bin_elf("swish")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("swish"));
-            return false;
-        }
-    };
-    let coremark = match read_stripped(&bin_elf("coremark")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("coremark"));
-            return false;
-        }
-    };
-    let os_primitives_benchmarker = match read_stripped(&bin_elf("os_primitives_benchmarker")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "mkinitrd: cannot read {}: {e}",
-                bin_elf("os_primitives_benchmarker")
-            );
-            return false;
-        }
-    };
-    let line_editor = match read_stripped(&bin_elf("line_editor")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("line_editor"));
-            return false;
-        }
-    };
-    let terminal_sink_caretaker = match read_stripped(&bin_elf("terminal_sink_caretaker")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "mkinitrd: cannot read {}: {e}",
-                bin_elf("terminal_sink_caretaker")
-            );
-            return false;
-        }
-    };
-    let allocator_exerciser = match read_stripped(&bin_elf("allocator_exerciser")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "mkinitrd: cannot read {}: {e}",
-                bin_elf("allocator_exerciser")
-            );
-            return false;
-        }
-    };
-    let net_stack = match read_stripped(&bin_elf("net_stack")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("net_stack"));
-            return false;
-        }
-    };
-    let smb_server = match read_stripped(&bin_elf("smb_server")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("smb_server"));
-            return false;
-        }
-    };
-    let mdns_responder = match read_stripped(&bin_elf("mdns_responder")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("mdns_responder"));
-            return false;
-        }
-    };
-    let budgeter = match read_stripped(&bin_elf("budgeter")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("budgeter"));
-            return false;
-        }
-    };
-    let fs_file_caretaker = match read_stripped(&bin_elf("fs_file_caretaker")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "mkinitrd: cannot read {}: {e}",
-                bin_elf("fs_file_caretaker")
-            );
-            return false;
-        }
-    };
-    let fs_subtree_caretaker = match read_stripped(&bin_elf("fs_subtree_caretaker")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!(
-                "mkinitrd: cannot read {}: {e}",
-                bin_elf("fs_subtree_caretaker")
-            );
-            return false;
-        }
-    };
-    let fs_test_client = match read_stripped(&bin_elf("fs_test_client")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fs_test_client"));
-            return false;
-        }
-    };
-    let heeder = match read_stripped(&bin_elf("heeder")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("heeder"));
-            return false;
-        }
-    };
-    let spinner = match read_stripped(&bin_elf("spinner")) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("spinner"));
-            return false;
-        }
-    };
-    // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", "swish" are the split system binaries (19f.2-5), "line_editor" is
-    // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
-    // "os_primitives_benchmarker" is the EL0 microbenchmark program (primitive suite), and "allocator_exerciser" proves the
-    // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries in
-    // the one archive. The authority-shrinking supervision tree (milestone 22 phase B.2), read as a
-    // group: four small portable programs that share one module, packed under their own names for
-    // both ISAs. The display pair (milestone 29) reads as a group for the same reason: the confined
-    // virtio-gpu driver and the client that draws into the surface it serves, both portable. The C
-    // seam (milestone 36) reads as a group too: the confiner that builds, supervises, and checks
-    // the foreign component, and the Rust shell that links it. Both portable. The compositor and
-    // its window clients (milestone 33, rung two) read as a group for the same reason: one server,
-    // one client binary with several roles, both portable.
-    let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
-    for name in [
-        "root_supervisor",
-        "spawner",
-        "sub_server_supervisor",
-        "flaky",
-        // The interactive boot's undertaker (milestone 22, the interactive increment): one
-        // endpoint capability and nothing else, so a job's region comes back to init's budget.
-        "job_undertaker",
-        "display",
-        "painter",
-        "c_confiner",
-        "c_shim",
-        "compositor",
-        "window",
-        "display_terminal",
-        "kbd",
-        "swapper",
-        "rust_swappable",
-        "c_swappable",
-        "chatty",
-        "broker",
-        "clock",
-        "date",
+    // **One table, one loop**, the shape `initrd_riscv` has always had (milestone 130). This
+    // function used to do the same job three ways at once: nineteen hand-rolled `let` bindings of
+    // seven identical lines each, then a loop over a name array doing exactly the same thing, then
+    // a hand-written vector re-listing the nineteen by the same string literals. Adding a program
+    // meant editing four places that all said its name, and the two that were prose rather than
+    // data were the two that drifted.
+    //
+    // `(archive_name, bin_name)` because the two differ exactly once: the kernel loads the entry
+    // called **`init`**, and on aarch64 that is the `hello` binary, which init then re-enters at
+    // its remaining roles (19f). Every other row is a name repeated, and that is fine: the pair is
+    // what lets the one exception be data instead of a special case in the loop.
+    //
+    // Order is preserved from the hand-written vector it replaces. It is not load-bearing (init
+    // looks entries up by name) but the measurement table is computed over this sequence, so
+    // reordering would churn the manifest for nothing.
+    let entries: &[(&str, &str)] = &[
+        ("init", "hello"),
+        ("worker", "worker"),
+        ("console", "console"),
+        ("input", "input"),
+        ("swish", "swish"),
+        // The line discipline between the console and the shell (milestone 28).
+        ("line_editor", "line_editor"),
+        // The terminal's sink adapter (milestone 50), so a declared second stream has somewhere to
+        // go that is not the shell's own output slot.
+        ("terminal_sink_caretaker", "terminal_sink_caretaker"),
+        // The compute workload (19e) and the EL0 microbenchmark program.
+        ("coremark", "coremark"),
+        ("os_primitives_benchmarker", "os_primitives_benchmarker"),
+        // Proves the user_rt heap (milestone 27).
+        ("allocator_exerciser", "allocator_exerciser"),
+        ("net_stack", "net_stack"),
+        ("smb_server", "smb_server"),
+        // The mDNS responder (milestone 55): the discovery half of the Time Machine target.
+        ("mdns_responder", "mdns_responder"),
+        ("budgeter", "budgeter"),
+        ("fs_test_client", "fs_test_client"),
+        ("fs_file_caretaker", "fs_file_caretaker"),
+        ("fs_subtree_caretaker", "fs_subtree_caretaker"),
+        ("heeder", "heeder"),
+        ("spinner", "spinner"),
+        // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
+        // construction authority to a spawner and its restart policy to a supervisor, then drops
+        // the budget.
+        ("root_supervisor", "root_supervisor"),
+        ("spawner", "spawner"),
+        ("sub_server_supervisor", "sub_server_supervisor"),
+        ("flaky", "flaky"),
+        // The interactive boot's undertaker (milestone 22, the interactive increment): one endpoint
+        // capability and nothing else, so a job's region comes back to init's budget.
+        ("job_undertaker", "job_undertaker"),
+        // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
+        // into the surface it serves.
+        ("display", "display"),
+        ("painter", "painter"),
+        // The C seam (milestone 36): the confiner that builds, supervises and checks the foreign
+        // component, and the Rust shell that links it.
+        ("c_confiner", "c_confiner"),
+        ("c_shim", "c_shim"),
+        // The compositor and its window client (milestone 33, rung two).
+        ("compositor", "compositor"),
+        ("window", "window"),
+        // The display terminal (milestone 29's text increment): one binary, two wirings.
+        ("display_terminal", "display_terminal"),
+        // The keyboard driver (milestone 29's input).
+        ("kbd", "kbd"),
+        // Live component replacement (milestone 23): the operator, the two instances of the
+        // swappable component (the second computes its answers in C), the client that talks across
+        // the swap, and the queue broker for the opt-in rung.
+        ("swapper", "swapper"),
+        ("rust_swappable", "rust_swappable"),
+        ("c_swappable", "c_swappable"),
+        ("chatty", "chatty"),
+        ("broker", "broker"),
+        // The clock service (milestone 51) and the program that reads the page it publishes.
+        ("clock", "clock"),
+        ("date", "date"),
         // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
-        // Portable, so both archives carry it.
-        "rm",
-        // The disk surveyor (milestone 57): the block-device roster and the partition table of the
-        // one disk it holds. Portable, so both archives carry it and both ISAs read literally the
-        // same table off literally the same image.
-        "disk_surveyor",
-        // The disk partitioner (milestone 57's write half): the same disk authority pointed the
-        // other way, plus the entropy endpoint a unique GUID needs. Portable, so both archives
-        // carry it, and both ISAs write a table the other could read.
-        "disk_partitioner",
+        ("rm", "rm"),
+        // The disk surveyor and the partitioner (milestone 57): the same disk authority pointed in
+        // each direction, and the partitioner refuses to write without an entropy endpoint.
+        ("disk_surveyor", "disk_surveyor"),
+        ("disk_partitioner", "disk_partitioner"),
         // The nameset caretaker (milestone 47's globbing lane): a directory capability attenuated
-        // to the names a pattern matched. Portable, so both archives carry it.
-        "fs_nameset_caretaker",
-        "entropy",
-        // The credential service and its clients (milestone 56, the credential half). Portable, so
-        // both archives carry both.
-        "credentialer",
-        "credentialer_test_client",
-        "ntp",
+        // to the names a pattern matched.
+        ("fs_nameset_caretaker", "fs_nameset_caretaker"),
+        ("entropy", "entropy"),
+        // The credential service and its clients (milestone 56, the credential half).
+        ("credentialer", "credentialer"),
+        ("credentialer_test_client", "credentialer_test_client"),
+        ("ntp", "ntp"),
         // The outlaw (milestone 19's user-test port): the privilege-boundary programs
-        // kernel::user::tests used to hand-assemble. Portable, so both archives carry it.
-        "outlaw",
-        // The sink contract's ends (milestone 50): the indifferent writer, the file sink, and the
-        // read-back. Portable, so both archives carry it and both ISAs run the same indifference
-        // test.
-        "sink",
+        // kernel::user::tests used to hand-assemble.
+        ("outlaw", "outlaw"),
+        // The sink contract's ends (milestone 50): the indifferent writer and the read-back.
+        ("sink", "sink"),
         // `wc` (milestone 50): the right-hand side of a pipe, and the first program that reads a
-        // stream. Portable, so both archives carry it.
-        "wc",
+        // stream.
+        ("wc", "wc"),
         // `doc` (milestone 40): the documentation viewer, a filter from markdown to styled text.
-        // Portable for the same reason as `wc`.
-        "doc",
-        // `ps` (milestone 126): the process listing over a supervision domain. Portable for the
-        // same reason as `wc`.
-        "ps",
-    ] {
-        match read_stripped(&bin_elf(name)) {
-            Ok(bytes) => tree.push((name, bytes)),
+        ("doc", "doc"),
+        // `ps` (milestone 126): the process listing over a supervision domain.
+        ("ps", "ps"),
+    ];
+    let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
+    for &(archive_name, bin_name) in entries {
+        match read_stripped(&bin_elf(bin_name)) {
+            Ok(b) => blobs.push((archive_name, b)),
             Err(e) => {
-                eprintln!("mkinitrd: cannot read {}: {e}", bin_elf(name));
+                eprintln!("mkinitrd: cannot read {}: {e}", bin_elf(bin_name));
                 return false;
             }
         }
     }
-
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("init", &hello),
-        ("worker", &worker),
-        ("console", &console),
-        ("input", &input),
-        ("swish", &swish),
-        ("line_editor", &line_editor),
-        ("terminal_sink_caretaker", &terminal_sink_caretaker),
-        ("coremark", &coremark),
-        ("os_primitives_benchmarker", &os_primitives_benchmarker),
-        ("allocator_exerciser", &allocator_exerciser),
-        ("net_stack", &net_stack),
-        ("smb_server", &smb_server),
-        ("mdns_responder", &mdns_responder),
-        ("budgeter", &budgeter),
-        ("fs_test_client", &fs_test_client),
-        ("fs_file_caretaker", &fs_file_caretaker),
-        ("fs_subtree_caretaker", &fs_subtree_caretaker),
-        ("heeder", &heeder),
-        ("spinner", &spinner),
-    ];
-    for (name, bytes) in &tree {
-        files.push((name, bytes.as_slice()));
-    }
+    let mut files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask std-exerciser`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.
@@ -3550,7 +3410,7 @@ fn mkinitrd() -> bool {
 }
 
 /// The packed initrd archive ([`initrd_path`]) is what `scripts/qemu-runner-aarch64.sh` passes to QEMU as
-/// `-initrd` (milestone 19f); the raw user ELF ([`user_elf`]) is only the input `mkinitrd` packs.
+/// `-initrd` (milestone 19f); the raw user ELFs ([`bin_elf`]) are only the input `mkinitrd` packs.
 ///
 /// **Deliberately the same road Linux's initramfs travels**, now literally an archive like theirs.
 /// QEMU loads the file into RAM and writes its address into `/chosen/linux,initrd-start` in the
@@ -4612,21 +4472,20 @@ fn redoxfs_reads_back(name: &str, want: &[u8]) -> bool {
     }
 }
 
-fn user_elf() -> String {
-    // ABSOLUTE, and that is not fussiness.
-    //
-    // Cargo runs the runner script with the working directory set to the **package** dir for
-    // `cargo test` and the workspace root for `cargo run`. A relative path therefore resolved
-    // under `cargo run` and silently did not under `cargo test`, so the tests booted with no
-    // initrd at all and the one that noticed was the one that panicked.
-    workspace_root()
-        .join(format!("target/{TARGET}/{}/hello", profile_dir()))
-        .display()
-        .to_string()
-}
-
-/// The ELF path of a named binary the `user` package builds beside `hello` (milestone 19f.2+):
-/// `worker`, `console`, and so on. `mkinitrd` packs each into the archive under that same name.
+/// The ELF path of a named binary the `user` package builds (milestone 19f.2+): `hello`, `worker`,
+/// `console`, and so on. `mkinitrd` packs each into the archive, under that same name for every
+/// program but `hello`, which is packed as `init`.
+///
+/// **The path is ABSOLUTE, and that is not fussiness.** Cargo runs the runner script with the
+/// working directory set to the **package** dir for `cargo test` and the workspace root for
+/// `cargo run`. A relative path therefore resolved under `cargo run` and silently did not under
+/// `cargo test`, so the tests booted with no initrd at all and the one that noticed was the one
+/// that panicked.
+///
+/// That lesson was written on a `user_elf()` helper that computed this same path for `hello`
+/// alone, and was `bin_elf("hello")` in every respect but the comment. Milestone 130 folded it in
+/// when `mkinitrd` stopped needing a special case for `init`; the warning belongs here, where
+/// every caller reads it, rather than on the one caller that happened to earn it.
 fn bin_elf(name: &str) -> String {
     workspace_root()
         .join(format!("target/{TARGET}/{}/{name}", profile_dir()))
