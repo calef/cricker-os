@@ -42,9 +42,22 @@ fn endpoint(region: u64) -> sched::EpId {
     sched::create_endpoint_from(region).expect("no endpoint")
 }
 
-/// Hold a domain the way a viewer holds one: `READ`, which is what `SURVEY` takes.
-fn hold_read(ep: sched::EpId) -> u64 {
-    sched::grant(crate::cap::endpoint_cap(ep, Rights::READ)).expect("grant the endpoint")
+/// Hold a domain **the way a viewer holds one**: `ENUMERATE` and nothing else, which is exactly
+/// what `ps` is granted. It is not that a viewer is refused `RECV` and `REAP`; it cannot name them,
+/// because those take `READ` and this capability does not carry it.
+fn hold_view(ep: sched::EpId) -> u64 {
+    sched::grant(crate::cap::endpoint_cap(ep, Rights::ENUMERATE)).expect("grant the endpoint")
+}
+
+/// Hold a domain **the way its supervisor holds it**: `READ` to receive and reap, `ENUMERATE` to
+/// look. The two rights are separable and this is the holder that has both, which is what makes
+/// [`hold_view`]'s narrowness a choice rather than the only thing available.
+fn hold_supervisor(ep: sched::EpId) -> u64 {
+    sched::grant(crate::cap::endpoint_cap(
+        ep,
+        Rights::READ.union(Rights::ENUMERATE),
+    ))
+    .expect("grant the endpoint")
 }
 
 /// Hold the same endpoint **send-only**: a peer that may report to this supervisor and is not the
@@ -175,7 +188,7 @@ fn a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted() {
         "the three children never reached their sends",
     );
 
-    let cap = hold_read(mine);
+    let cap = hold_view(mine);
     let mut buf = [ps::Row::default(); TEST_ROWS];
     let seen = walk(cap, &mut buf);
     assert!(
@@ -205,7 +218,7 @@ fn a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted() {
     );
 
     // The other endpoint answers about its own child and only its own, from the same kernel walk.
-    let other = hold_read(theirs);
+    let other = hold_view(theirs);
     let mut buf = [ps::Row::default(); TEST_ROWS];
     let seen = walk(other, &mut buf);
     assert_eq!(seen.rows().len(), 1);
@@ -216,9 +229,14 @@ fn a_domain_is_exactly_the_children_of_the_endpoint_that_was_granted() {
     );
 
     drain(parking, 3);
-    collect_all(cap, &[a, b]);
-    collect_all(other, &[stranger]);
-    tidy(budget, endpoints, &[cap, other]);
+    // Cleanup goes through a *separate* supervisor capability on the same endpoints. The viewer
+    // caps above cannot reap, which is the point: every walk in this test was made by a holder
+    // that could not have collected what it saw.
+    let sup_mine = hold_supervisor(mine);
+    let sup_theirs = hold_supervisor(theirs);
+    collect_all(sup_mine, &[a, b]);
+    collect_all(sup_theirs, &[stranger]);
+    tidy(budget, endpoints, &[cap, other, sup_mine, sup_theirs]);
 }
 
 /// **The negative control, and it is the point of the whole method** (milestone 126, the block's
@@ -274,7 +292,7 @@ fn a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list() {
     // A domain that really is empty is an *answer*. This is the assertion that makes the two above
     // mean something: without it, "refused" and "nothing here" could be the same code path.
     let vacant = endpoint(endpoints);
-    let held = hold_read(vacant);
+    let held = hold_view(vacant);
     assert_eq!(
         survey(held, 0),
         (abi::survey::DONE as i64, 0, 0),
@@ -291,15 +309,39 @@ fn a_viewer_without_the_domain_is_refused_rather_than_shown_an_empty_list() {
 
     // And the holder that *is* the supervisor still sees its child, so the refusals above are
     // about the rights and not about a survey that never works.
-    let sup = hold_read(ep);
+    let sup = hold_supervisor(ep);
     assert_eq!(
         tids(&walk(sup, &mut [ps::Row::default(); TEST_ROWS])).next(),
         Some(child)
     );
 
+    // **A domain names its members and does not act on them** (calef, 2026-08-17), and this pair
+    // is what makes that a property rather than a promise about `ps`'s source code. The two rights
+    // are separable in both directions:
+    //
+    // - a viewer holding `ENUMERATE` alone can look and **cannot reap**, so the widest thing a
+    //   monitor can be handed still confers no authority over what it lists;
+    // - a supervisor's plain `READ` handle can reap and **cannot look**, so the view is a grant
+    //   somebody made rather than a power that came along with receiving deaths.
+    //
+    // Before the right existed both operations rode on `READ`, and every `ps` in this system could
+    // have collected the children it listed.
+    let viewer = hold_view(ep);
+    assert_eq!(
+        reap(viewer, child),
+        Err(Error::NotPermitted),
+        "a viewer reaped a member of the domain it was only supposed to be able to name",
+    );
+    let receiver = sched::grant(crate::cap::endpoint_cap(ep, Rights::READ)).expect("grant");
+    assert_eq!(
+        survey(receiver, 0),
+        (Error::NotPermitted as i64, 0, 0),
+        "READ alone bought a domain listing, so the view is not a separate grant",
+    );
+
     drain(parking, 1);
     collect_all(sup, &[child]);
-    tidy(budget, endpoints, &[peer, held, sup]);
+    tidy(budget, endpoints, &[peer, held, sup, viewer, receiver]);
 }
 
 /// **A corpse is still in the domain, and it says so.**
@@ -318,7 +360,7 @@ fn a_dead_child_is_still_in_the_domain_until_it_is_reaped() {
     let ep = endpoint(endpoints);
     let child = child_in(budget, FAULT_STUB, None, ep);
 
-    let cap = hold_read(ep);
+    let cap = hold_supervisor(ep);
     // The corpse parks on its supervision endpoint's sender queue with its death message when
     // nobody is in RECV, which is how a survey can see it before anyone has collected the news.
     assert!(
@@ -379,7 +421,7 @@ fn a_resumed_walk_reports_every_member_exactly_once() {
         "the three children never reached their sends",
     );
 
-    let cap = hold_read(ep);
+    let cap = hold_view(ep);
     let mut buf = [ps::Row::default(); TEST_ROWS];
     let seen = walk(cap, &mut buf);
     assert_eq!(seen.rows().len(), 3, "the walk did not reach every member");
@@ -403,8 +445,9 @@ fn a_resumed_walk_reports_every_member_exactly_once() {
     assert_eq!(survey(cap, u64::MAX), (abi::survey::DONE as i64, 0, 0));
 
     drain(parking, 3);
-    collect_all(cap, &[a, b, c]);
-    tidy(budget, endpoints, &[cap]);
+    let sup = hold_supervisor(ep);
+    collect_all(sup, &[a, b, c]);
+    tidy(budget, endpoints, &[cap, sup]);
 }
 
 /// A small membership check without allocating: the kernel has no heap, and these tests hold at

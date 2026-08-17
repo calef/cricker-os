@@ -1085,11 +1085,15 @@ pub fn write_preview(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
     // tool can narrow. Here the scope is a capability, so it is a line a person can read before
     // anything is spawned, and a wider grant would be a different line rather than an invisible one.
     if e.prog.manifest().domain {
-        out(
-            b"    cap 7  endpoint  domain   READ. the processes this shell's jobs are supervised\n",
-        );
-        out(b"                              by, and no others. it cannot name a process outside\n");
-        out(b"                              this domain, or learn that one exists\n");
+        // `ENUMERATE`, and the word is the point of the line rather than decoration: it is the
+        // right that lets this program *name* the domain's members and not the one that would let
+        // it receive their deaths or collect them. Printing `READ` here would describe a wider
+        // grant than the one being made, which is the failure a `caps` output has available.
+        out(b"    cap 7  endpoint  domain   ENUMERATE. the processes this shell's jobs are\n");
+        out(b"                              supervised by, and no others. it can name them and\n");
+        out(b"                              do nothing to them: not receive their deaths, not\n");
+        out(b"                              collect them, and not learn that a process outside\n");
+        out(b"                              this domain exists\n");
     }
     // **Where its output goes**, which is the demonstration milestone 50 owed: the destination is a
     // capability rather than an integer with a convention attached, so `caps` can name it. On Unix

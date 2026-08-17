@@ -239,7 +239,11 @@ pub(crate) fn invoke(
             // `a0` is the cursor: 0 to start, then whatever the last call returned, until a
             // `survey::DONE` comes back. x1 carries the tid and x2 the state code.
             abi::endpoint::SURVEY => {
-                if !cap.rights.allows(Rights::READ) {
+                // `ENUMERATE`, not `READ`, and the distinction is the method's whole safety
+                // argument: `READ` here also unlocks `RECV` and `REAP`, so a viewer granted it
+                // could reap a child. A domain names its members and does not act on them, and one
+                // bit for three operations cannot say that. See `Rights::ENUMERATE`.
+                if !cap.rights.allows(Rights::ENUMERATE) {
                     return Err(Error::NotPermitted);
                 }
                 let (next, tid, state) = sched::survey_supervised(ep, a0)?;
@@ -455,11 +459,15 @@ pub(crate) fn invoke(
                 match a0 {
                     abi::objtype::ENDPOINT => {
                         let ep = sched::create_endpoint_from(region).ok_or(Error::OutOfMemory)?;
-                        let slot = sched::grant(crate::cap::endpoint_cap(
-                            ep,
-                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
-                        ))
-                        .map_err(|_| Error::OutOfMemory)?;
+                        // `Rights::ALL`, not a list. The comment above has always said the creator
+                        // gets full rights on its own object; spelling the set out meant "full"
+                        // silently stopped being full the day `ENUMERATE` was added, and the
+                        // symptom was three steps away: init could not narrow `deaths` to a right
+                        // it did not itself hold, `CAP_INSERT` refused the widen, and the spawn
+                        // surfaced as `OutOfMemory` at a prompt. A rights set that must be updated
+                        // by hand whenever a right is added is rung four; `ALL` is the invariant.
+                        let slot = sched::grant(crate::cap::endpoint_cap(ep, Rights::ALL))
+                            .map_err(|_| Error::OutOfMemory)?;
                         Ok(slot as i64)
                     }
                     // An address space (19b): the page becomes the L0 root, the untyped becomes
@@ -468,22 +476,21 @@ pub(crate) fn invoke(
                     abi::objtype::ASPACE => {
                         let name =
                             crate::user::user_aspace_create(region).ok_or(Error::OutOfMemory)?;
-                        let slot = sched::grant(crate::cap::aspace_cap(
-                            name,
-                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
-                        ))
-                        .map_err(|_| Error::OutOfMemory)?;
+                        // `Rights::ALL` for the ENDPOINT arm's reason: "full rights on its own
+                        // object" is the invariant, and a hand-listed set stops being full the
+                        // next time a right is added. `Aspace` does not consult `ENUMERATE` today
+                        // and is expected to when `pmap` is built; holding a right nothing checks
+                        // confers nothing, and not holding it is what blocks a future grant.
+                        let slot = sched::grant(crate::cap::aspace_cap(name, Rights::ALL))
+                            .map_err(|_| Error::OutOfMemory)?;
                         Ok(slot as i64)
                     }
                     // A thread (19c.3): the page holds an embryo TCB, born in no queue and not
                     // runnable until CONFIGURE + START. The page is the creator's region's.
                     abi::objtype::TCB => {
                         let tid = sched::create_tcb(region).ok_or(Error::OutOfMemory)?;
-                        let slot = sched::grant(crate::cap::tcb_cap(
-                            tid,
-                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
-                        ))
-                        .map_err(|_| Error::OutOfMemory)?;
+                        let slot = sched::grant(crate::cap::tcb_cap(tid, Rights::ALL))
+                            .map_err(|_| Error::OutOfMemory)?;
                         Ok(slot as i64)
                     }
                     _ => Err(Error::BadMethod), // no such object type
@@ -497,11 +504,8 @@ pub(crate) fn invoke(
                 // in one shot. The caller gets full rights on its own frame (read, write, and the
                 // right to pass it on); delegation is where those narrow. Nothing is mapped yet.
                 let phys = crate::untyped::retype_page(region).ok_or(Error::OutOfMemory)?;
-                let slot = sched::grant(crate::cap::frame_cap(
-                    phys,
-                    Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
-                ))
-                .map_err(|_| Error::OutOfMemory)?; // cspace full
+                let slot = sched::grant(crate::cap::frame_cap(phys, Rights::ALL))
+                    .map_err(|_| Error::OutOfMemory)?; // cspace full
                 Ok(slot as i64)
             }
             // Carve a child untyped off this one (subdivision), so a spawner can give each child its

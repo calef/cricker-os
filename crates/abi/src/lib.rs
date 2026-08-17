@@ -166,12 +166,18 @@ pub mod endpoint {
     /// whole machine. Authority is a subtree, not a global, and the difference between the two is
     /// a capability a reader can point at.
     ///
-    /// Needs `READ`, exactly as [`REAP`] does, and for the same reason: the authority to see who
-    /// may die here is the authority to *receive* deaths here. A send-only holder (a peer that
-    /// reports to this supervisor) is refused with [`crate::Error::NotPermitted`], **loudly**. It is
-    /// not shown an empty domain, because a monitor that reports nothing when it could not look is
-    /// the worst failure this tool has available; `fs_proto` chose `EPERM` over an empty listing for
-    /// the same reason.
+    /// **Needs [`rights::ENUMERATE`](super::rights::ENUMERATE), and pointedly not `READ`.** This
+    /// is the decision that makes the method safe rather than merely scoped. `READ` on a
+    /// supervision endpoint is what [`RECV`] and [`REAP`] take, so a viewer holding `READ` could
+    /// reap a child, and **a domain names its members, it does not act on them** (calef,
+    /// 2026-08-17). With a right of its own, a `ps` cannot express a reap rather than being
+    /// refused one, and the difference is the ladder's top rung against its middle.
+    ///
+    /// A holder without it (a send-only peer that reports to this supervisor, or a supervisor's own
+    /// `READ` handle that was never widened) is refused with [`crate::Error::NotPermitted`],
+    /// **loudly**. It is not shown an empty domain, because a monitor that reports nothing when it
+    /// could not look is the worst failure this tool has available; `fs_proto` chose `EPERM` over an
+    /// empty listing for the same reason.
     ///
     /// **The cursor is a resume point, not an index into a result.** Start at 0. Each entry returns
     /// the `next_cursor` to pass to get the one after it, and `next_cursor` of
@@ -306,6 +312,11 @@ pub mod rights {
     pub const READ: u64 = 1 << 0;
     pub const WRITE: u64 = 1 << 1;
     pub const GRANT: u64 = 1 << 2;
+
+    /// **Learn what exists, without acting on it** (milestone 126). The kernel-level twin of
+    /// `fs_proto`'s directory `ENUMERATE`; `capability::Rights::ENUMERATE` carries the full
+    /// argument and the list of objects expected to grow it.
+    pub const ENUMERATE: u64 = 1 << 3;
 }
 
 /// **The fault endpoint: thread death becomes a message a supervisor holds** (milestone 22,

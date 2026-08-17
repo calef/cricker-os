@@ -24,15 +24,24 @@ program's real loop.
 `Manifest::domain` is the declaration that gets the grant to a `ps` at the prompt, `clock`'s twin,
 and `caps ps` prints the scope before anything is spawned.
 
-**The honest finding this turned up, recorded rather than fixed:** a view riding on `READ` is wider
-than looking needs, because `READ` on a supervision endpoint is also what `RECV` and
-`endpoint::REAP` take. Splitting view from control changes the rights model, and it is the same
-decision the signalling stratum has to make to give `pgrep` and `pkill` genuinely different rights.
-Deciding it once, there, beats deciding it twice; notes/process-view.md's `BUGS` carries the whole
-argument.
+**The finding this turned up, and it is now fixed rather than recorded.** A view riding on `READ`
+was wider than looking needs, because `READ` on a supervision endpoint is also what `RECV` and
+`endpoint::REAP` take: a `ps` could have collected the children it listed. The lane left it on the
+reasoning that the signalling stratum needed the same decision, and that reasoning did not survive
+the ruling below. `capability::Rights::ENUMERATE` is the answer, the kernel-level twin of
+`fs_proto`'s directory `ENUMERATE` and the same argument one layer down; `SURVEY` takes it, `RECV`
+and `REAP` still take `READ`, and a viewer is granted `ENUMERATE` alone. notes/process-view.md
+carries the whole argument.
+
+**Only `Endpoint` consults the new right today, deliberately.** `Aspace` wants it when `pmap` is
+built (observe a mapping without being able to map) and `Untyped` wants it when `free` is built
+(ask what is committed without being able to `SPLIT` or `DESTROY`). Both are named here rather than
+pre-wired, because a right defined for hypothetical callers is the speculative abstraction this
+tree declines; the consumer that can say what it needs is the one that should extend it.
 
 **Still to build:** the rest of the view stratum (`top`, `pgrep`, `pmap`, `pwdx`, `w`), the
-signalling stratum, the machine-wide statistics, `watch`, and the `sysctl` fork below. The package
+machine-wide statistics, `watch`, and the `sysctl` fork below. The signalling stratum is no longer
+on this list; see the ruling below. The package
 file list still wants a real `dpkg -L procps` before anyone counts programs; nothing built so far
 depended on it, and the next lane does.
 
@@ -68,7 +77,7 @@ scope.
 | what it actually needs | programs | state here |
 |---|---|---|
 | **read the process namespace** | `ps`, `top`, `pgrep`, `pmap`, `pwdx`, `w` | the supervision tree exists (§26's `fault_ep`); the view does not |
-| **signal a process** (control, not view) | `kill`, `pkill`, `skill`, `snice` | `Tcb` carries `DESTROY`; nothing splits view from control yet |
+| **signal a process** (control, not view) | `kill`, `pkill`, `skill`, `snice` | **mostly abolished 2026-08-17**: a domain names, never acts, and a tid is not a capability. Killing stays with whoever holds the child's region |
 | **machine-wide statistics**, no process namespace | `free`, `uptime`, `vmstat`, `slabtop`, `tload` | **a different capability entirely**, and none exists |
 | **write kernel tunables** | `sysctl` | no design, and see the fork below |
 | **none of the above** | `watch` | nearly free: `line_editor` and the compositor already exist |
@@ -90,16 +99,25 @@ The point is not to forbid it but to make it visible: `caps top` should print th
 a `top` that sees one shell's children and a `top` that sees everything. On Linux there is no such
 distinction to print, which is the whole difference.
 
-## The demonstration: `pgrep` beside `pkill`
+## The demonstration was `pgrep` beside `pkill`, and the ruling took `pkill` away
 
-**These two do the same lookup and differ only in what they do with the answer**, which makes them a
-better demonstration than any test this milestone could invent. On Unix they are siblings in one
-package with identical `/proc` access and the split between them is convention. Here they hold
-genuinely different rights, and `caps pgrep` beside `caps pkill` prints that as two lines.
+**A domain names its members and does not act on them** (calef, 2026-08-17). That answers the
+signalling stratum before it was built, and it mostly abolishes it.
 
-It beats "run a monitor and try to kill something" because there is no argument about whether the
-program was artificially hobbled to make a point. **Both programs already exist upstream and already
-differ**; all this system does is make the difference structural instead of conventional.
+The reason is one the ABI already made and nobody had read back: **a survey returns a tid, which is
+a name and not a capability**, and there is no path from a tid to authority over that thread. `Tcb`
+has no `DESTROY`; killing a live child is `Untyped::DESTROY` on the region it was built from (§24's
+forcible `^C`), held by whoever spawned it. So `pkill` cannot be assembled out of a view, and making
+a domain confer control would be the one place this system copied the thing it exists to refuse,
+which is Unix turning `kill(pid)` from a name into an action.
+
+What replaces the demonstration: **`caps ps` prints a scope, and there is no `caps pkill` to print
+beside it**, because the program does not exist here. That is a weaker side-by-side and a stronger
+claim, and the write-up has to make the trade explicit rather than quietly dropping a promised
+comparison. Killing stays with the shell that spawned the thing, which already holds the region.
+
+The cost, stated plainly: `procps` gets ported without its signalling stratum, and a reader who
+expects `kill` to be a program will not find one.
 
 The negative control keeps milestone 108's shape: a viewer run against a domain it was not granted is
 **refused loudly** rather than shown an empty list. A monitor that silently reports nothing because

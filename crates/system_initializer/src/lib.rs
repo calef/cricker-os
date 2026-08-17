@@ -952,7 +952,10 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
                 placed_n += 1;
             }
             if wants_domain {
-                placed_buf[placed_n] = (grant_plan::DOMAIN_SLOT, deaths, abi::rights::READ);
+                // `ENUMERATE` alone, deliberately. Granting `READ` here would hand a viewer
+                // `RECV` and `REAP` on the supervision endpoint as well, which is authority to
+                // collect a child rather than to name one. See `Rights::ENUMERATE`.
+                placed_buf[placed_n] = (grant_plan::DOMAIN_SLOT, deaths, abi::rights::ENUMERATE);
                 placed_n += 1;
             }
             let placed: &[(u64, u64, u64)] = &placed_buf[..placed_n];

@@ -75,7 +75,32 @@ impl Rights {
     /// `FD_CLOEXEC` had to be invented as an afterthought.
     pub const GRANT: Rights = Rights(1 << 2);
 
-    pub const ALL: Rights = Rights(0b111);
+    /// The right to **learn what exists**, as distinct from acting on it (milestone 126).
+    ///
+    /// This is the kernel-level twin of `fs_proto`'s directory `ENUMERATE`, and it is the same
+    /// argument one layer down: listing is a larger power than reading something you were handed,
+    /// so it is a right of its own rather than a corner of `READ`. The name is deliberately the
+    /// word the filesystem already uses, because a reader who has met one has met both.
+    ///
+    /// **Why it had to exist.** `endpoint::SURVEY` first shipped needing `READ`, and `READ` on a
+    /// supervision endpoint is also what `RECV` and `REAP` take. A viewer granted `READ` could
+    /// therefore reap a child, which is acting on a member of a domain rather than naming one.
+    /// calef ruled on 2026-08-17 that **a domain names its members and never acts on them**, and
+    /// one bit for three operations cannot express that. With this right the wrong operation is
+    /// not refused to a viewer, it is unnameable by one.
+    ///
+    /// **Deliberately not pre-wired to other objects.** Only `Endpoint` consults it today. `Aspace`
+    /// wants it when `pmap` is built (observe a mapping without being able to map) and `Untyped`
+    /// wants it when `free` is built (ask what is committed without being able to `SPLIT` or
+    /// `DESTROY`), and both are named in milestone 126's strata rather than built ahead of a
+    /// consumer that can say what it needs. A right defined for three hypothetical callers is the
+    /// speculative abstraction this tree declines.
+    pub const ENUMERATE: Rights = Rights(1 << 3);
+
+    /// **Every defined bit.** [`from_bits`](Self::from_bits) masks against this, so a right that is
+    /// missing here is silently dropped at every delegation: adding a constant above without
+    /// widening this mask produces a right that cannot survive being passed on.
+    pub const ALL: Rights = Rights(0b1111);
 
     pub const fn bits(self) -> u32 {
         self.0

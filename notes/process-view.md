@@ -194,22 +194,31 @@ assert_eq!(survey.rows()[0].tid, 7);
 
 ## BUGS
 
-- **Holding a domain with `READ` is more authority than looking needs, and this is the finding.**
-  `READ` on a supervision endpoint is also what `RECV` and `endpoint::REAP` take, so a viewer endowed
-  a view can in principle take a death message out from under the real supervisor (`job_undertaker`,
-  at the interactive boot) or collect a corpse. `ps` does neither, and its source is the whole
-  argument that it does not, which is exactly the kind of argument this system exists to replace with
-  a mechanism.
+- **Holding a domain with `READ` was more authority than looking needs. Fixed 2026-08-17**, and the
+  entry is kept because the shape recurs and the fix is small enough to reuse.
 
-  This was not fixed in the lane that found it, deliberately. Splitting view from control changes the
-  **rights model** (a right of its own, or a narrower object handed out in place of the endpoint),
-  which is a decision rather than an implementation detail, and it is the *same* decision the
-  signalling stratum has to make to put `pgrep` beside `pkill` with genuinely different rights.
-  Deciding it once, there, beats deciding it twice. §32 recorded its own version of this shape and
-  waited for a ruling; this is that, one authority over.
+  The finding: `READ` on a supervision endpoint is also what `RECV` and `endpoint::REAP` take, so a
+  viewer endowed a view could take a death message out from under the real supervisor
+  (`job_undertaker`, at the interactive boot) or collect a corpse. `ps` did neither, and its source
+  was the whole argument that it did not, which is exactly the kind of argument this system exists
+  to replace with a mechanism.
 
-  What it costs today: nothing observable, and one program whose confinement rests on its source
-  rather than on its cspace.
+  The lane that found it deliberately left it, on the reasoning that splitting view from control
+  changes the rights model and is the *same* decision the signalling stratum needs. **That
+  reasoning turned out to be wrong in a way worth recording**, because the signalling stratum
+  mostly evaporated when calef ruled that a domain names its members and does not act on them: there
+  was no second decision to wait for, and the deferral was buying nothing.
+
+  The fix is `capability::Rights::ENUMERATE`, the kernel-level twin of `fs_proto`'s directory
+  `ENUMERATE`, and it is the same argument one layer down. `SURVEY` takes it; `RECV` and `REAP`
+  still take `READ`; `system_initializer` grants a viewer `ENUMERATE` **alone**. So a `ps` does not
+  get refused a reap, it cannot name one, which is the ladder's top rung in place of an argument
+  about a program's source.
+
+  **The tell that one bit was doing three jobs** is worth carrying off. `READ` on an endpoint
+  unlocked receive, reap and survey, and no grant could express any one of them. When a right
+  unlocks operations that differ in kind rather than in degree, it is not a right, it is a
+  category.
 
 - **A process has no name, so there is no `CMD` column.** This system has `arg0` in `Spawn` and no
   display name at all. A name is information rather than authority, but a confined viewer may still
