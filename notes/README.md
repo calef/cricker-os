@@ -356,6 +356,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   that say the client's stream was unbroken. The replacement is written in C. Also the latency
   ladder's two built rungs with the number that makes "opt-in, never the default" a rule, and an
   honest list of what state handoff, manifests and hung components still need.
+- [The component manifest](component-manifest.md): milestone 23's second residual, and the answer to
+  the question it forces: a component's declaration is a **sibling** of `grant_plan::Manifest`, not a
+  subtype, because that one says what a human at a prompt may designate and this one says what a
+  supervisor must route before a component can serve anyone. The four differences that make it
+  falsifiable, why a manifest belongs to the **contract** and not to the build, and the Fuchsia split
+  that keeps it from being a privilege-escalation surface (**a manifest is a request; the provisions
+  are the authority**). Also the slot agreement that stopped being a comment, why structure is a
+  compile error while provisioning is a runtime refusal, and an honest account of the wire format that
+  true vendor shipping still needs and this lane deliberately did not decide.
 - [The process view](process-view.md): milestone 126's first stratum: `ps` works and cannot
   enumerate the machine. `endpoint::SURVEY` reads one supervision subtree, which is a scope the
   kernel already maintains and so cannot drift out of agreement with reality; a wide grant is fine

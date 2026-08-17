@@ -2,10 +2,11 @@
 
 **Status: PARTIAL.**
 
-**Gate: NONE.** The mechanism is built and the block names nothing that blocks a start on the four
-residuals: state handoff, a component manifest, dependency-aware orchestration, and the
-hung-component case. Each is a lane or more, and the manifest is the piece milestone 39's packaging
-analysis already leans on.
+**Gate: NONE.** The mechanism is built and the block names nothing that blocks a start on the
+**three** remaining residuals: state handoff, dependency-aware orchestration, and the hung-component
+case. Each is a lane or more. The fourth, **the component manifest, is built** (2026-08-17,
+`crates/component_plan`, notes/component-manifest.md), which is the piece milestone 39's packaging
+analysis leans on.
 
 **In brief.** Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency)
 
@@ -28,9 +29,27 @@ revocation is by physical page, so the endowment has to move to the far side of 
 the *build* does stay first. And revoking a **device** had to mean take-back rather than destroy,
 which is the "deferred CDT finally earns its keep" this block predicted, at one level of the tree.
 
+**The manifest landed 2026-08-17, and the defect it named is gone.** `swapper` no longer contains
+an endowment: grep it for `abi::rights` or `abi::aspace::MAP_R` and there is nothing left. The
+capability half of the contract lives in `swap_proto` beside the wire half, which is where §41's own
+sentence puts it (a program that speaks the protocol **and holds the right capabilities** is the
+component), and the operator declares only which of *its own* objects answers to which role name, per
+child. Three things fell out that were not obvious from this block. **A component manifest is a
+sibling of `grant_plan::Manifest` and not a subtype**, because that one declares what a human at a
+prompt may designate and this one declares what a supervisor must route, and the argument is in
+notes/component-manifest.md. **A manifest is a request and the provisions are the authority** (the
+Fuchsia `use`/`offer` split), which is what stops a vendor's declaration being a privilege-escalation
+surface. And the role name is the *component's* while the object is the *supervisor's*, so one
+declaration wired two ways makes a component's **peer** substitutable too: `chatty` asks to use
+`service` and gets the shared endpoint on one channel and the queue broker's front endpoint on the
+other, without noticing. What is **not** done is shipping a manifest with a binary rather than
+compiling it in, which is a wire format and so calef's call; the options and their costs are in that
+note's `BUGS`.
+
 **What remains, and it is the part the block itself calls the real engineering:** state handoff
-(the component here is near-stateless, which is what makes kill-and-replace sufficient), a component
-manifest (endowments are literals in the operator's source), dependency-aware orchestration, and the
+(the component here is near-stateless, which is what makes kill-and-replace sufficient),
+dependency-aware orchestration (which will need the manifest to carry a dependency graph, and it
+does not yet: a component declares what it needs, not that another component supplies it), and the
 hung-component case (§32's watchdog). Also the console proper: the component swapped owns the real
 UART and is shaped like a console server, but `line_editor`/`display_terminal`/`compositor` are not themselves swapped,
 because the interactive stack is not running under the test harness.
@@ -91,10 +110,12 @@ ring variant is io_uring, DPDK, and virtio.
 
 **Generalising to all components: what the console case does not yet need.**
 
-- **A uniform component contract + manifest.** Each component implements a stable protocol and
-  *declares the capabilities it needs* (this device, these endpoints), so any vendor's build is a
-  drop-in the supervisor wires from the manifest. This is seL4 CapDL / Fuchsia component-manifest
-  territory.
+- **A uniform component contract + manifest.** **Built 2026-08-17**, `crates/component_plan` and the
+  four declarations in `crates/swap_proto`. Each component declares the capabilities it needs (this
+  device, these endpoints) and the supervisor wires it from the declaration, with a typed refusal
+  before anything is built when it cannot. seL4 CapDL / Fuchsia territory as this block predicted, and
+  Fuchsia's `use`/`offer` split turned out to be the load-bearing half. Still compiled in rather than
+  shipped beside a binary: notes/component-manifest.md.
 - **State handoff (the crux).** The console is easy because it is near-stateless. A filesystem
   server (open handles, caches, in-flight writes) or a network stack (live connections) cannot be
   kill-and-restarted without losing state; live-swapping them needs a serialise-old / absorb-new
