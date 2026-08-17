@@ -14,6 +14,11 @@ elf = { version = "0.1.0", path = "../elf" }
 # The grant expression and its wire form: what the shell resolved a typed line into, and the
 # protocol init decodes on the other side of the spawn channel. This crate is that other side.
 grant_plan = { version = "0.1.0", path = "../grant_plan" }
+# The filesystem contract, for exactly one word: the readiness sentinel a `fs_subtree_caretaker`
+# answers a directory grant's descent with (milestone 31 phase 3). An in-tree protocol crate rather
+# than a constant copied here, which is rule 7: what two binaries agree on is a crate. It brings
+# nothing with it (fs_proto has no non-dev dependencies of its own).
+fs_proto = { version = "0.1.0", path = "../fs_proto" }
 # The terminal contract's framing, for the one sentence init prints (`proto::OP_WRITE`).
 line_editor = { version = "0.1.0", path = "../line_editor" }
 # The hash and the manifest format the kernel measures init with (milestone 104). This crate is the

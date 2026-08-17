@@ -756,6 +756,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "elf",
+ "fs_proto",
  "grant_plan",
  "line_editor",
  "measured_boot",
