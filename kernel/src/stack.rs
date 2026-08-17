@@ -213,6 +213,11 @@ pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
 
     crate::println!();
     crate::println!("  *** KERNEL STACK OVERFLOW ***");
+    // The span to scan, filled in by the arms that have one. The scan runs at the very END of this
+    // function rather than inside the arm, and that ordering is load-bearing: see the `BUGS` note
+    // on `print_text_words`, which faulted mid-report on 2026-08-16 and took `ELR_EL1`, `FAR_EL1`
+    // and every line below it with it.
+    let mut scan: Option<(u64, u64)> = None;
     match kind {
         GuardPage::Boot => {
             crate::println!("  {addr:#018x} is in the BOOT stack's guard page.");
@@ -242,7 +247,7 @@ pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
                 bottom.saturating_sub(addr),
                 crate::thread::STACK_PAGES * 4096,
             );
-            print_text_words(bottom, bottom + (crate::thread::STACK_PAGES * 4096) as u64);
+            scan = Some((bottom, bottom + (crate::thread::STACK_PAGES * 4096) as u64));
         }
         GuardPage::Interrupt(id) => {
             let (bottom, top) = crate::interrupt_stack::span(id);
@@ -253,10 +258,10 @@ pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
                 bottom.saturating_sub(addr),
                 crate::interrupt_stack::SIZE,
             );
-            // The same conservative scan the thread arm gets, and for the same reason: this stack's
-            // pages are all mapped, so it cannot fault, and a handler chain deep enough to run off
-            // the bottom is exactly the thing whose callers nobody can name from the fault alone.
-            print_text_words(bottom, top);
+            // The same conservative scan the thread arm gets, and for the same reason: a handler
+            // chain deep enough to run off the bottom is exactly the thing whose callers nobody
+            // can name from the fault alone.
+            scan = Some((bottom, top));
         }
     }
 
@@ -287,6 +292,11 @@ pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
     crate::println!("  or none: a stray pointer, not a stack at all.");
     crate::println!("  The guard page is ONE page. A frame larger than that can step over it");
     crate::println!("  into the slot below without faulting; see notes/stack.md.");
+
+    // LAST, because it is the only part of this report that can itself fault. See its BUGS.
+    if let Some((bottom, top)) = scan {
+        print_text_words(bottom, top);
+    }
 }
 
 /// Print every word on the overflowed stack that points into the kernel's text section, deepest
@@ -298,10 +308,25 @@ pub fn warn_if_guard_page(addr: u64, interrupted_sp: u64) {
 /// candidates for `llvm-addr2line`, not as a walked chain. Capped so a full stack cannot flood
 /// the serial log the dump itself needs.
 ///
-/// Thread and interrupt stacks only, deliberately: the pages of both are all mapped (thread.rs maps
-/// every slot whole, and `map_everything` maps every interrupt-stack slot above its guard), so the
-/// scan cannot itself fault. The boot and secondary arms above could take the same scan but have
-/// never overflowed outside milestone 3's era; add them when one does.
+/// Thread and interrupt stacks only, deliberately. The boot and secondary arms above could take the
+/// same scan but have never overflowed outside milestone 3's era; add them when one does.
+///
+/// # BUGS
+///
+/// **A thread slot's pages are not necessarily mapped, and assuming they were cost a whole
+/// report.** This function's first version derived its span from the slot geometry and read it
+/// unconditionally, on the premise that "thread.rs maps every slot whole". That premise is true of
+/// a *live* slot and false of a dead one: `KernelStack::drop` unmaps all six pages and hands the
+/// address range back to `FREE_STACK_VAS`. On 2026-08-16 (CI run 31960738448) the very first read
+/// took a translation fault, which re-entered the fault handler and destroyed `ELR_EL1` and
+/// `FAR_EL1` before either had been printed. The report ate itself on its first real firing, and
+/// the one fact it was added to establish was the fact that killed it.
+///
+/// Two things follow, and both are here rather than in a tracker. The scan asks the page tables
+/// before every page and says so when the answer is no, which turns the old fault into the single
+/// most useful line in the report: **a slot whose stack is unmapped was freed under whoever was
+/// standing on it.** And the caller runs this LAST, so a future surprise in here can only cost the
+/// scan and never the registers.
 fn print_text_words(bottom: u64, top: u64) {
     const CAP: usize = 40;
     let text = crate::arch::mmu::text_start()..crate::arch::mmu::text_end();
@@ -313,16 +338,38 @@ fn print_text_words(bottom: u64, top: u64) {
     crate::println!("  as `bottom+offset: word` (candidate return addresses; no frame pointers):");
     let mut printed = 0usize;
     let mut p = bottom;
+    let mut unmapped = 0u64;
     while p < top && printed < CAP {
-        // SAFETY: `[bottom, top)` is a thread stack slot's mapped span (the caller derived it
-        // from the slot geometry), 8-byte aligned; volatile because the stack's owner is dead
-        // mid-store and nothing about this memory is ordinary.
+        // Ask the page tables rather than assume. A whole slot reads as unmapped when its
+        // `KernelStack` has been dropped, which is a diagnosis rather than an obstacle.
+        if p.is_multiple_of(4096) && !crate::arch::mmu::is_mapped(p) {
+            unmapped += 4096;
+            p += 4096;
+            continue;
+        }
+        // SAFETY: the page holding `p` is mapped (the check above is exactly that, and this
+        // address is in a kernel stack slot, whose mapping only the reaper changes), 8-byte
+        // aligned; volatile because the stack's owner is dead mid-store and nothing about this
+        // memory is ordinary.
         let w = unsafe { core::ptr::read_volatile(p as *const u64) };
         if text.contains(&w) {
             crate::println!("    +{:#07x}: {w:#018x}", p - bottom);
             printed += 1;
         }
         p += 8;
+    }
+    if unmapped > 0 {
+        crate::println!(
+            "    !! {unmapped} of {} bytes of this stack are NOT MAPPED. The stack was freed",
+            top - bottom
+        );
+        crate::println!(
+            "    while something was still standing on it: a store from the dead owner walks the"
+        );
+        crate::println!(
+            "    vector down to this slot's base, which is exactly the address above. See"
+        );
+        crate::println!("    notes/stack.md, \"a kernel stack freed under its owner\".");
     }
     if printed == CAP {
         crate::println!("    ... capped at {CAP} words; the shallower stack is not shown.");
