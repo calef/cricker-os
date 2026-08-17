@@ -1,11 +1,15 @@
 # 130. The copy that outlived its reason: one trap instruction, forty-eight sites
 
-**Status: IN-PROGRESS.** Raised 2026-08-17 from a code-smell survey calef asked for. The number is
-**provisional**, minted by the lane against a tree whose highest milestone was 129; expect the
-integrator to renumber.
+**Status: IN-PROGRESS** on `claude/code-smells-review-3uipoy`. Raised 2026-08-17 from a code-smell
+survey calef asked for. The number is **provisional**, minted by the lane against a tree whose
+highest milestone was 129; expect the integrator to renumber.
 
 **Gate: NONE.** Nothing blocks it. Every finding is in tooling or in userspace boilerplate, the
 syscall surface does not move, no dependency is added, and no wire format changes.
+
+The work is done and the status flip to BUILT is the integrator's at merge, per the rule that
+merging is what finishes a lane. Two of the four findings were built; the other two were
+investigated and deliberately not built, and that is the deliverable for those rather than a gap.
 
 ## What this is
 
