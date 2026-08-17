@@ -32,9 +32,21 @@
 /// shared witness page. Both come from the operator, because both are facts about the wiring rather
 /// than about this program: the incumbent on the direct channel owns a UART, the backend behind the
 /// queue broker does not, and neither can tell by looking.
+///
+/// `a2` is the sequence number to stop answering at, or zero to serve honestly, which is what the
+/// two healthy channels pass. It is a start argument rather than a manifest field for the reason
+/// notes/component-manifest.md gives: a manifest declares authority, and this carries none. A
+/// component lied to about it misbehaves rather than escaping, which is precisely what the hung
+/// channel wants it to do.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(device: u64, log_base: u64, _a2: u64) -> ! {
-    swap_proto::serve(swap_proto::V1, swap_proto::digest, log_base, device != 0)
+pub extern "C" fn _start(device: u64, log_base: u64, wedge: u64) -> ! {
+    swap_proto::serve(
+        swap_proto::V1,
+        swap_proto::digest,
+        log_base,
+        device != 0,
+        wedge,
+    )
 }
 
 #[panic_handler]

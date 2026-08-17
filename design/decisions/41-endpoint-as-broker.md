@@ -115,6 +115,10 @@ real engineering:
   capabilities a vendor's build could be wired from.
 - **Dependency-aware orchestration.** One channel is swapped at a time, with no dependency graph and
   no quiescence protocol across components.
-- **A hung component.** The whole sequence rests on the outgoing instance cooperating with
-  `OP_QUIESCE`. A livelocked one would need the stronger right, which is §32's recorded watchdog
-  case, still open.
+- **A hung component.** Recorded here as resting on the outgoing instance cooperating with
+  `OP_QUIESCE` and needing §32's stronger right otherwise. **Corrected 2026-08-17 (calef):** the
+  sequence does *not* rest on that cooperation. `swapper`'s `ROLE_HUNG` runs it against a component
+  that cooperates with nothing and three of the four steps are unchanged, because `OP_QUIESCE` is
+  the step a hang makes redundant rather than the step it blocks. What stays open is reclaiming the
+  hung instance's memory, and §32's amended consequence 2 records why the stronger right does not
+  fix that either. See notes/hung-component.md.

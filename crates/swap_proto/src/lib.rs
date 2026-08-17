@@ -82,6 +82,37 @@ use user_rt::invoke;
 /// the only way anything outside the operator can tell that a swap happened at all.
 pub const OP_PUT: u64 = 1;
 
+/// **The sequence number a wedging instance swallows**: it takes the request, files the caller's
+/// one-shot `Reply` capability away, and stops answering *without dying* (milestone 23's third
+/// residual; notes/hung-component.md).
+///
+/// **Keyed on the request rather than on a count, and that is what makes it deterministic.** A wedge
+/// that fired after N requests would depend on how far the conversation had got when the operator
+/// was ready, which is a race. This fires on the identity of one request, so the same thing happens
+/// in the same place whatever order the scheduler picked, on either architecture, under TCG or HVF.
+/// It sits between [`SWAP_TRIGGER`] and the end of the conversation so there is a real conversation
+/// on both sides of the hang.
+///
+/// Zero means "never wedge", which is what the two healthy roles pass.
+///
+/// Provisional name (`wedge`), like everything else in this crate's report and role vocabulary. It
+/// is at least the word this tree already uses for the condition: DECISIONS §26 calls it "alive but
+/// wedged" and milestone 62's block calls its own stuck test "wedged".
+pub const WEDGE_SEQ: u64 = 24;
+
+/// **What a released caller gets instead of an answer.** Not an error code, because nothing failed
+/// in a way the ABI can name: the caller's request was taken by a component that then stopped
+/// answering, and the only thing in the system that could ever free it was that component's own
+/// cooperation.
+///
+/// **This is the shape of the gap, and it is worth reading the constant as evidence.**
+/// [`abi::Error::Gone`] covers a caller whose *endpoint* was destroyed; it does not reach a caller
+/// whose *server is alive and silent*, because a caller parked awaiting a reply is woken by exactly
+/// one thing (`sched::ipc_reply`, addressed by tid) and nothing else in the kernel wakes it. So the
+/// release has to travel as an ordinary reply, from the component, in band. See
+/// notes/hung-component.md.
+pub const WEDGE_RELEASED: u64 = 0x5245_4c53; // "RELS"
+
 /// `call(SVC, OP_QUIESCE, 0)` -> `(QUIESCED, served)`. The operator's in-band drain.
 ///
 /// **It travels on the endpoint being drained, and that is the mechanism, not a shortcut.** The
@@ -157,6 +188,33 @@ pub const RPT_DRAINED: u64 = 10;
 /// build. The operator sends this before it starts anything at all, so the test can assert that the
 /// refusal landed ahead of the first build step rather than after a half-wired component existed.
 pub const RPT_REFUSED: u64 = 11;
+/// **What the supervision domain looks like while a component is hung** (milestone 23's third
+/// residual). `w1` = how many members the survey reported, `w2` = their states, packed by
+/// [`survey_counts`].
+///
+/// The operator reads this out of `abi::endpoint::SURVEY` (milestone 126), which is the only view of
+/// its own children it has. The report exists so the test can assert what the view **cannot** say.
+pub const RPT_SURVEY: u64 = 12;
+
+/// **Every member of the domain refused to be collected.** `w1` = how many the operator asked about,
+/// `w2` = how many answered [`abi::Error::StillAlive`].
+///
+/// `Endpoint::REAP` (DECISIONS §32) is the supervisor's whole vocabulary over its domain, and it
+/// refuses a thread that is not dead, on purpose: collecting a corpse is not killing. A hung
+/// component is not a corpse, so the vocabulary is empty. The operator asks about **every** member
+/// rather than about the one it suspects, because a survey returns a tid and nothing that says which
+/// tid is which, and asking about all of them is the stronger statement anyway.
+pub const RPT_UNCOLLECTABLE: u64 = 13;
+
+/// **An instance stopped answering without dying.** `w1` = its version, `w2` = how many requests it
+/// had served first.
+///
+/// Reported by the *operator*, after the instance told it on the coordination channel. That
+/// announcement is scaffolding and the note says so: a real hang announces nothing, and what is
+/// under test is what a supervisor can do once it knows, not how it found out. How it could find out
+/// is the part behind a decision (notes/hung-component.md).
+pub const RPT_WEDGED: u64 = 14;
+
 /// A death reached the operator. `w1` = tid, `w2` = event.
 pub const RPT_DEATH: u64 = 8;
 /// Where that death happened. `w1` = pc, `w2` = fault address.
@@ -219,6 +277,41 @@ pub mod client_checks {
     /// **The queued rung only.** Every call that got a real answer got a *correct* one, and every
     /// call that did not got `ACCEPTED`. Nothing was refused, and the queue never overflowed.
     pub const NONE_REFUSED: u64 = 1 << 6;
+    /// **The hung rung only.** One of this client's calls was swallowed by a component that stopped
+    /// answering, and it came back [`super::WEDGE_RELEASED`] rather than an answer, later, when the
+    /// operator got that component to let go.
+    ///
+    /// Without this bit the hung run would be indistinguishable from a run in which the component
+    /// simply happened to be replaced between two calls, which is the ordinary swap and proves
+    /// nothing new. With it, the client is saying: *I was stranded inside a `CALL`, and I was freed
+    /// by the component that stranded me.*
+    pub const WAS_RELEASED: u64 = 1 << 7;
+}
+
+/// **Pack the survey's state histogram into one report word.** Four counts, a byte each, in the
+/// order [`abi::survey`] declares them, so a reader of `RPT_SURVEY` needs no second table.
+///
+/// A byte each is enough because `MAX_THREADS` is far below 256 and this operator's domain is three
+/// children; a domain wider than a byte would saturate rather than wrap, which is a lie a test would
+/// catch and a real monitor would not want. Hence the `min`.
+pub const fn survey_counts(ready: u64, running: u64, blocked: u64, dead: u64) -> u64 {
+    const fn saturate(n: u64) -> u64 {
+        if n > 255 { 255 } else { n }
+    }
+    saturate(ready) | (saturate(running) << 8) | (saturate(blocked) << 16) | (saturate(dead) << 24)
+}
+
+pub const fn survey_ready(w: u64) -> u64 {
+    w & 0xff
+}
+pub const fn survey_running(w: u64) -> u64 {
+    (w >> 8) & 0xff
+}
+pub const fn survey_blocked(w: u64) -> u64 {
+    (w >> 16) & 0xff
+}
+pub const fn survey_dead(w: u64) -> u64 {
+    (w >> 24) & 0xff
 }
 
 // ===========================================================================================
@@ -263,10 +356,14 @@ pub const ROLE_USURPER: u64 = 1;
 /// The producer on the queued channel: the same conversation, one rung up the latency ladder.
 pub const ROLE_PRODUCER: u64 = 2;
 
-/// `swapper`'s roles. Two systems, one operator, because they share every helper: the loader, the
+/// `swapper`'s roles. Three systems, one operator, because they share every helper: the loader, the
 /// endowments, the log page and the reporting.
 pub const ROLE_DIRECT: u64 = 0;
 pub const ROLE_QUEUED: u64 = 1;
+/// **The hung component** (milestone 23's third residual, notes/hung-component.md). The direct
+/// channel's system, with one difference: the incumbent stops answering instead of being drained, so
+/// the operator has to run the swap against a component that never cooperates.
+pub const ROLE_HUNG: u64 = 2;
 
 /// Where the queued channel's log entries start, so the two systems can share one witness page
 /// without stepping on each other.
@@ -542,7 +639,10 @@ pub const POKE_QUIT: u64 = 2;
 /// passes one that calls into C. Everything else, including the capability layout and the wire
 /// format, is this one function, which is what makes "the replacement is a different program" a
 /// claim about the program and not about the harness.
-pub fn serve(version: u64, xform: fn(u64) -> u64, log_base: u64, device: bool) -> ! {
+///
+/// `wedge` is [`WEDGE_SEQ`] on the hung channel and **zero everywhere else**, which is the whole of
+/// how that channel differs: the same program, the same contract, one request it never answers.
+pub fn serve(version: u64, xform: fn(u64) -> u64, log_base: u64, device: bool, wedge: u64) -> ! {
     if device {
         // Before serving anything: can we reach the device we were endowed with? An instance that
         // could not would still answer every request correctly, and the swap would look perfect
@@ -559,6 +659,39 @@ pub fn serve(version: u64, xform: fn(u64) -> u64, log_base: u64, device: bool) -
             continue; // a plain SEND slipped in; the contract says CALL, and there is nobody to answer
         }
         match op {
+            // **Stop answering, without dying** (milestone 23's third residual,
+            // notes/hung-component.md). Everything a supervisor in this tree can notice is a
+            // *death*: a fault or an exit, a kernel-stamped message on the supervision endpoint, a
+            // corpse to reap, a region that comes home. None of that happens here. This process
+            // keeps its endpoint, keeps its device, stays `Blocked`, and every mechanism in the
+            // system reads it as a healthy server between requests, **because that is what a healthy
+            // server between requests looks like.**
+            //
+            // The hang is a `CALL` on the coordination channel that the operator never replies to,
+            // which is the commonest real hang there is: blocked awaiting a peer that will not
+            // answer. It is also the only shape whose blocked-ness is *provable* rather than raced.
+            // A `SEND` followed by a `RECV` would leave a window in which this thread was still
+            // `Ready`, and the operator surveying inside that window would read a state it must not
+            // be able to read (see notes/hung-component.md, "why the wedge is a CALL").
+            //
+            // What is deliberately *not* done first: no `log_put`, so the witness page carries a
+            // real gap at this sequence number, and no `reply`, so the caller stays parked awaiting
+            // a reply that is not coming. Both are facts the operator reads afterwards.
+            OP_PUT if wedge != 0 && arg == wedge => {
+                let (what, _) = user_rt::call(NOTE, NOTE_WEDGED, served);
+                // Reached only because the operator answered, which in a real hang it cannot do.
+                // **The caller first, then the device**, because the device read is expected to
+                // fault and a fault takes this reply capability to the grave with the cspace holding
+                // it, leaving that caller blocked for the life of the machine.
+                if what == NOTE_RELEASE {
+                    user_rt::reply(slot, WEDGE_RELEASED, 0);
+                }
+                if device {
+                    let _ = probe_device();
+                    user_rt::send(RPT, RPT_PROBE_SURVIVED, version, 0);
+                }
+                user_rt::exit()
+            }
             OP_PUT => {
                 log_put(log_base + arg, version);
                 served += 1;
@@ -609,6 +742,31 @@ pub const NOTE_ATTACK_DONE: u64 = 2;
 pub const NOTE_CLIENT_DONE: u64 = 3;
 /// The broker quiesced and is about to exit.
 pub const NOTE_BROKER_DONE: u64 = 4;
+/// **This instance has stopped answering and is not coming back on its own.** `w1` = version,
+/// `w2` = requests served first. **A `CALL`, not a `SEND`**, and that is the mechanism rather than a
+/// style choice: the `CALL` is what parks the instance, so it is hung *because* it announced.
+///
+/// The operator serves this one message with `RECV_CAP` and keeps the reply capability, which is the
+/// only handle anything in the system has on a wedged component. Everything the operator does next
+/// is done while that component is genuinely, provably stuck.
+///
+/// The announcement itself is scaffolding and must be read as such: a component that announces its
+/// own hang is not a hang anyone had to detect. It is here because *detection* is behind a decision
+/// (a deadline needs a timed wait, which is milestone 106's fork) while *what a supervisor can do
+/// about a hang it already knows about* is not, and the second is what this run measures.
+/// notes/hung-component.md says which is which and why the announcement does not weaken the
+/// assertions that follow it.
+pub const NOTE_WEDGED: u64 = 5;
+/// **The operator's answer to [`NOTE_WEDGED`]: let go.** The only thing in this system that can free
+/// a caller stranded inside a `CALL`, and it has to travel this way round.
+///
+/// The operator cannot answer the stranded caller itself. The one-shot `Reply` capability the kernel
+/// minted names that caller, lives in the *component's* cspace, carries `WRITE` without `GRANT`, and
+/// is consumed on use (DECISIONS §12). So the operator cannot be handed it, cannot forge it, and
+/// cannot reach it by revoking anything. Freeing a stranded caller requires the cooperation of the
+/// component whose lack of cooperation is the definition of the hang, which is the finding rather
+/// than a limitation of this fixture.
+pub const NOTE_RELEASE: u64 = 6;
 
 /// Trap. A half-built system is not worth limping along, and a fault is legible: the kernel prints
 /// the pc and the process dies where the mistake was.

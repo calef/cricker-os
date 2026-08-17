@@ -37,11 +37,30 @@ Four consequences, each deliberate:
 2. **It authorizes collecting a corpse, not killing.** The method refuses a thread that is still
    alive. Killing a live child is strictly more dangerous than collecting a dead one, and it
    already has a home: §24's forcible `^C` tier uses `Untyped::DESTROY`, which needs the
-   construction authority precisely because it is the stronger act. **The honest limitation:** a
-   supervisor that must restart a *hung* child (livelocked, not crashed, so no death message ever
-   arrives) still needs the stronger right. That case is real, it is the watchdog case, and it is
-   deliberately not solved here. When milestone 23's live replacement needs it, it is a new
-   decision, and the SUSPEND tracker is where the resumable half of it already lives.
+   construction authority precisely because it is the stronger act. **The honest limitation, corrected 2026-08-17
+   (calef) after milestone 23's watchdog lane tested it:** a supervisor that must deal with a *hung*
+   child (livelocked, not crashed, so no death message ever arrives) was recorded here as still
+   needing the stronger right. That sentence is **half wrong, and the two halves fail in opposite
+   directions.**
+
+   **Restoring the service needs no new right at all.** `swapper`'s `ROLE_HUNG` runs the four
+   live-replacement steps against a component that cooperates with nothing, and three of the four
+   are unchanged, because the only step that needed the incumbent's cooperation (`OP_QUIESCE`) is
+   the one a hang makes redundant. You do not ask a wedged component to stop.
+
+   **Reclaiming its memory needs the stronger right and, for the worst shape, is not fixed by it.**
+   `Untyped::DESTROY` on a region holding a live thread marks the thread `killed` and refuses, and
+   the kill is spent in `schedule()`, only for a thread whose state is `Running`. A thread blocked
+   forever on an endpoint its supervisor cannot reach never reaches `schedule()` again, so the kill
+   is armed and never lands and the refusal is permanent. **No privilege closes that, because it is
+   a scheduler property rather than an authorization one**, which `reap_region_objects` says in its
+   own comment. So this decision's refusal to hand over construction authority costs less than it
+   appeared to: for that case the authority would not have worked.
+
+   What remains open is therefore not "should a supervisor get the stronger right" but "what can end
+   a permanently blocked thread at all", which is a fork nobody has opened. notes/hung-component.md
+   carries the taxonomy (three hang shapes, three answers), the evidence, and the options. The
+   SUSPEND tracker is still where the resumable half lives.
 3. **It settles the queued tid-to-handle question for this case, and only this case.** The second
    fork raised alongside this one was how a supervisor names a child: a `Tcb::NAME` method,
    per-child fault endpoints, or a builder-reported tid. None is needed here, because the tid is

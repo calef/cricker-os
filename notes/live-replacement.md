@@ -241,8 +241,17 @@ which is the control this whole milestone rests on and which the test asserts on
   decision left to the architect.
 - **Dependency-aware orchestration.** One channel at a time, no dependency graph, no cross-component
   quiescence.
-- **A hung component.** The whole sequence rests on the outgoing instance answering `OP_QUIESCE`. A
-  livelocked one needs the stronger right, which is §32's recorded watchdog case.
+- ~~**A hung component.**~~ **Demonstrated 2026-08-17, and it half-corrects the sentence that used to
+  stand here.** The old text said a livelocked instance "needs the stronger right, which is §32's
+  recorded watchdog case". That is right about reclaiming its memory and **wrong about restarting its
+  service**: `swapper`'s `ROLE_HUNG` runs the swap against an incumbent that stops answering and gets
+  the service back with no authority the operator did not already hold, because the one step that
+  needed the incumbent's cooperation (`OP_QUIESCE`) is the step a hang makes redundant. What the test
+  also shows is the harder half: the domain reports the hang as `BLOCKED`, which is what a healthy
+  idle server reports as, and `Endpoint::REAP` answers `StillAlive` for every member. See
+  notes/hung-component.md, including the two decisions this cannot pass without (how a supervisor
+  *notices*, which needs milestone 106's timed wait, and what it may do to a component that never
+  cooperates) and the finding that `abi::Error::Gone` does not reach a caller stranded mid-`CALL`.
 - **The console proper.** The component swapped here owns the real UART and is shaped like a console
   server, but `line_editor`/`display_terminal`/`compositor` are not themselves swapped: the interactive stack is not
   running under the test harness, and building it there would have measured the harness.
@@ -251,5 +260,6 @@ which is the control this whole milestone rests on and which the test asserts on
 
 - DECISIONS §41 (the endpoint is the broker), §12 (a one-shot reply capability), §13 and §16 (revocation),
   §26 (the fault endpoint), §31 (the C seam), §32 (a supervisor may collect a corpse)
+- notes/component-manifest.md and notes/hung-component.md for the two residuals that have landed
 - notes/ipc-naming.md, notes/supervision.md, notes/object-revocation.md, notes/c-seam.md
 - notes/benchmarks.md for `broker_rtt` and what the default rung costs

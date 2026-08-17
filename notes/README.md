@@ -365,6 +365,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   are the authority**). Also the slot agreement that stopped being a comment, why structure is a
   compile error while provisioning is a runtime refusal, and an honest account of the wire format that
   true vendor shipping still needs and this lane deliberately did not decide.
+- [The hung component](hung-component.md): milestone 23's third residual, the case DECISIONS §32
+  named and declined. Every failure this system handles is a **death**, and a component that stops
+  answering without dying produces none of it: it reads `BLOCKED`, which is what a healthy server
+  between requests reads as, and `Endpoint::REAP` answers `StillAlive`. Three hang shapes with three
+  different answers, and the finding that the "stronger right" §32 points at is **insufficient** for
+  the worst of them, because a permanently blocked thread never reaches `schedule()` to spend the kill
+  a `DESTROY` arms. Also the half-correction it owes §32: the **service** is restored with no new
+  authority, and only reclaiming the memory needs one. Why `abi::Error::Gone` never reaches a caller
+  stranded mid-`CALL`, why a deadline belongs to the supervisor and is denominated in **progress
+  rather than time**, and the two decisions calef owes before a watchdog can exist.
 - [The process view](process-view.md): milestone 126's view stratum: `ps` and `pgrep` work and
   neither can enumerate the machine. `endpoint::SURVEY` reads one supervision subtree, which is a
   scope the kernel already maintains and so cannot drift out of agreement with reality; a wide grant

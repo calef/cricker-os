@@ -2,10 +2,10 @@
 
 **Status: NOT-STARTED.** Raised 2026-08-04 from `notes/net.md:307`, where milestone 30's network
 lane recorded the cost of not having one. It is a kernel-surface addition, so it is **a design fork
-for calef before it is a task**, and it is the same fork DECISIONS §51 already records.
+for calef before it is a task**, and it is the same fork **milestone 51** already records.
 
-**Gate: DECISION.** A timed wait is a kernel-surface addition and DECISIONS §51 already records the
-fork with three candidate shapes. The block adds the fourth consumer and asks for the decision to
+**Gate: DECISION.** A timed wait is a kernel-surface addition and **milestone 51's block** already
+records the fork with three candidate shapes. The block adds the fourth consumer and asks for the decision to
 be made against all of them at once, and warns against settling it by accident.
 
 **The finding, and it was found the expensive way.** `std_net` hung on riscv64 under the four-hart
@@ -58,5 +58,23 @@ Do not settle it by accident here either.
 
 **The consumers, so the decision is made against all of them at once**: net_stack's retransmit
 window (this block), `thread::sleep` in the std PAL (a yield-spin today), `Endpoint::RECV`'s
-no-timeout limitation (the kernel complains about it twice), and the shell's `^C` watch (milestone
-103). A shape that serves one and not the others is the wrong shape.
+no-timeout limitation (the kernel complains about it twice), the shell's `^C` watch (milestone
+103), and a **liveness watch over a supervision domain** (milestone 23's hung-component residual,
+added 2026-08-17, notes/hung-component.md). A shape that serves one and not the others is the wrong
+shape.
+
+**The fifth consumer discriminates between the candidates rather than only adding a vote**, which is
+why it is worth more than a line. A liveness watch does not want to *sleep*: it wants to be told
+"nothing arrived by time T" while staying able to receive a report, so a bare `SYS_SLEEP` leaves it
+spinning on the very question it exists to answer, and it wants the answer on a `RECV`, because the
+domain it watches reports progress to it. Its own note also recommends bounding a hang in **progress
+rather than duration** (milestone 62's argument, one level out), which softens what an inaccurate
+deadline costs it: a bad number delays a diagnosis rather than convicting a healthy component of being
+slow. So it is the cheapest of the five to serve and has the most specific requirement.
+
+**Two citations corrected 2026-08-17**, by milestone 23's hung-component lane, which needed this fork
+and so read it closely. This block twice attributed the three candidate shapes to "DECISIONS §51", and
+§51 is *the sink protocol*; they live in **milestone 51's** roadmap block, in its rejected-alternatives
+list. `script/decisions --check` proves that a cited §N resolves to *some* section and never that it
+resolves to the right one, so a well-formed wrong citation is invisible to it. §N and milestone N are
+colliding schemes, and this is what the collision costs.
