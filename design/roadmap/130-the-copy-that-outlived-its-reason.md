@@ -1,15 +1,18 @@
 # 130. The copy that outlived its reason: one trap instruction, forty-eight sites
 
-**Status: IN-PROGRESS** on `feature/130-code-smells`. Raised 2026-08-17 from a code-smell
-survey calef asked for. The number is **provisional**, minted by the lane against a tree whose
-highest milestone was 129; expect the integrator to renumber.
+**Status: BUILT** 2026-08-17, merged as #284. Raised the same day from a code-smell survey calef
+asked for. Two of the four findings were built; the other two were investigated and deliberately
+not built, and for those the investigation is the deliverable rather than a gap.
 
-**Gate: NONE.** Nothing blocks it. Every finding is in tooling or in userspace boilerplate, the
-syscall surface does not move, no dependency is added, and no wire format changes.
+The number was minted provisionally by the lane against a tree whose highest was 129, and it stuck:
+131 was minted beside it while this was in flight and there was no collision.
 
-The work is done and the status flip to BUILT is the integrator's at merge, per the rule that
-merging is what finishes a lane. Two of the four findings were built; the other two were
-investigated and deliberately not built, and that is the deliverable for those rather than a gap.
+**This block's own status was stale for the length of one merge**, which is the failure it is now
+an instance of. The lane wrote "the status flip to BUILT is the integrator's at merge" and then
+nobody flipped it, so `main` went red on the check that milestone 78's sweep added days earlier:
+IN-PROGRESS naming a branch the history has already merged. Caught by re-running the gate rather
+than by anyone noticing, which is the whole argument for the gate. The fix is this edit; the lesson
+is that "owed at merge" is rung four, and the gate that caught it is rung two.
 
 ## What this is
 
