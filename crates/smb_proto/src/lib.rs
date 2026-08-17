@@ -169,6 +169,7 @@
 //! says are already right (`elf`, `pci`, `ntlm`).
 
 pub mod apple;
+pub mod authenticator;
 pub mod client;
 pub mod create_context;
 pub mod ntlmssp;
@@ -333,6 +334,14 @@ pub const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
 /// `RMDIR` met a directory with something in it. Refused rather than emptied; the recursion belongs
 /// in the client, one refusable step at a time.
 pub const STATUS_DIRECTORY_NOT_EMPTY: u32 = 0xC000_0101;
+/// **The proof did not check out, or nobody offered one to a share that requires one**
+/// (milestone 54's identity item). One status for both, deliberately: see
+/// [`authenticator::Verdict::Refused`] on why distinguishing them would make session setup an
+/// oracle for which accounts exist.
+///
+/// It is what Windows and Samba answer, so a real client's retry logic already knows it: macOS
+/// prompts for a password on this and retries on the same connection.
+pub const STATUS_LOGON_FAILURE: u32 = 0xC000_006D;
 
 /// The one dialect this server offers and accepts: SMB 2.1. See the crate header for why.
 pub const DIALECT_0210: u16 = 0x0210;
