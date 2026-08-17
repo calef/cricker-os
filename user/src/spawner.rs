@@ -105,7 +105,4 @@ fn build(elf: &elf::Elf, attempt: u64) -> bool {
     true
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    supervision_proto::fail()
-}
+user_rt::panic_handler!();

@@ -612,18 +612,11 @@ pub const NOTE_BROKER_DONE: u64 = 4;
 
 /// Trap. A half-built system is not worth limping along, and a fault is legible: the kernel prints
 /// the pc and the process dies where the mistake was.
+///
+/// Delegates to [`user_rt::trap`] since milestone 130, for the reason `supervision_proto::fail`
+/// records: the name earns its keep, the duplicated asm did not.
 pub fn fail() -> ! {
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    user_rt::exit()
+    user_rt::trap()
 }
 
 /// A raw `RECV_CAP`, returning the kernel's answer rather than a message. The attacker uses it:

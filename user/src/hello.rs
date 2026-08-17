@@ -931,22 +931,12 @@ fn check(ok: bool) {
     }
 }
 
+/// Trap, killing this program where the mistake was. Kept as a local name because the call sites
+/// above read as "this build step failed", not as "execute a breakpoint"; the instruction itself
+/// is `user_rt`'s since milestone 130. The comment this replaces called it "the one arch-specific
+/// line in the program", which was true of `hello` and false of the tree: there were forty-eight.
 fn fail() -> ! {
-    // The one arch-specific line in the program: aarch64 `brk`, RISC-V `ebreak`. Both trap, and
-    // the kernel turns a trap from userspace into a kill.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: `brk` raises a breakpoint the kernel turns into a fault. That is the point.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: `ebreak` raises a breakpoint the kernel turns into a fault. That is the point.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    loop {
-        core::hint::spin_loop();
-    }
+    user_rt::trap()
 }
 
 /// Milestone 11: spend an untyped budget. This process holds a capability to a chunk of raw
@@ -1004,7 +994,4 @@ fn untyped_demo() -> ! {
     }
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    fail()
-}
+user_rt::panic_handler!();
