@@ -117,10 +117,12 @@ the QEMU vCPU thread to either. So the range, not a point:
 |---|---|---|---|
 | `ipc_rtt_el0` round trip | 350 | ~960 | ~1,420 |
 
-seL4 publishes, for the same-core different-address-space path on a Cortex-A57 in its default
-configuration, **413 cycles for the IPC call and 426 for the IPC reply**, one-way each
-(sel4.systems/performance.html). A round trip in our sense is their call plus their reply,
-**~839 cycles**.
+seL4 publishes, for the same-core different-address-space path, **413 cycles for the IPC call and
+426 for the IPC reply**, one-way each (sel4.systems/performance.html). Which machine that is matters
+and the page does not put it up front: it is the **Jetson TX1, a Cortex-A57 at 1.9 GHz**, in seL4's
+default configuration, and it is the *only* aarch64 platform the performance page carries
+(notes/aarch64-board-survey.md, read 2026-08-13). A round trip in our sense is their call plus their
+reply, **~839 cycles**.
 
 **So the corrected figure is roughly 1.1x to 1.7x an L4-lineage round trip, not 4 to 7 times.** And
 converting the *debug* EL0 number instead (~2272 ns) gives ~6,200 to ~9,200 cycles and a ratio of
@@ -365,7 +367,10 @@ userspace and implies `--real`), and compare on the same core:
 HVF tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs 139) and
 **~5x faster at the IPC round trip** (337 vs 1723), it beats native macOS at both, and it builds a
 process faster than either (spawn, below). These are seL4-class microkernel numbers, an IPC round trip
-in the low hundreds of nanoseconds, next to the reference OS on the same silicon. **Map is a deliberate
+in the low hundreds of nanoseconds, next to the reference OS on the same silicon. **"seL4-class" is a
+claim about magnitude and nothing more**; what it is worth measured against seL4's own published
+cycles, and the four ways that comparison is not apples-to-apples, is the calibration section above.
+Quoting this sentence without that one is how the last overstatement happened. **Map is a deliberate
 non-win**: provisioning
 a page is dominated by zeroing 4 KiB, which is bandwidth-bound and identical across the three, so all
 land near ~550 ns. The lean mapping *mechanism* (91 ns, measured by aliasing to strip the zeroing) is

@@ -26,7 +26,12 @@ t1 = read PMCCNTR
 cost = t1 - t0        // cycles, resolvable to nearly a single cycle
 ```
 
-A whole seL4 IPC is only ~200-400 cycles, so a single-shot measurement of it *needs* this resolution.
+A whole seL4 IPC is a few hundred cycles, so a single-shot measurement of it *needs* this resolution.
+(This line read "~200-400 cycles" until 2026-08-16, which was folklore about the L4 lineage rather
+than a figure anyone here had read. seL4's one published aarch64 platform measures **413 for the
+call and 426 for the reply**, one-way each; notes/benchmarks.md compares against that pair and
+notes/aarch64-board-survey.md says which machine it is. The argument is unchanged either way: at
+~0.25 ns per cycle, one operation of that size is unresolvable by a 41 ns tick.)
 That is exactly how `sel4bench` works (notes/benchmarks.md), and exactly why it could not run on this
 Mac.
 
