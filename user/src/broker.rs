@@ -158,7 +158,4 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     }
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap_proto::fail()
-}
+user_rt::panic_handler!();

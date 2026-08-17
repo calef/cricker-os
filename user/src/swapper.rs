@@ -936,7 +936,4 @@ fn bail(stage: u64) -> ! {
     swap_proto::fail()
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap_proto::fail()
-}
+user_rt::panic_handler!();

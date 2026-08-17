@@ -190,7 +190,4 @@ fn usurp() -> ! {
     user_rt::exit()
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap_proto::fail()
-}
+user_rt::panic_handler!();

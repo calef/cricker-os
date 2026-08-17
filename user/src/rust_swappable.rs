@@ -49,7 +49,4 @@ pub extern "C" fn _start(device: u64, log_base: u64, wedge: u64) -> ! {
     )
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap_proto::fail()
-}
+user_rt::panic_handler!();

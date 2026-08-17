@@ -194,22 +194,4 @@ fn goldfish_unix_nanos(base: u64) -> u64 {
     }
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    // No channel we would trust to report on: a fault the kernel turns into a kill is the only
-    // honest signal, and a dead clock service leaves the page at whatever it last published, which
-    // readers can still see the generation of. aarch64 `brk`, RISC-V `ebreak`.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    loop {
-        core::hint::spin_loop();
-    }
-}
+user_rt::panic_handler!();

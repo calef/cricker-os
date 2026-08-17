@@ -54,21 +54,4 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
     }
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    // A driver bug is a dead driver: fault, and the kernel kills the process legibly. The trap
-    // instruction is the one arch-specific line, same as every dedicated binary.
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    loop {
-        core::hint::spin_loop();
-    }
-}
+user_rt::panic_handler!();

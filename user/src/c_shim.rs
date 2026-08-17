@@ -189,19 +189,6 @@ pub unsafe extern "C" fn free(p: *mut u8) {
     }
 }
 
-/// A panic here is a bug in the shell, not in the C. Trap, so the kernel prints the pc and this
-/// process's supervisor sees a fault rather than a silent hang.
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: a deliberate trap; the kernel kills this thread.
-    unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem));
-    };
-    #[cfg(target_arch = "riscv64")]
-    // SAFETY: a deliberate trap; the kernel kills this thread.
-    unsafe {
-        core::arch::asm!("ebreak", options(nostack, nomem))
-    };
-    user_rt::exit()
-}
+// A panic here is a bug in the shell, not in the C. Trap, so the kernel prints the pc and this
+// process's supervisor sees a fault rather than a silent hang.
+user_rt::panic_handler!();
