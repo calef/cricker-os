@@ -57,12 +57,15 @@
 //!   its CLOSE leaks one FS handle for the life of the FS server. Bounded by `MAX_HANDLES` per
 //!   connection, unbounded across connections, and the fix is the `Connection` telling the share
 //!   what to release, which is a seam change rather than a line.
-//! - **Free space is nominal**, and Time Machine will care: see `smb_proto`'s BUGS and
-//!   `smb_proto::share::NOMINAL_VOLUME_BYTES`. `fs_proto` has no `statfs` verb.
-//! - **Subdirectories are listed but not enterable**: the share model is flat (`share.rs`), so a
-//!   directory shows in a listing with the directory attribute and answers `NOT_FOUND` when
-//!   opened. Writing therefore cannot create one either: `MKDIR` is a verb this share does not
-//!   offer at any disposition.
+//! - **A path costs one descent per component, on every call.** `open("a\\b\\c")` is two
+//!   `fs::OPENDIR`s and an `fs::OPEN`, and the two directory handles are opened and closed again
+//!   for the next call. There is no cache because a cache would have to be invalidated by every
+//!   other client of the same FS server, and this program cannot see them. Reads and writes are
+//!   unaffected: they go through the handle CREATE minted.
+//! - **A directory cannot be moved into another directory**, only renamed in place, because
+//!   `fs_proto::fs::RENAME` refuses it (its doc argues the boundary). It arrives at the client as
+//!   an unexpected-IO status rather than as something more useful, which is a gap worth naming: an
+//!   `EINVAL` from that verb means two different things and this share cannot tell which.
 //! - **Upper-case FS names are unreachable.** The wire folds names to lower-case ASCII before
 //!   lookup, and the FS is case-sensitive, so only lower-case names on disk can be opened.
 //! - **One connection at a time.** A second client connecting while one is served is refused by
@@ -84,8 +87,9 @@
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use fs_proto::{dir, dirent, fs, xattr};
+use smb_proto::path::Path;
 use smb_proto::server::Connection;
-use smb_proto::share::{Entry, Error, FIXTURE, FileId, Share};
+use smb_proto::share::{DirId, Entry, Error, FIXTURE, FileId, ROOT_DIR, Share, Volume};
 use smb_proto::{MAX_MESSAGE, XPORT_LEN, xport_parse, xport_write};
 use socket_proto::{
     DATA_MAX, LISTEN_DENIED, LISTEN_GRANTED, LISTEN_IN_USE, OFF_LEN, OFF_PAYLOAD, OP_ACCEPT,
@@ -165,7 +169,7 @@ fn r8(va: u64) -> u8 {
 // ============================================================================================
 
 /// One READDIR reply's records, copied out of the shared page before parsing. In `.bss` (the
-/// two-extra-page stack cannot hold a page-sized buffer), single-threaded like [`RX`].
+/// six-page stack cannot hold a page-sized buffer), single-threaded like [`RX`].
 static mut DIR: [u8; fs_proto::PAGE] = [0; fs_proto::PAGE];
 
 /// The name of the entry the last listing walk resolved; what an [`Entry`]'s `name` borrows.
@@ -188,11 +192,11 @@ fn fs_close(handle: u64) {
     let _ = call(FS, fs::req(fs::CLOSE, handle, 0), 0);
 }
 
-/// One `READDIR` page of the share directory starting at entry `cursor`, copied into [`DIR`]
-/// and returned as records ready for [`dirent::iter`]. Empty at the end of the listing, and on
-/// an FS refusal (the module BUGS: errors degrade to absence).
-fn fs_readdir(cursor: u64) -> &'static [u8] {
-    let (r0, _) = call(FS, fs::req(fs::READDIR, fs::ROOT, 0), cursor);
+/// One `READDIR` page of directory `dir` starting at entry `cursor`, copied into [`DIR`] and
+/// returned as records ready for [`dirent::iter`]. Empty at the end of the listing, and on an FS
+/// refusal (the module BUGS: errors degrade to absence).
+fn fs_readdir(dir: u64, cursor: u64) -> &'static [u8] {
+    let (r0, _) = call(FS, fs::req(fs::READDIR, dir, 0), cursor);
     if (r0 as i64) <= 0 {
         return &[];
     }
@@ -213,9 +217,11 @@ fn fs_readdir(cursor: u64) -> &'static [u8] {
 /// than silence, which is the whole point of the trait having an error channel at all.
 fn fs_error(r0: u64) -> Error {
     match fs_proto::reply_errno(r0 as i64) {
-        Some(2) => Error::NotFound,              // ENOENT
-        Some(17) => Error::Exists,               // EEXIST
-        Some(dir::EISDIR) => Error::IsDirectory, // 21
+        Some(2) => Error::NotFound,                // ENOENT
+        Some(17) => Error::Exists,                 // EEXIST
+        Some(dir::EISDIR) => Error::IsDirectory,   // 21
+        Some(dir::ENOTDIR) => Error::NotDirectory, // 20
+        Some(dir::ENOTEMPTY) => Error::NotEmpty,   // 39
         Some(dir::EROFS) | Some(dir::EPERM) => Error::ReadOnly,
         Some(xattr::ENOSPC) => Error::NoSpace, // 28
         Some(36) => Error::NameTooLong,        // ENAMETOOLONG
@@ -223,12 +229,12 @@ fn fs_error(r0: u64) -> Error {
     }
 }
 
-/// Walk the listing to entry `index`, leaving its name in [`NAME`]. Returns the name's length
-/// and whether the entry is a directory.
-fn fs_nth(index: usize) -> Option<(usize, bool)> {
+/// Walk the listing of directory `dir` to entry `index`, leaving its name in [`NAME`]. Returns the
+/// name's length and whether the entry is a directory.
+fn fs_nth(dir: u64, index: usize) -> Option<(usize, bool)> {
     let mut cursor = 0usize;
     loop {
-        let page = fs_readdir(cursor as u64);
+        let page = fs_readdir(dir, cursor as u64);
         if page.is_empty() {
             return None;
         }
@@ -268,6 +274,10 @@ fn fs_name(len: usize) -> &'static [u8] {
 /// makes a handle survive a directory that moves under it, which is what a writable share does
 /// every time a client creates a file.
 ///
+/// **A [`DirId`] is the FS server's handle too**, and [`ROOT_DIR`] is `fs::ROOT` because both are
+/// zero: the share's root directory and the endpoint's bound directory are the same object, so the
+/// mapping between the two id spaces is the identity function and there is nothing to get wrong.
+///
 /// `writable` comes from the boot (`arg2`), not from probing the capability: the protocol layer
 /// consults it before it asks anything, so a read-only share is read-only whatever the directory
 /// capability behind it would have permitted. A share wired writable over a capability that
@@ -279,43 +289,161 @@ struct FsShare {
     writable: bool,
 }
 
+/// A directory handle held for the duration of one `Share` call, and the rule for giving it back.
+///
+/// A path walk opens one FS handle per component and must close every one of them, including on
+/// the error paths, or the FS server's table grows for the life of the boot. Pairing the handle
+/// with "did I open it" is what lets one `close` call at the end of every method be correct for
+/// both the root (which nobody opened) and a descent (which somebody did).
+struct Descent {
+    handle: u64,
+    owned: bool,
+}
+
+impl Descent {
+    /// Give the handle back if it was ours. Calling this twice is harmless; not calling it is the
+    /// leak, so every method that makes one ends with it on every path.
+    fn close(self) {
+        if self.owned {
+            fs_close(self.handle);
+        }
+    }
+}
+
+impl FsShare {
+    /// **The rights this share asks for when it descends.** Exactly what it will use and no more:
+    /// `fs_proto::fs::OPENDIR` refuses with `EPERM` when the intersection with the parent's rights
+    /// is smaller than the request, so asking for `dir::ALL` on a read-only share would fail on a
+    /// capability that was correctly narrowed.
+    ///
+    /// A share wired read-write over a capability that lacks one of these gets that `EPERM`, which
+    /// `fs_error` reports as [`Error::ReadOnly`]: through this capability, that is what the
+    /// directory is. The refusal arrives at the descent rather than at the write, which is earlier
+    /// and therefore better.
+    fn descend_rights(&self) -> u64 {
+        if self.writable {
+            dir::ALL
+        } else {
+            dir::ENUMERATE | dir::READ | dir::DESCEND
+        }
+    }
+
+    /// **Walk to the directory `path` names**, one `fs::OPENDIR` per component.
+    ///
+    /// The cost is the recorded one: a path N components deep costs N descents per call, because
+    /// this share holds no cache and a cache would have to be invalidated by every other client of
+    /// the same FS server. See the module BUGS.
+    fn descend(&self, path: Path<'_>) -> Result<Descent, Error> {
+        let mut at = Descent {
+            handle: fs::ROOT,
+            owned: false,
+        };
+        for comp in path.components() {
+            if comp.len() > fs_proto::PAGE {
+                at.close();
+                return Err(Error::NameTooLong);
+            }
+            fs_put(comp);
+            let (r0, _) = call(
+                FS,
+                fs::req(fs::OPENDIR, at.handle, comp.len() as u64),
+                self.descend_rights(),
+            );
+            at.close();
+            if (r0 as i64) < 0 {
+                // Every component but the last is a *path* component, so a failure walking one is
+                // "path not found" rather than "name not found": that is what tells a client to
+                // make the parent first. `NotDirectory` survives as itself, being more specific.
+                return Err(match fs_error(r0) {
+                    Error::NotFound => Error::PathNotFound,
+                    e => e,
+                });
+            }
+            at = Descent {
+                handle: r0,
+                owned: true,
+            };
+        }
+        Ok(at)
+    }
+
+    /// Walk to the **parent** of `path` and hand back the parent's handle with the leaf name. The
+    /// shape every name-taking verb needs: `fs_proto` resolves a single component under a handle,
+    /// never a path.
+    fn parent_of<'p>(&self, path: Path<'p>) -> Result<(Descent, &'p [u8]), Error> {
+        if path.is_root() {
+            return Err(Error::IsDirectory);
+        }
+        let name = path.name();
+        if name.len() > fs_proto::PAGE {
+            return Err(Error::NameTooLong);
+        }
+        Ok((self.descend(path.parent())?, name))
+    }
+
+    /// One name-taking verb under the path's parent, with the parent closed on every path out.
+    /// `w1` is the request's second word (a rights mask for the descending verbs, 0 otherwise).
+    fn at_parent(&self, path: Path<'_>, op: u64, w1: u64) -> Result<u64, Error> {
+        let (parent, name) = self.parent_of(path)?;
+        fs_put(name);
+        let (r0, _) = call(FS, fs::req(op, parent.handle, name.len() as u64), w1);
+        parent.close();
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(r0)
+    }
+}
+
 impl Share for FsShare {
     fn writable(&self) -> bool {
         self.writable
     }
 
-    fn open(&self, name: &[u8]) -> Result<FileId, Error> {
-        if name.len() > fs_proto::PAGE {
-            return Err(Error::NameTooLong);
-        }
-        fs_put(name);
-        let (r0, _) = call(FS, fs::req(fs::OPEN, fs::ROOT, name.len() as u64), 0);
-        if (r0 as i64) < 0 {
-            // A directory is `EISDIR`, which this flat share reports as absence: it has no
-            // subdirectory node to hand back (module BUGS), so "there is nothing here you can
-            // open" is the true sentence.
-            return Err(match fs_error(r0) {
-                Error::IsDirectory => Error::NotFound,
-                e => e,
-            });
-        }
-        Ok(r0)
+    fn open(&self, path: Path<'_>) -> Result<FileId, Error> {
+        self.at_parent(path, fs::OPEN, 0)
     }
 
-    fn create(&self, name: &[u8]) -> Result<FileId, Error> {
-        if name.len() > fs_proto::PAGE {
-            return Err(Error::NameTooLong);
+    fn open_dir(&self, path: Path<'_>) -> Result<DirId, Error> {
+        if path.is_root() {
+            return Ok(ROOT_DIR);
         }
+        // Not `at_parent`: the last component is a directory here, so the whole path is a descent
+        // and the walk already does exactly this. Going through the parent would open the same
+        // handle twice.
+        let (parent, name) = self.parent_of(path)?;
         fs_put(name);
-        let (r0, _) = call(FS, fs::req(fs::CREATE, fs::ROOT, name.len() as u64), 0);
+        let (r0, _) = call(
+            FS,
+            fs::req(fs::OPENDIR, parent.handle, name.len() as u64),
+            self.descend_rights(),
+        );
+        parent.close();
         if (r0 as i64) < 0 {
             return Err(fs_error(r0));
         }
         Ok(r0)
     }
 
-    fn entry(&self, index: usize) -> Option<Entry<'_>> {
-        let (len, is_dir) = fs_nth(index)?;
+    fn close_dir(&self, dir: DirId) {
+        // The bound directory is not something this program opened, and closing it would take the
+        // whole share away from every later request. `smb_proto` never asks, and this is the
+        // second line rather than the first.
+        if dir != ROOT_DIR {
+            fs_close(dir);
+        }
+    }
+
+    fn create(&self, path: Path<'_>) -> Result<FileId, Error> {
+        self.at_parent(path, fs::CREATE, 0)
+    }
+
+    fn mkdir(&self, path: Path<'_>) -> Result<DirId, Error> {
+        self.at_parent(path, fs::MKDIR, self.descend_rights())
+    }
+
+    fn entry(&self, dir: DirId, index: usize) -> Option<Entry<'_>> {
+        let (len, is_dir) = fs_nth(dir, index)?;
         let size = if is_dir {
             0
         } else {
@@ -323,7 +451,7 @@ impl Share for FsShare {
             // dirent is name and kind only). This is the one path that still pays per entry,
             // because a listing is a walk by nature.
             fs_put(fs_name(len));
-            let (h, _) = call(FS, fs::req(fs::OPEN, fs::ROOT, len as u64), 0);
+            let (h, _) = call(FS, fs::req(fs::OPEN, dir, len as u64), 0);
             if (h as i64) < 0 {
                 0
             } else {
@@ -336,6 +464,30 @@ impl Share for FsShare {
             name: fs_name(len),
             size,
             is_dir,
+        })
+    }
+
+    /// **What the image reports** (`fs_proto::fs::STATFS`, milestone 54). Asked on the bound
+    /// directory, which every wiring of this program holds; the verb needs no right, so a share
+    /// over a narrowed capability answers this as well as one over the root.
+    ///
+    /// `None` on a refusal rather than a guess: the protocol layer's fallback is a stated nominal
+    /// figure, and a wrong number here would be an unstated one.
+    fn statfs(&self) -> Option<Volume> {
+        let (r0, _) = call(FS, fs::req(fs::STATFS, fs::ROOT, 0), 0);
+        if (r0 as i64) < 0 {
+            return None;
+        }
+        let n = (r0 as usize).min(fs_proto::PAGE);
+        let mut rec = [0u8; fs_proto::statfs::LEN];
+        for (i, b) in rec.iter_mut().enumerate().take(n) {
+            *b = r8(FS_VA + i as u64);
+        }
+        let (block_size, total_blocks, free_blocks) = fs_proto::statfs::decode(&rec[..n])?;
+        Some(Volume {
+            block_size,
+            total_blocks,
+            free_blocks,
         })
     }
 
@@ -416,36 +568,51 @@ impl Share for FsShare {
         Ok(())
     }
 
-    fn rename(&self, from: &[u8], to: &[u8]) -> Result<(), Error> {
-        if from.len() + to.len() > fs_proto::PAGE {
+    /// **The only verb that names two directories**, so it is the only one that holds two descents
+    /// at once and the only one whose second word is a packed pair rather than a scalar.
+    ///
+    /// `fs_proto::fs::RENAME` refuses moving a *directory* into another directory with `EINVAL`
+    /// (its own doc argues the boundary: the cycle guard is an ancestry walk in a server whose
+    /// stack is measured at three quarters used). That arrives here as [`Error::Io`] and reaches
+    /// the client as an unexpected-IO status, which is honest and unhelpful; the case a client
+    /// actually performs, renaming within one directory, works.
+    fn rename(&self, from: Path<'_>, to: Path<'_>) -> Result<(), Error> {
+        let (src_name, dst_name) = (from.name(), to.name());
+        if src_name.len() + dst_name.len() > fs_proto::PAGE {
             return Err(Error::NameTooLong);
         }
+        let src = self.descend(from.parent())?;
+        let dst = match self.descend(to.parent()) {
+            Ok(d) => d,
+            Err(e) => {
+                src.close();
+                return Err(e);
+            }
+        };
         // Source first, destination back to back: fs_proto::fs::RENAME's page layout.
-        fs_put(from);
-        for (i, &b) in to.iter().enumerate() {
-            w8(FS_VA + (from.len() + i) as u64, b);
+        fs_put(src_name);
+        for (i, &b) in dst_name.iter().enumerate() {
+            w8(FS_VA + (src_name.len() + i) as u64, b);
         }
         let (r0, _) = call(
             FS,
-            fs::req(fs::RENAME, fs::ROOT, from.len() as u64),
-            fs::rename_dst(fs::ROOT, to.len() as u64),
+            fs::req(fs::RENAME, src.handle, src_name.len() as u64),
+            fs::rename_dst(dst.handle, dst_name.len() as u64),
         );
+        src.close();
+        dst.close();
         if (r0 as i64) < 0 {
             return Err(fs_error(r0));
         }
         Ok(())
     }
 
-    fn remove(&self, name: &[u8]) -> Result<(), Error> {
-        if name.len() > fs_proto::PAGE {
-            return Err(Error::NameTooLong);
-        }
-        fs_put(name);
-        let (r0, _) = call(FS, fs::req(fs::UNLINK, fs::ROOT, name.len() as u64), 0);
-        if (r0 as i64) < 0 {
-            return Err(fs_error(r0));
-        }
-        Ok(())
+    fn remove(&self, path: Path<'_>) -> Result<(), Error> {
+        self.at_parent(path, fs::UNLINK, 0).map(|_| ())
+    }
+
+    fn rmdir(&self, path: Path<'_>) -> Result<(), Error> {
+        self.at_parent(path, fs::RMDIR, 0).map(|_| ())
     }
 }
 

@@ -471,15 +471,19 @@ impl Share for FixtureShare {
 pub struct MemoryShare {
     /// `(path, contents)`; `None` contents means the node is a directory. A slot is never removed,
     /// so no live id moves; a removed node's path is cleared and the empty path never matches.
-    nodes: core::cell::RefCell<Vec<(&'static [u8], Option<Vec<u8>>)>>,
+    nodes: core::cell::RefCell<Vec<MemoryNode>>,
 }
+
+/// One node of a [`MemoryShare`]: its path, and its bytes unless it is a directory.
+#[cfg(test)]
+type MemoryNode = (&'static [u8], Option<Vec<u8>>);
 
 #[cfg(test)]
 impl MemoryShare {
     /// A share holding `files` (flat or nested paths) plus `dirs`, in listing order. Every parent
     /// a path needs must be in `dirs`: this fixture makes no directory it was not told to.
     pub fn new(dirs: &[&[u8]], files: &[(&[u8], &[u8])]) -> Self {
-        let mut nodes: Vec<(&'static [u8], Option<Vec<u8>>)> = Vec::new();
+        let mut nodes: Vec<MemoryNode> = Vec::new();
         for d in dirs {
             nodes.push((Self::leak(d), None));
         }
