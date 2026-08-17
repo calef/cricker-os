@@ -31,6 +31,86 @@
 //! is refused where the bytes arrive rather than wherever a backing happens to look at it, and the
 //! [`share::Share`] seam takes a [`path::Path`] that cannot be constructed without that check.
 //!
+//! # Examples
+//!
+//! A whole mount, on the host, in microseconds. This is what the `smb_server` role does with a
+//! socket underneath and nothing else: bytes in, [`server::Connection::handle`], bytes out.
+//!
+//! ```
+//! use smb_proto::{
+//!     H_SESSION_ID, H_STATUS, H_TREE_ID, MAX_MESSAGE, STATUS_SUCCESS, client, r32, r64,
+//!     server::Connection, share::FIXTURE,
+//! };
+//!
+//! // One request through the state machine, the way a socket loop would drive it.
+//! fn exchange(c: &mut Connection, request: &[u8]) -> Vec<u8> {
+//!     let mut out = vec![0u8; MAX_MESSAGE];
+//!     let n = c.handle(request, &mut out, &FIXTURE).expect("SMB2 in, SMB2 out");
+//!     out.truncate(n);
+//!     out
+//! }
+//!
+//! // The challenge is the connection's, and a real server takes it from the entropy service.
+//! let mut c = Connection::new([0xA5; 8]);
+//!
+//! let resp = exchange(&mut c, &client::negotiate(1));
+//! assert_eq!(client::negotiate_dialect(&resp), smb_proto::DIALECT_0210);
+//!
+//! // Two round trips: the client asks, the server challenges, the client answers. Nothing checks
+//! // the answer, which is what "guest only" means and why it is the first entry under BUGS.
+//! let resp = exchange(&mut c, &client::session_setup_negotiate(2));
+//! let sid = r64(&resp, H_SESSION_ID);
+//! let resp = exchange(&mut c, &client::session_setup_authenticate(3, sid));
+//! assert_eq!(r32(&resp, H_STATUS), STATUS_SUCCESS);
+//!
+//! let resp = exchange(&mut c, &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"));
+//! let tid = r32(&resp, H_TREE_ID);
+//!
+//! // Open a file and read it.
+//! let resp = exchange(&mut c, &client::create(5, sid, tid, b"hello.txt"));
+//! let fid = client::create_file_id(&resp);
+//! let resp = exchange(&mut c, &client::read(6, sid, tid, &fid, 0, 64));
+//! assert_eq!(client::read_data(&resp), b"nife serves SMB\n");
+//!
+//! // A read at end of file is END_OF_FILE, not an empty success. That distinction is what ends a
+//! // client's read loop, so getting it wrong is a hang rather than a wrong answer.
+//! let resp = exchange(&mut c, &client::read(7, sid, tid, &fid, 16, 64));
+//! assert_eq!(r32(&resp, H_STATUS), smb_proto::STATUS_END_OF_FILE);
+//! ```
+//!
+//! The other thing worth showing is [`path`], because it is where a wire attack dies. A Time Machine
+//! sparsebundle is a directory of band files, so the share has to be a tree, and the moment it is a
+//! tree a client can try to walk out of it:
+//!
+//! ```
+//! use smb_proto::path::{Path, PathError};
+//!
+//! // What a Mac writing a backup actually sends.
+//! let p = Path::parse(b"corinne.sparsebundle\\bands\\1a2b").unwrap();
+//! assert_eq!(p.depth(), 3);
+//! assert_eq!(p.name(), b"1a2b");
+//! assert_eq!(p.parent().as_bytes(), b"corinne.sparsebundle\\bands");
+//!
+//! // `..` is refused, not resolved: the capability argument is that there is no "above" to
+//! // resolve to, and refusing stays correct if a component is a symlink one day.
+//! assert_eq!(Path::parse(b"bands\\..\\..\\etc\\passwd"), Err(PathError::Traversal));
+//!
+//! // `.` is refused too, for a different reason: accepting it would give one file two names, and
+//! // this share's handles carry their path as their identity.
+//! assert_eq!(Path::parse(b"bands\\.\\0"), Err(PathError::Traversal));
+//!
+//! // A forward slash is not this protocol's separator, so accepting it would let two clients
+//! // spell one file two ways.
+//! assert_eq!(Path::parse(b"bands/0"), Err(PathError::Separator));
+//!
+//! // But a trailing separator is stripped, because clients really do send `dir\`.
+//! assert_eq!(Path::parse(b"bands\\").unwrap().as_bytes(), b"bands");
+//!
+//! // The root is the one path with no components, and its parent is itself.
+//! assert!(Path::ROOT.is_root());
+//! assert_eq!(Path::ROOT.parent(), Path::ROOT);
+//! ```
+//!
 //! # BUGS
 //!
 //! - **Guest only, and guest means everyone.** Every AUTHENTICATE is accepted and flagged as a

@@ -36,6 +36,87 @@
 //! with `-(err.errno as i64)` at the serve loop and nowhere else, which is the "map the error type
 //! once, at the server boundary" rule the roadmap sets. The client reads it back with [`reply_errno`].
 //!
+//! # Examples
+//!
+//! The error boundary is one word wide and has no flag bit, which is what lets a caller read a
+//! length and an errno out of the same register without a mode to get wrong:
+//!
+//! ```
+//! use fs_proto::{reply_err, reply_errno};
+//!
+//! // A READ that moved 4096 bytes, and a READ at end of file. Both are results.
+//! assert_eq!(reply_errno(4096), None);
+//! assert_eq!(reply_errno(0), None);
+//!
+//! // ENOENT, mapped once at the server's serve loop and nowhere else.
+//! let wire = reply_err(2);
+//! assert_eq!(wire, -2);
+//! assert_eq!(reply_errno(wire), Some(2));
+//! ```
+//!
+//! A request word packs the opcode, the handle and the length, so control needs no shared page at
+//! all: the page is for the bytes.
+//!
+//! ```
+//! use fs_proto::{fs, op};
+//!
+//! // `read(handle 3, 1024)`.
+//! let w0 = fs::req(fs::READ, 3, 1024);
+//! assert_eq!(op(w0), fs::READ); // the opcode field is the same one in both protocols
+//! assert_eq!(fs::req_handle(w0), 3);
+//! assert_eq!(fs::req_len(w0), 1024);
+//!
+//! // An OPEN sends handle ROOT and the *name's* length; the name itself is in the page.
+//! let w0 = fs::req(fs::OPEN, fs::ROOT, b"report.txt".len() as u64);
+//! assert_eq!(fs::req_handle(w0), fs::ROOT);
+//! assert_eq!(fs::req_len(w0), 10);
+//! ```
+//!
+//! [`dir::Rights`] is where the interesting claim is, and it is a claim about what is **absent**:
+//! attenuation is the only way to make a non-root value, and it is a bitwise AND, so no chain of
+//! calls can produce a child carrying more than its parent.
+//!
+//! ```
+//! use fs_proto::dir::{self, Rights};
+//!
+//! // What a shell holds over the user's home directory.
+//! let home = Rights::root(dir::ALL);
+//!
+//! // What it hands a log writer: somewhere to write, and no power to delete what is there.
+//! let logs = home.attenuate(dir::READ | dir::WRITE | dir::CREATE);
+//! assert!(logs.allows(dir::WRITE));
+//! assert!(logs.denies_all(dir::REMOVE));
+//!
+//! // The log writer passing its authority on cannot widen it back, however it asks.
+//! let narrower = logs.attenuate(dir::ALL);
+//! assert_eq!(narrower.bits(), logs.bits());
+//! assert!(narrower.denies_all(dir::REMOVE));
+//! ```
+//!
+//! And [`grant`] is the shape that makes `run wc report.txt` mean what it says: `wc` is started
+//! holding one file, read-only, with the name in two argument words rather than a frame, so a
+//! per-file grant costs no extra mapping and the caretaker needs nothing mapped before it runs.
+//!
+//! ```
+//! use fs_proto::grant;
+//!
+//! assert!(grant::fits(b"report.txt"));
+//! let (lo, hi) = grant::pack_name(b"report.txt");
+//! let spec = grant::spec(b"report.txt".len(), grant::READ);
+//!
+//! // What the caretaker unpacks from its three argument words.
+//! let mut buf = [0u8; grant::MAX_NAME];
+//! let n = grant::unpack_name(lo, hi, grant::spec_len(spec), &mut buf);
+//! assert_eq!(&buf[..n], b"report.txt");
+//!
+//! // A read-only grant is not a policy that could have said yes, so a write gets EROFS.
+//! assert!(!grant::writable(spec));
+//! assert_eq!(grant::EROFS, 30);
+//!
+//! // A name too long to travel in two words is refused by the caller, not truncated on the wire.
+//! assert!(!grant::fits(b"a-name-longer-than-sixteen-bytes"));
+//! ```
+//!
 //! Name: recorded (milestone 46, and notes/naming.md's crate section). The wire contract was
 //! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
 //! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That

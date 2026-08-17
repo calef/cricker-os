@@ -46,6 +46,74 @@
 //!    wrapping 64-bit arithmetic and read back as signed ([`Interval`]), which is what makes an
 //!    exchange that straddles the 2036 boundary come out right instead of off by 136 years.
 //!
+//! # Examples
+//!
+//! One exchange, end to end. The client is 2 seconds behind the server and the path takes 20 ms
+//! each way, and the numbers that come out say exactly that:
+//!
+//! ```
+//! use ntp_proto::{Packet, Query, Timestamp, VERSION, leap, mode};
+//!
+//! // T1: what our clock said when we sent. The nonce is separate, and is 64 random bits.
+//! let sent = Timestamp::from_unix(1_800_000_000, 0).unwrap();
+//! let nonce = Timestamp::from_bits(0x9e37_79b9_7f4a_7c15);
+//! let query = Query::with_nonce(sent, nonce);
+//!
+//! // On the wire the transmit field is the nonce, not the time; a server never interprets it.
+//! let request = Packet::parse(&query.request()).unwrap();
+//! assert_eq!(request.transmit, nonce);
+//! assert_eq!(request.mode, mode::CLIENT);
+//!
+//! // A server whose clock is 2 seconds ahead of ours, taking 1 ms to turn the request around.
+//! let reply = Packet {
+//!     leap: leap::NONE,
+//!     version: VERSION,
+//!     mode: mode::SERVER,
+//!     stratum: 2,
+//!     origin: request.transmit, // echoed, and this is the whole off-path defence
+//!     receive: Timestamp::from_unix(1_800_000_002, 20_000_000).unwrap(), // T2
+//!     transmit: Timestamp::from_unix(1_800_000_002, 21_000_000).unwrap(), // T3
+//!     ..Packet::default()
+//! };
+//!
+//! // T4: our clock when the reply landed, 41 ms of our time after we sent.
+//! let dest = Timestamp::from_unix(1_800_000_000, 41_000_000).unwrap();
+//! let sample = query.accept(&reply.to_bytes(), dest).unwrap();
+//!
+//! // 2 seconds behind, to within the tick truncation, and 40 ms of path.
+//! assert_eq!(sample.offset.nanos() / 1_000_000, 2_000);
+//! assert_eq!(sample.delay.nanos() / 1_000_000, 40);
+//! ```
+//!
+//! The check worth demonstrating on its own is the one that runs **before any of the packet is
+//! believed**. An off-path attacker can flood us with well-formed stratum-1 replies, and without
+//! the nonce it holds there is nothing it can do with them:
+//!
+//! ```
+//! use ntp_proto::{Packet, Query, Reject, Timestamp, VERSION, leap, mode};
+//!
+//! let sent = Timestamp::from_unix(1_800_000_000, 0).unwrap();
+//! let query = Query::with_nonce(sent, Timestamp::from_bits(0x9e37_79b9_7f4a_7c15));
+//!
+//! // A perfect packet from a perfect server, claiming the year 2000. It is simply not ours.
+//! let spoof = Packet {
+//!     leap: leap::NONE,
+//!     version: VERSION,
+//!     mode: mode::SERVER,
+//!     stratum: 1,
+//!     origin: Timestamp::from_bits(0), // the attacker had to guess, and 64 bits is a lot
+//!     receive: Timestamp::from_unix(946_684_800, 0).unwrap(),
+//!     transmit: Timestamp::from_unix(946_684_800, 1).unwrap(),
+//!     ..Packet::default()
+//! };
+//! let dest = Timestamp::from_unix(1_800_000_000, 1_000_000).unwrap();
+//! assert_eq!(query.accept(&spoof.to_bytes(), dest), Err(Reject::OriginMismatch));
+//!
+//! // An unsolicited broadcast does not even get that far: mode 5 is not a reply.
+//! let broadcast = Packet { mode: 5, ..spoof };
+//! assert_eq!(query.accept(&broadcast.to_bytes(), dest), Err(Reject::Mode(5)));
+//! ```
+//!
 //! # Layering
 //!
 //! [`Packet::parse`] is **total on a 48-byte input**: it decodes fields and judges nothing, so

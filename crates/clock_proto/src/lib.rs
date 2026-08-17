@@ -42,6 +42,64 @@
 //! construction rather than by discipline**: a step is an offset write, and the counter never
 //! sees it.
 //!
+//! # Examples
+//!
+//! Setting the wall clock is writing an offset, and the monotonic counter is not in the expression.
+//! That is the section above stated as code, and it is the reason a clock step here cannot make
+//! `Instant` go backwards the way a Unix `settimeofday` once could:
+//!
+//! ```
+//! use clock_proto::{NANOS_PER_SEC, offset_for, wall_nanos};
+//!
+//! // The machine has been up for 5 seconds and the service has just learned the wall time.
+//! let monotonic = 5 * NANOS_PER_SEC;
+//! let now = 1_800_000_000 * NANOS_PER_SEC;
+//! let offset = offset_for(now, monotonic);
+//! assert_eq!(wall_nanos(offset, monotonic), now);
+//!
+//! // Two seconds later, with nobody having touched anything.
+//! let monotonic = 7 * NANOS_PER_SEC;
+//! assert_eq!(wall_nanos(offset, monotonic), now + 2 * NANOS_PER_SEC);
+//!
+//! // An operator steps the clock a minute forward. Only the offset changes.
+//! let stepped = offset_for(now + 60 * NANOS_PER_SEC, monotonic);
+//! assert_eq!(wall_nanos(stepped, monotonic), now + 60 * NANOS_PER_SEC);
+//! assert_eq!(monotonic, 7 * NANOS_PER_SEC); // untouched, and there is no way to touch it
+//! ```
+//!
+//! The other thing worth showing is **what a compromised network time client can and cannot do**,
+//! because that is what makes the propose endpoint safe to hand out. It can lie inside
+//! [`policy`]'s bounds and it can do nothing else, and the bounds are deliberately asymmetric:
+//! forward skips instants nobody has observed, backward makes instants happen twice.
+//!
+//! ```
+//! use clock_proto::{NANOS_PER_SEC, policy, state, status};
+//!
+//! let now = 1_800_000_000 * NANOS_PER_SEC;
+//!
+//! // A small correction, in either direction, is what a time client is for.
+//! assert_eq!(policy::decide(state::SYNCED, now, now + NANOS_PER_SEC / 2), status::ACCEPTED);
+//!
+//! // Walking the clock past a certificate expiry in one step is the classic attack.
+//! assert_eq!(
+//!     policy::decide(state::SYNCED, now, now + 2 * policy::MAX_STEP_FORWARD_NANOS),
+//!     status::REFUSED_TOO_FAR_FORWARD,
+//! );
+//!
+//! // And the tighter half: a second forward is fine, a second and a half backward is not.
+//! assert_eq!(policy::decide(state::SYNCED, now, now + 3 * NANOS_PER_SEC / 2), status::ACCEPTED);
+//! assert_eq!(
+//!     policy::decide(state::SYNCED, now, now - 3 * NANOS_PER_SEC / 2),
+//!     status::REFUSED_TOO_FAR_BACKWARD,
+//! );
+//!
+//! // The bootstrap case: a machine that does not know the time has no belief for a step limit to
+//! // protect, so a plausible proposal is accepted outright. The sanity window still applies.
+//! assert_eq!(policy::decide(state::UNKNOWN, 0, now), status::ACCEPTED);
+//! assert_eq!(policy::decide(state::UNKNOWN, 0, 0), status::REFUSED_IMPLAUSIBLE);
+//! assert!(!policy::plausible(0)); // 1970 plus uptime is not a time this code can be running at
+//! ```
+//!
 //! # Everything is nanoseconds since the Unix epoch, in a `u64`
 //!
 //! One unit everywhere, so no conversion sits at a boundary where it can be forgotten. A `u64` of
