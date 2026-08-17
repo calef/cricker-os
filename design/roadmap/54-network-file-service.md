@@ -16,15 +16,28 @@ network endpoint. The old gate was milestone 107's missing listen verb; 107 merg
 and this block sat behind a stale IN-PROGRESS status for eleven days before anyone noticed
 (2026-08-15, §76's defect class). Nothing blocks the head of the customer path.
 
-What remains, in order: **a `statfs` verb for `fs_proto`** (free space is a nominal constant today,
-and macOS sizes a Time Machine sparsebundle against what the volume reports), **subdirectories**
-(the share model is flat and a sparsebundle is a directory of band files, which makes this the
-largest piece between here and milestone 55), and **identity** beyond guest-for-everyone, which
-writes made more urgent than reads did. The wire decisions of both halves are listed in their pull
-requests for review, being the expensive category.
+**The `statfs` verb and subdirectories both landed** (pull request #255, 2026-08-16), which was two
+of the three remaining items. `fs_proto` grew **op 18, `STATFS`**: a record in the shared page with
+`r0` as its length, no right demanded, any handle the server minted, and the record's length is its
+version so a later field extends it rather than breaking a reader. The SMB volume classes report the
+image's real numbers through it, so a client no longer sizes its work against a constant. The share
+model became a **tree**: `crates/smb_proto/src/path.rs` parses a share-relative path once at the
+wire's edge and refuses `..` there, in a type the `Share` seam cannot be handed around, and the seam
+grew `open_dir`, `close_dir`, `mkdir`, `rmdir` and a per-directory listing. The adapter walks a path
+one `OPENDIR` per component, because `fs_proto` resolves a single component under a handle and never
+a path, which is the contract's shape rather than a limitation. The gate makes a directory over
+SMB2, writes a file inside it, and a different in-guest process descends to it through the FS
+server; the verdict distinguishes "the directory was never made" from "a *file* was made with a
+separator in its name", which is what a flat share produces and what looks identical on the wire.
 
-**It stays PARTIAL rather than BUILT deliberately**: the two items above are both required by
-milestone 55, and marking 54 done would leave them with no home.
+What remains is **identity** beyond guest-for-everyone, which writes made more urgent than reads
+did. The wire decisions of every half are listed in their pull requests for review, being the
+expensive category.
+
+**The status does not move, and stays PARTIAL deliberately**: identity is required by milestone 55
+and marking 54 done would leave it with no home. That was already this block's reason for staying
+`PARTIAL` and it is unchanged; what changed is that the list it was holding open is now one item
+long instead of three.
 
 **In brief.** The board serves files over a protocol macOS speaks natively, so it is useful before
 Time Machine specifically is solved.

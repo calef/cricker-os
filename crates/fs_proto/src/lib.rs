@@ -1176,11 +1176,11 @@ pub mod dirent {
 /// unit. A client that assumed they were equal would silently mis-size a volume the day a
 /// filesystem with 64 KiB records is served through the same contract.
 ///
-/// **The reply's length is the version.** `r0` is [`LEN`] today; a future field extends the record
-/// and raises [`LEN`], and a client written against this version reads its prefix correctly because
-/// it checks `r0 >= LEN` for the fields it knows rather than `r0 == LEN`. [`decode`] is written that
-/// way on purpose. There is deliberately **no version word**: the length already is one, and a
-/// second one would be a thing to keep in sync.
+/// **The reply's length is the version.** `r0` is [`statfs::LEN`] today; a future field extends the
+/// record and raises it, and a client written against this version reads its prefix correctly
+/// because it checks `r0 >= LEN` for the fields it knows rather than `r0 == LEN`.
+/// [`statfs::decode`] is written that way on purpose. There is deliberately **no version word**:
+/// the length already is one, and a second one would be a thing to keep in sync.
 ///
 /// # BUGS
 ///
@@ -1190,8 +1190,8 @@ pub mod dirent {
 ///   classes carry neither, so nothing above this contract has asked. Adding them extends the
 ///   record by the paragraph above rather than changing it.
 pub mod statfs {
-    /// Bytes one record takes. Also the value [`fs::STATFS`] answers with on success; see the
-    /// module header on why the length is the version.
+    /// Bytes one record takes. Also the value [`super::fs::STATFS`] answers with on success; see
+    /// the module header on why the length is the version.
     pub const LEN: usize = 24;
 
     /// Write a record at the start of `out`, returning its length, or `None` if it does not fit.
@@ -1985,6 +1985,23 @@ pub mod fixture {
     pub const SMB_WROTE: &[u8] =
         b"these bytes crossed SMB2, fs_proto, and RedoxFS on their way in\n";
 
+    /// **The directory the SMB gate makes** (milestone 54's subdirectory half). The host's prober
+    /// creates it over the wire with `FILE_DIRECTORY_FILE`, puts [`SMB_NESTED`] inside it, and the
+    /// same in-guest verify role checks that a *directory* is what landed.
+    ///
+    /// That last check is the one worth having: a share that ignored the separator would create a
+    /// file literally called `tm_bands\band0`, which reads back as a missing directory and a
+    /// missing file, and is exactly what the flat share did. `.sparsebundle` is not in the name on
+    /// purpose, because nothing here is Time Machine specific yet; the *shape* is what milestone 55
+    /// needs.
+    pub const SMB_DIR_NAME: &str = "tm_bands";
+    /// The file the gate writes inside [`SMB_DIR_NAME`], by its name alone: the verify role opens
+    /// the directory and then the name under it, which is the path walk done from the other side.
+    pub const SMB_NESTED_NAME: &str = "band0";
+    /// Its exact contents. Distinct from [`SMB_WROTE`] so that a share which wrote both files to
+    /// the same place cannot pass by accident.
+    pub const SMB_NESTED: &[u8] = b"a band file, written one directory down over SMB2\n";
+
     /// **What the verify role found**, sent as the report's second word. A classification rather
     /// than a pass/fail, in [`escape`]'s spirit and for the same reason: "the file is not there"
     /// and "the file is there and wrong" are different bugs, and a bare failure names neither.
@@ -1998,6 +2015,19 @@ pub mod fixture {
         pub const WRONG_SIZE: u64 = 3;
         /// The right length and the wrong bytes: an offset or a chunking bug in the write path.
         pub const WRONG_BYTES: u64 = 4;
+        /// **The subdirectory is not there** ([`super::SMB_DIR_NAME`]), so the client's `mkdir`
+        /// never reached the filesystem. Its own verdict rather than folded into [`ABSENT`],
+        /// because "the directory was not made" and "the directory was made and the file in it was
+        /// not" are different bugs in different halves of the path walk.
+        pub const DIR_ABSENT: u64 = 5;
+        /// The subdirectory is there and is not a directory, which means the adapter created a
+        /// *file* whose name happens to contain a separator: the exact failure a path-aware share
+        /// exists to prevent, and the one a flat share would produce.
+        pub const DIR_IS_A_FILE: u64 = 6;
+        /// The directory is there and the file inside it is not.
+        pub const NESTED_ABSENT: u64 = 7;
+        /// The nested file is there and holds the wrong bytes.
+        pub const NESTED_WRONG: u64 = 8;
     }
 
     /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk

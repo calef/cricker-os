@@ -201,6 +201,12 @@ pub(super) fn assert_fs_service_ready(readiness: Option<(crate::sched::EpId, cra
 /// different process witnessing each is what makes this a gate rather than a client agreeing with
 /// itself, and it is exactly the discipline the seed role applies to the read direction.
 ///
+/// **It checks the subdirectory too** (milestone 54's third act), and that check is the one the
+/// prober could not make for itself: the prober asked for a directory and got a success, but only
+/// a reader on this side can say whether a *directory* is what reached RedoxFS or a file whose
+/// name happens to contain a separator, which is what a flat share produces and what looks
+/// identical on the wire.
+///
 /// It runs after both verdicts, because the adapter has to have finished serving before there is
 /// anything settled to read.
 pub(super) fn assert_smb_write_landed(had_fs: bool) {
@@ -228,11 +234,18 @@ pub(super) fn assert_smb_write_landed(had_fs: bool) {
         "what the host wrote over SMB2 is not what the filesystem holds (verdict {}). {} means \
          the name is not there, so the write never reached RedoxFS; {} means the length is \
          wrong, which is the SET_INFO truncate leg; {} means the bytes are wrong, which is an \
-         offset or a chunking bug in the write path",
+         offset or a chunking bug in the write path. The subdirectory verdicts: {} means the \
+         directory was never made; {} means a FILE was made with a separator in its name, which \
+         is a share that is still flat; {} means the directory is there and the file in it is \
+         not; {} means the nested bytes are wrong",
         words[1],
         smb_wrote::ABSENT,
         smb_wrote::WRONG_SIZE,
         smb_wrote::WRONG_BYTES,
+        smb_wrote::DIR_ABSENT,
+        smb_wrote::DIR_IS_A_FILE,
+        smb_wrote::NESTED_ABSENT,
+        smb_wrote::NESTED_WRONG,
     );
 }
 
