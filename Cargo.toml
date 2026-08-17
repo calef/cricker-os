@@ -11,6 +11,7 @@ members = [
     "crates/calendar",
     "crates/canary_gate",
     "crates/capability",
+    "crates/component_plan",
     "crates/compositor",
     "crates/cpu_set",
     "crates/grant_plan",

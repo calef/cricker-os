@@ -233,8 +233,12 @@ which is the control this whole milestone rests on and which the test asserts on
 - **State handoff**, which is where the real engineering is. The component here is near-stateless by
   construction, and that is what makes kill-and-replace sufficient. A filesystem server's open
   handles or a network stack's live connections need a serialise-old / absorb-new protocol.
-- **A component manifest.** The operator's endowments are literals in its own source, not a declared
-  list of capabilities a vendor's build could be wired from (seL4 CapDL / Fuchsia territory).
+- ~~**A component manifest.**~~ **Built 2026-08-17**: the operator's endowments are no longer
+  literals in its own source. `swap_proto` carries the capability half of its own contract, `swapper`
+  wires every component from a declaration, and the slot agreement that used to be a comment in two
+  files is now a compile-time derivation. See notes/component-manifest.md, including the honest limit:
+  a manifest is compiled in rather than shipped beside a binary, which is a wire format and so a
+  decision left to the architect.
 - **Dependency-aware orchestration.** One channel at a time, no dependency graph, no cross-component
   quiescence.
 - **A hung component.** The whole sequence rests on the outgoing instance answering `OP_QUIESCE`. A

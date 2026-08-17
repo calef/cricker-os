@@ -117,6 +117,14 @@ pub const RPT_ATTACK: u64 = 7;
 /// ever took custody of. Both are the queue rung's whole claim: nothing was lost while the backend
 /// did not exist.
 pub const RPT_DRAINED: u64 = 10;
+/// **A component was refused before it was built** (milestone 23's manifest). `w1` = the
+/// `component_plan::Refusal` code, `w2` = the contract's own index in the operator's order.
+///
+/// The manifest's control that must fail, and the reason it is a *report* rather than a fault: a
+/// supervisor that cannot satisfy a declaration has a legible thing to say and a child it did not
+/// build. The operator sends this before it starts anything at all, so the test can assert that the
+/// refusal landed ahead of the first build step rather than after a half-wired component existed.
+pub const RPT_REFUSED: u64 = 11;
 /// A death reached the operator. `w1` = tid, `w2` = event.
 pub const RPT_DEATH: u64 = 8;
 /// Where that death happened. `w1` = pc, `w2` = fault address.
@@ -233,6 +241,158 @@ pub const ROLE_QUEUED: u64 = 1;
 pub const BROKER_LOG_BASE: u64 = 128;
 
 // ===========================================================================================
+// The capability half of the contract (milestone 23's manifest residual).
+//
+// §41's sentence is that any program which **speaks the protocol** and **holds the right
+// capabilities** is the component. Everything above is the first half. Until this section existed
+// the second half was a set of literal arrays inside `swapper`, which is what the roadmap block
+// calls the defect in six words: "endowments are literals in the operator's source". A vendor's
+// build of the same component was therefore not a drop-in, because what to hand it lived in the
+// operator rather than with the contract.
+//
+// So the declarations live here, next to the wire format they belong to, and the operator wires
+// from them. Two things follow that are worth stating rather than noticing:
+//
+//   - **A manifest belongs to the contract, not to the build.** What a console component needs is
+//     decided by what a console component *is*, and a build that needed something else would not be
+//     substitutable for one that did not. `rust_swappable` and `c_swappable` are wired from one
+//     declaration, which is the drop-in claim in its smallest true form.
+//   - **A role name is the component's, and the object is the supervisor's.** `CLIENT` asks to use an
+//     endpoint it calls `service`; on the direct channel that is the shared service endpoint and on
+//     the queued channel it is the broker's front endpoint. One declaration, two routings, and the
+//     component cannot tell which it got.
+//
+// The role names are **provisional** (see this crate's report): a lane may not mint a name, and
+// these are the words a reader meets first.
+// ===========================================================================================
+
+use component_plan::Direction::{Serve, Use};
+use component_plan::{CapNeed, MapNeed, PageKind, Requirements};
+
+/// **The pages one instance is built out of**: its segments (three for a debug build of a program
+/// this small), its four-page stack, its address-space root, its TCB, its page tables and its
+/// revocation log.
+///
+/// Thirty-two, roughly double what any of these programs uses. It was a constant in the operator
+/// until milestone 23's manifest lane; it is here now because it is a fact about the thing being
+/// built rather than about who builds it. It is also the one number in a manifest that is a property
+/// of the **build** rather than of the contract, which `component_plan`'s `BUGS` section records.
+pub const INSTANCE_PAGES: u64 = 32;
+
+/// **The console component**: the thing that gets replaced. It serves the stable endpoint, owns a
+/// UART, writes the witness page, and holds nothing it could build anything with.
+///
+/// The declared order of `caps` **is** the component's cspace slot order, which is why [`SVC`] and
+/// its three siblings are derived from this value rather than written down beside it.
+pub const CONSOLE: Requirements = Requirements {
+    contract: "console",
+    caps: &[
+        CapNeed {
+            role: "service",
+            direction: Serve,
+        },
+        CapNeed {
+            role: "report",
+            direction: Use,
+        },
+        CapNeed {
+            role: "operator",
+            direction: Use,
+        },
+        CapNeed {
+            role: "control",
+            direction: Serve,
+        },
+    ],
+    maps: &[
+        MapNeed {
+            role: "witness",
+            va: LOG_VA,
+            kind: PageKind::Shared,
+        },
+        MapNeed {
+            role: "uart",
+            va: DEV_VA,
+            kind: PageKind::DeviceRegisters,
+        },
+    ],
+    pages: INSTANCE_PAGES,
+};
+
+/// **The same programs behind a queue broker, with no device.** A different contract rather than a
+/// configuration of [`CONSOLE`], and §41 says why: the backend behind a broker is a plain service,
+/// and mixing the device story into the queue story would make it unclear which mechanism carried
+/// which claim. The capability half of the two contracts is identical; the device is the difference.
+pub const BACKEND: Requirements = Requirements {
+    contract: "backend",
+    caps: CONSOLE.caps,
+    maps: &[MapNeed {
+        role: "witness",
+        va: LOG_VA,
+        kind: PageKind::Shared,
+    }],
+    pages: INSTANCE_PAGES,
+};
+
+/// **The client** (`chatty`, in all three of its roles). It *uses* the service and never serves it,
+/// which is the whole of why the attacker role cannot become the server: `Use` is `WRITE`, and there
+/// is no longer anywhere for an operator to type `READ` by mistake.
+pub const CLIENT: Requirements = Requirements {
+    contract: "client",
+    caps: &[
+        CapNeed {
+            role: "service",
+            direction: Use,
+        },
+        CapNeed {
+            role: "report",
+            direction: Use,
+        },
+        CapNeed {
+            role: "operator",
+            direction: Use,
+        },
+    ],
+    maps: &[],
+    pages: INSTANCE_PAGES,
+};
+
+/// **The queue broker**, the latency ladder's opt-in rung. It serves the endpoint producers hold and
+/// uses the one a backend serves, which is the only manifest here that names both directions on the
+/// same channel.
+pub const BROKER: Requirements = Requirements {
+    contract: "broker",
+    caps: &[
+        CapNeed {
+            role: "requests",
+            direction: Serve,
+        },
+        CapNeed {
+            role: "backend",
+            direction: Use,
+        },
+        CapNeed {
+            role: "report",
+            direction: Use,
+        },
+        CapNeed {
+            role: "operator",
+            direction: Use,
+        },
+    ],
+    maps: &[],
+    pages: INSTANCE_PAGES,
+};
+
+/// Every declaration in this crate is well formed, checked at compile time on both architectures.
+/// A role declared twice or two pages at one address would otherwise be a component reading the
+/// wrong slot, or one mapping silently winning, with nothing to see at run time.
+const _: () = assert!(CONSOLE.problem().is_none());
+const _: () = assert!(BACKEND.problem().is_none());
+const _: () = assert!(CLIENT.problem().is_none());
+const _: () = assert!(BROKER.problem().is_none());
+
+// ===========================================================================================
 // The component's work, defined once so two implementations can be checked against each other.
 // ===========================================================================================
 
@@ -311,12 +471,30 @@ pub fn log_get(seq: u64) -> u64 {
 // The component itself: one serving loop, two implementations of one function.
 // ===========================================================================================
 
-/// The capability layout every instance is built with. The operator's `ChildEndowment.caps` lists them in
-/// this order, so they land in these slots.
-pub const SVC: u64 = 0; // READ: requests arrive here. The stable name.
-pub const RPT: u64 = 1; // WRITE: the record the test reads.
-pub const NOTE: u64 = 2; // WRITE: the operator's own coordination channel.
-pub const POKE: u64 = 3; // READ: what to do once quiesced.
+/// **The capability layout every instance is built with, derived from [`CONSOLE`].**
+///
+/// These four used to be written here as `0, 1, 2, 3` with a comment saying that the operator's
+/// `ChildEndowment.caps` listed them in the same order, and that comment was the only thing holding
+/// the two files together: a reordered array in `swapper` would have produced a component receiving
+/// on its report channel, with nothing to see but a hang. Now the number **is** the position in the
+/// declaration, computed at compile time, and a role this component does not declare does not
+/// compile.
+pub const SVC: u64 = component_plan::slot_of(&CONSOLE, "service");
+/// WRITE: the record the test reads. See [`SVC`].
+pub const RPT: u64 = component_plan::slot_of(&CONSOLE, "report");
+/// WRITE: the operator's own coordination channel. See [`SVC`].
+pub const NOTE: u64 = component_plan::slot_of(&CONSOLE, "operator");
+/// READ: what to do once quiesced. See [`SVC`].
+pub const POKE: u64 = component_plan::slot_of(&CONSOLE, "control");
+
+/// **One binary serves both contracts, so both must put its capabilities in the same slots.** That
+/// was true by inspection of two literal arrays in the operator; it is a compile error to break it
+/// now. `serve` reads [`SVC`] whichever channel it was started on, and [`BACKEND`] is a separate
+/// declaration that could drift.
+const _: () = assert!(component_plan::slot_of(&BACKEND, "service") == SVC);
+const _: () = assert!(component_plan::slot_of(&BACKEND, "report") == RPT);
+const _: () = assert!(component_plan::slot_of(&BACKEND, "operator") == NOTE);
+const _: () = assert!(component_plan::slot_of(&BACKEND, "control") == POKE);
 
 /// **Touch the device one last time.** The operator sends this to an instance it has already
 /// revoked, and the fault that follows is the receipt.

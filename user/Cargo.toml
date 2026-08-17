@@ -519,6 +519,10 @@ supervision_proto = { version = "0.1.0", path = "../crates/supervision_proto" }
 # The interactive system, built once (milestone 96). Both inits are a table of the slot numbers
 # their own kernel granted plus a call into this.
 system_initializer = { version = "0.1.0", path = "../crates/system_initializer" }
+# The supervisor half of milestone 23's component manifest: the operator wires a component from
+# its declaration rather than from literals, and `chatty` and `broker` derive their own slot
+# numbers from the declarations they are built against.
+component_plan = { version = "0.1.0", path = "../crates/component_plan" }
 swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }

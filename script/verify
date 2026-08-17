@@ -245,6 +245,7 @@ glob	902	matching is total, and a hostile pattern cannot be made to blow up
 fs_proto	1	a directory capability's child never exceeds its parent, at any depth
 cred_proto	4	no request word reads outside the page; nothing but MATCH authenticates
 mdns_proto	21	the name decoder terminates and stays in bounds on every byte string
+component_plan	10	no wiring grants a right its declaration did not ask for
 TABLE
 )"
 

@@ -13,7 +13,13 @@ const RPT_ATTACK: u64 = 7;
 const RPT_DEATH: u64 = 8;
 const RPT_SITE: u64 = 9;
 const RPT_DRAINED: u64 = 10;
+const RPT_REFUSED: u64 = 11;
 const RPT_FAILED: u64 = 99;
+
+/// `component_plan::Refusal::Unprovided`'s wire code: the supervisor routes nothing to a role the
+/// component's manifest declares. Mirrored here for the same reason every other constant in this
+/// block is: userspace owns the definition.
+const REFUSAL_UNPROVIDED: u64 = 1;
 
 /// The operator's steps.
 const STEP_BUILT: u64 = 1;
@@ -66,8 +72,9 @@ const SWAPPER_BUDGET_PAGES: u64 = 224;
 
 /// How many reports one run can make before the test gives up waiting for the operator's final
 /// verdict. Generous: the loop stops at `RPT_LOG`, and this is only the tripwire for a run that
-/// never gets there.
-const MAX_REPORTS: usize = 24;
+/// never gets there. Raised from 24 with milestone 23's manifest, which adds one `RPT_REFUSED` per
+/// run; a run that overflows this loses the operator's verdict and fails for the wrong reason.
+const MAX_REPORTS: usize = 28;
 
 /// **Spawn the operator the way the kernel spawns init**, and return the report endpoint every
 /// process in the run holds a WRITE view of.
@@ -159,7 +166,8 @@ fn run_swap(role: u64) -> ([[u64; 5]; MAX_REPORTS], usize) {
             msg[0], RPT_FAILED,
             "the swap system could not be built: stage {}. Stages 1-4 are the archive and the \
              four program images, 5-10 the endpoints and the witness page, 11-16 the incumbent \
-             and the client, 20-27 the swap itself, 30-33 the attacker, 40-51 the queued rung.",
+             and the client, 20-27 the swap itself, 30-33 the attacker, 40-51 the queued rung, \
+             60-63 the component manifests (60 means an unsatisfiable declaration was WIRED).",
             msg[1],
         );
         assert_ne!(
@@ -242,6 +250,44 @@ fn had_step(msgs: &[[u64; 5]], step: u64) -> bool {
     of_kind(msgs, RPT_STEP).any(|m| m[1] == step)
 }
 
+/// **A component this operator cannot provide for is refused before anything is built**
+/// (milestone 23's component manifest; `crates/component_plan`, notes/component-manifest.md).
+///
+/// Asserted on both channels, because a mechanism that only worked for the one component it was
+/// written against would not be a mechanism. On the direct channel the operator plans the queue
+/// broker's declaration, which names `requests` and `backend`, and that channel routes neither; on
+/// the queued channel it plans the console component's declaration, which names `uart`, and that
+/// channel routes no device. Both are **real manifests against real routing tables**, not fixtures:
+/// each is the other role's component, asked for by a supervisor that genuinely cannot satisfy it.
+///
+/// Two things are asserted, and the second is the one that matters. The refusal is the *typed* one
+/// (a role went unrouted) rather than any old failure, and it arrives **ahead of every build step and
+/// every instance that started**, which is what makes a manifest a request the supervisor may refuse
+/// rather than an instruction it has to carry out half way. A supervisor that discovered the problem
+/// after mapping a page would have already moved authority.
+fn a_component_the_operator_cannot_provide_for_was_refused_first(msgs: &[[u64; 5]]) {
+    let at = msgs.iter().position(|m| m[0] == RPT_REFUSED).expect(
+        "the operator never reported a refusal, so nothing shows that an unsatisfiable \
+             manifest is refused rather than wired",
+    );
+    assert_eq!(
+        msgs[at][1], REFUSAL_UNPROVIDED,
+        "the manifest was refused for the wrong reason (code {}, wanted Unprovided={}): the \
+         refusal has to be \"this supervisor routes nothing to a role it declares\" or it is not \
+         evidence about routing at all",
+        msgs[at][1], REFUSAL_UNPROVIDED,
+    );
+    let first_build = msgs
+        .iter()
+        .position(|m| m[0] == RPT_STEP || m[0] == RPT_UP)
+        .unwrap_or(usize::MAX);
+    assert!(
+        at < first_build,
+        "the refusal arrived at report {at}, after the first build at report {first_build}: a \
+         component that cannot be provided for must be refused before any authority has moved",
+    );
+}
+
 /// **The flagship: a component is replaced under a client that is talking to it.**
 ///
 /// The four steps all happen, in an order the operator chose, and then two independent
@@ -252,6 +298,10 @@ fn had_step(msgs: &[[u64; 5]], step: u64) -> bool {
 fn a_client_keeps_talking_while_the_server_underneath_it_is_replaced() {
     let (msgs, n) = run_swap(ROLE_DIRECT);
     let msgs = &msgs[..n];
+
+    // Before the four steps: every component in this run was wired from its own declaration, and one
+    // that this channel cannot provide for was refused with nothing built.
+    a_component_the_operator_cannot_provide_for_was_refused_first(msgs);
 
     // The four steps, each on machinery that existed before this milestone.
     for (step, what) in [
@@ -405,6 +455,10 @@ fn a_client_of_the_stable_endpoint_cannot_become_its_server() {
 fn a_producer_never_blocks_on_an_absent_consumer_and_loses_nothing() {
     let (msgs, n) = run_swap(ROLE_QUEUED);
     let msgs = &msgs[..n];
+
+    // The manifest mechanism's other side: on this channel the console component's declaration is
+    // the one that cannot be satisfied, because no device is routed here.
+    a_component_the_operator_cannot_provide_for_was_refused_first(msgs);
 
     let producer = of_kind(msgs, RPT_CLIENT)
         .next()

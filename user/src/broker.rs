@@ -48,10 +48,14 @@ use user_rt::{call, recv_cap, reply, send};
 
 /// What `swapper` endowed us with, in order. No budget, no device, no way to build anything: a
 /// compromised broker can reorder or drop the one channel it was placed on, and nothing else.
-const FRONT: u64 = 0; // READ: producers CALL here, and so does the operator (in band)
-const BACK: u64 = 1; // WRITE: the backend's stable endpoint
-const RPT: u64 = 2; // WRITE: the record
-const NOTE: u64 = 3; // WRITE: the operator's channel
+// Derived from this program's own declaration (`swap_proto::BROKER`, milestone 23's manifest), so
+// the slot a name lands in and the slot this code reads are one number rather than two that agree.
+// `requests` is the only `Serve` here: a broker answers producers and asks its backend, and those
+// two directions on one hop are the whole of what a queue rung is.
+const FRONT: u64 = component_plan::slot_of(&swap_proto::BROKER, "requests");
+const BACK: u64 = component_plan::slot_of(&swap_proto::BROKER, "backend");
+const RPT: u64 = component_plan::slot_of(&swap_proto::BROKER, "report");
+const NOTE: u64 = component_plan::slot_of(&swap_proto::BROKER, "operator");
 
 /// How deep the backlog goes. Fixed storage in our own `.bss`, which lives in the region this
 /// instance was built in, so the bound is a bound on *this process's* memory and the kernel's
