@@ -392,10 +392,26 @@ Known limitations, next to the feature rather than only in a tracker.
   `user/src/fs_nameset_caretaker.rs`, serves only the names that matched: see
   [glob-grant.md](glob-grant.md)) and it is still open for a literal one, because a set of exactly
   one has no wiring behind it today.
-- **The rights are not printed by `caps` yet.** §42 says the rights *are* the discovery mechanism for
-  what a mount offers, and they are introspectable in principle; nothing renders them at the shell
-  today because init builds no caretaker per grant, which is milestone 31 phase 3's remainder
-  (§27's amendment records the older refusal, from before the boot had a filesystem at all).
+- **A grant on the root of a shell's namespace cannot be narrowed at all** (milestone 31 phase 3,
+  2026-08-17). A caretaker's whole attenuation is one `OPENDIR` *into* the granted directory, and the
+  root has no name to descend into: the contract resolves a single component under a handle, and it
+  has no verb meaning "the directory I already hold, with fewer rights". So `rm gate.txt` typed at
+  the top prompt is a refusal with nothing spawned, while `rm rmtree/rm-solo` works, and the
+  difference is one level of path. Two answers exist and both are somebody's call rather than a
+  lane's: a narrowing verb on the contract (small in the server, `Rights::attenuate` with no name
+  resolution, and a permanent addition to something two programs agree on), or a boot whose
+  interactive shell is rooted one component below the image root, which costs nothing on the wire and
+  changes what every other command means. Recorded in `design/roadmap/31-capability-shell.md` rather
+  than guessed at.
+- **Init builds one caretaker per grant, so a grant more than one level down is not delivered**
+  either. That shape is a *chain* of caretakers, each an ordinary FS client above and an ordinary FS
+  server below, which DECISIONS §92 names as the case supervision was chosen to make free. Nothing
+  builds the chain today; `rm a/b/c.txt` is a refusal at the prompt.
+- **The rights are not printed by `caps`.** §42 says the rights *are* the discovery mechanism for
+  what a mount offers, and they are introspectable in principle. `caps rm -r logs` says which of the
+  two capabilities is being handed over in a sentence ("...and everything under it: -r grants the
+  walk") rather than as a rights mask, so a reader learns the shape of the grant and not its bits.
+  (§27's amendment records an older refusal, from before the boot had a filesystem at all.)
 - **A wrong row in `fs_proto::verb` is wrong in three programs at once** (milestone 61). The
   mitigation is that it is pure data in a host-testable crate, so the tests and Kani can reach it,
   which a hand-written match in a `no_std` binary could not. The row that decides a security

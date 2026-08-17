@@ -3607,9 +3607,13 @@ mod tests {
         assert_ne!(RMTREE, SUB, "the rm grant must not be the shells' subtree");
     }
 
-    /// **A verdict word cannot be mistaken for a line of text**, which is the one thing the `rm`
-    /// program's report channel rests on: its receiver reads "the first message is the verdict" as
-    /// "the run printed nothing", and `rm(1)`'s default is to print nothing on success.
+    /// **A verdict word cannot be mistaken for a line of text**, which every witness in this fixture
+    /// rests on: a receiver reads "the first message is the verdict" as "this run printed nothing".
+    ///
+    /// **`rm` no longer rides this word** (2026-08-17). It declares the sink contract, so it ends its
+    /// stream with `sink_proto::eof()` and its status and count ride in the two words that message
+    /// leaves free; the same property is pinned over there by `eof_is_not_a_byte_count`. What is
+    /// checked here is the word the attackers and the shell witnesses still use.
     #[test]
     fn a_text_frame_and_a_verdict_are_told_apart_by_the_first_word() {
         // A frame's first word is a byte count into the two payload words, so 16 is its ceiling.
@@ -3619,6 +3623,12 @@ mod tests {
         const _: () = assert!(
             fixture::VERDICT > 16,
             "a verdict word that could be a byte count would make a diagnostic read as a verdict",
+        );
+        // And the caretakers' two answers to a descent are told apart the same way, which is what
+        // lets init read one word and know whether it holds a capability or a refusal.
+        const _: () = assert!(
+            fixture::READY != fixture::DESCENT_REFUSED,
+            "a caretaker's two possible answers must not be the same word",
         );
         // And a non-zero status is the errno, so the two ends agree about what failed rather than
         // only that something did.

@@ -1,11 +1,13 @@
 # 31. A capability shell: designation is authorization
 
-**Status: PARTIAL.**
+**Status: BUILT.**
 
-**Gate: NONE.** Phase 3 has one item left, and it is **not** the four this block used to list:
-**init building a `fs_subtree_caretaker` per grant**. Everything else in phase 3 landed under
-milestone 50 and is gated at the real prompt on both ISAs; the corrections are in "Phase 3" below.
-Read that before starting, because this gate line sent lanes at finished work for twelve days.
+**Gate: `script/shell-check` (both ISAs).** It types `caps rm rmtree/rm-solo`, `rm -v
+rmtree/rm-solo` and `ls rmtree | wc` at the real prompt: the authority is previewed, the name the
+command line designated is removed, and the two names beside it inside the same capability are
+still there. `rm gate.txt` beside them is the one grant shape that is still a refusal, and it is a
+refusal about what a name *is* rather than about a missing feature; see "The two shapes a grant
+cannot take" below.
 
 **In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `grant_plan` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note, **retired 2026-08-16**: the interactive shell used to refuse a named file because its boot wired no FS service. Milestone 50 wired it, and `wc gate.txt` at the real prompt is gated on both ISAs; what remains is init building a caretaker per grant. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
@@ -68,12 +70,40 @@ interactive boot and flip holdings()', and milestone 50 did both. Nothing read t
 milestone's status is maintained by its own lane, and nothing maintains it when another lane finishes
 its work. Found 2026-08-17 by the status-accuracy sweep.
 
-**Phase 3's one remaining item**, and it is already gated *as a gap*, on both ISAs: **init building a
-`fs_subtree_caretaker` per grant.** `xtask/src/main.rs:5530` runs `rm gate.txt` at the prompt and
-expects `needs init to build the caretaker`. A directory grant is delivered by a caretaker, init is the
-only process that can build one, and init deletes that endpoint during the boot, so the answer at the
-prompt is a refusal. That refusal is true rather than a placeholder, which is this milestone's own
-standard for a recorded gap, and it is the whole of what keeps the status PARTIAL.
+**Phase 3 built (both ISAs), 2026-08-17: init builds a `fs_subtree_caretaker` per grant.** Init used
+to delete the file service during the boot, with a comment in `crates/system_initializer` saying what
+would have to change; the shell's copy of that endpoint carries no `GRANT`, so the shell held nothing
+it could hand a caretaker and `rm` was a refusal at the prompt for six weeks. Init now keeps the
+service for the life of the boot (two of its sixteen cspace slots, taking a directory-granted spawn's
+peak to fifteen) and builds a caretaker per grant out of **the client's own region**, which is
+DECISIONS §92 read through §40's mechanism: a caretaker's serve loop never returns, so one built in a
+region of its own never comes home and §16's LIFO rule then pins the region above it too.
+
+Three things fell out that were latent defects rather than new work, and each is worth naming because
+each was invisible until something real ran. `rm` declared the sink contract and never sent its
+end-of-stream, so `rm -rv logs | wc` had never been expressible. `fs_subtree_caretaker` panicked on a
+refused descent, which cost a kernel test a watchdog and would have cost the prompt the machine, since
+init is the waiter and has no second thread. And `job_undertaker` trapped on a refused reclaim, which
+is exactly what the *first* reclaim of a two-process region is by construction: the endpoint sweep
+wakes the caretaker so it can be collected, and a thread that can be scheduled is refused with §16's
+kill armed. It now yields and retries, bounded, and still traps at the end so a real leak stays loud.
+
+**The two shapes a grant cannot take**, both refused at the prompt with nothing spawned, and neither
+is a permission:
+
+- **A grant on the root of the shell's namespace.** A caretaker's whole attenuation is one `OPENDIR`
+  *into* the granted directory, and the root has no name to descend into; `fs_proto` has no verb
+  meaning "the directory I already hold, with fewer rights". So `rm gate.txt` at the top prompt is a
+  refusal and `rm rmtree/rm-solo` works, and the difference is one level of path. **This is a design
+  fork and belongs to calef**, because both answers are permanent: a narrowing verb on the contract
+  (small in the server, `Rights::attenuate` with no name resolution, and an addition to something two
+  programs agree on) or an interactive boot whose shell is rooted one component below the image root
+  (nothing on the wire, and it changes what every other command at that prompt means).
+- **A directory more than one level down, or a set of more than one name.** The first is a *chain* of
+  caretakers, which §92 chose supervision partly to make free; the second is
+  `fs_nameset_caretaker`, which takes its set in a frame rather than in argument words. Init builds
+  one subtree caretaker per grant today, so `caps rm globmany/m-*.txt` still previews an authority
+  that cannot yet be delivered.
 
 **Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
 entire authority; a nife command line is a **grant expression**: every argument that
@@ -98,8 +128,7 @@ BECAUSE this milestone will point at them.
 contracts for scripts, on Capsicum) is the academic anchor; Mark Miller's object-capability
 line (E, CapDesk, Polaris) supplies the organizing principle; Plash is the Linux attempt worth
 reading as the mistake catalog. Feeds 23 and 22 (shrinking ambient authority, met at the human
-layer); sits behind 28's terminal contract. **Effort: 2 lanes built** (the grant expression, then
-CREATE/TRUNCATE and per-file grants), plus phase 3's larger half landing free under milestone 50.
-**Less than 1 lane estimated** for what is left, which is init building a `fs_subtree_caretaker` per
-grant; gating the interactive boot, which this line used to name as the cost, is `script/shell-check`
-and already exists.
+layer); sits behind 28's terminal contract. **Effort: 4 lanes built** (the grant expression; then CREATE/TRUNCATE and per-file grants; then
+phase 3's larger half landing free under milestone 50; then init building the caretaker per grant,
+2026-08-17). Gating the interactive boot, which this line long named as the remaining cost, turned
+out to be `script/shell-check` and already built.

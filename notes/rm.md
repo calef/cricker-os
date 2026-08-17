@@ -94,20 +94,21 @@ the names this run has already taken away.
 
 ## BUGS
 
-- **`rm` cannot be run from the interactive prompt yet**, which is where most readers will meet it,
-  so it is named here rather than only where the wiring lives. Everything above is real and is proven
-  on both ISAs from the kernel's test boot, where the harness builds the caretaker; at the prompt the
-  shell holds a directory but no way to *hand one on* (its file-service endpoint carries no `GRANT`),
-  and init deletes the endpoint it would build a caretaker from. So `rm gate.txt` is a refusal at the
-  prompt with nothing spawned, which is deliberate: an `rm` started holding nothing would be a
-  program told to destroy something, holding nothing, saying nothing. `script/shell-check` reads that
-  refusal, so the day it changes the gate changes with it. What building the delivery costs is
-  measured in notes/grant-expression.md, "What 'init builds the caretaker per grant' actually costs".
-- **A verdict word must not look like a byte count.** The report channel carries text frames (first
-  word = a byte count, at most 16) and one verdict. The receiver reads "the first message is the
-  verdict" as "the run printed nothing", which is what makes `rm(1)`'s silence-on-success checkable.
-  `fs_proto` asserts `VERDICT > 16` at **compile time** (`const _: () = assert!(…)`), so a change that
-  broke it fails the build rather than waiting for the suite.
+- **`rm` runs at the interactive prompt only for a name one directory down** (milestone 31 phase 3,
+  2026-08-17). Init builds a `fs_subtree_caretaker` per grant now, so `rm rmtree/rm-solo` works and is
+  gated on both ISAs by `script/shell-check`. `rm gate.txt` typed at the top prompt is still a refusal
+  with nothing spawned, and the reason is a fact about names rather than a missing feature: a
+  caretaker's whole attenuation is one `OPENDIR` *into* the granted directory and the root has no name
+  to descend into. `rm a/b/c.txt` is refused for the neighbouring reason, that init builds one
+  caretaker and a deeper grant is a chain of them. See notes/dir-capability.md's BUGS for both, and
+  design/roadmap/31-capability-shell.md for the fork the root case is waiting on.
+- **The end of the stream is the verdict**, and it must not look like a byte count. The report channel
+  carries text frames (first word = a byte count, at most 16) and then `sink_proto::eof()`, whose
+  first word is `OP_EOF << 56`; the status and the removal count ride in the two words that message
+  leaves free. A receiver reads "the first message ends the stream" as "the run printed nothing",
+  which is what makes `rm(1)`'s silence-on-success checkable. It used to be `fs_proto::fixture::VERDICT`
+  instead, which no reader that was not a guest test could decode, so this program could not be piped
+  even though its manifest declared the sink contract.
 - **No `rm -i`.** There is no prompting anywhere in this system, so the flag has nothing to mean.
 - **Recursion depth is real stack**, since the program has no allocator and each level holds a listing
   buffer by value. `rm` asks for 4 stack pages. A deep enough tree will exhaust it, and the failure
