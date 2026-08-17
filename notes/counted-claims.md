@@ -180,11 +180,56 @@ mistake:
   finished the job. Real, common, and **not checkable**: it needs a reader who knows the system, which
   is milestone 117, the stranger test.
 
+## Two relations, and equality is the wrong one for a growing count
+
+```markdown
+**124 harnesses** <!--count:kani-harnesses-->            a census: must EQUAL the tree
+**over 100 harnesses** <!--count-at-least:kani-harnesses-->   a floor: fires only when FALSE
+```
+
+**Why the second exists, measured 2026-08-17.** `kani-harnesses` was marked at four claim sites and
+the count moved three times in one day. So every lane that added a harness had to edit four files,
+one of them `README.md`, which nearly every other lane touches as well. **The convention had
+manufactured a merge hotspot that the tree itself did not have**, and it did it to the file with the
+most traffic in the repository.
+
+Reading what each site actually claimed split them cleanly, and that is the reusable part:
+
+| Site | What it claims | Relation |
+|---|---|---|
+| `notes/verification.md` | the canonical census, with its own history | equality |
+| `notes/unsafe-obligations.md` | "exactly five Kani items, `any` (287), `proof` (124)" | equality |
+| `README.md` | coverage and scale, in a table row about `script/verify` | **floor** |
+| `notes/fuzzing.md` | comparative context for a different technique | **floor** |
+
+**For a monotonically growing quantity, a floor is the true claim and an exact equality is a
+maintenance tax that buys nothing.** "Over 100 harnesses" is what those two sentences were really
+asserting; the exact figure was incidental to the point they were making, and it cost a four-file
+edit every time somebody proved something new.
+
+**The ratchet is intact, which is the only test that matters.** A floor that goes false still fails
+the build, and going false means harnesses were **deleted**, which is precisely the event worth
+catching and the one an equality check was drowning in noise. Rounded to 100 it will not move for
+months, and when it does, moving it is a deliberate act rather than bookkeeping.
+
+**Deliberately not built: an auto-fix.** A `--fix` that rewrote marked numbers was considered and
+refused. This gate's failure message offers two responses, and they are not equally likely to be
+right: *fix the number*, or *fix the derivation if the tree is right and the gate is asking the
+wrong question*. An auto-fix biases every disagreement toward the first, and the second is where the
+real bugs are; the `mdns_proto` shard hole was found exactly that way. With two exact sites left,
+hand-editing is cheap and thinking is the point.
+
 ## BUGS
 
 - **An unmarked number is unchecked, by construction.** The gate reports nothing about it, so "lint
   passed" never means "every number in the tree is right". It means every *marked* number is. This is
   the ratchet working as designed and it is the first thing to know about it.
+
+- **A floor says less than it looks like it says.** `over 100` beside a tree of 124 is true and
+  uninformative, and a reader who wants the number has to go to `notes/verification.md`. That is the
+  trade: two files stop being a collision point and one indirection appears. If a floor ever drifts
+  so far below the truth that it misleads (say the tree reaches 400), raise it, because nothing warns you,
+  because a floor with slack is exactly what the relation is for.
 
 - **A marker can lie about what it counts.** Nothing checks that `<!--count:kani-harnesses-->` sits
   beside a sentence about harnesses rather than about crates; the gate matches the number, not the
