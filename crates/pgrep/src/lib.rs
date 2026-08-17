@@ -136,18 +136,19 @@
 //!   can subtract two of them (notes/process-view.md's `BUGS`, and a proposed milestone). This
 //!   filter reads `ps::Survey`, which never held a cursor, so there is nothing here to widen.
 //!
-//! Name: `pgrep` is upstream's, in the group of standard terms the naming tenet says are already
-//! right and must not be respelled; sharing it with `user/src/pgrep.rs` is the crate-and-program
-//! pair the same tenet describes. That rule plus the standard term produces this name, so nothing
-//! here is a naming decision calef has not already made. [`Selector`] is a type inside a crate
-//! rather than a crate, a program or a shared module, so it is outside the tenet's scope; it is
-//! **provisional** all the same.
+//! Name: recorded (milestone 126, and CLAUDE.md's naming tenet). `pgrep` is upstream's, in the group
+//! of standard terms the tenet says are already right and must not be respelled; sharing it with
+//! `user/src/pgrep.rs` is the crate-and-program pair the same tenet describes, as `ps` and
+//! `crates/ps` already are. That rule plus the standard term produces this name, so nothing here is a
+//! naming decision calef has not already made. `Selector` is a type inside a crate rather than a
+//! crate, a program or a shared module, so it is outside the tenet's scope; it is **provisional** all
+//! the same, and a lane that finds a better word for it should take it.
 
 #![cfg_attr(not(test), no_std)]
 
-/// **A state's bit in a [`Selector`] mask is `1 << its `abi::survey` code`**, which is why there are
-/// four of them and why bit 0 is unused: `abi::survey::DONE` is zero and is the cursor sentinel
-/// rather than a state a thread can be in.
+/// **A state's bit in a [`Selector`] mask is one shifted left by its `abi::survey` code**, which is
+/// why there are four of them and why bit 0 is unused: `abi::survey::DONE` is zero and is the cursor
+/// sentinel rather than a state a thread can be in.
 ///
 /// Deriving the bit from the code rather than numbering the bits separately means a state added to
 /// `abi::survey` cannot be given a bit that already belongs to another one.

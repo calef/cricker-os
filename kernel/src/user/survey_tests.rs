@@ -550,6 +550,7 @@ fn the_survey_cursor_counts_threads_the_viewer_cannot_name() {
     collect_all(sup_mine, &[a, b]);
     collect_all(sup_theirs, &[stranger]);
     tidy(budget, endpoints, &[cap, sup_mine, sup_theirs]);
+}
 
 /// **`pgrep`: the filter over the same domain, and the fourth answer it adds** (milestone 126).
 ///

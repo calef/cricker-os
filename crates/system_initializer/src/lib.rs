@@ -324,9 +324,10 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
 
     // **The programs the shell can spawn** (milestone 31), measured and parsed here rather than
     // after the giveaway: the announcement further down is the only thing init ever says, so the
-    // verdicts have to exist before it. One `Option<elf::Elf>` is five words, so moving seven of
-    // them up the frame costs a third of a kilobyte and buys a person being told at boot instead of
-    // at the prompt.
+    // verdicts have to exist before it. One `Option<elf::Elf>` is five words, so moving the whole
+    // table up the frame costs a few hundred bytes and buys a person being told at boot instead of
+    // at the prompt. (It said "seven of them" while `PROG_COUNT` was nine and then ten; a count
+    // written beside a constant that moves is a count that goes stale, so this one is not written.)
     //
     // The refusals are collected in the same pass, because a second pass would hash every program a
     // second time. Only entries the archive **has** count as refusals: `rm` is deliberately not
