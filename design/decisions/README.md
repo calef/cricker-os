@@ -151,6 +151,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 90 | DECIDED | [The claim is a draft pull request; the status flip is a gate](90-claiming-and-closing.md) |
 | 91 | DECIDED | [A region's endpoints are swept before its refusal, not after](91-endpoints-before-the-refusal.md) |
 | 92 | DECIDED | [A caretaker is supervised by the client it serves](92-caretaker-lifetime.md) |
+| 93 | DECIDED | [The filesystem wire protocol is ours, and 9P is an adapter at the edge](93-filesystem-wire-protocol.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
