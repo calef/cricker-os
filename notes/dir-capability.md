@@ -403,6 +403,14 @@ Known limitations, next to the feature rather than only in a tracker.
   interactive shell is rooted one component below the image root, which costs nothing on the wire and
   changes what every other command means. Recorded in `design/roadmap/31-capability-shell.md` rather
   than guessed at.
+- **A grant whose directory is not there reads as "init is out of memory" at the prompt.** The
+  caretaker answers `DESCENT_REFUSED` and init does the right thing with it (nothing is spawned, and
+  the region goes back), but the only word init can put on the result endpoint is
+  `spawnproto::SPAWN_FAILED`, and the shell renders that with the one sentence it has. So
+  `rm nosuchdir/x` says something true about the outcome and false about the cause. Fixing it is a
+  second sentinel on that endpoint, which is two programs agreeing on a format for one diagnostic,
+  and it was left rather than taken: the honest sentence is worth having and it is not worth widening
+  the wire for on its own. Whatever else next needs a reason on that endpoint should carry this too.
 - **Init builds one caretaker per grant, so a grant more than one level down is not delivered**
   either. That shape is a *chain* of caretakers, each an ordinary FS client above and an ordinary FS
   server below, which DECISIONS §92 names as the case supervision was chosen to make free. Nothing

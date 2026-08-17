@@ -1220,7 +1220,7 @@ fn spawn_service(
             // for a death that will never come.
             if let Some(r) = region {
                 if !ok {
-                    supervision_proto::untyped_destroy(r);
+                    reclaim(r);
                 }
                 cap_delete(r);
             }
@@ -1352,6 +1352,34 @@ fn build_caretaker(
         None
     }
 }
+
+/// **Give a failed job's region back, retrying while something in it can still run.**
+///
+/// A `DESTROY` of a region holding a live thread is refused with §16's kill armed, and one
+/// preemption later the retry succeeds; that is `sched::reclaim_region`'s documented contract and it
+/// is why the shell's `^C` escalation is a loop. It reaches this path when a directory grant's
+/// caretaker was built and the program behind it was not: the caretaker is parked in `RECV`, the
+/// endpoint sweep wakes it, and a single attempt would leave [`DIR_JOB_REGION_PAGES`] spoken for
+/// until the machine stops. That is the *out of memory* path, which is exactly where a leak hurts
+/// most.
+///
+/// Bounded and silent on failure, which is not the same call `job_undertaker` makes and the
+/// difference is who is running: that program's whole job is collecting, so giving up there means a
+/// leak nobody will see and trapping is the loud answer. This is the spawn service, and a trap here
+/// takes the prompt down over one command's memory. The pool is bounded and renewable, so a region
+/// this could not reclaim costs later commands and does not end them.
+fn reclaim(region: u64) {
+    for _ in 0..RECLAIM_ATTEMPTS {
+        if supervision_proto::untyped_destroy(region) {
+            return;
+        }
+        user_rt::yield_now();
+    }
+}
+
+/// How many times [`reclaim`] retries. Small, because the only resident it ever waits on is a
+/// caretaker that has already been woken and doomed, and one preemption is enough.
+const RECLAIM_ATTEMPTS: usize = 64;
 
 /// Carve `pages` off `ut` into a new child untyped we can delegate (milestone 31). The SPLIT grants
 /// full rights on the child, including GRANT, so a memory budget can be handed on. The error code
