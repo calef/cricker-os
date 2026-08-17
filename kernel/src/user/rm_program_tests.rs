@@ -1,5 +1,5 @@
 use fs_proto::dir;
-use fs_proto::fixture::{VERDICT, rm as rr, tree};
+use fs_proto::fixture::{rm as rr, tree};
 use grant_plan::rmopt;
 
 use super::*;
@@ -58,15 +58,19 @@ fn run_rm(rights: u64, name: &str, flags: u64) -> Option<Outcome> {
     // reported, so this is not merely appeasing the lint.
     for (printed, _) in (0..MAX_MESSAGES).enumerate() {
         let [w0, w1, w2, _, _] = sched::ipc_recv(report);
-        if w0 == VERDICT {
+        // **The stream's end carries the verdict** (2026-08-17): `rm` declares the sink contract
+        // and now speaks it, so the last message is `sink_proto::eof()` with the status and the
+        // count in the two words that contract leaves free. It cannot collide with a text frame,
+        // whose first word is a byte count of at most sixteen.
+        if w0 == sink_proto::eof() {
             return Some(Outcome {
                 status: w1,
                 removed: w2,
                 printed,
             });
         }
-        // A text frame: its first word is a byte count, which cannot collide with the verdict
-        // word. That is what makes "it printed nothing" an assertion rather than a hope.
+        // A text frame: its first word is a byte count, which cannot collide with the end of the
+        // stream. That is what makes "it printed nothing" an assertion rather than a hope.
         assert!(w0 <= 16, "neither a verdict nor a text frame: {w0:#x}");
     }
     panic!("rm sent {MAX_MESSAGES} messages and never a verdict");

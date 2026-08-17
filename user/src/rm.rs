@@ -27,9 +27,16 @@
 //!   holds the operand: the shell resolves any leading path at the prompt and grants **the
 //!   directory the name is in**, because taking a name away is an operation on a directory.
 //! - **slot 1**: a report endpoint, `WRITE`. Diagnostics and `-v` lines as framed text, then one
-//!   verdict; see [`fs_proto::fixture::rm`].
+//!   [`sink_proto::eof`] carrying the verdict; see [`fs_proto::fixture::rm`] and [`verdict`].
 //! - **[`PAGE_VA`]**: the page shared with the FS server, where a name goes out and a listing comes
 //!   back.
+//!
+//! **The same two slots on both wirings, and that is why the order is this way round.** The kernel's
+//! `start_granted_dir` puts the narrowed endpoint at slot 0 and a report endpoint at slot 1;
+//! `system_initializer`'s spawn service puts the caretaker it built at slot 0 and the shell's output
+//! at slot 1, ahead of every other grant, so this program's two constants mean one thing in a guest
+//! test and at the real prompt. Every other program in this tree takes its output at slot 0, and the
+//! exception is recorded there rather than left for a reader to infer from two call sites.
 //!
 //! The name and the options ride in the three `START` argument words, packed by
 //! [`fs_proto::grant`] exactly as a per-file grant's name is, so this program costs no extra frame
@@ -331,6 +338,24 @@ fn text(bytes: &[u8]) {
     }
 }
 
+/// **The last message, and it closes the stream** ([`sink_proto::eof`]) rather than inventing a
+/// terminator of its own.
+///
+/// This program's manifest declares [`grant_plan::OutputSpec::Bytes`], which is the sink contract:
+/// self-framing byte messages ending in `OP_EOF`. [`text`] always produced them, and the verdict
+/// used to be `fs_proto::fixture::VERDICT`, a word that contract has no meaning for. Under the guest
+/// wiring the reader was a test that knew to look for it; at the real prompt the reader is the shell,
+/// which reads the same three words through `sink_proto::unpack` and would have called it malformed.
+/// So `rm -rv logs | wc` had never been expressible, and the declaration and the program disagreed
+/// with nothing to notice. Found while wiring milestone 31 phase 3, 2026-08-17.
+///
+/// The verdict is not lost: `OP_EOF` uses only the first word, so the status and the count ride in
+/// the two the contract leaves free. Every reader that wants them takes them off the message that
+/// ends the stream, which is also the only message that can carry a status without racing the text.
+fn verdict(status: u64, count: u64) {
+    send(REPORT, sink_proto::eof(), status, count);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(spec: u64, name_lo: u64, name_hi: u64) -> ! {
     let mut buf = [0u8; grant::MAX_NAME];
@@ -356,7 +381,7 @@ pub extern "C" fn _start(spec: u64, name_lo: u64, name_hi: u64) -> ! {
     };
     // The verdict, last and once. Anything this run printed went out before it, so a receiver that
     // takes this as its first message knows the run printed nothing, which is `rm(1)`'s default.
-    send(REPORT, fixture::VERDICT, status, count);
+    verdict(status, count);
     exit();
 }
 

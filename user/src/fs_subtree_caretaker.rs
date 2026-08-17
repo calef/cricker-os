@@ -42,7 +42,9 @@
 //! - **slot 0**: the FS-service endpoint, `WRITE`. The directory capability being attenuated.
 //! - **slot 1**: the narrowed endpoint, `READ`. The confined program `CALL`s here; this endpoint IS
 //!   the subtree capability.
-//! - **slot 2**: a report endpoint, `WRITE`. Readiness, sent once the descent has succeeded.
+//! - **slot 2**: a report endpoint, `WRITE`. Readiness ([`fs_proto::fixture::READY`]) once the
+//!   descent has succeeded, or [`fs_proto::fixture::DESCENT_REFUSED`] with the errno if it did not,
+//!   after which this process exits without serving.
 //! - **[`PAGE_VA`]**: the page shared with the FS server *and* with the client, one frame for all
 //!   three, sound for the reason `fs_file_caretaker`'s note gives: every request on both hops is a
 //!   blocking `CALL`, so the client is parked inside its own call for the whole time this process
@@ -63,7 +65,7 @@
 #![no_main]
 
 use fs_proto::{fs, grant, op, reply_err, reply_errno, verb};
-use user_rt::{call, invoke, recv_cap, send};
+use user_rt::{call, exit, invoke, recv_cap, send};
 
 /// The FS-service endpoint: the directory capability this process attenuates.
 const FS: u64 = 0;
@@ -252,8 +254,24 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
         fs::req(fs::OPENDIR, fs::ROOT, n as u64),
         grant::spec_rights(spec),
     );
-    if reply_errno(r0 as i64).is_some() {
-        panic!();
+    // **A refused descent is answered, not trapped** (2026-08-17, milestone 31 phase 3). It used to
+    // `panic!()`, which was survivable while the only thing waiting for the handshake was a kernel
+    // test: the test hit its watchdog and named the caretaker. Since `system_initializer` builds one
+    // of these per directory grant, the waiter is **init**, which serves every command the prompt
+    // ever runs and has no second thread, so a caretaker that died before answering would park the
+    // whole machine in `RECV`. `rm nosuchdir/x` is an ordinary thing to type.
+    //
+    // Exiting rather than serving is the other half: a caretaker whose one `OPENDIR` failed holds no
+    // narrowed handle, so there is nothing it could serve, and coming up anyway would mean answering
+    // requests from `fs::ROOT`, which is the whole directory it was supposed to attenuate.
+    if let Some(errno) = reply_errno(r0 as i64) {
+        send(
+            REPORT,
+            fs_proto::fixture::DESCENT_REFUSED,
+            errno as i64 as u64,
+            0,
+        );
+        exit();
     }
 
     send(REPORT, fs_proto::fixture::READY, 0, 0);

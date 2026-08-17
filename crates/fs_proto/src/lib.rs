@@ -2132,6 +2132,22 @@ pub mod fixture {
     /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.
     pub const READY: u64 = 0xF5_0BEEF5;
 
+    /// **A caretaker's descent was refused**, sent on the same endpoint [`READY`] would have gone
+    /// out on, with the errno in the second word. The caretaker then exits without serving.
+    ///
+    /// It exists because of who waits for the handshake. Under `kernel::user::fs_service` the waiter
+    /// is a test, and a caretaker that panicked instead of answering cost that test a 60-second
+    /// watchdog and a legible failure. Under `system_initializer` the waiter is **init**, which is
+    /// the spawn service for the whole prompt and has no other thread: a caretaker that panicked
+    /// there would park init in `RECV` forever and the machine would never take another command.
+    /// A grant naming a directory that is not there is an ordinary thing to type, so the honest
+    /// answer has to be a message rather than a corpse.
+    ///
+    /// **Provisional name** (2026-08-17, milestone 31 phase 3): it names the one step that can fail
+    /// before a caretaker serves anything, which is the single `OPENDIR` its whole attenuation lives
+    /// in.
+    pub const DESCENT_REFUSED: u64 = 0xF5_0DEAD5;
+
     /// **The attacker's report: a bitmap of what got through**, not a pass/fail. Each bit says one
     /// specific thing happened, so the test asserts an *expected set* rather than "zero", and a
     /// failure names itself. That shape is what lets one attacker serve as its own negative control:
@@ -2578,6 +2594,12 @@ pub mod fixture {
     /// nothing, which is `rm(1)`'s default behaviour asserted rather than assumed: a `SEND` blocks
     /// until somebody receives it, so a line that was emitted cannot be missed by looking later.
     pub mod rm {
+        //! **Where these two words travel** (corrected 2026-08-17). `rm` declares the sink contract
+        //! (`grant_plan::OutputSpec::Bytes`), so its report is framed text and then `sink_proto`'s
+        //! `OP_EOF`; the status and the removal count ride in the two words that end-of-stream
+        //! message leaves free. They used to ride on [`super::VERDICT`], a word the sink contract has
+        //! no meaning for, which no reader but a guest test could have decoded.
+
         /// The exit status of a run in which everything named was removed. `rm(1)`: "exits 0 if all
         /// of the named files or file hierarchies were removed".
         pub const OK: u64 = 0;
