@@ -47,6 +47,67 @@
 //! reach a writer that is not making a syscall. A capability system has a better channel: the
 //! writer *is* making a syscall, on a capability the kernel can see is dead.
 //!
+//! # Examples
+//!
+//! A writer chunks; the sink reassembles. Sixteen bytes per message is not a tuning parameter, so
+//! an example that writes more than that is the honest one:
+//!
+//! ```
+//! use sink_proto::{INLINE_MAX, Msg, eof, pack, unpack};
+//!
+//! let line = b"the quick brown fox\n"; // 20 bytes, so two messages and an EOF
+//! let mut messages = 0;
+//! let mut received = [0u8; 32];
+//! let mut got = 0;
+//! let mut ended = false;
+//!
+//! let mut rest = &line[..];
+//! while !rest.is_empty() {
+//!     let (w0, w1, w2, taken) = pack(rest);
+//!     messages += 1;
+//!     rest = &rest[taken..]; // `pack` never drops a tail silently; the count says what it took
+//!
+//!     // The other end of the SEND.
+//!     let mut buf = [0u8; INLINE_MAX];
+//!     match unpack(w0, w1, w2, &mut buf) {
+//!         Msg::Bytes(n) => {
+//!             received[got..got + n].copy_from_slice(&buf[..n]);
+//!             got += n;
+//!         }
+//!         Msg::Eof | Msg::Malformed => unreachable!(),
+//!     }
+//! }
+//! // The writer is finished, and says so rather than leaving it to be inferred.
+//! let (w0, w1, w2) = (eof(), 0, 0);
+//! if let Msg::Eof = unpack(w0, w1, w2, &mut [0u8; INLINE_MAX]) {
+//!     ended = true;
+//! }
+//!
+//! assert_eq!(messages, 2); // 16 + 4
+//! assert_eq!(&received[..got], line);
+//! assert!(ended);
+//! ```
+//!
+//! Two claims in the constants are worth checking in code rather than trusting in prose. The first
+//! is why [`OP_BYTES`] is zero: with that opcode the first word **is** the byte count, which is
+//! bit-for-bit the framing std's stdout sent before this crate existed, so unifying the protocol
+//! cost no instruction on the hottest path in the system. The second is that a length the message
+//! cannot hold is refused rather than obeyed, because obeying it is a read past the end of a
+//! buffer:
+//!
+//! ```
+//! use sink_proto::{INLINE_MAX, Msg, OP_BYTES, len, op, pack, req, unpack};
+//!
+//! let (w0, ..) = pack(b"hi");
+//! assert_eq!(w0, 2); // the whole word, not just its low bits
+//! assert_eq!(op(w0), OP_BYTES);
+//! assert_eq!(len(w0), 2);
+//!
+//! // A writer claiming more bytes than three words can carry is malformed, not generous.
+//! let lying = req(OP_BYTES, INLINE_MAX as u64 + 1);
+//! assert_eq!(unpack(lying, 0, 0, &mut [0u8; INLINE_MAX]), Msg::Malformed);
+//! ```
+//!
 //! # What this contract deliberately does not carry
 //!
 //! **A per-write error code.** A sink that cannot accept bytes any more says so by ceasing to
@@ -75,6 +136,10 @@
 //! The stem is the contract's own word (DECISIONS §51), which that section uses and never defends.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The opcode's position in the first word: bits 63:56, the same place `fs_proto` and
 /// `line_editor::proto` put theirs. One spelling for "the wire contract" across the tree.

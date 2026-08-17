@@ -33,6 +33,45 @@
 //! compositor takes the client's place and multiplexes many surfaces into one, and it should not
 //! have to invent a contract to do it.
 //!
+//! # Examples
+//!
+//! The test pattern is the part of this contract worth demonstrating, because its whole value is
+//! **negative**: it is built so that the ways a framebuffer actually fails are all visible, and a
+//! solid fill would catch none of them. A buffer shifted by a single pixel is the case that a
+//! checksum over a fill, or a "is it all blue?" check, cannot see at all:
+//!
+//! ```
+//! use gfx_proto::{PIXELS, checksum, expected_checksum, first_mismatch, pixel_at};
+//!
+//! // A client that painted the surface correctly.
+//! let good: [u32; PIXELS] = core::array::from_fn(pixel_at);
+//! assert_eq!(checksum(|i| good[i]), expected_checksum());
+//! assert_eq!(first_mismatch(|i| good[i]), None);
+//!
+//! // The same pixels, off by one: a stride bug, or a driver that transferred from the wrong offset.
+//! let shifted: [u32; PIXELS] = core::array::from_fn(|i| pixel_at(i + 1));
+//! assert_ne!(checksum(|i| shifted[i]), expected_checksum());
+//! assert_eq!(first_mismatch(|i| shifted[i]), Some(0)); // and it names where
+//!
+//! // A device that ignored the transfer entirely.
+//! assert_ne!(checksum(|_| 0), expected_checksum());
+//! ```
+//!
+//! A damage rectangle is one word, so a flush is one message with no shared-memory preamble, and a
+//! rectangle that leaves the surface is **refused rather than clamped**: a clamp would silently
+//! absorb a client's coordinate bug.
+//!
+//! ```
+//! use gfx_proto::{HEIGHT, WIDTH, rect, rect_in_surface, unrect};
+//!
+//! let w = rect(4, 8, 16, 32);
+//! assert_eq!(unrect(w), (4, 8, 16, 32));
+//! assert!(rect_in_surface(4, 8, 16, 32));
+//!
+//! assert!(!rect_in_surface(0, 0, WIDTH + 1, HEIGHT)); // one pixel too wide
+//! assert!(!rect_in_surface(0, 0, WIDTH, 0)); // empty is not a flush
+//! ```
+//!
 //! # What deliberately is NOT here
 //!
 //! No fonts, no glyph cache, no VT state, no input. Rung one puts pixels in a scanout and proves
@@ -50,6 +89,10 @@
 //! enumeration.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 // ================================================================================================
 // The surface: geometry and pixel format.

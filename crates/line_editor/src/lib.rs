@@ -6,6 +6,97 @@
 //! whatever it emits. That split is DECISIONS §7 applied: the editing rules are host-tested in
 //! milliseconds (with a small terminal model, see the tests), and only the wiring needs QEMU.
 //!
+//! # Examples
+//!
+//! Typing a line, editing it, and getting it back. The [`Sink`] is where echo goes; here it is a
+//! `Vec`, and in the running system it is an endpoint.
+//!
+//! ```
+//! use line_editor::{Event, LineDisc, Sink};
+//!
+//! struct Echo(Vec<u8>);
+//! impl Sink for Echo {
+//!     fn put(&mut self, bytes: &[u8]) {
+//!         self.0.extend_from_slice(bytes);
+//!     }
+//! }
+//!
+//! let mut out = Echo(Vec::new());
+//! let mut ld = LineDisc::new();
+//! ld.start_line(b"$ ", &mut out);
+//!
+//! // Type "13", then fix it: ^B moves the cursor left one, onto the 3, and typing 2 **inserts**
+//! // before it rather than overwriting it.
+//! for b in b"13" {
+//!     assert_eq!(ld.feed(*b, &mut out), Event::None);
+//! }
+//! ld.feed(0x02, &mut out); // ^B
+//! ld.feed(b'2', &mut out);
+//!
+//! // Carriage return ends the line. The caller reads it before feeding the next byte.
+//! assert_eq!(ld.feed(b'\r', &mut out), Event::Line);
+//! assert_eq!(ld.line(), b"123");
+//!
+//! // The prompt was echoed, and so was everything typed.
+//! assert!(out.0.starts_with(b"$ "));
+//! ```
+//!
+//! Three control characters mean things a caller has to act on rather than echo, and `^D`'s double
+//! duty is the one worth demonstrating: on an empty line it ends input, and on a non-empty line it is
+//! an ordinary delete. That is Unix's behaviour, and it is a decision rather than an accident.
+//!
+//! ```
+//! # use line_editor::{Event, LineDisc, Sink};
+//! # struct Echo(Vec<u8>);
+//! # impl Sink for Echo {
+//! #     fn put(&mut self, bytes: &[u8]) { self.0.extend_from_slice(bytes); }
+//! # }
+//! let mut out = Echo(Vec::new());
+//! let mut ld = LineDisc::new();
+//! ld.start_line(b"$ ", &mut out);
+//!
+//! // ^D on an empty line: end of input.
+//! assert_eq!(ld.feed(0x04, &mut out), Event::Eof);
+//!
+//! // ^C discards whatever was in progress.
+//! ld.start_line(b"$ ", &mut out);
+//! for b in b"rm -rf" {
+//!     ld.feed(*b, &mut out);
+//! }
+//! assert_eq!(ld.feed(0x03, &mut out), Event::Interrupt);
+//!
+//! // On a non-empty line, ^D deletes at the cursor instead. ^A goes to the start first.
+//! ld.start_line(b"$ ", &mut out);
+//! for b in b"xls" {
+//!     ld.feed(*b, &mut out);
+//! }
+//! ld.feed(0x01, &mut out); // ^A: home
+//! assert_eq!(ld.feed(0x04, &mut out), Event::None); // deletes the 'x', does NOT end input
+//! assert_eq!(ld.feed(b'\r', &mut out), Event::Line);
+//! assert_eq!(ld.line(), b"ls");
+//! ```
+//!
+//! An LF straight after a CR is swallowed, which is what makes one engine serve both an interactive
+//! terminal (CR) and piped CRLF text without the caller knowing which it has:
+//!
+//! ```
+//! # use line_editor::{Event, LineDisc, Sink};
+//! # struct Echo(Vec<u8>);
+//! # impl Sink for Echo {
+//! #     fn put(&mut self, bytes: &[u8]) { self.0.extend_from_slice(bytes); }
+//! # }
+//! let mut out = Echo(Vec::new());
+//! let mut ld = LineDisc::new();
+//! ld.start_line(b"", &mut out);
+//!
+//! ld.feed(b'a', &mut out);
+//! assert_eq!(ld.feed(b'\r', &mut out), Event::Line);
+//! assert_eq!(ld.line(), b"a");
+//!
+//! // The LF of the CRLF pair is not a second, empty line.
+//! assert_eq!(ld.feed(b'\n', &mut out), Event::None);
+//! ```
+//!
 //! # What it implements
 //!
 //! - Insertion and deletion at a cursor, with minimal echo for the common case (typing at the

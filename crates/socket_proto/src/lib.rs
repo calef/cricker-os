@@ -87,6 +87,58 @@
 //! backlog is **one connection deep** per listener (see `net_stack`'s `OP_ACCEPT`, which re-arms
 //! immediately), so a second connection arriving while a first is un-accepted is refused by TCP
 //! rather than queued.
+//! # Examples
+//!
+//! The claim worth checking in code is that **the two inbound authorities are independent**. They
+//! ride in one spawn word and compose with `|`, which is exactly the shape that invites a reader to
+//! assume one implies the other. It does not: an mDNS responder granted UDP 5353 cannot listen on
+//! TCP 5353, and a web server granted TCP 80 cannot bind UDP 80.
+//!
+//! ```
+//! use socket_proto::{
+//!     NO_LISTEN_GRANT, grant_allows, listen_grant, udp_bind_grant, udp_grant_allows,
+//! };
+//!
+//! // What an mDNS responder is spawned with: one UDP port, no TCP listen authority at all.
+//! let responder = udp_bind_grant(5353, 5353);
+//! assert!(udp_grant_allows(responder, 5353));
+//! assert!(!grant_allows(responder, 5353)); // the same number, and not the same authority
+//!
+//! // What a file server is spawned with: SMB's port, and nothing on the UDP side.
+//! let smb = listen_grant(445, 445);
+//! assert!(grant_allows(smb, 445));
+//! assert!(!udp_grant_allows(smb, 445));
+//!
+//! // Both at once is one word, and neither half leaks into the other.
+//! let both = smb | responder;
+//! assert!(grant_allows(both, 445) && udp_grant_allows(both, 5353));
+//! assert!(!grant_allows(both, 5353) && !udp_grant_allows(both, 445));
+//!
+//! // The default, and what every outbound-only client is spawned with: nothing inbound.
+//! assert!(!grant_allows(NO_LISTEN_GRANT, 445));
+//! assert!(!udp_grant_allows(NO_LISTEN_GRANT, 5353));
+//! ```
+//!
+//! A grant is also **safe to get wrong at the spawn site**, which is why the degenerate cases
+//! collapse to one value a reader can recognise rather than to a wide range:
+//!
+//! ```
+//! use socket_proto::{NO_LISTEN_GRANT, listen_grant};
+//!
+//! assert_eq!(listen_grant(0, 65535), NO_LISTEN_GRANT); // port 0 is not a port
+//! assert_eq!(listen_grant(8080, 80), NO_LISTEN_GRANT); // an inverted range grants nothing
+//! ```
+//!
+//! And the request word packs an opcode with the socket id it applies to:
+//!
+//! ```
+//! use socket_proto::{OP_RECV, req, req_op, req_sid};
+//!
+//! let w = req(OP_RECV, 3);
+//! assert_eq!(req_op(w), OP_RECV);
+//! assert_eq!(req_sid(w), 3);
+//! ```
+//!
 //! Name: ratified 2026-08-01 (calef, the naming tenet), which names `socket_proto` among the
 //! standard terms that are already right. It graduated from a module inside `net_stack` to a crate
 //! on 2026-07-31 under rule 7, taking the spelling the suffix rule already required.

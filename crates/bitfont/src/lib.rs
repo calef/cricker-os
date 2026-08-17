@@ -17,6 +17,75 @@
 //! last property is what makes the text on the screen provable rather than merely plausible, and it
 //! is the reason to start here even though rung three will eventually want the scalable path.
 //!
+//! # Examples
+//!
+//! The whole crate is a pure function from `(byte, x, y)` to a colour, so the expected picture can be
+//! *printed*. This is the property the section above claims and it is worth showing rather than
+//! asserting: a mirrored font is the classic bitmap-font bug and nearly invisible in review, because
+//! half the alphabet is symmetric enough to look fine. `F` is not.
+//!
+//! ```
+//! use bitfont::{GLYPH_H, GLYPH_W, ink};
+//!
+//! let art: Vec<String> = (0..GLYPH_H)
+//!     .map(|y| (0..GLYPH_W).map(|x| if ink(b'F', x, y) { '#' } else { '.' }).collect())
+//!     .collect();
+//!
+//! assert_eq!(
+//!     art,
+//!     [
+//!         "#######.", // the top bar runs the full width
+//!         ".##...#.", // the stem is on the LEFT, with a serif at the right end
+//!         ".##.#...",
+//!         ".####...", // the middle bar is short and left-hand
+//!         ".##.#...",
+//!         ".##.....",
+//!         "####....", // the foot serif widens the base
+//!         "........",
+//!     ],
+//! );
+//! ```
+//!
+//! Drawing into a framebuffer is [`cell_pixel`] and nothing else. Three independent parties call it
+//! for three different reasons, which is why it is a function rather than a method on a canvas: the
+//! terminal to paint, the kernel test to predict, and the host-side scanout check to grade what QEMU
+//! is actually displaying.
+//!
+//! ```
+//! use bitfont::{GLYPH_H, GLYPH_W, cell_pixel};
+//!
+//! const WHITE: u32 = 0x00ff_ffff;
+//! const BLACK: u32 = 0x0000_0000;
+//!
+//! // The cell at column 3, row 0 of a terminal grid, holding a space.
+//! let (col, row) = (3u32, 0u32);
+//! for y in 0..GLYPH_H {
+//!     for x in 0..GLYPH_W {
+//!         assert_eq!(cell_pixel(b' ', x, y, WHITE, BLACK), BLACK);
+//!     }
+//! }
+//!
+//! // And the grid arithmetic a fixed-pitch font buys: a pixel's cell is a division.
+//! let (px, py) = (col * GLYPH_W + 2, row * GLYPH_H + 1);
+//! assert_eq!((px / GLYPH_W, py / GLYPH_H), (col, row));
+//! assert_eq!(cell_pixel(b'F', px % GLYPH_W, py % GLYPH_H, WHITE, BLACK), WHITE);
+//! ```
+//!
+//! Out-of-cell coordinates are not ink rather than a panic, because the callers are pixel loops, and
+//! a byte with no glyph draws a visible box rather than nothing:
+//!
+//! ```
+//! use bitfont::{ink, glyph, MISSING};
+//!
+//! assert!(!ink(b'F', 8, 0)); // past the cell
+//! assert!(!ink(b'F', 0, 99));
+//!
+//! // Everything from 0x80 up is outside basic latin, so it draws the missing-glyph box. A reader
+//! // sees that the text is wrong instead of seeing a gap.
+//! assert_eq!(glyph(0xe9), &MISSING);
+//! assert_ne!(glyph(b'F'), &MISSING);
+//! ```
+//!
 //! # What deliberately is NOT here
 //!
 //! No kerning, no proportional widths, no anti-aliasing, no Unicode beyond the basic-latin block
@@ -29,6 +98,10 @@
 //! none.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 pub mod glyphs;
 

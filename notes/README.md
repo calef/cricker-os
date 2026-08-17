@@ -543,6 +543,13 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
+- [Rustdoc coverage](doc-coverage.md): the doc-example floor and the `missing_docs` ratchet
+  (milestone 68's two unfinished halves). Every crate now has a worked example (49 doctests became 116); item documentation is
+  a 401-item worklist with a per-crate opt-in in the 23 crates already clean. Two findings worth
+  carrying off: the block's counts had moved in both directions (three of the four crates it named as
+  hard were done, and five new crates arrived with nothing), and `rustdoc --show-coverage` measures
+  something different from `missing_docs`, so the number the block used to defer that lint was not
+  about that lint. The BUGS section names the five crates whose doctests no gate runs.
 - [The documentation sweep](documentation-audit.md): how to run one, and what counts as a finding.
   Milestone 92's audit mechanism pointed at a second target, sharing its index, its tripwire and its
   three dispositions rather than growing a twin. The disease is **claim rot**: a path that was

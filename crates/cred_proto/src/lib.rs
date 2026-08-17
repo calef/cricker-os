@@ -85,6 +85,53 @@
 //! clothes, and the shape of this contract is what makes that a change to the contract rather than
 //! a bug in a serve loop.
 //!
+//! # Examples
+//!
+//! A verify is one page write and one `CALL`. Both halves are here, because the client side and the
+//! server side of this contract are the same two functions read in opposite directions:
+//!
+//! ```
+//! use cred_proto::{PAGE, place, read, verify, wipe};
+//!
+//! // Client: put the identity and the presented secret in the page both parties map.
+//! let mut page = [0u8; PAGE];
+//! let w0 = place(&mut page, b"corinne", b"hunter2", verify::VERIFY).expect("within bounds");
+//!
+//! // Server: every `u64` either names a well-formed request or is refused, so the serve loop has
+//! // no arithmetic that could run off the page.
+//! let (identity, secret) = read(&page, w0).expect("a well-formed request");
+//! assert_eq!(identity, b"corinne");
+//! assert_eq!(secret, b"hunter2");
+//!
+//! // Then the service wipes the request area, so the frame holds no secret once the reply lands.
+//! wipe(&mut page);
+//! assert!(!page.windows(7).any(|w| w == b"hunter2"));
+//!
+//! // An empty identity is a caller bug and never becomes a message: it is the one string that
+//! // would collide with an unwritten slot in the service's fixed-size store.
+//! assert_eq!(place(&mut page, b"", b"hunter2", verify::VERIFY), None);
+//! ```
+//!
+//! [`authenticated`] is the one function a caller must not get wrong, and what makes it safe is that
+//! **every way of not being an unambiguous match is `false`**, including the case where there is no
+//! credential service to ask. A caller that read a missing capability as a successful login would be
+//! the worst bug this crate could permit, so the contract refuses to let it be written:
+//!
+//! ```
+//! use cred_proto::{MALFORMED, MATCH, MISMATCH, OK, authenticated, code};
+//!
+//! assert!(authenticated(MATCH));
+//!
+//! assert!(!authenticated(MISMATCH));  // the wrong secret, or an identity that is not in the store
+//! assert!(!authenticated(OK));        // a provisioning success is not an authentication
+//! assert!(!authenticated(MALFORMED));
+//!
+//! // `abi::Error` is -1 to -8. As a `u64` each is enormous, so no reply code collides with one,
+//! // and an empty capability slot is distinguishable from an answer without a probe request.
+//! assert_eq!(code(-4i64 as u64), None);
+//! assert!(!authenticated(-4i64 as u64));
+//! ```
+//!
 //! # A miss and a wrong password are the same answer
 //!
 //! [`MISMATCH`] means "not this secret for this identity", and it is what an identity that is not
@@ -102,6 +149,10 @@
 //! it. Introduced 2026-07-31 with milestone 56.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The shared-page size, in bytes. One host page, the same unit `fs_proto` moves, and far more
 /// than the [`MAX_IDENTITY`] + [`MAX_SECRET`] a request can fill.

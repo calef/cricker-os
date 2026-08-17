@@ -23,6 +23,58 @@
 //! smaller footprint than a page both parties map. The cost is one round trip per
 //! [`MAX_BYTES`] bytes, which is what the `entropy_rtt` benchmark prices.
 //!
+//! # Examples
+//!
+//! The one thing a client of this contract must get right is that **a reply is eight bytes, so
+//! filling anything larger is a loop**. That is the cost DECISIONS §44 accepted in exchange for
+//! never putting random bytes in a page a second party maps, so it is what an example should show:
+//! a twenty-byte key takes three round trips, and the last one is short.
+//!
+//! ```
+//! use entropy_proto::{GET, MAX_BYTES, delivered, op, req, take, want};
+//!
+//! // Stands in for the `CALL`: the real service reads the same two accessors off the request word
+//! // and answers with a count and a word of bytes.
+//! fn service(w0: u64) -> (u64, u64) {
+//!     assert_eq!(op(w0), GET);
+//!     (want(w0), 0x0807_0605_0403_0201)
+//! }
+//!
+//! let mut key = [0u8; 20];
+//! let mut filled = 0;
+//! let mut round_trips = 0;
+//! while filled < key.len() {
+//!     let (r0, r1) = service(req(GET, (key.len() - filled) as u64));
+//!     round_trips += 1;
+//!     // `None` would mean the word is a kernel error rather than a count. See below.
+//!     let n = delivered(r0).expect("the service answered");
+//!     assert_ne!(n, 0, "a zero count is NO_ENTROPY: fail, do not retry");
+//!     filled += take(n, r1, &mut key[filled..]);
+//! }
+//! assert_eq!(round_trips, 3); // 8 + 8 + 4, because MAX_BYTES is 8
+//! assert_eq!(MAX_BYTES, 8);
+//! assert_eq!(&key[16..], &[0x01, 0x02, 0x03, 0x04]);
+//! ```
+//!
+//! The other property worth stating as code is the one [`delivered`] exists for, because it is a
+//! claim about two number spaces *not* overlapping. A program holding no entropy capability at all
+//! gets a kernel error in the register a count would have arrived in, and it does not have to probe
+//! to find out which it is holding:
+//!
+//! ```
+//! use entropy_proto::{MAX_BYTES, NO_ENTROPY, delivered};
+//!
+//! // Every count the service can send.
+//! for n in 0..=MAX_BYTES {
+//!     assert_eq!(delivered(n), Some(n as usize));
+//! }
+//! // `abi::Error` is -1 to -8; as a u64 each is enormous, so none can be read as a count.
+//! assert_eq!(delivered(-4i64 as u64), None); // an empty slot: no entropy capability
+//!
+//! // And "the service has none to give" is a third answer, distinct from both.
+//! assert_eq!(delivered(NO_ENTROPY), Some(0));
+//! ```
+//!
 //! # Nothing here transforms a byte
 //!
 //! The service passes the device's bytes through. It does not hash, mix, whiten, or stretch them,
@@ -40,6 +92,10 @@
 //! The stem is the service's own word (`entropy`, DECISIONS §44), which is itself unrecorded.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The most bytes one request can carry: the reply's second word.
 ///

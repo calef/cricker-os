@@ -49,6 +49,84 @@
 //! (a legacy querier's port is not 5353) is a [`QuerySource`] the caller supplies, because the
 //! crate never sees a socket.
 //!
+//! # Examples
+//!
+//! The whole responder, minus the socket. A Mac browsing for backup targets sends a PTR query for
+//! `_adisk._tcp.local`, and what comes back is what populates its list:
+//!
+//! ```
+//! use mdns_proto::{
+//!     Advertisement, Builder, CLASS_IN, Disk, QuerySource, Reader, SERVICE_ADISK, respond, rrtype,
+//!     name_from_dotted, txt_strings,
+//! };
+//!
+//! // The two shares the family actually backs up, and the reference's measured flag values.
+//! let disks = [
+//!     Disk { volume: "corinne", flags: "0x82" },
+//!     Disk { volume: "chris", flags: "0x82" },
+//! ];
+//! let adv = Advertisement {
+//!     host: "patagonia",
+//!     smb_port: 445,
+//!     disks: &disks,
+//!     sys_flags: "0x100",
+//!     model: "MacSamba",
+//!     ipv4: Some([192, 168, 1, 20]),
+//! };
+//!
+//! // What a browsing Mac puts on the wire.
+//! let mut qbuf = [0u8; 512];
+//! let mut q = Builder::query(&mut qbuf).unwrap();
+//! q.question(name_from_dotted(SERVICE_ADISK).unwrap().as_bytes(), rrtype::PTR, CLASS_IN).unwrap();
+//! let qlen = q.finish();
+//!
+//! let mut rbuf = [0u8; 1472];
+//! let n = respond(&adv, &qbuf[..qlen], &mut rbuf, QuerySource::Multicast)
+//!     .unwrap()
+//!     .expect("we are authoritative for _adisk._tcp");
+//!
+//! // Both shares ride inside ONE instance's TXT record. That is the measured shape of the
+//! // reference, and the thing reading RFC 6763 would not tell you.
+//! let mut r = Reader::new(&rbuf[..n]).unwrap();
+//! let mut entries = 0;
+//! for _ in 0..r.header.qdcount {
+//!     r.question().unwrap();
+//! }
+//! let records = r.header.ancount + r.header.nscount + r.header.arcount;
+//! for _ in 0..records {
+//!     let rec = r.record().unwrap();
+//!     if rec.rrtype == rrtype::TXT {
+//!         for s in txt_strings(rec.rdata) {
+//!             if s.unwrap().starts_with(b"dk") {
+//!                 entries += 1;
+//!             }
+//!         }
+//!     }
+//! }
+//! assert_eq!(entries, 2);
+//! ```
+//!
+//! Silence is an answer, and it is the common one: a responder says nothing about a name it is not
+//! authoritative for, rather than replying that it does not know.
+//!
+//! ```
+//! # use mdns_proto::{
+//! #     Advertisement, Builder, CLASS_IN, QuerySource, respond, rrtype, name_from_dotted,
+//! # };
+//! # let adv = Advertisement {
+//! #     host: "patagonia", smb_port: 445, disks: &[], sys_flags: "0x100", model: "MacSamba",
+//! #     ipv4: None,
+//! # };
+//! let mut qbuf = [0u8; 512];
+//! let mut q = Builder::query(&mut qbuf).unwrap();
+//! let name = name_from_dotted("_ipp._tcp.local").unwrap();
+//! q.question(name.as_bytes(), rrtype::PTR, CLASS_IN).unwrap();
+//! let qlen = q.finish();
+//!
+//! let mut rbuf = [0u8; 1472];
+//! assert_eq!(respond(&adv, &qbuf[..qlen], &mut rbuf, QuerySource::Multicast).unwrap(), None);
+//! ```
+//!
 //! # BUGS
 //!
 //! - **Names are emitted uncompressed.** Legal: RFC 1035 §4.1.4 makes decompression mandatory for

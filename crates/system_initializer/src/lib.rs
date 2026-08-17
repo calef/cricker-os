@@ -1,4 +1,8 @@
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 // `Result<_, ()>` throughout the build path, for `supervision_proto`'s reason: every failure here is
 // a syscall that already returned its own error through the ABI, and a second, richer error would be
 // inventing detail the kernel did not provide. See that crate's head comment.
@@ -18,6 +22,48 @@
 //! all**, with no fault and no message. That shape cost three separate lanes an evening each.
 //! `script/shell-check` boots both ISAs and types at the prompt, which is what makes it the gate
 //! that proves this: it is the only thing in the tree that runs a real init.
+//!
+//! # Examples
+//!
+//! **This one cannot run either, and the reason is structural.** [`boot`] returns `!` and every step
+//! it takes is a syscall on a capability the kernel granted at spawn, so there is nothing to assert
+//! and nowhere to assert it: `script/test`'s host pass excludes this crate (it depends on `user_rt`'s
+//! EL0 `asm!`, an exclusion `script/lint` derives and checks), and the thing that actually proves this
+//! code is `script/shell-check`, which boots both ISAs and types at the prompt. So the example below
+//! is `no_run`: type-checked against the real signatures, and executed by that gate.
+//!
+//! An init's whole source, near enough. Everything a board contributes is the **table of slot numbers
+//! its own kernel granted**, which is a fact about that boot path and nothing else:
+//!
+//! ```no_run
+//! use system_initializer::{BootEndowment, boot};
+//!
+//! /// riscv64's init. The slot numbers come from `kernel::user::riscv_shell_boot` and are the only
+//! /// thing this file knows that the other board's init does not.
+//! fn init(initrd_len: u64, fs_rights: u64) -> ! {
+//!     let endowment = BootEndowment {
+//!         untyped: 2,
+//!         uart_dev: 3,
+//!         uart_irq: 4,
+//!         clock_page: 5,
+//!         fs_ep: 6,
+//!         fs_page: 7,
+//!         // Empty here. On aarch64 this holds the kernel's report endpoint and a test SGI, because
+//!         // that boot path is shared with milestone 19d's test roles; init deletes them with the
+//!         // device authority once the drivers exist, rather than keeping delegable authority for
+//!         // nothing.
+//!         for_test_roles: &[],
+//!     };
+//!
+//!     // `fs_rights` of 0 means this boot attached no RedoxFS disk, in which case `fs_ep` and
+//!     // `fs_page` hold nothing at all and the system comes up without a filesystem.
+//!     boot(&endowment, initrd_len, fs_rights)
+//! }
+//! ```
+//!
+//! Reading that struct literal is meant to tell you the complete authority of the system about to
+//! exist, which is why the fields are named for what they *are* rather than numbered. Note what is
+//! not in it: no framebuffer, no network, and no second budget.
 //!
 //! # What the kernel hands over, and what this builds from it
 //!

@@ -32,6 +32,59 @@
 //! **blobs** to copy into the child. That last one is what lets a construction sub-server hold
 //! exactly the one program image it is allowed to build, instead of the whole initrd.
 //!
+//! # Examples
+//!
+//! **A caveat first, because it is a limitation rather than a footnote.** This crate takes an
+//! unconditional `user_rt` dependency, so `script/test`'s host pass excludes it (the exclusion list
+//! is in `xtask` and is derived and checked by `script/lint`). The examples below run under
+//! `cargo test --doc -p supervision_proto` on an aarch64 host and **are not checked by the gate**.
+//!
+//! [`ChildEndowment`] is the crate's real interface, and reading one is meant to tell you the
+//! complete authority of the thing about to run. Every field is public and there is a
+//! nothing-endowment to build from, which is what keeps a later field from being a change to every
+//! caller:
+//!
+//! ```
+//! use supervision_proto::{CHILD_STACK_PAGES, ChildEndowment};
+//!
+//! // A sub-server that gets exactly one endpoint, is born supervised, and holds nothing else.
+//! // `..ChildEndowment::new()` is the intended shape: what is not listed is not granted.
+//! let endow = ChildEndowment {
+//!     caps: &[(4, 0b11)], // our slot 4, read/write, landing in the child's slot 0
+//!     fault: Some(7), // our slot 7 holds its supervision endpoint
+//!     ..ChildEndowment::new()
+//! };
+//!
+//! assert_eq!(endow.caps.len(), 1);
+//! assert!(endow.maps.is_empty() && endow.blobs.is_empty() && endow.placed.is_empty());
+//! assert_eq!(endow.stack_pages, CHILD_STACK_PAGES);
+//!
+//! // A construction sub-server, holding exactly the one program image it may build. That is what
+//! // `blobs` buys: the child is handed *data* it has no capability to reach, so the sub-server
+//! // never needs the whole initrd.
+//! let image = &[0x7f, b'E', b'L', b'F'][..];
+//! let builder = ChildEndowment { blobs: &[(0x2000_0000, image)], ..ChildEndowment::new() };
+//! assert_eq!(builder.blobs[0].1.len(), 4);
+//! assert!(builder.fault.is_none()); // unsupervised, and visibly so
+//! ```
+//!
+//! The two budgets [`build_child`] takes are the design's load-bearing distinction and are easy to
+//! pass in the wrong order, so it is worth stating what each one is for:
+//!
+//! ```no_run
+//! # use supervision_proto::{ChildEndowment, build_child, tcb_start};
+//! # fn demo(own: u64, per_child: u64, elf: &elf::Elf) -> Result<(), ()> {
+//! let endow = ChildEndowment { fault: Some(7), ..ChildEndowment::new() };
+//!
+//! // `own` pays for OUR scratch mappings; `per_child` is what the child is made of. Passing a
+//! // per-child region as the second argument is what makes a single `DESTROY` reap the whole
+//! // instance, and passing our own would free our page tables under the child.
+//! let tcb = build_child(own, per_child, elf, &endow)?;
+//! tcb_start(tcb, 0, 0, 0);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! Name: recorded (milestone 46, and notes/naming.md's crate section). The wire contract was
 //! spelled four ways (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`) for one concept;
 //! `*_proto` won on 2026-07-30 under DECISIONS §39, and `script/lint` has checked it since. That

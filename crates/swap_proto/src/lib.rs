@@ -21,6 +21,38 @@
 //! trick, and it is DECISIONS §12's endpoint-only naming cashed in: a client names an endpoint and
 //! never a peer, so the peer is free to be somebody else tomorrow.
 //!
+//! # Examples
+//!
+//! **A caveat about this example first, because it is a limitation and not a footnote.** This crate
+//! takes an unconditional `user_rt` dependency, so `script/test`'s host pass excludes it (see the
+//! exclusion list in `xtask`, derived and checked by `script/lint`). The example below therefore runs
+//! under `cargo test --doc -p swap_proto` on an aarch64 host and **is not checked by the gate**. It
+//! is written as a real example rather than a fenced comment so that it is at least checkable; the
+//! fix is to split the pure half out from the serving loop, which is a change no lane has made.
+//!
+//! What a client learns from one exchange, and it is two facts in two words: the answer, and *who
+//! answered*. The second is the only way anything outside the operator can tell a swap happened.
+//!
+//! ```
+//! use swap_proto::{digest, tag, tag_seq, tag_version};
+//!
+//! // v1 answers request 7.
+//! let (r0, r1) = (digest(7), tag(1, 7));
+//! assert_eq!(r0, digest(7)); // the client checks the arithmetic itself
+//! assert_eq!(tag_version(r1), 1);
+//! assert_eq!(tag_seq(r1), 7);
+//!
+//! // The operator swaps the component. The client's capability did not change, its loop did not
+//! // branch, and the only observable difference is the version word.
+//! let (r0_after, r1_after) = (digest(8), tag(2, 8));
+//! assert_eq!(r0_after, digest(8)); // the same eight lines, in C this time, bit for bit
+//! assert_eq!(tag_version(r1_after), 2);
+//!
+//! // Which is why the digest is deliberately trivial: two language implementations of one
+//! // definition must agree, so the client can check its server without trusting either.
+//! assert_ne!(digest(7), digest(8));
+//! ```
+//!
 //! # The one thing the component owns that cannot be shared
 //!
 //! The UART's registers. Two processes writing one device's registers is the interleaving hazard
