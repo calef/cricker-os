@@ -978,19 +978,37 @@ map would have moved `map_new` by ~570 ticks over 64 iterations. The observed mo
 carry a correct single-bit mask. One RFENCE costs ~9 ticks. The 2026-08-15 inference, that the delta
 was remote RFENCEs fired against an over-reporting mask, **is refuted for PR #176's tree.**
 
-**Not proven, and this is the live confound.** These runs are on **QEMU 8.2.2 with
-`-device riscv-iommu-pci` removed**, because the QEMU available here is not the pinned 11.0.2 and
-does not implement that device. CI measured 2731 on QEMU 11.0.2 with the IOMMU present. So the
-regression may be a property of the machine rather than of the branch, and **the IOMMU is now the
-prime suspect precisely because it is the part of the machine this run deleted.** That fits the
-shape of the original observation better than the mask ever did: the four failing branches were the
-VisionFive 2 lane family, whose subject is per-cpu enumeration, and `pci::init_iommu` runs at boot.
+**The confound, and why it turned out to be small.** The three runs above are on **QEMU 8.2.2 with
+`-device riscv-iommu-pci` removed**, because the QEMU available in that container is not the pinned
+11.0.2 and does not implement the device. CI measured 2731 on 11.0.2 with the IOMMU present, so the
+worry was that the regression is a property of the machine rather than of the branch.
 
-**What to run next**, in order: this probe on the pinned QEMU 11.0.2 **with** the IOMMU present, on
-`main` (CI does this on every pull request now that the probe is in the tree, and the `bench` job
-prints the `bench-probe:` lines); then the same on `pull/176/head`, which is the experiment that
-turns "refuted here" into "refuted". If the fences are still zero there, the cause is elsewhere
-entirely and the 2026-08-15 section should be rewritten rather than amended.
+**CI has since run this probe on the pinned machine and the worry mostly dissolves.** On QEMU 11.0.2
+with the IOMMU present, `main` reports `map_new_remote_fences 0`, `online_harts_mask 0x1`, and
+`map_new 2362`.
+
+The interesting part is the pair of numbers either side of that machine change:
+
+| | container (8.2.2, no IOMMU) | CI (11.0.2, IOMMU) |
+|---|---|---|
+| `map_new` | 2362 | **2362** |
+| `rfence_self` | 8.91 ticks/call | **11.70 ticks/call (+31%)** |
+
+**`map_new` is bit-identical across the machine change while the RFENCE benchmark moves 31%.** That
+is a cross-check nobody designed and it is the strongest single piece of evidence here: a benchmark
+made entirely of SBI calls is visibly sensitive to the firmware and emulator, and `map_new` is
+completely insensitive to them, which is what a path that makes **no SBI calls at all** looks like.
+The fence counter says zero and the machine-sensitivity says zero independently.
+
+So the container's reading of `pull/176/head` at 2362 is very unlikely to be an artifact of the
+machine, and the refutation stands rather than being provisional on it.
+
+**What is now genuinely unexplained.** Not the mechanism, but the observation: what CI measured at
+2731 to 2732 on four branches, reproducibly, in August. Nothing in this section explains it, and
+there is no live hypothesis left. The remaining experiment that would speak to it is the probe run
+against `pull/176/head` **in CI**, on the pinned machine, which is a thing a lane can do deliberately
+and nothing does by accident. Until then the 2026-08-15 section's diagnosis should be read as
+withdrawn rather than replaced.
 
 ### The part of the old section that survives intact
 
