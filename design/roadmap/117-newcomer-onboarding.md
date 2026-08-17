@@ -1,10 +1,32 @@
 # 117. The stranger test: could someone build this and understand it without asking
 
-**Status: IN-PROGRESS.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
+**Status: PARTIAL.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
 leave it as an aspiration. The rubric was written 2026-08-14 (notes/stranger-test.md) and run 1 went
-the same day, finding four defects that are fixed and landed. Run 2 is the remaining half.
+the same day, finding four defects that are fixed and landed. **Run 2 went 2026-08-16** (pull request
+#219) and found four more, also fixed: a Linux setup blocker in `script/bootstrap` and
+`script/ci-qemu`, four corrections to notes/adding-a-program.md, a real `swish` bug in `caps arg`, and
+`design/decisions/89`. What remains is **run 3, and the two predicted defects nobody has fixed**;
+the next paragraph but one says why run 3 is not a formality.
 
-**Gate: NONE.** The instrument exists and the first run cost one lane.
+**Gate: NONE.** The instrument exists, and run 3 needs an isolated harness rather than a decision or a
+lane's worth of design.
+
+**This block said "Run 2 is the remaining half" and was falsified thirty-nine minutes later**, when
+pull request #219 merged without touching this file, and it stayed wrong for a day. That is the second
+time this one milestone's status has gone stale in exactly the same way, which is the strongest single
+argument in the tree for §76's defect class being structural rather than careless. Found 2026-08-17 by
+the status-accuracy sweep; the `IN-PROGRESS` token was additionally false because no branch existed,
+the three lanes having been `milestone/117-stranger-test`, `fix/stranger-run-findings` and
+`claude/milestone-117-7ik9e6`, all merged and all deleted.
+
+**Run 3 is owed, and it is the run that would actually measure the mental-model half.** Neither run so
+far did: run 1's rubric was greppable by its own subject, and run 2's stranger was handed `AGENTS.md`
+at turn zero from the maintainer's checkout, which discounts five of the eight rubric rows
+(notes/stranger-test.md:215). Run 3 must be a process that cannot see this repository except through
+the tree it is handed, which is a container or a session whose working directory is the clone
+(notes/stranger-test.md:260). Two of the four defect shapes this block predicted are also still open:
+there is **no `CONTRIBUTING.md`** at the repository root, and `README.md` still states no reading
+order.
 
 **The column said `NOT-STARTED` until 2026-08-16, with run 1 already recorded in three other files.**
 That is §76's failure again and it is worth naming here rather than quietly correcting: the gate

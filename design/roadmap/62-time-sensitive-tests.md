@@ -1,9 +1,36 @@
 # 62. Tests that assert on time: make a red run mean something
 
-**Status: NOT-STARTED.** Raised 2026-08-01, from evidence rather than from taste.
+**Status: PARTIAL.** Raised 2026-08-01, from evidence rather than from taste. The token read
+`NOT-STARTED` until 2026-08-17, by which point most of what this block asks for had been built **by
+other lanes**, chiefly milestone 78's four rounds and milestone 50's shell work, and nobody came back
+to this file. That is why it is PARTIAL rather than NOT-STARTED and PARTIAL rather than BUILT; the
+precedent is milestone 40, whose status said `NOT-STARTED` with two phases shipped for the same reason.
 
-**Gate: NONE.** The evidence is in the block, ~19 bounded spins and the day they cost, and the
-acceptance evidence it asks for is a repeat count rather than one green run.
+**Gate: NONE.** The remaining work is the acceptance run and the icount instrument, and the icount
+half is shared with milestone 78 rather than gated by it.
+
+**What is built.** The prescribed fix exists by name: `sched::wait_for`
+(`kernel/src/sched.rs:3233`), "bounded by the CLOCK rather than by a yield count", and
+`sched::within_ticks` (`kernel/src/sched.rs:3260`), budgeted in guest timer ticks, which is this
+block's own guest-ticks prescription. The example this block names is converted:
+`threads_round_robin` (`kernel/src/sched.rs:3809`) calls `wait_for(all_ran)` instead of giving twenty
+yields. `ticks_arrive_at_the_configured_rate` was rebuilt on both ISAs against the re-arm law rather
+than against elapsed counter time (`kernel/src/arch/aarch64/timer.rs:382`,
+`kernel/src/arch/riscv64/timer.rs:423`). And the watchdog progress heartbeat this block asks for is
+`testing::note_progress` (`kernel/src/testing.rs:288`), bumped on every IPC rendezvous, wake and
+console line, beside a per-test wall-clock ceiling.
+
+**What remains, and it is why this is not BUILT.** The acceptance evidence this block asks for is a
+repeat count under load rather than one green run, and no such run is recorded. The heartbeat that
+landed credits work by *any* thread rather than per test, and `kernel/src/testing.rs:48` records that
+this blinded it once for real. The icount instrument is still recommended and still not built
+(notes/load-sensitive-assertions.md:601), which is the same residual milestone 78 carries.
+
+**The count in this block is stale**, and left below as written rather than edited into the prose,
+because the argument it supports is history: `sched.rs` holds **6** of these spins now, not nineteen.
+Tree-wide the shape matches 19 sites, but 9 are not test code at all, and none of the 10 in tests has
+the flake-prone shape. They are all "let it settle, then prove nothing more happened", which is a
+negative assertion a loaded host cannot fail in the failing direction.
 
 ## The problem
 

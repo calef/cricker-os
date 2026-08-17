@@ -1,13 +1,32 @@
 # 112. The SAFETY comments that bind nobody
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/112-safety-comments`. Raised 2026-08-04 by milestone 82's lane, which set out to burn down
-`unsafe fn` violations, found **zero** of them, and reported this instead. Recorded in
-`notes/unsafe-obligations.md`'s BUGS. It is a change to the kernel's soundness surface, which is why
-82 deliberately did not take it on a lint milestone.
+**Status: BUILT** 2026-08-05 (pull request #120, merge `4904cce0`). Raised 2026-08-04 by milestone
+82's lane, which set out to burn down `unsafe fn` violations, found **zero** of them, and reported this
+instead. Recorded in `notes/unsafe-obligations.md`'s BUGS. It is a change to the kernel's soundness
+surface, which is why 82 deliberately did not take it on a lint milestone. The status read
+`IN-PROGRESS since 2026-08-04, a developer holds it on milestone/112-safety-comments` for twelve days
+after that merge; found 2026-08-17 by the status-accuracy sweep. §76's defect class.
 
-**Gate: NONE.** Four sites, decided per site with an argument, the way milestone 78 decides per
-assertion. The block is explicit that the answer may not be four conversions and that no new gate
-is proposed here.
+**Three of the four converted, and the fourth was decided rather than skipped**, which is what the
+deleted gate line asked for when it said the answer may not be four conversions. `write_satp` is now
+`unsafe fn` (`kernel/src/arch/riscv64/mmu.rs:80`), and its `# Safety` section says out loud that it is
+unsafe because aarch64's `set_ttbr0` is, which closes the ISA asymmetry in the direction of the
+stricter ISA. `switch_user_root` is `unsafe fn` on both ISAs
+(`kernel/src/arch/aarch64/mmu.rs:913`, `kernel/src/arch/riscv64/mmu.rs:796`). `stack::paint` is
+`unsafe fn` (`kernel/src/stack.rs:436`), and its sibling `high_water` went with it. **`virtio::pread`
+stayed a safe fn on purpose**, with the argument written where a reader meets it
+(`kernel/src/virtio.rs:233`, "Why these two stay safe fns"): it is private, all twenty call sites are
+one `impl Transport` block, and the compiler closes the caller set, so the obligation really is
+discharged by the module rather than onto nobody.
+
+**The call sites carry the cost the block predicted.** `kernel/src/sched.rs:1477` is the context
+switch, and its SAFETY comment argues liveness from `on_cpu` and `Running` after `SCHED` is released
+rather than restating the signature; `kernel/src/sched.rs:2827` carries its own separate argument.
+
+**One gate did arrive, adjacent to the headline property rather than on it**: `script/lint` now checks
+that every `unsafe fn` states its contract in a `# Safety` section. It checks that a contract is
+*written*, never that it is true, and it found one violation on its first run (`fs_server`'s
+`file_page`, fixed in the same pull request). The decision table is notes/unsafe-obligations.md:250.
 
 **The finding.** Four **safe** functions carry a `// SAFETY:` comment that discharges an obligation
 onto "the caller", and their signatures impose that obligation on nobody. Any safe code may call

@@ -1,10 +1,27 @@
 # 115. The names that were ratified, and the ones that were refused
 
-**Status: IN-PROGRESS** since 2026-08-04, a developer holds it on `milestone/115-ratified-names`. Raised 2026-08-04 by calef, asking whether anything tracks the names he
-has ratified. Nothing does, and the same day produced the evidence for why it should.
+**Status: BUILT** 2026-08-04 (pull request #116, merge `d1e6b1e9`). Raised 2026-08-04 by calef, asking
+whether anything tracked the names he had ratified. Nothing did, and the same day produced the evidence
+for why it should. The status read `IN-PROGRESS since 2026-08-04, a developer holds it on
+milestone/115-ratified-names` for thirteen days after that merge; found 2026-08-17 by the
+status-accuracy sweep. §76's defect class, and the sharpest instance of it in this sweep, because
+`script/roadmap` was listing 115 under `IN-PROGRESS` and under "ready to start" at the same time.
 
-**Gate: NONE.** Nothing blocks a start: the backfill is mechanical, the worklist it produces is the
-deliverable, and the tenet it records already exists.
+**All of it landed.** Provenance lives at the name: a `Name:` block in 55 crates, 58 programs and 35
+script entry points, 148 in total, which is complete coverage rather than a sample.
+`script/names --check` verifies every one of them carries a block, and `script/lint` runs it. The
+table is a derived query (`script/names`, with `--unratified`, `--refused`, `--unrecorded`,
+`--provisional` and a bare-name lookup) rather than a file anyone maintains, which is the half calef
+rejected the first draft over. The convention is notes/naming.md:223.
+
+**The worklist's length is the mechanism working, not a shortfall.** `script/names --unratified`
+stands at 74 of 148. The gate deliberately checks that a name carries provenance and never that its
+state is `ratified`, because a gate keyed on ratification would hold every unrelated merge behind a
+review nobody can hurry; `unrecorded` is a truthful answer and passes. Draining the worklist is
+calef's, on his own clock, and was explicitly out of this milestone's scope.
+
+**Extended since, which is what a live mechanism looks like:** `design/decisions/89` added
+`provisional` as a fourth state on 2026-08-16, implemented at `script/names:252`.
 
 **The incident.** A lane proposed `system_builder` for the crate milestone 96 extracted; the
 maintainer endorsed it; calef overruled it to `system_initializer`. Only afterwards did the

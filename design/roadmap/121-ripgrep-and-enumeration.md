@@ -23,8 +23,22 @@ implemented in `crates/fs_proto`, and its absence answers `EPERM` rather than an
 is milestone 42's truthfulness rule applied to the one refusal most easily faked. `rm -r` already
 composes it (`REMOVE_TREE = ENUMERATE | DESCEND | REMOVE`).
 
-So the machinery exists and one workload uses it, to **delete**. Nothing uses it to **walk**, and
-walking is where the interesting costs and the interesting confinement both live.
+**This block said `rm -r` was the only thing composing `ENUMERATE`, and that was already false when it
+was minted** (corrected 2026-08-17 by the status-accuracy sweep; the status itself is right and did not
+move). At least four other things compose it, and one of them predates this block by ten days: the
+shell's glob expander (`user/src/swish.rs:518`, driving `crates/grant_plan/src/expand.rs`, landed
+2026-08-03 against this block's 2026-08-13), the SMB server
+(`user/src/smb_server.rs:327`), the `std` PAL's `read_dir`
+(`patches/std-nife/overlay/std/src/sys/fs/nife.rs:891`), and the survey viewer's kernel-level
+`Rights::ENUMERATE` (`crates/system_initializer/src/lib.rs:958`). Things walk, too:
+`user/src/smb_server.rs:331` walks to a directory one `OPENDIR` per component, `user/src/rm.rs:160` is
+a real recursive stack walk, and `swish` walks components to navigate.
+
+**The honest claim is narrower, and it is the one this milestone actually rests on:** no recursive walk
+is reachable from a `std` program, because the PAL retains no directory handle. That is milestone 122,
+which is this block's gate, and the 2026-08-13 correction section below already states it correctly.
+Nothing composes `ENUMERATE` to walk **a tree it was handed, from somebody else's program**, and that
+is where the interesting costs and the interesting confinement both live.
 
 ## What is already in place, measured rather than assumed
 
