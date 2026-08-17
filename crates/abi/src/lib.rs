@@ -4,23 +4,33 @@
 //! two files that agree by luck. If it changes, both sides fail to compile, which is the entire
 //! point: a boundary that can drift silently is not a boundary.
 //!
-//! # The surface is three calls, and that is deliberate
+//! # The surface is four calls <!--count:syscalls-->, and that is deliberate
 //!
 //! DECISIONS.md §4 rule 3: *the syscall surface stays narrow and explicit. It is a boundary, not
-//! a habit.* And §10 chose capabilities, which is what makes three enough:
+//! a habit.* And §10 chose capabilities, which is what makes so few enough:
 //!
 //! ```text
 //!   exit(code)                              you always have authority over yourself
 //!   yield()                                 likewise
+//!   cap_delete(slot)                        likewise: your own cspace is your own
 //!   invoke(cap, method, a0, a1, a2)         EVERYTHING ELSE
 //! ```
 //!
 //! There is no `open`. No `read`. No `write`. No `fork`. **A process can only act on things it
 //! was handed**, and `invoke` is how it acts on them.
 //!
-//! `exit` and `yield` are plain syscalls rather than invocations on a TCB capability, and the
-//! reason is worth stating: **a capability is authority over something *else*.** You do not need
-//! to be granted the right to stop running.
+//! `exit`, `yield` and `cap_delete` are plain syscalls rather than invocations on a TCB
+//! capability, and the reason is worth stating: **a capability is authority over something
+//! *else*.** You do not need to be granted the right to stop running, or to be granted the right
+//! to make your own cspace forget something.
+//!
+//! **So three of the four are authority over yourself and the fourth is everything else**, which
+//! is the shape that matters rather than the number. This header said "three calls" from
+//! 2026-07-14 until the 2026-08-17 documentation sweep found it, because
+//! [`SYS_CAP_DELETE`] arrived on 2026-07-24 (milestone 19d) and nothing brought the summary with
+//! it. The count now carries a `<!--count:syscalls-->` marker, so `script/lint` re-derives it from
+//! the constants below and a fifth call cannot land without this sentence moving. See
+//! notes/counted-claims.md.
 //!
 //! # The register convention
 //!
@@ -236,9 +246,6 @@ pub mod reply {
     pub const REPLY: u64 = 0;
 }
 
-/// The rights bits, matching `capability::Rights`, so userspace can name the rights to narrow a
-/// delegated capability to (the `rights` argument to [`endpoint::SEND_CAP`]) without depending on
-/// the kernel's `capability` crate.
 /// Object types for [`untyped::RETYPE_OBJ`]: what a page of untyped becomes.
 pub mod objtype {
     /// An IPC endpoint, page-resident, owned by the caller's budget (milestone 19a).
@@ -308,6 +315,20 @@ pub mod aspace {
     pub const MAP_CODE: u64 = 2;
 }
 
+/// The rights bits, matching `capability::Rights`, so userspace can name the rights to narrow a
+/// delegated capability to (the `rights` argument to [`endpoint::SEND_CAP`]) without depending on
+/// the kernel's `capability` crate.
+///
+/// **Four bits <!--count:rights-bits-->, and rights only ever narrow.** `capability::Rights::ALL`
+/// is the mask `from_bits` filters against, so a bit defined here and missing there is silently
+/// dropped at every delegation; the comment on that constant carries the warning.
+///
+/// These three lines of documentation spent from milestone 19a until the 2026-08-17 documentation
+/// sweep attached to [`objtype`](self::objtype) instead, because 19a inserted that module directly
+/// beneath them. The visible cost was on the other side: `objtype`'s rustdoc opened by telling a
+/// reader it was the rights bits, and the module that holds them had no documentation at all. It
+/// is the module the sweep's own trigger moved, since [`ENUMERATE`](self::rights::ENUMERATE)
+/// landed here on 2026-08-17.
 pub mod rights {
     pub const READ: u64 = 1 << 0;
     pub const WRITE: u64 = 1 << 1;
@@ -486,7 +507,7 @@ pub enum Error {
     /// No such method on that object.
     BadMethod = -5,
 
-    /// The syscall number is not one of the three.
+    /// The syscall number is not one of the four <!--count:syscalls-->.
     BadSyscall = -6,
 
     /// **The untyped region is exhausted.** The process ran out of the memory it was handed. The
@@ -593,10 +614,15 @@ mod tests {
     /// values are load-bearing on both sides of the syscall boundary. Milestone 85's mutation run
     /// showed nothing pinned them (`1 << 1` could become `1 >> 1`, which is zero, and WRITE would
     /// silently mean nothing).
+    ///
+    /// `ENUMERATE` was added to this assertion by the 2026-08-17 documentation sweep. It landed on
+    /// 2026-08-17 and this test kept pinning three bits while its own comment said *each* must be a
+    /// distinct single bit, so the newest right was the one nothing held down. **A test that
+    /// enumerates is a claim about a set, and it rots exactly like prose does.**
     #[test]
     fn rights_are_distinct_single_bits() {
-        use super::rights::{GRANT, READ, WRITE};
-        assert_eq!([READ, WRITE, GRANT], [1, 2, 4]);
+        use super::rights::{ENUMERATE, GRANT, READ, WRITE};
+        assert_eq!([READ, WRITE, GRANT, ENUMERATE], [1, 2, 4, 8]);
     }
 
     /// The fault-endpoint slot is a valid slot index. Its value is `CSPACE_SLOTS - 1` by

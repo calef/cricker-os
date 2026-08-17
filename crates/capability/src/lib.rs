@@ -785,15 +785,31 @@ mod tests {
     /// showed the exact values were pinned nowhere (WRITE's `1 << 1` could become `1 >> 1`, zero,
     /// and delegating WRITE would delegate nothing), and `from_bits` could OR instead of mask, so
     /// undefined bits became defined rights.
+    ///
+    /// `ENUMERATE` and the `ALL` identity below were added by the 2026-08-17 documentation sweep,
+    /// which found this test pinning three bits the day after a fourth landed. The `ALL` assertion
+    /// is the one worth having: [`Rights::ALL`]'s own comment warns that a constant defined without
+    /// widening that mask is **silently dropped at every delegation**, and until now nothing
+    /// checked it. Spelling the union out by hand is deliberate, because a derivation that read
+    /// `ALL` to check `ALL` would pass whatever it was given.
     #[test]
     fn rights_bits_are_the_wire_format() {
         assert_eq!(
             [
                 Rights::READ.bits(),
                 Rights::WRITE.bits(),
-                Rights::GRANT.bits()
+                Rights::GRANT.bits(),
+                Rights::ENUMERATE.bits()
             ],
-            [1, 2, 4]
+            [1, 2, 4, 8]
+        );
+        // Every defined bit is in ALL, and ALL defines nothing that is not a named right.
+        assert_eq!(
+            Rights::ALL.bits(),
+            Rights::READ.bits()
+                | Rights::WRITE.bits()
+                | Rights::GRANT.bits()
+                | Rights::ENUMERATE.bits()
         );
         // Undefined bits are dropped, never reinterpreted.
         assert_eq!(Rights::from_bits(!Rights::ALL.bits()), Rights::NONE);

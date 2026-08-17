@@ -1,4 +1,4 @@
-//! The syscall boundary. **Three calls.**
+//! The syscall boundary. **Four calls <!--count:syscalls-->.**
 //!
 //! DECISIONS.md §4 rule 3 said the syscall surface stays narrow and explicit, *"a boundary, not a
 //! habit."* §8 said milestone 7 was a hard decision point and that hacking one in without the
@@ -9,8 +9,14 @@
 //! ```text
 //!   exit(code)                          authority over yourself
 //!   yield()                             likewise
+//!   cap_delete(slot)                    likewise: your own cspace is your own
 //!   invoke(cap, method, a0, a1, a2)     EVERYTHING ELSE
 //! ```
+//!
+//! Three of the four are authority over yourself and the fourth is everything else, which is the
+//! property worth remembering rather than the count. This header said "three calls" from
+//! 2026-07-14 until the 2026-08-17 documentation sweep, `abi::SYS_CAP_DELETE` having arrived on
+//! 2026-07-24 without it; the count is now a re-derived `<!--count:syscalls-->` claim.
 //!
 //! No `open`. No `read`. No `write`. No `fork`. **A process can only act on things it was
 //! handed.** The ABI lives in `crates/abi`, which both the kernel and every user program depend

@@ -14,9 +14,18 @@ is that a derivative's rights are a **subset** of the source's:
 if !rights.is_subset_of(src.rights) { return Err(NoRights); }
 ```
 
-`Rights` are three bits: `READ`, `WRITE`, `GRANT`. `is_subset_of` is the whole enforcement; there
-is no code path that widens rights, which is the point (DECISIONS.md §10): if delegation could
-widen authority, the model is theatre.
+`Rights` are four bits <!--count:rights-bits-->: `READ`, `WRITE`, `GRANT`, and `ENUMERATE`.
+`is_subset_of` is the whole enforcement; there is no code path that widens rights, which is the
+point (DECISIONS.md §10): if delegation could widen authority, the model is theatre.
+
+`ENUMERATE` is the newest and the one that shows why the count is worth gating rather than
+retyping: it arrived on 2026-08-17 with milestone 126, this line still said three bits the next
+day, and the 2026-08-17 documentation sweep is what found it. It is **the right to learn what
+exists, as distinct from acting on it**, the kernel-level twin of `fs_proto`'s directory
+`ENUMERATE`, and `endpoint::SURVEY` is its only consumer today. The argument for a right of its own
+rather than a corner of `READ` is on `capability::Rights::ENUMERATE`, where a reader meets it:
+`READ` on a supervision endpoint is what `RECV` and `REAP` take, so a `ps` granted `READ` could
+reap a child, and a domain names its members rather than acting on them.
 
 ## `SEND_CAP` is share, not move
 
@@ -35,14 +44,20 @@ So the sender **keeps its capability**; the receiver gets a narrowed derivative 
 object. That is exactly what lets a frame be shared: a producer holding `READ|WRITE|GRANT` keeps its
 writable mapping while handing a consumer a read-only view of the same physical page.
 
-## Two independent narrowings
+## Independent narrowings
 
-Delegation answers two separate questions, and they narrow independently:
+Delegation answers separate questions, and they narrow independently:
 
 | Question | Right | Example |
 |---|---|---|
 | What may the holder **do**? | `READ`, `WRITE` | a `Frame` with `READ` alone maps read-only, never writable |
 | May the holder **pass it on**? | `GRANT` | a derivative sent *without* `GRANT` is a dead end: the receiver may use it but not re-delegate |
+| What may the holder **learn**? | `ENUMERATE` | an `Endpoint` with `ENUMERATE` can `SURVEY` the domain it supervises; one with `READ` instead can `RECV` and `REAP` there but cannot list it |
+
+This section was headed "Two independent narrowings" and had the first two rows until the
+2026-08-17 documentation sweep; `ENUMERATE` made the third question a real one the day before. The
+heading no longer counts them, because the count is the part that rots and the independence is the
+part that matters.
 
 `SEND_CAP` needs `WRITE` on the *endpoint* (may I send here?) **and** `GRANT` on the *delegated*
 capability (was I trusted to lend it?). Two rights, two objects, two questions.

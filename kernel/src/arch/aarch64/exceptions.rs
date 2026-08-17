@@ -367,7 +367,7 @@ extern "C" fn exception_body(frame: &mut TrapFrame, index: u64) -> bool {
         // At 7a this arm did nothing but count, deliberately, because DECISIONS §8 said "if we
         // find ourselves hacking in a syscall without having had that conversation, the plan has
         // failed." We had the conversation (§10), chose capabilities, and 7d designed the whole
-        // surface at once against a capability table. It is three calls. See syscall.rs.
+        // surface at once against a capability table. It is four calls. See syscall.rs.
         //
         // Note ELR already points PAST the `svc`: the hardware advances it for us. Compare
         // `brk` above, where it points AT the instruction and we must step over it by hand.
