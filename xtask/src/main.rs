@@ -157,6 +157,9 @@ fn main() -> ExitCode {
         "test" => test(),
         "undefined-behavior-check" => undefined_behavior_check(),
         "bench" => bench(),
+        // The instruction-count instrument (milestone 78): the two timing claims a wall clock
+        // cannot make, on both ISAs. See script/icount.
+        "icount" => icount(),
         "gdb" => gdb(),
         "objdump" => objdump(),
         "image" => image(),
@@ -165,7 +168,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|icount|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(
@@ -177,6 +180,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "       cargo xtask test [--arch aarch64|riscv64] [--cpu <qemu-cpu-model>] [--hvf]"
             );
+            eprintln!("       cargo xtask icount [--arch aarch64|riscv64]");
             return ExitCode::FAILURE;
         }
     };
@@ -6193,6 +6197,140 @@ fn run_bench(
         return ok;
     }
 
+    true
+}
+
+/// **The instruction-count instrument** (milestone 78;
+/// design/roadmap/78-load-sensitive-assertions.md), on both ISAs because parity is a gate (§19).
+///
+/// Boots a `--features icount` kernel under `-icount shift=0,sleep=off`, where QEMU's virtual clock
+/// advances by exactly one nanosecond per guest instruction retired and by nothing else. The guest
+/// asserts two claims a wall-clock test cannot make (that the timer fired at the deadline the kernel
+/// armed, and that the handler costs fewer than N instructions) and prints what it measured.
+///
+/// **This is not on the test path and that is the design.** `-icount` changes what QEMU is: it
+/// serializes execution, it gives every vCPU one shared virtual clock, and it slows the emulator
+/// down. Putting it under `script/test` would change what all ~400 tests measure in order to sharpen
+/// two of them, so the instrument gets its own boot, exactly as `script/bench` does, and the test
+/// path is untouched.
+///
+/// The verdict arrives the bench boot's way rather than through semihosting: the guest prints
+/// `icount: done` and parks in `wfi`, this owns the child and kills it. A panic (a violated claim)
+/// prints `[PANIC]` and is a failure; so is reaching end of output with neither.
+fn icount() -> bool {
+    let legs = match flag_value("--arch").as_deref() {
+        None => ArchLegs::Both,
+        Some("aarch64") => ArchLegs::Aarch64,
+        Some("riscv64") => ArchLegs::Riscv64,
+        Some(other) => {
+            eprintln!("icount: --arch {other} is not an architecture (aarch64 or riscv64)");
+            return false;
+        }
+    };
+    if legs.aarch64() && !icount_leg("aarch64", RUNNER, TARGET) {
+        return false;
+    }
+    if legs.riscv64() && !icount_leg("riscv64", "scripts/qemu-runner-riscv64.sh", RISCV_TARGET) {
+        return false;
+    }
+    true
+}
+
+/// One ISA's instrument run: build, boot, read the transcript, report.
+fn icount_leg(arch: &str, runner: &str, target: &str) -> bool {
+    if !cargo(&[
+        "build",
+        "-p",
+        "kernel",
+        "--features",
+        "icount",
+        "--target",
+        target,
+    ]) {
+        return false;
+    }
+
+    eprintln!();
+    eprintln!(
+        "--- icount: {arch}, single hart, TCG + icount (one instruction = one nanosecond) ---"
+    );
+
+    let mut cmd = Command::new(runner);
+    cmd.arg(format!("target/{target}/debug/kernel"));
+    cmd.args(["-icount", "shift=0,sleep=off"]);
+    // One hart, for the reason the bench instrument pins it and the placement probe can never move
+    // here: under `-icount` all vCPUs share ONE virtual clock, and an idle secondary parked in `wfi`
+    // jumps that clock forward to the next event. A timer measurement on four harts would be
+    // measuring three other harts' idle jumps. See notes/benchmarks.md.
+    cmd.env("NIFE_SMP", "1");
+    // No accelerator: HVF has no icount at all (it runs the physical core, which is the whole point
+    // of it), so a stale `NIFE_ACCEL` from the caller's shell would silently produce wall-clock
+    // numbers wearing instruction units. The guest's own calibration refuses that case too; this
+    // stops it happening rather than catching it.
+    cmd.env_remove("NIFE_ACCEL");
+    // And no devices. Every one of these adds a source of interrupts, and an interrupt that is not
+    // the timer landing inside the measured window would show up as the timer handler being late.
+    // The suite attaches them because its tests assert they are present; this boot drives none of
+    // them, so a variable left set by an earlier `script/test` in the same shell must not reach it.
+    for device in [
+        "NIFE_GPU",
+        "NIFE_KBD",
+        "NIFE_RNG",
+        "NIFE_NVME",
+        "NIFE_NET",
+        "NIFE_DISK",
+        "NIFE_INITRD",
+        "NIFE_GPU_MON",
+    ] {
+        cmd.env_remove(device);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("icount: failed to start the runner: {e}");
+            return false;
+        }
+    };
+
+    use std::io::BufRead;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::io::BufReader::new(stdout);
+    let mut done = false;
+    let mut panicked = false;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        // The guest's own lines, verbatim: the numbers are the deliverable, not a summary of them.
+        if let Some(rest) = line.strip_prefix("icount: ") {
+            eprintln!("  {rest}");
+            if rest == "done" {
+                done = true;
+                break;
+            }
+            continue;
+        }
+        // A violated claim is a panic in the guest. Print the whole panic, since its message is
+        // written to say which claim moved and by how much.
+        if line.contains("[PANIC]") {
+            panicked = true;
+        }
+        if panicked {
+            eprintln!("  {line}");
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if panicked {
+        eprintln!("icount: {arch} FAILED a claim (the panic above says which)");
+        return false;
+    }
+    if !done {
+        eprintln!("icount: {arch} QEMU ended before printing `icount: done`; no verdict");
+        return false;
+    }
+    eprintln!("icount: {arch} claims hold");
     true
 }
 

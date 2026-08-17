@@ -129,6 +129,13 @@ measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 [features]
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.
 bench = []
+# The instruction-count instrument (milestone 78): boot under `-icount shift=0,sleep=off`, where
+# virtual time is a deterministic function of instructions retired, and assert the two timing claims
+# no wall-clock test can make. Its own feature rather than a flag on `bench` so the benchmark binary
+# does not move: icount counts drift with codegen (notes/benchmarks.md), and a baseline that had to
+# be re-saved because an unrelated instrument was added to the same build is a tripwire that just
+# lost its history. See script/icount and kernel/src/icount.rs. Name provisional.
+icount = []
 # The init boot (milestone 19d.2c): userspace init is the boot path and brings up the system's
 # console, rather than the kernel wiring services directly. See script/initboot / xtask.
 initboot = []

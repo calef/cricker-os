@@ -163,7 +163,11 @@ fn start(interval: u64) {
 /// the grid to now. Linux calls this the same thing every kernel calls it: dropping ticks.
 fn rearm(interval: u64) {
     let now = CNTVCT_EL0.get();
-    let mut next = CNTV_CVAL_EL0.get() + interval;
+    // The deadline that just fired, named rather than folded into the sum below: milestone 78's
+    // instruction-count instrument compares the arrival against it, and a value read after the
+    // write is a different value.
+    let fired = CNTV_CVAL_EL0.get();
+    let mut next = fired + interval;
 
     if next <= now {
         MISSED_TICKS[cpu::id()].fetch_add(1, Ordering::Relaxed);
@@ -177,6 +181,66 @@ fn rearm(interval: u64) {
     }
 
     CNTV_CVAL_EL0.set(next);
+
+    // The instruction-count instrument (milestone 78), in the boot mode that owns it and nowhere
+    // else: three relaxed counters, after the deadline is armed so the measured span is the whole
+    // handler rather than a prefix of it. Absent from the test and shipping builds, so what this
+    // number describes is the handler that ships. See kernel/src/icount.rs.
+    #[cfg(feature = "icount")]
+    crate::icount::tick_trace::record(fired, now, CNTVCT_EL0.get());
+}
+
+/// **Instructions between a deadline and the handler observing it** (milestone 78's instrument),
+/// the ceiling `icount::run` asserts.
+///
+/// Interrupt delivery, the vector, the register save, `exception_dispatch`, the GIC acknowledge and
+/// `tick`'s counter bump, in the debug build this boot compiles. Measured rather than reasoned: the
+/// run prints what it saw beside this number, so the margin is visible. The value is a ceiling with
+/// room for ordinary codegen movement, not a baseline; a change that halves it is not a failure and
+/// a change that doubles it is a fact worth stopping for.
+#[cfg(feature = "icount")]
+pub const ARRIVAL_BOUND: u64 = 2_000;
+
+/// **Instructions from a deadline to the next one being armed** (milestone 78's instrument): the
+/// whole handler, which is [`ARRIVAL_BOUND`]'s span plus the tick bookkeeping and the `CNTV_CVAL_EL0`
+/// write.
+///
+/// This is the claim the missed-tick assertions could never make. A miss is this number exceeding
+/// one tick period (625,000 instructions of virtual time at 100 Hz), so the bound here is more than
+/// two orders of magnitude tighter than the thing it replaces, and unlike it, nothing the host does
+/// can move it.
+#[cfg(feature = "icount")]
+pub const HANDLER_BOUND: u64 = 2_500;
+
+/// Execute `2 * iters` instructions and return that count, so `icount::calibrate` can check the
+/// virtual clock against a known instruction count and refuse to measure anything if this boot is
+/// not on the instrument.
+///
+/// The loop is written in assembly on purpose. The whole value of the check is that the expected
+/// instruction count is *known*, and a Rust loop's count is whatever the optimizer decided this
+/// week. `subs`/`b.ne` is two instructions per iteration on every aarch64 that has ever existed.
+///
+/// **The return is the loop body only.** Materializing the operand costs the compiler a `mov` or
+/// two either side, which is why the caller's tolerance is a percentage of a seven-figure window
+/// rather than an equality: a handful of setup instructions must not be the thing that decides
+/// whether the instrument is believed.
+///
+/// Here rather than in `icount.rs` because DECISIONS §3 puts every `asm!` under `arch/`.
+#[cfg(feature = "icount")]
+pub fn calibration_loop(iters: u64) -> u64 {
+    // SAFETY: a self-contained counted loop in a caller-saved scratch register. It touches no
+    // memory, makes no call, and leaves the register dead, which is what the operand spec and
+    // `nomem`/`nostack` state.
+    unsafe {
+        core::arch::asm!(
+            "2:",
+            "subs {n}, {n}, #1",
+            "b.ne 2b",
+            n = inout(reg) iters => _,
+            options(nomem, nostack),
+        );
+    }
+    2 * iters
 }
 
 /// Deadlines that had already passed by the time we re-armed. **Should be zero.** A nonzero

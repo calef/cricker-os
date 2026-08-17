@@ -26,6 +26,18 @@
 // *only* on riscv64, so the aarch64 build keeps full dead-code checking; it goes away if the RISC-V
 // boot is ever wired into the shared path instead of halting. See notes/riscv-port.md.
 
+// **The instruction-count boot compiles the whole kernel and runs the timer** (milestone 78,
+// `script/icount`). Like the bench boot it diverges before the tour, so the tour, the userspace
+// bring-up and everything reachable only from them are genuinely unreferenced in this one
+// configuration.
+//
+// One crate-level allow rather than a `cfg_attr` at each of the dozen sites the bench feature marks
+// individually. That is a deliberate trade and it is the smaller half: those sites are in
+// `sched.rs`, `user.rs` and `main.rs`, which every lane touches, and an allow that is scoped to a
+// single boot mode costs nothing anywhere else. The normal, test, shell, initboot and bench builds
+// keep full dead-code checking, so nothing this hides can reach a build anyone ships or gates on.
+#![cfg_attr(feature = "icount", allow(dead_code))]
+
 mod arch;
 #[cfg(feature = "bench")]
 mod bench;
@@ -33,6 +45,8 @@ mod cap;
 mod console;
 mod cpu;
 mod drivers;
+#[cfg(feature = "icount")]
+mod icount;
 mod interrupt_stack;
 mod iommu;
 mod kmem;
@@ -241,6 +255,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
         #[cfg(feature = "bench")]
         bench::run();
+
+        // The instruction-count boot (milestone 78, `script/icount`) diverges here too, on the ISA
+        // whose claim it was written for: SBI's `set_timer` is write-only, so this is the only place
+        // in the tree that proves the firmware was armed with the deadline the kernel recorded.
+        #[cfg(feature = "icount")]
+        icount::run();
 
         // A `shell` build hands the machine to userspace init here and parks, instead of the tour.
         // The kernel loads `system_initializer` from the initrd, grants it the NS16550 and the UART interrupt,
@@ -708,7 +728,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     #[cfg(feature = "bench")]
     bench::run();
 
-    #[cfg(not(any(test, feature = "bench")))]
+    // The instruction-count boot (milestone 78, `script/icount`): assert the two timing claims on
+    // the deterministic clock and park. Diverges, like the bench boot beside it.
+    #[cfg(feature = "icount")]
+    icount::run();
+
+    #[cfg(not(any(test, feature = "bench", feature = "icount")))]
     {
         use aarch64_cpu::registers::CurrentEL;
         use tock_registers::interfaces::Readable;
@@ -995,7 +1020,8 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         }
     }
 
-    #[cfg(not(feature = "bench"))] // bench::run diverged above; this is everyone else's parking
+    // bench::run and icount::run both diverged above; this is everyone else's parking.
+    #[cfg(not(any(feature = "bench", feature = "icount")))]
     arch::halt()
 }
 

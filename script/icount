@@ -1,0 +1,31 @@
+#!/bin/sh
+# script/icount: the instruction-count instrument (milestone 78).
+#
+#   script/icount                    both ISAs
+#   script/icount --arch aarch64     one leg
+#   script/icount --arch riscv64
+#
+# Boots a `--features icount` kernel under `-icount shift=0,sleep=off`, where QEMU's virtual clock
+# advances by exactly one nanosecond per guest instruction retired and by nothing else. The guest
+# asserts two claims that no wall-clock test on either ISA can make, because from inside the guest a
+# slow handler and a descheduled emulator are the same observation:
+#
+#   1. the timer fired at the deadline the kernel armed (on riscv64, that SBI was armed with the
+#      DEADLINE word rather than with something else that keeps the array looking right), and
+#   2. the handler takes fewer than N instructions, deadline to re-armed.
+#
+# It also asserts zero missed ticks, which is only assertable here: the miss taxonomy on both ISAs
+# exists to tell a slow handler from a descheduled emulator, and virtual time has no deschedules.
+#
+# **Not part of script/test, deliberately.** `-icount` changes what QEMU is (it serializes, it gives
+# every vCPU one shared virtual clock, and it is slower), so putting it on the test path would change
+# what all ~400 tests measure in order to sharpen two of them. This is its own boot for the same
+# reason script/bench is. See design/roadmap/78-load-sensitive-assertions.md and
+# notes/instruction-clock.md.
+#
+# Name: provisional. calef names the scripts, the crates and the programs (AGENTS.md); this one
+# borrows QEMU's own flag, which is the term of art a reader already knows.
+
+set -e
+cd "$(dirname "$0")/.."
+exec cargo xtask icount "$@"

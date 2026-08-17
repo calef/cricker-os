@@ -205,7 +205,12 @@ pub fn tick() {
 fn rearm() {
     let id = cpu::id();
     let now = now();
-    let mut next = DEADLINE[id].load(Ordering::Relaxed) + interval();
+    // The deadline that just fired, named rather than folded into the sum below: milestone 78's
+    // instruction-count instrument compares the arrival against it, and on this ISA that comparison
+    // is the whole claim (SBI's `set_timer` is write-only, so nothing else proves the firmware was
+    // armed with the word this array holds).
+    let fired = DEADLINE[id].load(Ordering::Relaxed);
+    let mut next = fired + interval();
 
     if next <= now {
         MISSED_TICKS[id].fetch_add(1, Ordering::Relaxed);
@@ -221,6 +226,67 @@ fn rearm() {
 
     DEADLINE[id].store(next, Ordering::Relaxed);
     sbi_set_timer(next);
+
+    // The instruction-count instrument (milestone 78), in the boot mode that owns it and nowhere
+    // else. **After the SBI call on purpose**: the `ecall` into M-mode firmware and back is a real
+    // part of what this handler costs and is the one part aarch64 does not pay, so a measurement
+    // that stopped short of it would compare two different spans across the ISAs. Absent from the
+    // test and shipping builds. See kernel/src/icount.rs.
+    #[cfg(feature = "icount")]
+    crate::icount::tick_trace::record(fired, now, super::timer::now());
+}
+
+/// **Instructions between a deadline and the handler observing it** (milestone 78's instrument),
+/// the ceiling `icount::run` asserts, and on this ISA the claim the milestone was left holding.
+///
+/// `DEADLINE` is the kernel's own array; SBI's `set_timer` is write-only, so reading it back proves
+/// only that we can remember what we meant to write. This bound is what proves the firmware was
+/// armed with it: the span from that word to the trap handler observing the interrupt, in
+/// instructions, on a clock the host cannot move. An implementation that kept `DEADLINE` on the
+/// grid and armed SBI from `now()` would pass every other test in this tree and leave this bound
+/// within a few ticks.
+#[cfg(feature = "icount")]
+pub const ARRIVAL_BOUND: u64 = 1_500;
+
+/// **Instructions from a deadline to the next one being armed** (milestone 78's instrument): the
+/// whole handler, [`ARRIVAL_BOUND`]'s span plus the tick bookkeeping, the `DEADLINE` store and the
+/// SBI `ecall` that arms the firmware.
+///
+/// Larger than the aarch64 twin's for a reason that is real rather than sloppy: this ISA arms its
+/// timer through a firmware call, and the round trip into OpenSBI is inside the span. A miss is
+/// this number exceeding one tick period, which is 10,000,000 instructions of virtual time at
+/// 100 Hz, so the bound is three orders of magnitude tighter than the assertion it replaces.
+#[cfg(feature = "icount")]
+pub const HANDLER_BOUND: u64 = 2_500;
+
+/// Execute `2 * iters` instructions and return that count, so `icount::calibrate` can check the
+/// virtual clock against a known instruction count and refuse to measure anything if this boot is
+/// not on the instrument. The aarch64 twin, with this ISA's two-instruction loop.
+///
+/// `addi`/`bnez` is two instructions per iteration. Both may be assembled compressed on this target
+/// (`riscv64imac`), which changes their encoding and not their count: `-icount` counts instructions
+/// retired, and a compressed instruction is one.
+///
+/// **The return is the loop body only**; materializing the operand costs a couple of instructions
+/// either side, which is why the caller's tolerance is a percentage of a seven-figure window rather
+/// than an equality.
+///
+/// Here rather than in `icount.rs` because DECISIONS §3 puts every `asm!` under `arch/`.
+#[cfg(feature = "icount")]
+pub fn calibration_loop(iters: u64) -> u64 {
+    // SAFETY: a self-contained counted loop in a caller-saved scratch register. It touches no
+    // memory, makes no call, and leaves the register dead, which is what the operand spec and
+    // `nomem`/`nostack` state.
+    unsafe {
+        asm!(
+            "2:",
+            "addi {n}, {n}, -1",
+            "bnez {n}, 2b",
+            n = inout(reg) iters => _,
+            options(nomem, nostack),
+        );
+    }
+    2 * iters
 }
 
 /// Ticks since boot, **on this hart**.
