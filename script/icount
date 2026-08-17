@@ -24,8 +24,11 @@
 # This is its own boot for the same reason script/bench is. See
 # design/roadmap/78-load-sensitive-assertions.md and notes/instruction-clock.md.
 #
-# Name: provisional. calef names the scripts, the crates and the programs (AGENTS.md); this one
-# borrows QEMU's own flag, which is the term of art a reader already knows.
+# Name: unrecorded. Provisional, minted by milestone 78's lane on 2026-08-17 and not yet put to
+# calef, who names things. It borrows QEMU's own flag, `-icount`, on the "standard terms are already
+# right" argument: a reader who has met the emulator knows the word, and it is a noun (an instruction
+# count). Considered and set aside: `instruction-clock`, which names the mechanism the note is named
+# for but is longer to type and does not match the flag anyone would grep for.
 
 set -e
 cd "$(dirname "$0")/.."

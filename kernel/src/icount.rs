@@ -41,9 +41,10 @@
 //!
 //! `-icount` is not a flag that observes; it changes what QEMU is. Two things about it are
 //! disqualifying for a general test path, and **neither of them is speed**, which is worth saying
-//! because "icount is slower" is what this project's own notes assumed and it is not what the
-//! machine says (measured 2026-08-17: an identical compute-bound boot took 2.47-2.61 s under the
-//! instrument and 2.62-2.80 s without it, three runs each).
+//! because the milestone block states the cost as "icount is slower and changes what the suite
+//! measures" and the first half had never been measured. It is not slower on compute (2026-08-17: an
+//! identical boot took 2.47-2.61 s under the instrument and 2.62-2.80 s without it, three runs
+//! each). The second half is right, and is what the next two paragraphs are.
 //!
 //! It makes every vCPU share **one** virtual clock, so an idle hart parked in `wfi` jumps that clock
 //! forward to the next event and multi-hart timing becomes fiction. That is why this boot and the

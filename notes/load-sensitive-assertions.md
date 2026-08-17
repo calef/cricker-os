@@ -832,29 +832,41 @@ The claim that matters is riscv64's, because it is the one this milestone was le
 kernel remembers what it meant to write. The block names the exact residual: *"an implementation
 that maintains `DEADLINE` correctly and arms SBI with something else"*.
 
-So that implementation was built and run. One line in `rearm`, keeping the grid store and arming the
-firmware from `now` instead:
+So that implementation was built and run, twice, each a single line in `rearm` with the grid store
+left untouched beside it. Both were reverted.
 
-```rust
-DEADLINE[id].store(next, Ordering::Relaxed);
-sbi_set_timer(now + interval());   // injected, reverted
-```
+| injection | `script/icount --arch riscv64` | the riscv64 leg of `script/test` |
+|---|---|---|
+| `sbi_set_timer(now + interval())`: re-anchor every tick | **red**, arrival 420,400 instructions against a bound of 1,500 | **red**, `the_handler_keeps_up_when_no_lock_is_held` |
+| `sbi_set_timer(next + interval() / 4)`: a fixed offset, no drift, no misses, 100 Hz still exactly delivered | **red**, arrival 2,500,400 on every one of 64 ticks | **red**, `ticks_arrive_at_the_configured_rate` |
 
-| what saw it | verdict |
-|---|---|
-| `script/icount --arch riscv64` | **red**: "an interrupt arrived 420,400 instructions after the deadline it was armed against, over a bound of 1500" |
-| the riscv64 leg of `script/test`, whole suite | *(recorded in the milestone report)* |
-| `missed_ticks` during the icount run | **0**, so the miss counter never noticed |
-| the re-arm law (`ticks_arrive_at_the_configured_rate`) | passes by construction: `DEADLINE` was still on the grid |
+**The prediction was that the suite would miss them, and it did not. That is the useful part.** What
+the suite cannot do is say what is wrong. The first injection fails as *"the timer handler is taking
+longer than a whole tick period, with no lock held... Late by less than one interval means the
+handler itself is slow, which is this kernel's bug"*, which is false, and which is the assertion that
+broke #204, #210 and #215 in one afternoon. The second fails as *"no miss-free measurement window in
+eight tries: either the host is too contended to observe the grid, or the handler is slower than a
+whole tick period"*, whose first clause is an invitation to re-run.
 
-The middle row is the point of the exercise and the reason the instrument earns its keep: the defect
-is invisible to a wall clock because the interrupt still arrives, still arrives roughly on time, and
-still leaves every counter this suite reads looking exactly right.
+The icount message names the actual defect: *"either the trap path grew, or the timer was armed with
+something other than the deadline the kernel recorded"*, on a number that has no host term in it.
+
+**So what the instrument buys is diagnostic certainty rather than detection**, which is this
+milestone's own thesis rather than a lesser result. The block's cost line is that every red check
+here needs a human to decide "known or real", and that on 2026-08-03 the judgement was made six times
+and got the wrong answer twice. Both injections produce exactly that judgement call on the test path,
+and none of it on the instrument.
+
+A third injection asked what the instrument can *see* rather than whether it fires: exactly 200
+instructions added to the aarch64 `tick`. Arrival went 1,008 -> 1,216 and the handler 1,056 -> 1,264,
+both **+208** on every one of 64 ticks, with the eight-instruction residual (the loop's operand
+setup) smaller than one counter tick. That is the resolution measured, and it is what makes the
+instrument able to answer milestone 106's pricing question on aarch64.
 
 ### What the instrument cost, and a correction it forced
 
-This page, the block, and `notes/benchmarks.md` have all reached for "icount is slower" as the
-reason it belongs in the bench harness rather than on the test path. **Measured, that is wrong**:
+The block states the cost as *"icount is slower and changes what the suite measures"*, and the
+first half of that had never been measured. **It is wrong**:
 the same bench boot took 2.47-2.61 s under `-icount shift=0,sleep=off` and 2.62-2.80 s without it,
 three runs each, on the same binary. `sleep=off` fast-forwards virtual time through idling, which
 covers icount's per-instruction overhead.

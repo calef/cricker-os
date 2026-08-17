@@ -210,10 +210,19 @@ asserts the two claims above and one that came free.
 The aarch64 numbers are the same on all 64 ticks, minimum equal to maximum, which is the instrument
 proving itself rather than being argued for.
 
-**The riscv64 claim was proved by injection**, because it is the one that could not be made any
-other way: an implementation that keeps `DEADLINE` on the grid and arms SBI from `now()` (the exact
-residual this block named) sends the arrival latency to 420,400 instructions against a bound of
-1,500, while `missed_ticks` stays at zero and the re-arm law still passes.
+**The riscv64 claim was proved by injection**, twice, with the residual this block named built
+rather than argued about: an implementation that keeps `DEADLINE` on the grid and arms SBI from
+`now()` sends the arrival latency to 420,400 instructions against a bound of 1,500, and one that
+arms it a *fixed* quarter period off the grid (no drift, no misses, the delivered rate still exactly
+100 Hz) reads 2,500,400 on every tick.
+
+**And the prediction attached to those injections was wrong, which is the more useful finding.** The
+existing suite catches both. What it does not do is say what is wrong: the first fails as "the
+handler itself is slow, which is this kernel's bug" on the assertion that broke #204, #210 and #215,
+and the second as "either the host is too contended to observe the grid, or the handler is slower
+than a whole tick period". Both hand a reader the "known or real" judgement this block's own cost
+line is about. The instrument's value is diagnostic certainty rather than detection, and its message
+names the defect.
 
 **Three things it deliberately did not do.** It is not on the test path, and
 notes/instruction-clock.md carries the measured reason (not speed: one shared virtual clock, and
