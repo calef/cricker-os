@@ -409,6 +409,16 @@ and the difference is accounted rather than shrugged at:
   fault is real, it is not this milestone's, and the binary really was byte-identical between a red
   run and a green one.
 
+  **And the answer arrived on 2026-08-17, which vindicates the register and not the reasoning
+  beside it.** The recurring address proved nothing: a fault that reaches the exception vector's own
+  frame store walks `sp` down and stores upward in aligned steps, so its terminal store lands on the
+  guard base every time regardless of what `sp` was doing. What `x8` was telling you is exactly
+  right, though, and it is the whole diagnosis in one register: **the thread really was shallow on
+  slot 87's stack, because the stack had been unmapped under it.** A supervised corpse is published
+  `Dead` while still executing on its own kernel stack, and an out-of-band region reap frees that
+  stack before the corpse reaches `switch_to`. See notes/stack.md, "a kernel stack freed under its
+  owner", and milestone 124's block.
+
   **A correction worth keeping, because the wrong reading was reasonable and cost an hour.** The
   first pass at this decoded `FAR` through `phys_to_virt` (which is `pa | KERNEL_VA_BASE`), read the
   result as physical `0x1b3000` with a stray bit 36, and concluded the pointer was corrupted. Bit 36
