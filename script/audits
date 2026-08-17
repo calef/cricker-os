@@ -33,6 +33,7 @@
 #   script/audits --due       the tripwire: exit 1 if any kind is overdue, and say which trigger
 #   script/audits --check     structural validation of the index; non-zero on a problem (script/lint)
 #   script/audits --baseline  today's counts, to paste into a new baseline row
+#   script/audits --worklist  which documents a documentation sweep should read first (milestone 93)
 #
 # **What the four counted triggers actually count**, because a number nobody can re-derive is a
 # claim rather than evidence:
@@ -67,6 +68,15 @@
 #   commit they claim, so a mistyped baseline silently moves a trigger.
 # - **It cannot tell a report that says nothing from one that found nothing.** `fixed 0, minted 0,
 #   accepted 0` parses and passes.
+# - **`--worklist` ranks documents it can parse a citation out of, and says nothing about the rest.**
+#   138 of the 269 documents in its scope cite no code path it can resolve, and they are simply
+#   absent from the list rather than reported as clean. It also never reads a sentence: a document at
+#   the top may be perfectly true and one that is absent may be a year out of date. See
+#   notes/documentation-audit.md, which is where the sweep procedure and this heuristic's limits are
+#   written down.
+# - **Adding a kind takes a cadence row and, if it has uncountable triggers, a `JUDGMENT` entry.**
+#   The count triggers are index data on purpose; the judgment questions are prose that no table cell
+#   holds, so they are in this script. That is one thing to remember, and it is rung four.
 #
 # **`minted` rather than `milestone` in the disposition vocabulary, and the reason is a collision
 # with another gate rather than taste.** script/roadmap validates the phrase "milestone <number>"
@@ -100,9 +110,9 @@ import sys
 root, mode = sys.argv[1], sys.argv[2]
 index_path = os.path.join(root, "design", "audit-reports", "README.md")
 
-if mode not in ("", "--check", "--due", "--baseline"):
+if mode not in ("", "--check", "--due", "--baseline", "--worklist"):
     print(f"audits: unknown argument {mode!r} "
-          f"(no argument, --check, --due, or --baseline)", file=sys.stderr)
+          f"(no argument, --check, --due, --baseline, or --worklist)", file=sys.stderr)
     sys.exit(2)
 
 # The trigger names, in the order they are printed and in the order the cadence table's columns
@@ -113,6 +123,26 @@ LABEL = {
     "components": "components",
     "abi": "ABI constants",
     "packages": "external packages",
+}
+
+# The triggers no script can count, printed per kind under the kind they belong to. They are code
+# rather than index data on purpose, and it is worth knowing why given that the cadence numbers went
+# the other way: a number fits a table cell, and these are questions. A row shape that held one would
+# hold one question per kind and no more, which is already wrong for `security` (it has two), and a
+# free-form list in the index is a format for `--check` to police for no gain. The cost is that
+# adding a kind means editing this dict as well as adding a row; the count triggers, which are the
+# ones that actually fire, still need only the row. Recorded in the BUGS above.
+JUDGMENT = {
+    "security": [
+        "has a new component taken device or network authority since the last audit?",
+        "has this booted on a new machine class (a board, a cloud) since the last audit?",
+    ],
+    "documentation": [
+        "has a subsystem been rewritten inside its existing crate since the last sweep? That "
+        "moves no count here, and the note describing it from the outside is where it shows up.",
+        "has a decision superseded a plan that a note still prescribes? notes/cpu-models.md's "
+        "closing line was the 2026-08-03 exhibit.",
+    ],
 }
 
 CADENCE_HDR = ("| Kind | Milestones | Components | ABI constants | External packages | Weeks |")
@@ -307,6 +337,94 @@ if mode == "--baseline":
     sys.exit(0)
 
 
+# ---- the worklist: which documents a documentation sweep should read first ------
+#
+# Milestone 93's block asks for this and leaves the shape open: "a note whose cited code has changed
+# substantially since the note's last edit is the highest-value candidate for the next sweep, and git
+# can compute that; whether it becomes a signal or stays a sweep heuristic is a decision for whoever
+# builds this." It is a **heuristic, not a signal**: it never fails and nothing consumes its exit
+# status. A document at the top of this list is a good guess about where claim rot is, and a
+# confident guess about where it is not would be a lie, because the ranking cannot read a sentence.
+#
+# The rank is **how many of a document's cited files moved**, and the commit count only breaks ties.
+# Ranking by commits alone puts every document that mentions xtask/src/main.rs on top, because that
+# file and kernel/src/user/tests.rs are where every lane wires its test (CLAUDE.md names them as the
+# merge hotspot). A note where eight of its twelve cited files moved has more surface that could have
+# gone stale than one where a single hotspot moved thirty times.
+
+def worklist():
+    tracked = set(subprocess.run(["git", "-C", root, "ls-files"],
+                                 capture_output=True, text=True).stdout.split("\n"))
+    tracked.discard("")
+
+    # One walk of the whole history rather than two git calls per document. At 1,900 commits and 270
+    # documents the difference is a second against a minute, and a heuristic nobody waits for is a
+    # heuristic people run.
+    log = subprocess.run(["git", "-C", root, "log", "--format=%x00%cI", "--name-only"],
+                         capture_output=True, text=True).stdout
+    touched, when = {}, None
+    for line in log.split("\n"):
+        if line.startswith("\x00"):
+            when = line[1:]
+        elif line.strip():
+            touched.setdefault(line.strip(), []).append(when)
+
+    # A backticked path, or a markdown link target. Bare basenames (`sched.rs`) are deliberately not
+    # resolved: a basename is ambiguous across the tree, and every note in the sample that wrote one
+    # also wrote the full path somewhere near it. See BUGS in notes/documentation-audit.md.
+    cite = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9_]+)`|\]\(([^)#\s]+)\)")
+
+    rows = []
+    for doc in sorted(tracked):
+        if not doc.endswith(".md"):
+            continue
+        # notes/ and design/roadmap/ and the repository-root documents. design/decisions/ is out:
+        # a decision is a dated record of an argument, and code moving under it does not make it
+        # wrong, it makes it history. Superseding a decision is a new decision, not an edit.
+        if not (doc.startswith("notes/") or doc.startswith("design/roadmap/") or "/" not in doc):
+            continue
+        # CLAUDE.md is a symlink to AGENTS.md (they are one document with two names, for the
+        # cross-tool convention), and listing the same prose twice costs a slot on the list.
+        if os.path.islink(os.path.join(root, doc)):
+            continue
+        with open(os.path.join(root, doc), errors="replace") as f:
+            text = f.read()
+        cited = set()
+        for m in cite.finditer(text):
+            raw = m.group(1) or m.group(2)
+            for cand in (raw, os.path.normpath(os.path.join(os.path.dirname(doc), raw))):
+                if cand in tracked and not cand.endswith(".md"):
+                    cited.add(cand)
+        edited = touched.get(doc, [None])[0]
+        if edited is None:
+            continue
+        moved = {}
+        for path in cited:
+            n = sum(1 for t in touched.get(path, []) if t > edited)
+            if n:
+                moved[path] = n
+        if moved:
+            rows.append((len(moved), sum(moved.values()), doc, edited[:10], len(cited),
+                         sorted(moved.items(), key=lambda kv: -kv[1])))
+    rows.sort(reverse=True)
+    return rows
+
+
+if mode == "--worklist":
+    rows = worklist()
+    print("Documents whose cited code has moved since they were last edited, most-moved first.")
+    print("A heuristic for picking a documentation sweep's scope, never a verdict on a document:")
+    print("nothing here has read a sentence. See notes/documentation-audit.md.")
+    print()
+    print(f"{'moved/cited':>12}  {'commits':>7}  {'last edit':<11} document")
+    for n_moved, n_commits, doc, edited, n_cited, moved in rows[:30]:
+        print(f"{n_moved:>5}/{n_cited:<6}  {n_commits:>7}  {edited:<11} {doc}")
+        print(f"{'':>23}{', '.join(p for p, _ in moved[:3])}")
+    print()
+    print(f"{len(rows)} documents cite code that has moved under them.")
+    sys.exit(0)
+
+
 # ---- due, and why -------------------------------------------------------------
 
 today = datetime.date.today()
@@ -321,6 +439,8 @@ for kind in sorted(cadence):
         out.append(f"{kind:<12}  never audited")
         out.append("  DUE: no audit of this kind has ever run, and its cadence row says one is "
                    "expected")
+        for q in JUDGMENT.get(kind, []):
+            out.append(f"  ? {q}")
         out.append("")
         continue
 
@@ -355,17 +475,17 @@ for kind in sorted(cadence):
         out.append(f"  DUE: {'; '.join(fired)}")
     else:
         out.append("  not due")
+
+    # Printed every run, due or not, and under the kind rather than at the end, because a reader who
+    # has just been told "not due" is exactly the reader who has to answer these. Nothing standing
+    # behind them but somebody reading this, which is rung four and known to be the weakest part.
+    for q in JUDGMENT.get(kind, []):
+        out.append(f"  ? {q}")
     out.append("")
 
 print("\n".join(out))
-
-# Printed every run, due or not, because these two are the triggers no script can evaluate and the
-# only thing standing behind them is somebody reading this. Milestone 92 lists four event triggers;
-# the two above are counted, and these are not.
-print("The two triggers nothing here can count, which are a judgment and not a number:")
-print("  - has a new component taken device or network authority since the last audit?")
-print("  - has this booted on a new machine class (a board, a cloud) since the last audit?")
-print("  If either is yes, an audit is due regardless of everything above (milestone 92, §74).")
+print("The `?` lines are triggers nothing here can count, because they are a judgment and not a")
+print("number. If one is yes, that kind is due regardless of everything above (milestone 92, §74).")
 print()
 
 if due_kinds:

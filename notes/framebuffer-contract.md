@@ -215,7 +215,7 @@ That gap is closed, and by the host rather than the guest, because only the host
 
 QEMU's monitor works headlessly: `screendump FILE` writes a PPM of the scanout even with
 `-display none` (verified against QEMU 11.0.2). So the runners take a monitor socket
-(`CRICKER_GPU_MON`), and `cargo xtask`'s `cargo_test_with_scanout_check` drives it **while the
+(`NIFE_GPU_MON`), and `cargo xtask`'s `cargo_test_with_scanout_check` drives it **while the
 ordinary test run is happening**: it spawns the suite, and beside it polls the monitor every 100 ms,
 dumps the scanout, and compares the PPM against `gfx_proto::pixel`, the same definition the client
 painted from. The first match ends the polling. Both ISAs. On success it prints:
@@ -344,4 +344,4 @@ Deliberately not in rung one, each with the seam it will use:
 | enumeration | `kernel/src/pci.rs` (`find_gpu_device`) |
 | the spawn wiring | `kernel/src/user/display_service.rs` |
 | the tests | `kernel/src/user/display_tests.rs` |
-| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` (`CRICKER_GPU`) |
+| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` (`NIFE_GPU`) |

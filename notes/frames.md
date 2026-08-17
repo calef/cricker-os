@@ -430,7 +430,7 @@ and the difference is accounted rather than shrugged at:
   **That one frame wanted 2104 bytes more than all the headroom there was**, so any chain reaching the
   measured peak and then entering a reap could not fit. This milestone added one more spawned program
   to a margin that was already short, which is why it faulted here first. Fixed on `main`
-  (notes/stack-high-water.md), and `script/stack-frames` now fails the build on a frame that size.
+  (notes/stack-high-water.md), and `script/stack-frame-check` now fails the build on a frame that size.
 
   The general lesson is worth more than the bug: **the milestone a fault appears in is not
   necessarily the milestone that caused it**, and on a shared resource as invisible as stack depth,

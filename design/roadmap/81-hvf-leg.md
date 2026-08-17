@@ -2,7 +2,7 @@
 
 **Status: BUILT** 2026-08-04 (PR #95). Raised 2026-08-03, same survey as 79.
 
-The infrastructure exists and is used one-sidedly: `CRICKER_ACCEL=hvf` runs the kernel on the
+The infrastructure exists and is used one-sidedly: `NIFE_ACCEL=hvf` runs the kernel on the
 physical Apple Silicon core, `script/bench --real` and `script/server --hvf` use it, and `script/test`
 has never run there as a habit. That leaves the suite's only execution environments emulated ones,
 while a machine with real caches, real reordering, and a real GIC sits under the emulator the whole

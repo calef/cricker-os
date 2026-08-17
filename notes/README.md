@@ -527,6 +527,14 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [A security audit](security.md): an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
+- [The documentation sweep](documentation-audit.md): how to run one, and what counts as a finding.
+  Milestone 92's audit mechanism pointed at a second target, sharing its index, its tripwire and its
+  three dispositions rather than growing a twin. The disease is **claim rot**: a path that was
+  renamed, a number that grew, a "currently" describing a state that ended, a plan a later decision
+  superseded. Where the boundary with milestone 125 (a number in the prose is a claim) and milestone 117 (the
+  stranger test) falls, why `script/audits --worklist` is a heuristic and not a signal, and the rule
+  that makes the mechanism compound: **every sweep converts at least one class of claim into one a
+  gate re-derives.**
 - [Machine-checked proofs (Kani)](verification.md): the verification thesis (DECISIONS §14) in
   practice: the capability model is proved for *every* input, not just tested on the cases we wrote.
   Run by `script/verify`. Milestone 18 completed the spread inward: `capability`, then IPC (rendezvous and

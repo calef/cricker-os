@@ -21,10 +21,10 @@ already lets us **narrow** with `-cpu`, and narrowing is the whole idea.
 script/cpu-matrix                      # every model in the default list
 script/cpu-matrix sifive-u54           # just these
 script/test --arch riscv64 --cpu sifive-u54    # one model, by hand
-CRICKER_CPU=sifive-u54 cargo run -p kernel --target riscv64imac-unknown-none-elf
+NIFE_CPU=sifive-u54 cargo run -p kernel --target riscv64imac-unknown-none-elf
 ```
 
-`--cpu` reaches the QEMU runners as `CRICKER_CPU`, which both `scripts/qemu-runner-riscv64.sh` and
+`--cpu` reaches the QEMU runners as `NIFE_CPU`, which both `scripts/qemu-runner-riscv64.sh` and
 `scripts/qemu-runner-aarch64.sh` read. Unset, they use what they always used: `rv64` on riscv64,
 `cortex-a72` on aarch64. Nothing that existed before this flag changed its meaning.
 
@@ -35,7 +35,7 @@ ran both legs unconditionally. Its default is still both, so the parity gate (DE
 be weakened by forgetting to pass it.
 
 Under HVF (`--hvf`) there is no CPU model to pick: the guest runs the physical Apple core, so
-`-cpu host` is mandatory. `CRICKER_CPU` set to anything else there is a hard error rather than a
+`-cpu host` is mandatory. `NIFE_CPU` set to anything else there is a hard error rather than a
 value silently ignored.
 
 ## The result: the suite passes on all five models
@@ -201,7 +201,7 @@ through SBI, so it works on both.
   failing branch.** The board will be the first machine that can. Until then the unconditional
   `sfence.vma` in `write_satp` is what keeps address spaces from aliasing, and it stays.
 
-- **The matrix runs riscv64 only.** `CRICKER_CPU` works on the aarch64 runner too, and nothing uses
+- **The matrix runs riscv64 only.** `NIFE_CPU` works on the aarch64 runner too, and nothing uses
   it: QEMU's aarch64 models are not a live question for this project the way the RISC-V ones are,
   because there is no aarch64 board arriving. If a Pi 4 port happens, `-cpu cortex-a72` versus
   `cortex-a53` is the same exercise and the mechanism is already there.
