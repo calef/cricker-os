@@ -1502,9 +1502,9 @@ file is already dirty, so it cannot restore over an edit it did not make. `cargo
 filesystem built at that level rather than a mixed one. **The tree's committed value is unchanged at
 5.** This sweep measures; it does not decide.
 
-**The machine was loaded, so the control does more here than select rounds.** Thirty passes ran over
+**The machine was loaded, so the control does more here than select rounds.** Twenty passes ran over
 the six levels, interleaved (one pass sweeps 0 through 5, then the next), on a host at load averages
-of 6 to 18 with three other lanes gating. That is outside the load 4 to 9 milestone 38 took its own
+of 5.5 to 21 with three other lanes gating. That is outside the load 4 to 9 milestone 38 took its own
 figures at, and keeping only the rounds that pass a 2% control would have left one or two per level.
 
 So the primary figure below is a **ratio**: each phase divided by the **same round's** `fs_read`.
@@ -1517,8 +1517,8 @@ guest that second.
 
 **Two runs taken at an ordinary load are the evidence that the normalisation invents nothing.** Before
 the sweep, at load 6.9 and 7.3, single runs at level 5 and level 0 gave a sequential read of
-1,466,327 ns and 257,893 ns. The ratio method over thirty noisy passes puts them at 1,452,286 and
-260,569: **0.9% and 1.0% apart**. The raw minimums are printed beside the normalised figures, and
+1,466,327 ns and 257,893 ns. The ratio method over twenty passes at loads from 5.5 to 21 puts them at 1,453,963 and
+258,582: **0.8% and 0.3% apart**. The raw minimums are printed beside the normalised figures, and
 where the two disagree the disagreement is the noise rather than a finding.
 
 ### The sweep
@@ -1528,23 +1528,23 @@ ns per 4 KiB, with MiB/s in brackets. Level 5 is the tree's shipped value, so th
 
 | record level | record | seq read | rand read | record read | seq write | rand write |
 |---|---|---|---|---|---|---|
-| **0** | 4 KiB | 260,569 (15.0) | 261,837 (14.9) | 262,902 (14.9) | 797,224 (4.9) | 879,609 (4.4) |
-| **1** | 8 KiB | 280,063 (13.9) | 283,705 (13.8) | 279,668 (14.0) | 769,699 (5.1) | 909,632 (4.3) |
-| **2** | 16 KiB | 356,165 (11.0) | 359,856 (10.9) | 359,092 (10.9) | 887,591 (4.4) | 1,080,327 (3.6) |
-| **3** | 32 KiB | 513,841 (7.6) | 522,121 (7.5) | 518,966 (7.5) | 1,059,535 (3.7) | 1,397,901 (2.8) |
-| **4** | 64 KiB | 832,868 (4.7) | 842,414 (4.6) | 844,264 (4.6) | 1,524,098 (2.6) | 2,059,930 (1.9) |
-| **5** | 128 KiB | 1,452,286 (2.7) | 1,459,497 (2.7) | 1,458,567 (2.7) | 2,410,489 (1.6) | 3,299,884 (1.2) |
+| **0** | 4 KiB | 258,582 (15.1) | 261,918 (14.9) | 262,883 (14.9) | 790,317 (4.9) | 881,395 (4.4) |
+| **1** | 8 KiB | 280,262 (13.9) | 281,607 (13.9) | 279,648 (14.0) | 769,266 (5.1) | 911,009 (4.3) |
+| **2** | 16 KiB | 355,002 (11.0) | 359,628 (10.9) | 359,342 (10.9) | 870,776 (4.5) | 1,079,208 (3.6) |
+| **3** | 32 KiB | 517,314 (7.6) | 521,923 (7.5) | 518,700 (7.5) | 1,058,267 (3.7) | 1,398,535 (2.8) |
+| **4** | 64 KiB | 836,690 (4.7) | 839,899 (4.7) | 840,427 (4.6) | 1,520,484 (2.6) | 2,056,411 (1.9) |
+| **5** | 128 KiB | 1,453,963 (2.7) | 1,458,916 (2.7) | 1,458,735 (2.7) | 2,408,470 (1.6) | 3,331,724 (1.2) |
 
 The raw minimum of every round at each level, with no normalisation at all, in ns:
 
 | record level | seq read | rand read | record read | seq write | rand write |
 |---|---|---|---|---|---|
-| 0 | 259,138 | 251,037 | 253,507 | 768,457 | 868,865 |
+| 0 | 256,296 | 251,037 | 251,311 | 767,722 | 868,865 |
 | 1 | 268,126 | 268,806 | 264,532 | 720,203 | 879,846 |
-| 2 | 338,488 | 333,764 | 336,788 | 840,401 | 1,018,608 |
-| 3 | 506,940 | 512,699 | 513,431 | 1,050,055 | 1,367,542 |
-| 4 | 810,257 | 836,729 | 823,514 | 1,505,937 | 2,016,396 |
-| 5 | 1,462,972 | 1,467,532 | 1,399,981 | 2,369,916 | 3,260,817 |
+| 2 | 338,488 | 333,764 | 336,788 | 805,264 | 1,018,608 |
+| 3 | 506,940 | 512,699 | 513,431 | 1,043,946 | 1,367,542 |
+| 4 | 810,257 | 830,180 | 823,514 | 1,505,937 | 2,016,396 |
+| 5 | 1,445,499 | 1,462,345 | 1,399,981 | 2,357,163 | 3,260,817 |
 
 ### One straight line fits all six points, and that is the result
 
@@ -1553,30 +1553,30 @@ holding at every record size. Fitting `cost = a + b x 2^level` by least squares:
 
 | phase | `a`, fixed per request | `b`, per 4 KiB block | residual at levels 0..5 |
 |---|---|---|---|
-| `fs_seq_read` | 207,767 ns | 38,876 ns | +5.3 -1.9 -2.0 -1.0 +0.4 +0.0 % |
-| `fs_rand_read` | 211,584 ns | 39,046 ns | +4.3 -2.1 -2.2 -0.4 +0.7 -0.1 % |
-| `fs_record_read` | 210,183 ns | 39,085 ns | +5.2 -3.1 -2.1 -0.8 +1.0 -0.2 % |
-| `fs_seq_write` | 679,144 ns | 53,552 ns | +8.1 -2.2 -0.6 -4.5 -0.8 +0.7 % |
-| `fs_rand_write` | 773,620 ns | 79,136 ns | +3.1 -2.4 -0.9 -0.6 +1.0 -0.2 % |
+| `fs_seq_read` | 207,679 ns | 38,980 ns | +4.6 -1.9 -2.4 -0.4 +0.6 -0.1 % |
+| `fs_rand_read` | 210,769 ns | 39,036 ns | +4.6 -2.6 -2.0 -0.2 +0.5 -0.1 % |
+| `fs_record_read` | 209,832 ns | 39,059 ns | +5.3 -3.0 -1.9 -0.7 +0.7 -0.1 % |
+| `fs_seq_write` | 672,199 ns | 53,720 ns | +8.1 -1.3 -1.9 -4.1 -0.7 +0.7 % |
+| `fs_rand_write` | 769,202 ns | 80,049 ns | +3.6 -2.0 -0.9 -0.8 +0.3 +0.0 % |
 
-**Read a request as two terms**: about **208 us** the record level does not touch, plus **38.9 us for
+**Read a request as two terms**: about **208 us** the record level does not touch, plus **39.0 us for
 every 4 KiB block the record holds**. At level 5 the second term is 32 blocks and swamps the first; at
 level 0 it is one block and the first term is 80% of the total.
 
 **That corrects a constant this page has been quoting.** Milestone 38's **46.2 us per block** came
 from dividing one measurement by 32, so it charged the per-request metadata walk to the blocks. It is
 an average rather than a marginal cost. The marginal cost of a block through the confined block server
-is **38.9 us**, and the per-request metadata walk is a separate 208 us, which is about 5.3 blocks at
+is **39.0 us**, and the per-request metadata walk is a separate 208 us, which is about 5.3 blocks at
 that price. Both readings describe the same measurement; the sweep can separate them because it has
-six points and a slope. The parity claim survives and gets slightly stronger: 38.9 us against Linux's
+six points and a slope. The parity claim survives and gets slightly stronger: 39.0 us against Linux's
 38.7 to 53.3 us for a raw 4 KiB virtio read at this tier.
 
 **The writes decompose the same way, and they say out loud what a copy-on-write write is.** A random
-write's slope is **79.1 us per block, 2.03 times the read slope**: the record is read and then
-written, exactly as copy-on-write says. A sequential write's slope is lower, **53.6 us**, because a
+write's slope is **80.0 us per block, 2.05 times the read slope**: the record is read and then
+written, exactly as copy-on-write says. A sequential write's slope is lower, **53.7 us**, because a
 growing record doubles its stored level rather than rewriting a full one, which is the mechanism
 behind milestone 38's "a sequential write is 55 blocks and a random write is 74". Both write
-intercepts are far larger than the read's, 679 us and 774 us against 208: that is the transaction,
+intercepts are far larger than the read's, 672 us and 769 us against 208: that is the transaction,
 which allocates, rewrites the node and commits to the header ring on **every request**, and no record
 level touches it either.
 
@@ -1591,7 +1591,7 @@ first**. At level 5 the whole file is eight direct pointers and there is no indi
 | | read | seq write | rand write | against today |
 |---|---|---|---|---|
 | **today**: 4 KiB request, 128 KiB record | 2.7 MiB/s | 1.6 | 1.2 | 1x |
-| **option 2 alone**: 4 KiB request, one-block record | **15.0** | 4.9 | 4.4 | 5.6x read, 3.0x write |
+| **option 2 alone**: 4 KiB request, one-block record | **15.1** | 4.9 | 4.4 | 5.6x read, 3.0x write |
 | **option 1 alone**: 64 KiB request, 128 KiB record | **43** | 26 | | 16x |
 | **options 1 and 2**: 64 KiB request, 64 KiB record | **75** | 41 | | 28x |
 | the block path's own ceiling | ~100 | | | 37x |
@@ -1603,7 +1603,7 @@ would cost if the contract could carry one. The derivation rests on something mi
 rather than assumed: `read_record` reads the block the pointer **stores** and only then checks the
 level asked for, so how many bytes a request asks for does not change what the store fetches. The
 extra cost of moving 64 KiB rather than 4 KiB into the client's pages is bounded by `fs_payload_fill`,
-which paints a page in 820 ns: sixteen pages is **13 us against 830**, under 2%.
+which paints a page in 820 ns: sixteen pages is **13 us against 837**, under 2%.
 
 - **Option 2, a record level matched to the transfer unit.** 5.6x on reads and 3.0x on writes,
   measured. It is the only one of the three that needs no agreement between two programs. Its costs
@@ -1612,7 +1612,7 @@ which paints a page in 820 ns: sixteen pages is **13 us against 830**, under 2%.
   2 buys, because it amortises **both** terms of the model over sixteen times the payload rather than
   only the record term. It is a wire change.
 - **Both.** 28x, and this is the combination worth wanting. Note what happens to the record level once
-  a request carries 64 KiB: level 4 and level 0 cost the **same** 830 us for that 64 KiB, because the
+  a request carries 64 KiB: level 4 and level 0 cost the **same** 837 us for that 64 KiB, because the
   fixed cost is per request and the block count is identical either way. **With a multi-page transfer
   the record level stops mattering for aligned bulk IO**, and option 2 collapses into "do not fetch
   more than the request asked for", which every level from 0 to 4 satisfies.
@@ -1626,7 +1626,7 @@ which paints a page in 820 ns: sixteen pages is **13 us against 830**, under 2%.
 **And the wall behind all three, which is new.** The ceiling row is not rhetorical. `IpcDisk::read_at`
 chunks every record into **one `fs_proto::blk` request per 4 KiB block**, because the block contract
 shares exactly one page with the block server, the same limit the file contract has. A 128 KiB record
-read is therefore 32 device round trips rather than one 128 KiB transfer, and 38.9 us is the price of
+read is therefore 32 device round trips rather than one 128 KiB transfer, and 39.0 us is the price of
 a round trip rather than of the bytes. At that price **no request size and no record level can exceed
 about 100 MiB/s**. Linux moves 64 KiB through one virtio request for 67 us at this same tier, which is
 where the remaining order of magnitude lives, and it is one layer below the one milestone 138 is
@@ -1638,19 +1638,33 @@ Two of the three costs milestone 138 named are avoided by not going all the way 
 
 **Compression is given up at level 0 and only at level 0.** RedoxFS compresses a record when its
 stored level is above zero (`write_node_inner_records`: `if decomp_level.0 > 0`), so a one-block
-record is never compressed and an 8 KiB record still is. Level 1 keeps lz4 and reads **7% slower than
+record is never compressed and an 8 KiB record still is. Level 1 keeps lz4 and reads **8% slower than
 level 0**, which is nothing against the 5.6x either of them buys, and it writes sequentially
-*faster* (769,699 ns against 797,224).
+*faster* (769,266 ns against 790,317).
 
 **More records means more block pointers, and the sweep shows it** in the level 0 residual above. It
 grows with the file rather than staying put: an 8 MiB Time Machine band file is 64 records at level 5
 and every one of them direct, against 1,024 records at level 1 of which 87% need an indirect block
-read, which is one more 38.9 us round trip on a 280 us request, about 14%. Level 1 halves the number
+read, which is one more 39.0 us round trip on a 280 us request, about 14%. Level 1 halves the number
 of records against level 0 for the same reason it keeps compression.
 
 **Copy-on-write means a write reads its record first**, and that cost *falls* with the level rather
-than rising: it is the 79.1 us per block slope, and at level 0 there is one block to read instead of
+than rising: it is the 80.0 us per block slope, and at level 0 there is one block to read instead of
 32. It is a cost of the large record, not of the small one.
+
+**And the space cost, which is the one this sweep can put a number on.** The same 560 KiB of
+documentation imported into a fresh 16 MiB image, counted as non-zero 4 KiB blocks:
+
+| record level | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| blocks used | 200 | 172 | 165 | 162 | 160 | 145 |
+| against level 5 | **+38%** | +19% | +14% | +12% | +10% | 1x |
+
+That is compression and metadata together, on text, which is the payload most favourable to lz4.
+Level 0 gives up both and pays 38%; level 1 keeps compression and pays 19%, and the 19% is the
+pointers rather than the entropy. **An incompressible payload would show only the pointer half**, so
+a backup workload should expect something closer to the 10% at level 4 than to the 38%, and this
+sweep did not measure that case.
 
 ### How a level is chosen, and the correction the code forced
 
@@ -1709,8 +1723,8 @@ thing a 128 KiB record does, because a growing record doubles its stored level i
 random write columns at every level. It is a discount on a bad price rather than a case for the price.
 
 What that costs a real backup, at today's setting and at the two that are one decision away: a 100 GB
-first backup is **17 hours** of sequential writing at 1.6 MiB/s, **5.6 hours** at option 2's 4.9, and
-**41 minutes** at the 41 MiB/s of options 1 and 2 together. Those are the write path alone, with no
+first backup is **17.6 hours** of sequential writing at 1.62 MiB/s, **5.8 hours** at option 2's 4.94, and
+**42 minutes** at the 41 MiB/s of options 1 and 2 together. Those are the write path alone, with no
 network, no SMB, and no second copy of anything.
 
 ### BUGS
@@ -1735,7 +1749,8 @@ network, no SMB, and no second copy of anything.
 - **Option 1 is priced by derivation and not by measurement**, because it cannot be measured without
   being built: no request in this system can carry more than a page. The assumption it rests on is
   named where the price is, and it is one milestone 38 measured rather than assumed.
-- **The space cost of a lower record level was not measured.** Compression is given up at level 0 and
-  metadata grows at every level below 5, and this sweep priced both in time rather than in bytes. A
-  reader who cares how much of a 16 MiB image the same content occupies at each level has to run that
-  themselves.
+- **The space figures count non-zero blocks in a fresh image, which is not the allocator's own
+  answer.** A block a record has vacated keeps its old bytes, so the count would drift upward on an
+  image that had been rewritten; these images were made, imported into once, and never written
+  again, which is the case where the count and the allocation agree. RedoxFS's own free-block count
+  (`fs_proto::fs::STATFS`) would be exact and needs a guest or a verb the host tool does not have.

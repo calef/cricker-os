@@ -720,7 +720,7 @@ measurement.
 - **The block contract has the same one-page limit the file contract has, and it is the wall behind
   the record level.** `IpcDisk::read_at` chunks every record into one `fs_proto::blk` request per
   4 KiB block, so a 128 KiB record read is 32 device round trips rather than one 128 KiB transfer.
-  The measured marginal cost is ~38.9 us per block (notes/benchmarks.md), which puts a ceiling of
+  The measured marginal cost is ~39.0 us per block (notes/benchmarks.md), which puts a ceiling of
   about 100 MiB/s on this stack whatever the record level is and whatever the file contract carries.
   Linux moves 64 KiB through one virtio request for ~67 us at the same tier, and that is where the
   rest of the gap lives. Recorded rather than milestoned, per §71: it is one layer below what
