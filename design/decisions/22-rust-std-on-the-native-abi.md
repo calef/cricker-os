@@ -83,8 +83,13 @@ is: **a std program holds a directory capability at slot 4, and `File::open("foo
 the directory I was granted."** Everything else follows, and is enforced client-side before a byte
 reaches the wire so a would-be escape becomes a legible error rather than an `ENOENT`:
 
-- An absolute path, any `..`, and any nested path are **refused as `ErrorKind::InvalidFilename`**,
-  with a message naming which case it was. Deliberately **not** `PermissionDenied`: nothing consulted
+- An absolute path and any `..` are **refused as `ErrorKind::InvalidFilename`**, with a message
+  naming which case it was. A **nested path is a chain of attenuated descents** (milestone 122), one
+  `OPENDIR` per component, each hop asking for `DESCEND` plus what the final verb needs; the grant is
+  exactly as tight as it was, because a child's rights are its parent's intersected with the request.
+  This bullet refused nested paths outright until 2026-08-18, which was the honest statement of what
+  the binding then did rather than a principle: a chain of descents never had the authority problem,
+  only the machinery was missing. Deliberately **not** `PermissionDenied`: nothing consulted
   a permission, and there is no name here for what was asked, because no capability designates it.
   Mapping a capability refusal onto EPERM would smuggle in exactly the POSIX fiction this milestone
   exists to avoid. A name that is expressible but absent stays an ordinary `NotFound`, which is what
