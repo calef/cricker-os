@@ -1,0 +1,213 @@
+#!/bin/sh
+# script/repeat-under-load: run the suite N times with the host deliberately loaded, and record
+# what the load actually was. This is milestone 62's acceptance instrument.
+#
+# Usage:
+#   script/repeat-under-load                          # 12 runs, one spinner per core
+#   script/repeat-under-load -n 4 -s 8                # 4 runs, 8 spinners
+#   script/repeat-under-load -n 3 -s 0                # 3 runs, no induced load (the control)
+#   script/repeat-under-load -n 4 -- --arch riscv64   # extra args go to script/test
+#
+# Why this exists rather than a green run. A flake that fires one run in six is indistinguishable
+# from a fixed one until you have run it many times, so milestone 62's acceptance evidence is a
+# repeat count under load, not a green run (design/roadmap/62-time-sensitive-tests.md BUGS). The
+# recipe was already written prose in notes/load-sensitive-assertions.md and had been executed by
+# hand three times, each time producing a number nobody could reproduce. This is that recipe with
+# the measurement attached.
+#
+# The load is induced ON PURPOSE and the direction matters. Load causes false failures, not false
+# passes (notes/cpu-models.md BUGS), so a green run under load is conclusive where a quiet one is
+# not, and a red one is a lead rather than a verdict. Do not widen a bound to make this green;
+# milestone 62 forbids that by name and DECISIONS §61 records three lints dropped for that shape.
+#
+# What it records per run, because a load claim with no measurement is the thing this deletes:
+# elapsed seconds, the one-minute load average sampled every 10 s (minimum, mean, peak), and the
+# number of QEMU processes seen at each sample. A sample showing more QEMUs than this run started
+# means a neighbouring lane was gating at the same time, which is real contention and is worth
+# separating from the contention this script manufactures.
+#
+# Logs go under target/acceptance/<branch>-<pid>/, which is per-worktree and per-invocation. That
+# is deliberate: a shared scratchpad has clobbered two lanes' logs, and one of them then spent time
+# diagnosing a panic that was never its own, which is the false-red confusion this milestone
+# exists to abolish.
+#
+# Name: provisional, minted by milestone 62's lane on 2026-08-17 and not yet put to calef. It says
+# what the script does (repeat the suite while the host is loaded) rather than what it was built
+# for, because "acceptance" names one milestone's use of it and the instrument outlives that use.
+# Hyphenated per milestone 63's rule for this directory. Considered and not taken: `acceptance-run`
+# (names the occasion, not the mechanism) and `flake-hunt` (names a hope, and the script cannot
+# tell a flake from a regression, which is the whole reason its failure text says "a lead, not a
+# verdict").
+
+set -e
+cd "$(dirname "$0")/.."
+
+RUNS=12
+SPINNERS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)
+SAMPLE_SECONDS=10
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n) RUNS="$2"; shift 2 ;;
+        -s) SPINNERS="$2"; shift 2 ;;
+        --) shift; break ;;
+        -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+        *)
+            echo "repeat-under-load: unknown option '$1' (put script/test args after --)" >&2
+            exit 2
+            ;;
+    esac
+done
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo detached)
+OUT="target/acceptance/$BRANCH-$$"
+mkdir -p "$OUT"
+SUMMARY="$OUT/summary.md"
+
+# The one-minute load average, from uptime, on both macOS ("load averages: 4.14 4.86 4.29") and
+# Linux ("load average: 0.50, 0.40, 0.30"). Commas are stripped first so one parse serves both.
+load_now() {
+    uptime | tr ',' ' ' | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^averages?:$/) { print $(i + 1); exit }
+        }
+    }'
+}
+
+qemu_count() {
+    pgrep -l qemu 2>/dev/null | wc -l | tr -d ' '
+}
+
+# One suite run, its whole output in one file.
+#
+# `$SUITE` rather than a literal `script/test`, and that is not style. shellcheck matches the
+# command word by its LAST path element, so it reads `script/test` as the `test` builtin and warns
+# that the redirection is not a comparison (SC2065). `./script/test` warns identically; only
+# indirection through a variable does not. script/gates never hits this because it does not
+# redirect the call. Verified against shellcheck on 2026-08-17.
+SUITE="script/test"
+suite_run() {
+    suite_log="$1"
+    shift
+    "$SUITE" "$@" > "$suite_log" 2>&1
+}
+
+spinners_start() {
+    SPINNER_PIDS=""
+    i=0
+    while [ "$i" -lt "$SPINNERS" ]; do
+        # A busy loop in the shell itself: no build step, no dependency, and it competes for the
+        # same cores QEMU wants. `nice` is deliberately NOT used; a spinner that yields to
+        # everything is a load average with no contention behind it.
+        ( while :; do :; done ) &
+        SPINNER_PIDS="$SPINNER_PIDS $!"
+        i=$((i + 1))
+    done
+}
+
+spinners_stop() {
+    for p in $SPINNER_PIDS; do
+        kill "$p" 2>/dev/null || true
+    done
+    SPINNER_PIDS=""
+}
+
+# Killing the sampler and the spinners has to happen even when the suite dies or the operator
+# interrupts, or this script leaves eight busy loops on the machine for the next lane to find.
+cleanup() {
+    if [ -n "$SAMPLER_PID" ]; then
+        kill "$SAMPLER_PID" 2>/dev/null || true
+    fi
+    spinners_stop
+    return 0
+}
+SAMPLER_PID=""
+SPINNER_PIDS=""
+trap 'cleanup; exit 130' INT TERM
+trap cleanup EXIT
+
+{
+    echo "# acceptance run: $BRANCH"
+    echo
+    echo "- host: $(uname -srm), $(sysctl -n hw.model 2>/dev/null || echo unknown), \
+$(sysctl -n hw.ncpu 2>/dev/null || nproc) cores"
+    echo "- tree: $(git rev-parse --short HEAD)"
+    echo "- command: script/test $*"
+    echo "- runs: $RUNS, spinners per run: $SPINNERS"
+    echo "- started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo
+    echo "| run | result | seconds | 1-min load average (min/mean/peak) | peak QEMUs seen |"
+    echo "|---|---|---|---|---|"
+} > "$SUMMARY"
+
+echo "repeat-under-load: $RUNS runs, $SPINNERS spinners, logs in $OUT"
+echo "repeat-under-load: baseline load average before any spinner: $(load_now)"
+
+failures=0
+run=1
+while [ "$run" -le "$RUNS" ]; do
+    log="$OUT/run-$(printf '%02d' "$run").log"
+    samples="$OUT/run-$(printf '%02d' "$run").samples"
+    : > "$samples"
+
+    spinners_start
+    ( while :; do
+          echo "$(load_now) $(qemu_count)" >> "$samples"
+          sleep "$SAMPLE_SECONDS"
+      done ) &
+    SAMPLER_PID=$!
+
+    started=$(date +%s)
+    result="pass"
+    if ! suite_run "$log" "$@"; then
+        result="**FAIL**"
+        failures=$((failures + 1))
+    fi
+    elapsed=$(( $(date +%s) - started ))
+
+    kill "$SAMPLER_PID" 2>/dev/null || true
+    SAMPLER_PID=""
+    spinners_stop
+
+    stats=$(awk '
+        NR == 1 || $1 < min { min = $1 }
+        $1 > max { max = $1 }
+        $2 > qmax { qmax = $2 }
+        { sum += $1; n++ }
+        END {
+            if (n == 0) { print "n/a n/a n/a 0"; exit }
+            printf "%.1f %.1f %.1f %d", min, sum / n, max, qmax
+        }' "$samples")
+    lamin=$(echo "$stats" | awk '{print $1}')
+    lamean=$(echo "$stats" | awk '{print $2}')
+    lamax=$(echo "$stats" | awk '{print $3}')
+    qmax=$(echo "$stats" | awk '{print $4}')
+
+    echo "| $run | $result | $elapsed | $lamin / $lamean / $lamax | $qmax |" >> "$SUMMARY"
+    echo "repeat-under-load: run $run: $result in ${elapsed}s, load $lamin/$lamean/$lamax, \
+peak qemu $qmax"
+
+    run=$((run + 1))
+done
+
+{
+    echo
+    echo "- finished: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "- **$((RUNS - failures)) of $RUNS green**"
+} >> "$SUMMARY"
+
+echo
+cat "$SUMMARY"
+
+if [ "$failures" -gt 0 ]; then
+    echo >&2
+    echo "repeat-under-load: $failures of $RUNS runs failed. That is a lead, not a verdict." >&2
+    echo "Read the failing run's log in $OUT, then re-run that leg on a QUIET machine: load" >&2
+    echo "causes false failures, not false passes. Do NOT widen the bound to make it green." >&2
+    echo "See design/roadmap/62-time-sensitive-tests.md and notes/load-sensitive-assertions.md." >&2
+    exit 1
+fi
+
+echo
+echo "repeat-under-load: $RUNS of $RUNS green under load. A green run under load is conclusive;"
+echo "that is what makes this evidence rather than one lucky suite."

@@ -190,7 +190,7 @@ jobs:
       # bare-metal clang (milestone 36, DECISIONS §30). The test job gets this from script/bootstrap;
       # this job does not run bootstrap (it would install QEMU it never uses), so install clang here.
       # Ubuntu's clang carries every LLVM backend, including RISC-V.
-      # shellcheck too: script/lint gates the 40 `#!/bin/sh` scripts <!--count:sh-scripts--> on it.
+      # shellcheck too: script/lint gates the 41 `#!/bin/sh` scripts <!--count:sh-scripts--> on it.
       # (That number is re-derived from the tree by script/lint's counted-claims check; the marker is
       # what makes it a claim a machine keeps honest. See notes/counted-claims.md.) Installed explicitly
       # rather than relying on the runner image shipping it, so the gate cannot quietly vanish when
