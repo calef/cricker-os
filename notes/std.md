@@ -177,9 +177,33 @@ What binds, and how it maps to the contract:
   `Unsupported` (net_stack is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
   back negative and becomes `Unsupported`, the same answer a program with no net grants gets.
 
+- **`TcpListener::{bind, accept}`** -> `OP_LISTEN` and `OP_ACCEPT` (milestone 64). This is the
+  inbound half, and the reason it reads differently from everything above is that **a listening port
+  is an authority this program was granted or was not**. `net_stack` is spawned with a listen grant,
+  an inclusive port range, and refuses `LISTEN` outside it; `NO_LISTEN_GRANT` is the default, so a
+  std program on a stack nobody granted ports to is refused every port there is. The three contract
+  answers map to three `ErrorKind`s that tell a caller three different things to do:
+  `LISTEN_DENIED` is `PermissionDenied` (ask whoever spawned you; no other port will help),
+  `LISTEN_IN_USE` is `AddrInUse` (pick another port), and a refused `ACCEPT` is `WouldBlock` (the
+  listener is still armed, call again).
+
+  **A listener and a connection are two socket ids, and the listener never gets a frame.** That is
+  DECISIONS §25 showing through the PAL rather than a choice made here: the shared frame is the
+  granted resource and a listener carries no bytes, so it has nothing to grant. `accept` allocates a
+  *second* id, attaches that one's frame, and asks `OP_ACCEPT` to install the connection there;
+  `net_stack` refuses an accept into the listener's own id, so the POSIX move of turning a listening
+  descriptor into the connection in place is not expressible from this PAL.
+
+  **The peer address is `0.0.0.0:0`**, and it is a placeholder named as one. `accept` must return a
+  `SocketAddr` and the contract's reply carries no peer; reporting the real one is a wire change and
+  therefore a fork rather than a PAL decision (notes/net.md carries the two options).
+
 The concurrency model is the contract's: single-threaded, one synchronous exchange at a time. A
-program can hold up to `MAX_SOCKETS` (4) sockets at once and interleave them, but there is only ever
-one operation in flight, which is all a single-threaded process can do anyway.
+program can hold up to `MAX_SOCKETS` (6, raised from 4 by milestone 55) sockets at once and
+interleave them, but there is only ever
+one operation in flight, which is all a single-threaded process can do anyway. For a listener that
+means the backlog is **one connection deep**: the listener re-arms inside `ACCEPT`, so serving
+connections one after another works indefinitely, and serving two at once does not.
 
 **A finding, recorded honestly.** net_stack derives a socket's local port from its socket id
 (`LOCAL_PORT_BASE + sid`), so an id is not an ephemeral port that rotates; reopening a just-closed id
@@ -551,11 +575,11 @@ completes, not why the poll path did not.
   `Unsupported` from all of it, and the offline demo checks exactly that: same binary, no slot 4, and
   `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
   filesystem to look in.
-- **`net` is bound, but with recorded gaps.** `TcpStream` and outbound `UdpSocket` work; the honest
-  Unsupported list is `TcpListener` (the contract grew LISTEN and ACCEPT in milestone 107, so this
-  is now a gap in the PAL rather than in the contract; see notes/net.md for what binding it takes),
-  non-blocking mode and
-  read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
+- **`net` is bound, but with recorded gaps.** `TcpStream`, `TcpListener` and outbound `UdpSocket`
+  work; the honest Unsupported list is an accepted connection's **peer address** (the contract's
+  `ACCEPT` reply carries no peer, so it reads `0.0.0.0:0`; reporting it is a wire change and a fork,
+  see notes/net.md), non-blocking mode and read/write timeouts (the contract is blocking-only, no
+  poll verb), DNS via `lookup_host` (no
   resolver rides the contract, so `ToSocketAddrs` handles numeric addresses only, and a program that
   wants DNS does it as a plain UDP query, as the demo does), IPv6 (net_stack is IPv4-only), and `peek` /
   socket duplication / multicast join-leave (no contract verb backs them). `UdpSocket::recv_from`

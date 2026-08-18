@@ -637,6 +637,55 @@ matter of authority, 7778 binds, and asking for 7778 again on a second socket id
 `LISTEN_IN_USE`. No frame is attached until all of that has passed, which is the two-object claim
 proved by construction rather than by assertion.
 
+### The std client is a server too: `TcpListener` on this contract (milestone 64)
+
+Everything above is `socket_test_client`, which is hand-written and speaks the wire directly. The
+same inbound path is now reachable from **ordinary Rust**: `std::net::TcpListener::bind`, `accept`,
+`read_exact`, `write_all`, in a program that names no capability and no socket id
+(`patches/std-nife/overlay/std/src/sys/net/connection/nife.rs`). That is the difference between a
+crate compiling and a server running, and it is what milestone 55's Samba-shaped workload stands on.
+
+**The binding was mechanical, exactly as this note predicted, and the interesting part is what it
+did to the capability graph rather than to the code.** `start_net_std` used to pass
+`NO_LISTEN_GRANT` with a comment saying a grant would be authority nothing could spend. It now takes
+the grant as a parameter, so **the caller decides**, and the two callers decide differently:
+
+| the stack a `std_exerciser` is spawned over | `TcpListener::bind` | the pinned transcript |
+|---|---|---|
+| `NO_LISTEN_GRANT` | `PermissionDenied` | `std net on nife` / `listen refused` / `udp ok` / `tcp echo ok` |
+| `listen_grant(7778, 7778)` | granted | `std net on nife` / `listen ok` / `denied refused` / `in use refused` / `served 2` |
+
+Both are compared byte for byte on both ISAs, which is what makes the first row a **negative
+control** rather than a test that happens not to run: a change that widened the grant check would
+turn `listen refused` into `listen ok` and fail in a transcript diff. It costs that boot nothing,
+because that test already existed and already spawned a stack with no grant.
+
+**Three answers, three `ErrorKind`s**, and the mapping is the contract's own vocabulary rather than
+one invented in the PAL. `LISTEN_DENIED` becomes `PermissionDenied`, which is the one error here a
+caller cannot fix by trying elsewhere: no other port helps, because the answer was about authority.
+`LISTEN_IN_USE` becomes `AddrInUse`, which is the retryable one. A refused `ACCEPT` (nobody arrived
+inside the server's bounded wait) becomes `WouldBlock`, because the listener is still armed and
+calling again is the right response.
+
+**What the granted run does not do is the outbound half**, and that is a cost decision made in the
+open rather than an oversight. A net test spends minutes in `net_stack`'s userspace smoltcp poll, so
+a boot is the expensive unit in this suite; the outbound transcript is already proven by the run that
+is refused the port, so the granted run serves and stops.
+
+**One thing the contract cannot tell the PAL, and it is now a fork rather than a gap.**
+`std::net::TcpListener::accept` must return a `SocketAddr`, and `OP_ACCEPT`'s reply carries no peer,
+so what comes back is `0.0.0.0:0` and `peer_addr()` on an accepted stream reports the same. A server
+that logs its peers logs zeros. Two ways to fix it, both changes to what two programs agree on and
+therefore neither taken here: a **second reply word** (`reply` already carries two and `OP_ACCEPT`
+sends zero in the second), or the **frame's dead `dst` fields**, which is exactly the move a UDP
+`RECV` already makes with the datagram's source and would cost no format change at all. The second
+is cheaper and has the precedent; both are calef's.
+
+**The host prober now counts four rounds, not two**, because two guest programs listen on the
+forwarded port over one boot. It deliberately does not try to tell them apart: nothing on the host
+can see which guest process answered, and it does not need to, because each guest test asserts its
+own two rounds in its own transcript. What the host adds is the half no in-guest assertion can make.
+
 ### The aarch64 test boot has run out of memory, and this is the receipt
 
 That grant half wanted a test of its own, and could not have one. A second `net_stack` spawn costs a
@@ -721,10 +770,13 @@ decides whether a boot lives, is 14080 either way.)
 Two things this does **not** fix, both recorded rather than papered over:
 
 - **`virtio::MAX_DEVICES` is untouched.** `virtio::register` bumps a counter and never reuses a slot,
-  so the ninth receipt in that constant's comment still stands: the boot's ceiling is still "how many
+  so the receipts in that constant's comment still stand: the boot's ceiling is still "how many
   devices has this boot ever wired". Reusing a slot safely needs a generational name on the device
   table, because a stale `Object::Virtio` capability must not alias a fresh device, and that is a
-  capability-semantics change rather than a counter change. Its own lane.
+  capability-semantics change rather than a counter change. Its own lane. **Milestone 64 paid the
+  ninth receipt** (33, for the listener gate's second `net_stack`) and confirmed the other half of
+  the prediction from the other side: the memory ceiling really is gone, so what is left is only the
+  counter.
 - **The DMA page and the shadow ring are deliberately not returned**, ~2 frames per net service. The
   NIC still holds whatever receive buffers the dead driver posted, and handing those pages back to the
   allocator would let a live device write into somebody else's memory. Ending that safely means
@@ -732,13 +784,11 @@ Two things this does **not** fix, both recorded rather than papered over:
 
 ### What is still not proven, and what is deliberately out of scope
 
-- **`std::net::TcpListener` is still `Unsupported`.** The block asked whether the PAL binding lands
-  here or in milestone 27's follow-on, and the answer taken was: not here. The contract had to settle
-  first, and it now has, so the PAL work is small and mechanical: `TcpListener::bind` is `OP_LISTEN`
-  on a client-allocated socket id, `accept` is `OP_ACCEPT` into another one the PAL allocates and
-  attaches a frame to, and the std client's stack must be spawned with a listen grant instead of
-  `NO_LISTEN_GRANT`. `start_net_std` passes no grant today for exactly that reason: granting ports to
-  a client that cannot spend them would be a lie in the capability graph.
+- **`std::net::TcpListener` is bound** (milestone 64, 2026-08-18; this bullet used to say it was
+  still `Unsupported`). The prediction above was right in every particular: `bind` is `OP_LISTEN` on
+  a client-allocated socket id, `accept` is `OP_ACCEPT` into another one the PAL allocates and
+  attaches a frame to, and the std client's stack is now spawned with a real listen grant. See "The
+  std client is a server too" below, and notes/std.md.
 - **Only the mmio transport carries the inbound gate.** A PCIe twin would need a second host port,
   and the transport is orthogonal to the accept path, which the outbound gates already prove over
   both buses. This is the same reasoning that retired the PCIe DNS variant.

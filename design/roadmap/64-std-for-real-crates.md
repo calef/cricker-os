@@ -152,6 +152,37 @@ be sized against. **Then answer `File::open`'s resolution once, as a fork spanni
 than twice. Answered inside 64's PAL it will be a trick; answered as 47's namespace it is the design
 both milestones already point at.
 
+## The fourth pass: `TcpListener`, which was a binding and not a decision (2026-08-18)
+
+**Status does not move: still PARTIAL, gate still NONE.** The ranked list is not exhausted (rank 2's
+`std::os::unix` fallthrough, rank 3's threads and rank 19's `modified` all still want answers calef
+has not been asked for), so a flip to BUILT would be a claim this pass did not earn. What this pass
+did earn is the largest piece of *ordinary* work the list had left.
+
+`std::net::TcpListener` was `Unsupported`, and it had stopped being a contract gap at milestone 107:
+`LISTEN` and `ACCEPT` have been on the wire, with a listen grant behind them, since that milestone
+landed. The PAL is now bound to them, and nothing about it needed a decision. **`bind` is
+`OP_LISTEN`, `accept` is `OP_ACCEPT` into a second socket id with a frame attached**, and a listener
+carries no frame at all, because a listener carries no bytes (DECISIONS §25).
+
+**The authority is the interesting half, and it is what the gate is built around.** A listening port
+is a grant `net_stack` was spawned with, so the same `std_exerciser` binary does two different things
+on two boots and neither of them is a fallback:
+
+| the stack it was spawned over | what `TcpListener::bind` answers | what the program prints |
+|---|---|---|
+| `NO_LISTEN_GRANT` | `PermissionDenied` | `listen refused`, then the outbound transcript |
+| `listen_grant(7778, 7778)` | granted | `listen ok`, and it serves two host connections |
+
+Both transcripts are pinned byte for byte on both ISAs, so a change that widened the grant check
+would turn `listen refused` into `listen ok` and fail in a diff rather than pass with more authority
+than it was given. The granted run also asserts the two refusals inside its own grant: a port
+outside the range is `PermissionDenied` and the granted port asked for twice is `AddrInUse`.
+
+**What this unblocks** is milestone 55, and it is not a small step: nothing that serves a share
+accepts no connections. A `std` program that can listen is the difference between "a crate compiles"
+and "a server runs".
+
 ## BUGS
 
 - **"Runs unmodified" is the claim to be careful with.** A crate that compiles is not a crate that

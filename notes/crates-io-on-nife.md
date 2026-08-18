@@ -399,7 +399,7 @@ least one call site.
 | 19 | `Metadata::modified` | `Unsupported` | 5 | 7 | no verb reports mtime, but §51 gave us a clock |
 | 19a | `Path::is_dir` on a directory | was always `false` | (not counted) | | closed with the five above; `create_dir_all` needed it |
 | 20 | `fs::set_permissions` | `Unsupported` | 4 | 3 | |
-| 21 | `TcpListener` | `Unsupported` | 4 | 11 | no LISTEN verb in the socket contract |
+| 21 | `TcpListener` | **CLOSED** 2026-08-18 | 4 | 11 | the LISTEN verb landed at milestone 107; the reason column was stale for a fortnight |
 | 22 | `ToSocketAddrs` / DNS | numeric only | 4 | 5 | |
 | 23 | `Metadata::created` | `Unsupported` | 3 | 3 | |
 | 24 | `set_nonblocking` | `Unsupported` | 3 | 4 | contract is blocking-only |
