@@ -11,6 +11,12 @@
 # the bare targets) wraps that core in the IPC Disk and the serve loop. See notes/fs-server.md.
 [workspace]
 
+# Name: unrecorded. It serves the filesystem, and `fs` is this tree's own word for that service from
+# `fs_proto` through `fs_test_client`. Its own workspace because it links the vendored engine (§27).
+# Milestone 63 renamed the DIRECTORY from `fs-server/` to match the package on 2026-08-01; the package
+# name itself was never put to calef, and it predates the `*_proto`/`*_server` habit being written
+# down.
+
 [package]
 name = "fs_server"
 version = "0.1.0"

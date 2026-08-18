@@ -1,3 +1,9 @@
+# Name: unrecorded. `kernel` is the standard term for the thing this is, and the naming tenet's
+# protected class covers exactly that case: a word a reader already knows from outside costs a
+# newcomer nothing, so `elf`, `pci`, `dtb` and `paging` were left alone for the same reason. Nobody
+# recorded a decision because nobody had to make one. Kept `unrecorded` rather than claimed as
+# `recorded`, because `recorded` asserts the reasoning is written down somewhere and it is not.
+
 [package]
 name = "kernel"
 version = "0.1.0"

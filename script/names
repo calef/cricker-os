@@ -114,11 +114,63 @@ SURFACES = [
      lambda name: os.path.join(root, "script", name), "#"),
 ]
 
+# The fourth kind is not a directory listing, so it is discovered rather than listed: see
+# `packages()`. `package` is a PROVISIONAL name for the kind (calef names things). It is Cargo's own
+# word, which is the argument for it, and it is imprecise against Cargo's strict taxonomy, where a
+# package contains crates and everything in `crates/` is one too. What the tree means by it is
+# narrower and positional, the way the other three kinds are: `crate` is a thing in `crates/`,
+# `program` a thing in `user/src/`, `script` a thing in `script/`, and `package` a Cargo package that
+# is none of those.
+#
+# **Why this kind had to exist** (calef, 2026-08-18). `script/names std_exerciser` answered "neither
+# a name in the tree nor a recorded refusal" for weeks, because the three surfaces above are the only
+# places this tool looked. Eight packages live outside `crates/` and not one carried a provenance
+# block, so milestone 115's whole claim -- that a name's provenance lives beside the name -- was
+# false for every one of them, silently. A registry with a hole is worse than no registry: it answers
+# confidently about the names it happens to cover.
+PACKAGE_PREFIX = "#"
+
 problems = []
 
 
+def packages():
+    """Every Cargo package outside `crates/`, and the `Cargo.toml` that must carry its block.
+
+    **Discovered, not listed**, which is the point: a hardcoded list is the defect this kind fixes,
+    one level along. A package that arrives tomorrow is covered without editing this script, and
+    `script/lint` runs `--check`, so it cannot arrive without a provenance block either.
+
+    **The block lives in `Cargo.toml`** rather than in `src/lib.rs`, because a package here may have
+    a `lib.rs`, a `main.rs`, or neither: `fuzz`'s targets live in `fuzz_targets/` and it has no `src/`
+    at all. `Cargo.toml` is the one file every package must have, and it is where the name it is being
+    asked about is actually written.
+
+    **The name is the package's, not the directory's.** Those usually agree, because AGENTS.md's table
+    says a directory holding a Rust package is named exactly as the package. Where they disagree the
+    package wins, since that is the name a `use` statement and a dependency list carry.
+    """
+    out = []
+    skip = {os.path.join(root, "crates"), os.path.join(root, "vendor"), os.path.join(root, "target")}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith(".") and d != "target"
+                       and os.path.join(dirpath, d) not in skip]
+        if dirpath == root or "Cargo.toml" not in filenames:
+            continue
+        manifest = os.path.join(dirpath, "Cargo.toml")
+        name = None
+        for line in open(manifest, errors="replace"):
+            hit = re.match(r'name\s*=\s*"([^"]+)"', line.strip())
+            if hit:
+                name = hit.group(1)
+                break
+        if name:
+            out.append(("package", name, manifest, PACKAGE_PREFIX))
+    return sorted(out, key=lambda row: row[1])
+
+
 def items():
-    """Every crate, program and script/ entry point, with the file that must carry its block."""
+    """Every crate, program, script/ entry point and Cargo package, with the file carrying its block."""
     out = []
     for kind, directory, path_of, prefix in SURFACES:
         for entry in sorted(os.listdir(directory)):
@@ -135,6 +187,7 @@ def items():
                     continue
                 name = entry
             out.append((kind, name, path_of(name), prefix))
+    out.extend(packages())
     return out
 
 
@@ -269,7 +322,10 @@ refusals = [(bad, r) for r in records for bad in r["refused"]]
 # went from internal plumbing to a prompt-typed pipeline stage inside a day. Every program in
 # `user/src/` is in the initrd and can be typed, so the kind is the honest tier and needs no
 # classification anybody could get wrong.
-EXPOSURE = {"program": 0, "crate": 1, "script": 2}
+EXPOSURE = {"program": 0, "crate": 1, "package": 2, "script": 3}
+# `package` sits between `crate` and `script`: a package name is read in a `[dependencies]`
+# list and in a `use` statement, which is the crate tier, but most of these are structural
+# (`kernel`, `user`, `xtask`) and a stranger meets them as directories rather than as choices.
 # Within a tier, a name nobody can justify outranks one whose reasoning merely lacks a signature.
 # `provisional` outranks both: its author has SAID it is wrong, so it is the shortest
 # conversation calef can have.
