@@ -724,6 +724,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   magnitudes. The first real numbers (debug): IPC round trip ~705 ns, call/reply ~886 ns. The L4
   calibration built on them was corrected on 2026-08-04: it compared the kernel-side, debug,
   round-trip number against seL4's EL0, release, one-way number, three errors that partly cancelled.
+  Milestone 38 added filesystem throughput against ext4 at a matched tier and APFS natively: the
+  confined-server tax is 0.07% of a file request, our userspace block server is at parity with
+  Linux's block layer, and every 4 KiB request moves a 128 KiB RedoxFS record.
 - [The PMU, and the two clocks in a core](pmu.md): the cycle counter (`PMCCNTR`) versus the
   generic timer (`CNTVCT`), and why the coarse, boring timer is the one that survives
   virtualization. The reason our bench runs on a laptop and `sel4bench` does not.

@@ -221,7 +221,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 35 | BUILT | [Prove the DMA-confinement boundary (extends 18)](35-dma-confinement-proof.md) | closes the one isolation boundary we test instead of prove | 2026-07-29 |
 | 36 | BUILT | [A foreign-language component, seam first (spike; feeds 29 and 23)](36-foreign-component.md) | the thesis in one assertion: unverified foreign code, confined and restarted | 2026-07-29 |
 | 37 | BUILT | [Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)](37-redoxfs-crash-consistency.md) | decides whether §34's "primary filesystem" label is earned | 2026-07-30 |
-| 38 | NOT-STARTED | [Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25)](38-filesystem-throughput.md) | "primary filesystem" invites a comparison we cannot currently make | |
+| 38 | BUILT | [Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25)](38-filesystem-throughput.md) | "primary filesystem" invites a comparison we cannot currently make | 2026-08-18 |
 | 39 | RECORDED | [Repository structure for a loosely-coupled OS, and the road to a distribution](39-repository-structure.md) | the structure has to serve the thesis, and one constraint dominates | |
 | 40 | PARTIAL | [Documentation as a system service: searchable, rendered, and installed by packages](40-documentation-service.md) | the OS explains itself, on itself | |
 | 41 | BUILT | [Dead code: triage the suppressions, and un-blindfold the gate](41-dead-code-triage.md) | a `-D warnings` gate with holes in a third of the kernel is not a gate | 2026-07-30 |
