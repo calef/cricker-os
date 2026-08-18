@@ -32,6 +32,33 @@ honest lane wastes an afternoon and the incurious one is right.
 That is the same shape as every failure AGENTS.md records: a fact that exists only in a place nobody
 reads, here a ruleset page in GitHub's settings rather than a report or a call site.
 
+## The two mechanisms disagree about what an advisory check means, in opposite directions
+
+Measured 2026-08-18, after the red above, and this is the part that makes the current arrangement
+actively expensive rather than merely unenforced.
+
+**GitHub's merge queue ignores a failing advisory check and merges anyway.** That is how `main` went
+red: #316's `fastpath footprint` failed and nothing stopped it.
+
+**`scripts/merge-drain.sh` refuses to enqueue a pull request with *any* failing check**, required or
+not. Its own comment says why, and the reasoning is sound in isolation: *"the queue ejects what fails,
+and nothing here should retry it and burn CI."*
+
+So the same red check means "merge it" to the queue and "do not touch it" to the drain. The effect is
+not theoretical: within an hour of #323 fixing the baseline, **three pull requests (#319, #321, #325)
+sat stalled** with the drain printing `STALLED. #N is failing fastpath footprint` for each, because
+each had branched before the fix and inherited a failure that no longer existed on `main`. Every one
+of them was mergeable and none of them was moving.
+
+**Neither behaviour is wrong on its own; having both is.** A tree where the enforcing mechanism does
+not block and the non-enforcing one does is one where nobody can predict what a red check costs, and
+the answer changes depending on which robot looks first.
+
+Whichever way option 1 goes, the drain's filter should be narrowed to the **required** set, so that
+one list decides. If the six become required, the narrowing is a no-op and the drain keeps working.
+If they stay advisory, the narrowing is what stops a report-only check from silently holding the
+queue.
+
 ## The options
 
 1. **Require four of the six** (recommended): `fastpath footprint`, `stack frames`, `verify scope`,
