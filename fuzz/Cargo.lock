@@ -41,6 +41,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "fuzz"
+version = "0.0.0"
+dependencies = [
+ "dtb",
+ "elf",
+ "gpt",
+ "libfuzzer-sys",
+ "nifefs",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -79,17 +90,6 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
-]
-
-[[package]]
-name = "nife_fuzz"
-version = "0.0.0"
-dependencies = [
- "dtb",
- "elf",
- "gpt",
- "libfuzzer-sys",
- "nifefs",
 ]
 
 [[package]]
