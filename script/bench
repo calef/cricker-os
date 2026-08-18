@@ -6,6 +6,8 @@
 #   script/bench --save      rewrite the baseline (do it in the commit that moved the numbers)
 #   script/bench --real      HVF: natively on the Apple Silicon core; per-core magnitudes, no gating
 #   script/bench --real --smp  HVF on 4 harts; adds the multi-hart throughput bench (smp_throughput)
+#                              and, with a RedoxFS disk attached, the filesystem ones: fs_read and
+#                              milestone 38's four throughput phases (fs_seq_read and friends)
 #
 # --real is single-hart by default so the primitive magnitudes are per-core (the cross-OS comparison
 # reads them that way); --smp boots the whole machine for the aggregate-throughput bench.

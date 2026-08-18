@@ -669,6 +669,61 @@ read-only verb; RedoxFS's own `clone` computes free space from exactly this pair
 because this server runs one request to completion before it receives the next, which is the same
 property `RENAME`'s concurrency atomicity rests on.
 
+## Throughput, and where the milliseconds actually go (milestone 38)
+
+The per-request number has been here since milestone 32 built this server: `fs_read`, ~204 us. There
+was no MB/s figure at all, which is what milestone 38 was for. The four phases now live in `fs_test_client`'s
+throughput role and `kernel/src/bench.rs`'s `fs_throughput`, and the cross-OS side is in
+notes/benchmarks.md. Two results belong here, next to the server they are about.
+
+**Every 4 KiB read of an ordinary file fetches 128 KiB, whatever offset it asked for.** `fs_read`
+reads `motd`, 69 bytes, which RedoxFS keeps *inline in the node*: that is the cheapest read this
+server can serve, at ~207 us, and it is a tree walk with no record at the end of it. A 4 KiB read of
+an ordinary file is ~1.51 ms, and dividing by the 32 blocks a 128 KiB record holds gives **46.2 us
+per 4 KiB block through the block server**, a constant that then explains every other figure: an
+inline read is 4.5 blocks, a sequential write is 55, a random write is 74.
+
+**The mechanism is one level below where it looks like it is**, and milestone 38's bench found that
+out by predicting the wrong thing and measuring. `read_node_inner` asks for the record at
+`BlockLevel::for_bytes(offset_within_record + len)`, which is level 0 at the start of a record and
+level 5 at the end, so a read at a record boundary should have been cheap. It is not:
+`read_record` reads the block the pointer **stores** and only then checks whether that is as large as
+the level requested. A fully written record is stored at level 5. The bench keeps the phase that
+refuted the prediction (`fs_record_read`) for exactly that reason.
+
+None of this is the isolation. `relay_rtt` prices one confined intermediary at about a microsecond,
+three orders of magnitude below a read, and 46.2 us per block is the same as Linux gets on the same
+virtio device at the same tier (notes/benchmarks.md has that comparison).
+
+**There is no cache anywhere in this path, and the throughput numbers are how we finally proved
+it.** `fs_server`'s `IpcDisk` is a bare `Disk` with no `DiskCache` wrapped around it, so a re-read
+goes back to the device. That had been stated and never demonstrated; milestone 38 demonstrated it
+by measuring sequential, random and record-aligned reads of the same file and getting the same
+per-request cost to within 3% (1.51, 1.48 and 1.48 ms). A path with a cache or a readahead cannot do
+that. It also finally retired a comment in `fs_test_client` that had claimed `fs_read` was a warm
+measurement.
+
+### BUGS
+
+- **A 4 KiB request moves 128 KiB, in both directions.** The client's transfer unit is one page,
+  because that is what a `fs_proto` request can carry; RedoxFS's record is 128 KiB. A read fetches
+  the whole record (32 blocks); a write reads it, changes 4 KiB, and writes a new copy, because the
+  store is copy-on-write. Measured: ~1.51 ms per 4 KiB read and ~2.57 ms per 4 KiB written, against
+  ~207 us for the cheapest read this server can do. **This is the single largest term in every
+  throughput figure this project has**, and the fix is not in this server: it is either a multi-page
+  transfer on the contract, or a record level chosen to match the transfer unit, and both are
+  decisions rather than patches. Recorded rather than milestoned for now, per §71.
+- **A write whose bytes match what is already there is not a write.** `Transaction::write_node`
+  compares before it does anything, so rewriting a block with identical contents costs a read and
+  no write at all. That is a sensible store optimisation and a trap for anyone measuring: a
+  benchmark that sends one constant page repeatedly measures the comparison. It also means a client
+  cannot use a rewrite to force an allocation.
+- **RedoxFS compresses records with lz4 when the record is larger than one block**, which is always
+  here (128 KiB records). Payload entropy therefore changes throughput: an all-zero or repetitive
+  file writes and reads several times faster than an incompressible one. Every number above and in
+  notes/benchmarks.md uses an incompressible payload, which is the conservative choice and the one
+  a backup workload resembles.
+
 ## For later milestones
 
 - **31 (capability shell)** is **done** as a mechanism: per-file grants exist, proven on both ISAs by

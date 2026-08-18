@@ -45,6 +45,14 @@ STATUS=$?
 set -e
 
 # Don't leave the killer sleeping if the child finished on its own.
+#
+# **Kill the killer's `sleep` first, and that is not tidiness.** `kill "$KILLER"` ends the subshell
+# and orphans the `sleep` inside it, which keeps running for the whole bound. That matters whenever
+# this script's output is piped, because the orphaned `sleep` inherited the pipe's write end and the
+# reader therefore blocks until the bound expires however quickly the guest finished. Found on
+# 2026-08-18 by milestone 38, whose Linux comparison runs a guest that powers itself off in about
+# fifteen seconds and whose every round nevertheless took the full five minutes.
+pkill -P "$KILLER" 2>/dev/null || true
 kill "$KILLER" 2>/dev/null || true
 
 exit "$STATUS"
