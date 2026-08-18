@@ -681,10 +681,27 @@ sends zero in the second), or the **frame's dead `dst` fields**, which is exactl
 `RECV` already makes with the datagram's source and would cost no format change at all. The second
 is cheaper and has the precedent; both are calef's.
 
-**The host prober now counts four rounds, not two**, because two guest programs listen on the
-forwarded port over one boot. It deliberately does not try to tell them apart: nothing on the host
-can see which guest process answered, and it does not need to, because each guest test asserts its
-own two rounds in its own transcript. What the host adds is the half no in-guest assertion can make.
+**The host prober now sees two listening windows over one boot, and what it requires changed shape
+because of it.** The guest offers four rounds (two per program) and the prober passes at **three**.
+That is a provable claim rather than a fudge: neither program can supply more than two, so three
+collected means at least one from each, which is exactly the half no in-guest assertion can make.
+The *re-arm* claim is not the host's to confirm any more; it is asserted inside each guest test,
+where it is actually checkable, and a guest cannot fake a second `accept` returning the right bytes.
+
+**Requiring all four was tried first and measured red.** On CI run 32195227733 the riscv64 leg
+reported "the guest served 3 of 4" while **all 279 guest tests passed**, on a machine the script's
+own load instrument called not oversubscribed. So the guest served four and the host collected
+three: one answer went somewhere the prober was not reading. Five local riscv boots did not
+reproduce it, which puts it near one in six on that runner class.
+
+**The mechanism is not identified, and that is stated rather than guessed at.** The candidate this
+note already describes is a connection the prober abandoned that slirp still delivered ("an
+abandoned request may still be executed"), which would let the guest serve a round nobody was
+collecting; the other is a teardown race on the very last round, since that test's program exits and
+its `net_stack` is reclaimed immediately afterwards. Neither is confirmed. What is confirmed is that
+this is the intermittent red notes/net.md already records misleading three separate milestones, so
+the gate was made robust to losing one round rather than left claiming something it cannot deliver
+six runs out of six. Identifying it wants a lane of its own.
 
 ### The aarch64 test boot has run out of memory, and this is the receipt
 
