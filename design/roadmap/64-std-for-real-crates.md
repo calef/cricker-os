@@ -1,22 +1,47 @@
 # 64. Enough `std` to run somebody else's crate
 
-**Status: PARTIAL** since 2026-08-04 (PR #113). The measurement phase is done and its deliverable,
-the prioritised gap list that milestones 99 and 66 consume, is in `notes/crates-io-on-nife.md`:
-**50 crates.io crates, 35 built with no change, 15 failed**, and the gaps are ranked by demand
-rather than by the function counts below. Five ranks turned out to be bindings rather than verbs
-(`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename` were all dispatched by the FS
-server since milestones 47 and 48; only the client refused) and this milestone bound them. **What
-remains is the ranked list**: a `getrandom` backend (rank 1, and honestly not a `std` gap at
-all but an ecosystem one), the `std::os::unix` fallthrough (rank 2), `thread::spawn` (rank 3) and
-`env::var` (rank 4). The sting the measurement found is the one worth carrying forward: **a green
-build is not evidence.** `tempfile` compiles, links, and returns "operation not supported" at run
-time. Raised 2026-08-01, from a question with a number behind it: does milestone
-27 mean ordinary Rust programs run here?
+**Status: PARTIAL** since 2026-08-04 (PR #113), and still PARTIAL after the second pass
+(2026-08-17), because what is left on the ranked list is a decision each rather than an effort each.
+The measurement's deliverable, the prioritised gap list that milestones 99 and 66 consume, is in
+`notes/crates-io-on-nife.md`: **50 crates.io crates, 39 built with no change, 11 failed.**
 
 **Gate: NONE.** The block's own sequencing is to run the measurement phase first and independently:
 pick the probe crates, build them, and let the failures name the work. The `File::open` resolution
 question is a design fork inside it, to be raised before code and answered jointly with milestone
 47's namespace half rather than twice.
+
+**That split was recorded as 35/15 and is 39/11.** Re-derived against this tree on 2026-08-17, same
+fifty crates, and no probe changed its answer: the old headline summed the four failure-class
+headings, and four crates are in two classes at once (`zip` and `ring` in A and C, `gix-config` and
+`gix` in A and B). The note's tables always listed 39 passes; only the sentence over them was wrong,
+which is why nothing caught it.
+
+**What is closed.** Five ranks turned out to be bindings rather than verbs (`create_dir`, `read_dir`,
+`remove_file`, `remove_dir`, `rename` were all dispatched by the FS server since milestones 47 and
+48; only the client refused). The second pass added four more, working the list from the top:
+
+- **Rank 1, the `getrandom` backend**, which was 8 of the 11 build failures and is the one gap on the
+  list that is not a `std` gap at all. `entropy_backend` is the fix, on `getrandom`'s own
+  documented custom-backend hook over `std::random::SystemRng`. **`rand`, `uuid`, `gix-object` and
+  `gix-actor` build for nife now**, and the other four no longer fail on `getrandom` at all.
+- **Rank 4, `env`**, and it is the sting in a second place: `env::var` was recorded as "no PAL at
+  all", which sounded harmless because `getenv` answered `None` honestly. The same fallback's `env()`
+  is a `panic!`, so **`std::env::vars()` aborted the process**, and it compiled perfectly.
+- **Rank 8, `File::set_len`** and **rank 26, `fs::copy`**. Rank 9 (`symlink_metadata`) needed nothing:
+  the row was stale, std routes it to `lstat`, which this PAL binds.
+
+**What remains, and why each one stops here rather than being unfinished.** Rank 2, the
+`std::os::unix` fallthrough, wants a **uid** and a **file mtime set** that this system does not have
+in the form the crates ask for, and answering would be a Unix fiction over a capability refusal.
+Rank 3, `thread::spawn`, is this block's own unanswered scheduling question (see BUGS) and has **no
+build failures behind it**. Rank 19, `Metadata::modified`, is one field in `FSTAT`'s reply away and
+that makes it a wire-format change. Everything else that resolves a path waits on the `File::open`
+fork below.
+
+The sting the measurement found is the one worth carrying forward: **a green build is not evidence.**
+`tempfile` compiles, links, and returns "operation not supported" at run time. Raised 2026-08-01,
+from a question with a number behind it: does milestone 27 mean ordinary Rust programs run here?
+
 
 ## What 27 actually delivered, and where it stops
 
@@ -109,7 +134,16 @@ both milestones already point at.
   to add only what a probe demands.
 - **Threads open a scheduling question this project has not answered.** `std::thread::spawn` implies
   a thread the program owns; the kernel has TCBs and a budget model, and which of those a `std`
-  thread is has never been decided.
+  thread is has never been decided. **This is why rank 3 is still open after the second pass**, and
+  the measurement makes the case for deciding it rather than building it: all four of the crates
+  behind that rank (`rayon`, `crossbeam-channel`, `tokio`, `ignore`) already compile and link, so
+  nothing is blocked on the code and everything is blocked on the answer. A PAL that guessed would
+  ship the decision as an implementation detail.
+- **`env` is a table nobody seeds.** The environment backend added in the second pass is honest and
+  it is also a stub in one direction: a program can set its own variables and cannot be *given* one,
+  because there is no endowment to carry it. That is milestone 47's namespace, and until it lands
+  every `env::var` a crate reads is `None`. `chrono`'s `TZ` and `clap`'s colour detection both take
+  that path, which is fine and is not the same as working.
 
 **Effort: not estimated**, deliberately. The measurement is the first deliverable: pick the probes,
 build them, and report what breaks.

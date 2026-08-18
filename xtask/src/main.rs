@@ -225,7 +225,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-nife", "riscv64-unknown-nife"];
 const NIFE_TOOLCHAIN: &str = "nife-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 5;
+const STD_SRC_PATCH_VERSION: u32 = 6;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/nife-farm")
@@ -626,6 +626,16 @@ fn std_patch_dispatch() -> bool {
         &sys.join("fs/mod.rs"),
         "cfg_select! {",
         "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
+    ) && patch_after(
+        // env: a process-local variable table (milestone 64, rank 4). The arm precedes the `_ =>`
+        // unsupported fallback, whose `env()` is `panic!("not supported on this platform")`: without
+        // this, `std::env::vars()` aborted the process rather than yielding nothing. `sys/env/nife.rs`
+        // defines its own `Env` instead of reusing `sys/env/common.rs`, so this is the only anchor
+        // env costs us; `common` is gated on a `#[cfg(any(...))]` platform list that would have been
+        // a second one to keep in step across nightlies.
+        &sys.join("env/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::*;\n    }",
     ) && patch_after(
         // io/error has no fallback arm; route nife to the generic backend.
         &sys.join("io/error/mod.rs"),

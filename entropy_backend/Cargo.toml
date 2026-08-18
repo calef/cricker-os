@@ -1,0 +1,31 @@
+# The `getrandom` backend for nife (milestone 64, rank 1 of the measured gap list). See src/lib.rs
+# for what it is and why it is a crate; notes/crates-io-on-nife.md for the measurement that ranked it
+# first.
+#
+# Deliberately NOT a member of the main workspace, for `std_exerciser`'s reason and one more of its
+# own. It needs `std` (the whole point is `std::random::SystemRng`), so it can only be built for a
+# `*-unknown-nife` target under the linked `nife-dev` toolchain with build-std; and it needs
+# `--cfg getrandom_backend="custom"` in the consumer's rustflags, which the workspace crates must
+# never inherit.
+#
+# `entropy_backend` is calef's, ruled 2026-08-18. It names the thing rather than the slot it fills:
+# `entropy` and `entropy_proto` are this tree's words for the domain, and a third participant takes
+# the same stem. The refusals are recorded in src/lib.rs.
+
+[package]
+name = "entropy_backend"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+# The only dependency, and it is here for a type rather than for a call: the hook's signature is
+# `Result<(), getrandom::Error>` and nothing in this crate invokes anything from it. Both 0.3 and 0.4
+# declare the same `__getrandom_v03_custom` symbol, so one definition serves a graph holding either
+# or both; 0.4 is named here because it is the one that resolves for a fresh dependency.
+[dependencies]
+getrandom = "0.4"

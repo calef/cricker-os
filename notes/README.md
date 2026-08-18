@@ -200,13 +200,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   truncate verb, monotonic-only clock, non-crypto random" caveats this line used to list are all
   gone: milestone 31 phase 2 bound `CREATE` and `TRUNCATE`, milestone 51 gave `SystemTime` a real
   wall clock, and milestone 56 put `std::random` on the entropy service.
-- [Somebody else's crate on nife](crates-io-on-nife.md): milestone 64's measurement phase:
-  fifty crates.io crates built against the patched `std` to find out what actually stops them. 35 of
-  50 build unchanged, and of the 15 failures **eight are one crate that is not part of std**
-  (`getrandom` has no `nife` backend). The four failure classes, the prioritised gap list
-  milestones 99 and 66 consume, why five of the top gaps are **bindings rather than missing verbs**,
-  and the sting: `tempfile` compiles, links, and returns "not supported" from every call, which is
-  gitoxide's whole atomic-write path.
+- [Somebody else's crate on nife](crates-io-on-nife.md): milestone 64's measurement, and what
+  closing the top of its ranked list took. Fifty crates.io crates built against the patched `std` to
+  find out what actually stops them: **39 of 50 build unchanged**, and of the 11 failures **eight are
+  one crate that is not part of std** (`getrandom` had no `nife` backend; it does now, and `rand` and
+  `uuid` build). The four failure classes, the prioritised gap list milestones 99 and 66 consume, why
+  the split was recorded as 35/15 and is 39/11, why nine of the top gaps turned out to be **bindings
+  rather than missing verbs**, which gaps were declined and for what reason, and the sting in two
+  places: `tempfile` compiles and returns "not supported" from every call, and `std::env::vars()`
+  used to abort the process.
 - [Running a foreign language: the C seam](c-seam.md): milestone 36: memory-unsafe C, compiled by
   bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
   confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`

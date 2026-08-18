@@ -132,6 +132,45 @@ fn offline_demo() {
     assert_ne!(a, b, "two draws from std::random are identical");
     assert!(a.iter().any(|&x| x != 0), "a draw is all zeros");
     println!("entropy ok");
+
+    // **The environment** (milestone 64, rank 4 of the measured gap list). Three separate claims,
+    // and the first one is why the line exists at all.
+    //
+    // `vars()` must not panic. Before this milestone nife had no `sys::env` backend, so it fell
+    // through to the unsupported one whose `env()` is `panic!`, and `std::env::vars()` aborted the
+    // process. That compiled perfectly. Counting the iterator is what proves the call returned.
+    //
+    // It must be EMPTY, because nothing endows a nife process with variables and inventing some
+    // would be exactly the ambient authority this system does not have.
+    //
+    // And `set_var` must actually take, because that is what `set_var` means everywhere else and a
+    // library configured by its caller through the environment is an ordinary thing to do.
+    assert_eq!(
+        std::env::vars().count(),
+        0,
+        "a nife process started with variables it was never granted",
+    );
+    assert!(
+        std::env::var("PATH").is_err(),
+        "PATH resolved, so something is fabricating an ambient environment",
+    );
+    unsafe { std::env::set_var("NIFE_DEMO", "set-by-the-program") };
+    assert_eq!(
+        std::env::var("NIFE_DEMO").as_deref(),
+        Ok("set-by-the-program"),
+        "a variable this process set did not read back",
+    );
+    assert_eq!(
+        std::env::vars().count(),
+        1,
+        "the variable this process set is not in its own listing",
+    );
+    unsafe { std::env::remove_var("NIFE_DEMO") };
+    assert!(
+        std::env::var("NIFE_DEMO").is_err(),
+        "a removed variable still resolves",
+    );
+    println!("env ok");
 }
 
 /// The same sanity window `clock_proto::policy` applies, restated here because a std program links
@@ -198,7 +237,10 @@ fn fs_demo(mut motd: File) {
     // that one behaviour, so it is pinned here at the top level rather than only in a host test.
     let long = b"the first write, deliberately the longer of the two";
     let short = b"the second write, shorter";
-    assert!(short.len() < long.len(), "the shorter write must be shorter");
+    assert!(
+        short.len() < long.len(),
+        "the shorter write must be shorter"
+    );
 
     std::fs::write("made-by-std", long).expect("fs::write could not create a file");
     std::fs::write("made-by-std", short).expect("fs::write could not rewrite a file");
@@ -391,6 +433,71 @@ fn namespace_transcript() {
 
     std::fs::remove_dir(DIR).expect("remove_dir failed");
     println!("rmdir ok");
+
+    set_len_and_copy();
+}
+
+/// **`File::set_len` and `fs::copy`** (milestone 64, ranks 8 and 26), both of which the PAL refused
+/// until this milestone and neither of which needed anything from the contract that was not there.
+///
+/// `set_len` is `TRUNCATE` with the size in the second word, which is the same message `File::open`
+/// has been sending with a 0 in it since milestone 31. Both directions are checked, because
+/// `ftruncate` grows as well as shrinks and a binding that only shrank would pass a shrink-only test.
+///
+/// `copy` needs no verb at all: it is an open, a read/write loop and two closes. What it proves that
+/// a length check would not is that the destination gets the *source's bytes* rather than a file of
+/// the right size, which is the way a copy loop with a bad offset fails.
+fn set_len_and_copy() {
+    const ORIGINAL: &str = "set-len-subject";
+    const DUPLICATE: &str = "copy-destination";
+
+    std::fs::write(ORIGINAL, b"0123456789").expect("write failed");
+
+    // Shrink. The bytes past the new end must be gone, not merely unreported.
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(ORIGINAL)
+        .expect("reopening for set_len failed");
+    f.set_len(4).expect("set_len shrink failed");
+    drop(f);
+    assert_eq!(
+        std::fs::read(ORIGINAL).expect("read after shrink failed"),
+        b"0123",
+        "set_len shrank the reported size without discarding the tail",
+    );
+
+    // Grow. POSIX extends with zeroes, and the contract's TRUNCATE promises the same, so the four
+    // bytes must survive and the new tail must be NUL rather than whatever was there before.
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(ORIGINAL)
+        .expect("reopening for set_len grow failed");
+    f.set_len(8).expect("set_len grow failed");
+    drop(f);
+    assert_eq!(
+        std::fs::read(ORIGINAL).expect("read after grow failed"),
+        b"0123\0\0\0\0",
+        "set_len grew the file with something other than zeroes",
+    );
+    println!("set_len ok");
+
+    let n = std::fs::copy(ORIGINAL, DUPLICATE).expect("copy failed");
+    assert_eq!(n, 8, "copy reported the wrong byte count");
+    assert_eq!(
+        std::fs::read(DUPLICATE).expect("read of the copy failed"),
+        b"0123\0\0\0\0",
+        "the copy does not hold the source's bytes",
+    );
+    // The source survives a copy. Trivially true and worth asserting once, because the way to
+    // implement `copy` wrongly on a contract with a RENAME verb is to reach for the wrong one.
+    assert!(
+        std::fs::exists(ORIGINAL).expect("exists on the copy source failed"),
+        "the source did not survive a copy",
+    );
+    println!("copy ok");
+
+    std::fs::remove_file(ORIGINAL).expect("cleanup of the set_len subject failed");
+    std::fs::remove_file(DUPLICATE).expect("cleanup of the copy destination failed");
 }
 
 /// Assert that a path is refused as un-nameable, and say which case it was.

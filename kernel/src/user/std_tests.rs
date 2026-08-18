@@ -350,6 +350,10 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
         b"mkdir ok\nread_dir ok\nread_dir descend ok\n".as_slice(),
         b"unlink refused a directory\nrmdir refused a file\n".as_slice(),
         b"rename ok\nunlink ok\nis_dir ok\nrmdir ok\n".as_slice(),
+        // Milestone 64's second pass: `File::set_len` (`TRUNCATE` with a size, both directions) and
+        // `fs::copy` (no verb, and none needed). Same shape of finding as the nine lines above, one
+        // milestone later: the refusal outlived the reason for it.
+        b"set_len ok\ncopy ok\n".as_slice(),
         b"fs ok\n".as_slice(),
     ] {
         buf[n..n + part.len()].copy_from_slice(part);
@@ -372,7 +376,8 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
     net honestly unsupported\n\
     instant monotonic ok\n\
     wall clock ok\n\
-    entropy ok\n";
+    entropy ok\n\
+    env ok\n";
 
 /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
 ///
@@ -384,6 +389,13 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
 /// through a read-only page and the ambient counter, and the program asserted it was inside the
 /// same sanity window the clock service applies. Before that milestone the same call returned
 /// 1970 plus uptime and would have passed any test that only checked it did not crash.
+///
+/// The `env ok` line is milestone 64's, and it is a third correction of the same shape, found by a
+/// different method. `std::env::vars()` used to **abort the process**: nife had no `sys::env`
+/// backend, so it fell through to the unsupported one whose `env()` is a `panic!`. Nothing in a
+/// build failure list showed it, because it compiled. The line asserts three things at once: that
+/// the call returns, that the listing is empty (nothing endows a nife process with variables), and
+/// that `set_var` takes, since that is what `set_var` means on every other platform.
 ///
 /// The `entropy ok` line is milestone 56's half, and it is the same shape of correction:
 /// `std::random` reached a virtio-rng device, through one endpoint that names no device, and
