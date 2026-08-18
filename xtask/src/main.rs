@@ -324,6 +324,53 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Where the machine-global `nife-dev` name currently resolves, if it is a link we can read.
+///
+/// `rustup toolchain link` writes a symlink under `$RUSTUP_HOME/toolchains`, so the target is
+/// readable without shelling out. `None` covers every shape we cannot interpret (no such link, a
+/// real directory rather than a symlink, an unreadable home), and the caller treats `None` as
+/// "cannot prove it is ours", which relinks. Relinking when it was already correct costs one
+/// idempotent `rustup` call; assuming it was correct costs a silently wrong build.
+fn linked_farm() -> Option<PathBuf> {
+    let home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".rustup")))?;
+    std::fs::read_link(home.join("toolchains").join(NIFE_TOOLCHAIN)).ok()
+}
+
+/// Point `nife-dev` at *this* worktree's farm, loudly, if it currently points anywhere else.
+///
+/// Called on the warm-farm path, which is the one that used to trust the name without checking it.
+/// See the comment at that call site for the failure this closes.
+fn relink_farm_if_stolen() -> bool {
+    let farm = farm_dir();
+    // Canonicalize both sides: a worktree reached through a symlinked path (/tmp on macOS is one)
+    // would otherwise compare unequal to the same directory recorded literally, and relink on every
+    // single call. Falling back to the uncanonicalized path keeps a missing directory readable in
+    // the message rather than swallowing it.
+    let canon = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+    if linked_farm().map(|l| canon(&l)) == Some(canon(&farm)) {
+        return true;
+    }
+    eprintln!(
+        "--- std-src: `{NIFE_TOOLCHAIN}` did not point at this worktree's farm; relinking ---"
+    );
+    match linked_farm() {
+        Some(other) => eprintln!("std-src:   it pointed at {}", other.display()),
+        None => eprintln!("std-src:   it pointed at nothing this tool could read"),
+    }
+    eprintln!("std-src:   now {}", farm.display());
+    eprintln!(
+        "std-src: if another lane is mid-gate it has just lost the link, which is how this shared \
+         name has always worked (AGENTS.md). The integrator relinks from the main checkout at merge."
+    );
+    if !run("rustup", &["toolchain", "link", NIFE_TOOLCHAIN, &s(farm)]) {
+        eprintln!("std-src: `rustup toolchain link {NIFE_TOOLCHAIN}` failed");
+        return false;
+    }
+    true
+}
+
 /// **Materialize the patched `nife-dev` toolchain** (milestone 27).
 ///
 /// build-std reads std's source from the sysroot of the rustc it invokes, so a patched std means
@@ -341,6 +388,24 @@ fn std_src() -> bool {
     if farm_std_src().is_dir()
         && std::fs::read_to_string(&stamp_file).ok().as_deref() == Some(&stamp.to_string())
     {
+        // A warm, correctly-stamped farm is not enough, and this early return used to be the whole
+        // check. The stamp says *this worktree's farm is built*; it says nothing about where the
+        // machine-global `nife-dev` name currently points, and every build downstream of here
+        // resolves std through that name rather than through `farm_dir()`.
+        //
+        // So two lanes gating at once silently built each other's std. That is not hypothetical:
+        // on 2026-08-18 lane `55-durability` relinked mid-run and lane `64-more`'s `std_exerciser`
+        // compiled against 55's farm, caught only by a person reading the `Compiling std` path out
+        // of the build output. AGENTS.md predicted this failure in prose and nothing looked for it.
+        //
+        // Relink rather than refuse. The lane calling this is about to build and needs the name to
+        // mean its own farm, taking the link is what every lane already does by design, and failing
+        // here would only convert a silent wrong build into a stopped gate. What changes is that
+        // the theft is now deliberate and printed, so `Compiling std` from a foreign path cannot
+        // happen without a line above it saying who took what.
+        if !relink_farm_if_stolen() {
+            return false;
+        }
         return true;
     }
 
