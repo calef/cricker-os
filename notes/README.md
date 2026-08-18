@@ -396,6 +396,19 @@ in the code or the conversation doesn't make sense, it belongs here.
   orders of magnitude tighter than the forward one, the two RTC drivers found by `compatible`
   because no node-name prefix matches both boards, and the "I do not know what time it is" state
   that is the default rather than an afterthought.
+- [What a timed wait costs](timed-wait.md): milestone 106's fork, priced rather than built. The
+  block said a deadline in the blocked state "means the scheduler carries a timer wheel or an ordered
+  deadline list", and every clause of that turns out to be wrong or beside the point: the per-thread
+  word is **free** (a TCB is 744 bytes in a 4096-byte page since 19c.2, so the static-BSS premise is
+  stale), the **idle tick is one comparison for all three data structures** so the always-paid cost
+  does not distinguish them, the ordered list is the **worst** option above one waiter while scanning
+  wins until about 64, and milestone 124's no-context-switch-from-the-interrupt-stack proof **holds
+  measured on both ISAs** because `irq_notify` already wakes a blocked thread from that stack. Also
+  the +30/+31 instructions a deadline check adds to the tick, the 97-of-128 blocked-thread peak the
+  suite really reaches, the 10^5-to-1 ratio against today's yield-spin, the two things a deadline on
+  `RECV`/`CALL` needs that a `SYS_SLEEP` does not (a targeted unlink on a singly-linked queue, and
+  nothing else, because `abort()` already exists), and the stale-`Reply` hazard that wants a lane of
+  its own. Names no winner: the fork is calef's.
 - [`date`](date.md): milestone 51's deliverable: the command that makes the wall clock visible, and
   the first thing to put the clock service and the calendar crate in one process. It reads and
   cannot set, which is a fact about its wiring (a read-only mapping) rather than a missing flag, so
