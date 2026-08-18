@@ -349,7 +349,13 @@ pub fn missed_ticks_on(hart: usize) -> u64 {
 /// interval per delivered tick) instead of inferring it from a wall-clock tick rate, which a
 /// descheduled emulator falsifies. aarch64 reads its deadline back out of `CNTV_CVAL_EL0`; this is
 /// the software copy that SBI's write-only `set_timer` forces us to keep anyway (module header).
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// **Two callers now**, which is milestone 62's shape: the suite's test, which measures the law on
+/// a wall clock and may report `UNMEASURED` when a loaded host denies it a miss-free window, and
+/// `icount::run`'s claim 4, which measures the same law in instructions and always answers. On this
+/// ISA claim 4 is the stronger of the two in a second way: `DEADLINE` is bookkeeping, and claim 1
+/// beside it is what proves SBI was armed with this word rather than another.
+#[cfg_attr(all(not(test), not(feature = "icount")), allow(dead_code))]
 pub fn deadline() -> u64 {
     DEADLINE[cpu::id()].load(Ordering::Relaxed)
 }

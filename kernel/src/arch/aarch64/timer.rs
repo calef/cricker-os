@@ -272,7 +272,11 @@ pub fn missed_ticks_on(core: usize) -> u64 {
 /// Exposed so the drift test can assert the re-arm law directly (deadlines advance by exactly one
 /// interval per delivered tick) instead of inferring it from a wall-clock tick rate, which a
 /// descheduled emulator falsifies. The register is banked per core, like the counter.
-#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
+///
+/// **Two callers now**, which is milestone 62's shape: the suite's test, which measures the law on
+/// a wall clock and may report `UNMEASURED` when a loaded host denies it a miss-free window, and
+/// `icount::run`'s claim 4, which measures the same law in instructions and always answers.
+#[cfg_attr(all(not(test), not(feature = "icount")), allow(dead_code))]
 pub fn deadline() -> u64 {
     CNTV_CVAL_EL0.get()
 }
