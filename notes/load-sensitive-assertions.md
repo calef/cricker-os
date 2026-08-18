@@ -462,6 +462,13 @@ is not an obstacle. Recommended here, not built here.
   the harness is in a position to sample `uptime` and print the load average beside a timing
   assertion's failure, which would make the failure diagnose itself in one line. Recorded rather
   than fixed, per notes/stranger-test.md.
+
+  ***Both are now done, and this entry is kept because the measurement in it is the evidence.*** The
+  load average is printed by the harness on any red kernel leg since 2026-08-18; see "The harness now
+  says whether the host was loaded" under the diagnostic at the top of this file. The panic text was
+  not reworded, which would have left a claim the code cannot support in a shorter sentence: milestone
+  62 **deleted the assertion carrying it** on both ISAs, having measured that its true-positive band
+  and its false-positive band are the same band.
 - **Scope was five sites, not 39.** The roadmap's scope note counts 39 sites in 7 files matching
   the shape (`wait_for`, or assertions against `free_frames`, `thread_count`, `used()`). The
   other 34 were not audited here; the diagnostic above is the checklist for reading any of them.
