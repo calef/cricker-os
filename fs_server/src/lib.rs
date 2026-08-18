@@ -702,6 +702,26 @@ impl<D: Disk> Server<D> {
         ))
     }
 
+    /// **May this handle ask for the storage to be made durable?** (milestone 55). `Ok(())` when it
+    /// may; the caller then does the IO.
+    ///
+    /// This is the permission half of `fs_proto::fs::SYNC` and **it performs no flush**, which the
+    /// name is chosen to say. The flush is a `fs_proto::blk::FLUSH` to the block server, so it lives
+    /// in the binary with the rest of the IO; RedoxFS's `Disk` trait has no sync method and this
+    /// crate does not modify vendored code to add one. A method here called `sync` would be the
+    /// exact kind of claim-beyond-the-mechanism milestone 55 exists to remove.
+    ///
+    /// [`node_at`](Self::node_at) with [`dir::WRITE`], so it takes a handle of **either kind** the
+    /// way `STATFS` does (the answer is about the storage, not about the node), and refuses with
+    /// [`dir::EROFS`] the way every mutating verb does. The rights argument is in
+    /// `fs_proto::fs::SYNC`'s own documentation: a sync is an action on the device rather than a
+    /// fact about it, and a read-only holder has nothing outstanding to make durable.
+    ///
+    /// Name: provisional, minted by milestone 55's durability lane on 2026-08-18.
+    pub fn sync_permitted(&self, handle: u32) -> Result<()> {
+        self.node_at(handle, dir::WRITE, EROFS).map(|_| ())
+    }
+
     /// Install an entry in the handle table, reusing a freed slot before growing. Returns the
     /// handle. Slot 0 is never free, so a minted handle is never 0 and never shadows the root.
     fn install(&mut self, entry: Entry) -> u32 {
@@ -1045,6 +1065,60 @@ mod tests {
         fn size_bytes(&mut self) -> Result<u64> {
             Ok(self.0.len() as u64)
         }
+    }
+
+    /// **A sync is a write-side authority, and a read-only capability may not ask for one**
+    /// (milestone 55).
+    ///
+    /// The rights question here is not obvious and the answer is argued at `fs_proto::fs::SYNC`,
+    /// so what this pins is the choice rather than a mechanism: a sync is an *action on the
+    /// device*, and a device flush stalls the queue for every client of the image. Letting a
+    /// read-only holder ask would hand it a lever on everybody else's write latency for no
+    /// purpose, because a holder with nothing written has nothing to make durable.
+    ///
+    /// It also pins the shape: **either kind of handle**, file or directory, because the answer is
+    /// about the storage rather than about the node, which is `STATFS`'s rule and the reason this
+    /// goes through `node_at` rather than `file_at`.
+    #[test]
+    fn a_sync_needs_write_and_takes_a_handle_of_either_kind() {
+        let mut fs = FileSystem::create(BlockDisk(VecIo(vec![0u8; 16 * 1024 * 1024])), None, 0, 0)
+            .expect("mkfs through BlockDisk");
+        fs.tx(|tx| {
+            tx.create_node(TreePtr::root(), "scratch", Node::MODE_FILE | 0o644, 0, 0)?;
+            tx.create_node(TreePtr::root(), "sub", Node::MODE_DIR | 0o755, 0, 0)?;
+            Ok(())
+        })
+        .expect("populate");
+        let image = fs.disk.0.0;
+        let mut srv = Server::open(BlockDisk(VecIo(image))).expect("Server::open");
+
+        // The bound directory carries every right, so it may ask.
+        assert!(srv.sync_permitted(fs_proto::fs::ROOT as u32).is_ok());
+
+        // A file handle opened through it inherits READ | WRITE, so it may too: the verb is not
+        // about the file, and refusing a file handle would be inventing a distinction.
+        let file = srv.open_file("scratch").expect("open scratch");
+        assert!(srv.sync_permitted(file).is_ok());
+
+        // A directory capability narrowed to reading may not. EROFS rather than EACCES, because
+        // through this capability the storage takes no writes and there is no policy that could
+        // have said yes.
+        let ro = srv
+            .open_dir(
+                fs_proto::fs::ROOT as u32,
+                "sub",
+                dir::ENUMERATE | dir::READ | dir::DESCEND,
+            )
+            .expect("open sub read-only");
+        assert_eq!(
+            srv.sync_permitted(ro).unwrap_err().errno,
+            dir::EROFS,
+            "a read-only capability must not be able to make the whole device flush"
+        );
+
+        // And a handle nobody minted is EBADF, which is the check that makes the right meaningful:
+        // a forged handle must not be a way around it.
+        assert_eq!(srv.sync_permitted(9999).unwrap_err().errno, EBADF);
     }
 
     /// **Repeat writes through the EL0 binary's exact chunking.** The device's `IpcDisk` and this

@@ -1186,6 +1186,37 @@ mod tests {
         assert_eq!(got_hi & 1, 1, "VERSION_1 must survive negotiation");
     }
 
+    /// **`VIRTIO_BLK_F_FLUSH` survives negotiation** (milestone 55), which is the one feature bit
+    /// whose loss would be silent and expensive.
+    ///
+    /// The block server asks for feature bit 9 and treats the answer as the truth about whether the
+    /// device can be flushed at all. If a future filter cleared it here, the block server would see
+    /// a device with no flush, `fs_proto::fs::SYNC` would start answering `EOPNOTSUPP`, and the SMB
+    /// server would stop being able to back the `VOLUME_FULL_SYNC` bit it advertises to macOS. That
+    /// chain is long enough that the failure would surface as "Time Machine stopped working" rather
+    /// than as anything pointing here, so the bit gets its own assertion next to the two that *are*
+    /// stripped on purpose.
+    ///
+    /// It is deliberately not folded into the test above: that one is about the ring-layout
+    /// features, and this one is about a device feature something depends on. Same function, two
+    /// different claims.
+    #[test_case]
+    fn feature_negotiation_leaves_the_blk_flush_bit_alone() {
+        const F_FLUSH_LO: u32 = 1 << 9; // VIRTIO_BLK_F_FLUSH
+        assert_eq!(
+            sanitize_driver_features(0, F_FLUSH_LO),
+            F_FLUSH_LO,
+            "VIRTIO_BLK_F_FLUSH must reach the device: the block server's whole durability answer \
+             is whether it was negotiated (crates/virtio's F_FLUSH_LO)"
+        );
+        // And it must survive alongside the bit that is stripped, because that is how the honest
+        // driver and the indirect attacker differ: one asks for flush, the other for indirect.
+        assert_eq!(
+            sanitize_driver_features(0, F_FLUSH_LO | (1 << 28)),
+            F_FLUSH_LO
+        );
+    }
+
     /// **A PCI queue in range but never set up has no doorbell, and ringing it would leave the
     /// BAR** (milestone 112).
     ///
