@@ -68,6 +68,60 @@ The mitigation this tree can afford is differential rather than deductive. The s
 construction, since the fastpath must be able to bail to it, so a build that forces the slowpath and
 compares outcomes against a build that does not is a real gate and is rung two.
 
+### Amended 2026-08-18: the boundary is further away than the paragraph above implies
+
+calef read the original as trading provability for specialisation and asked whether there is not
+already an unproven subset, and therefore a judgement rather than a line. **He is right, and the
+correction is larger than the question assumed.**
+
+`script/verify` states it: the proofs are a function of the harness crates and their dependency
+closure, and `cargo kani` never compiles the kernel. So the tiers are:
+
+| tier | size | what defends it |
+|---|---|---|
+| pure-logic crates | the proved set | Kani, over every input |
+| Rust in `kernel/src` | 47,525 lines, **none of it proved** | types, the borrow checker, the QEMU suite |
+| `unsafe` within it | 394 blocks, functions and impls | review and `// SAFETY:` comments |
+| hand-written assembly | 1,152 lines, 2.4% of the kernel | read once, notes/arch-audit.md |
+
+**The assembly is not the unproven subset. It is the least-defended layer inside an already-unproven
+kernel.** `ipc_send` is unproved today; what is proved is the decision core it calls. A Rust fastpath
+therefore crosses no proof boundary at all, and the sentence above, while true, puts the line nearer
+than it is.
+
+The quantity actually being spent is **unverified TCB**: how much unproved code sits on a
+security-critical path, and what compensating control covers it. That is a trade this tree has
+already priced once. Milestone 20 accepted a new architecture knowing it "enlarges the unverified TCB
+(one hand-written boot/MMU/trap/syscall layer per arch, the least-verifiable code)" and paid for it
+with sequencing rather than with a refusal. §14 concedes the frame outright: not a seL4-scale proof of
+the whole kernel, because that is person-decades.
+
+### The judgement, as seL4 wrote it, and the part that changes the recommendation below
+
+§4.7 of the retrospective sets the price explicitly: **"For seL4 we were willing to tolerate no more
+than a 10% degradation in IPC performance"** as the cost of verifiability. They then beat it, at 188
+cycles one-way on ARM11, roughly 10% *better* than the fastest IPC they had measured on any kernel on
+that hardware, with the verdict "Abandoned: Assembler code for performance" and the flat statement
+that assembler implementations are no longer justified by performance arguments. OKL4 had already
+dropped its assembler fastpath commercially, on maintenance cost alone and with no verification
+motive.
+
+**How they got there is the fact that matters here**, and the original text of this decision missed
+it. The fastpath was hand-crafted in C by "manually re-ordering statements, making use of **(verified)
+invariants that the compiler is unable to determine by static analysis**". The proof was not a tax on
+the optimisation. It was an **input** to it: a verified invariant licenses a reordering the compiler
+cannot justify by itself.
+
+That is a stronger argument for option 2 than the one this file originally gave, which was only that
+the predicate cannot be retrofitted honestly. It is also why the three decisions here are separable
+and should not be taken as one:
+
+- **Assembly** is refused on two grounds that are independent of proof: maintenance cost, and the
+  evidence that it no longer buys anything.
+- **A Rust fastpath** is an unverified-TCB increase, the same class of decision milestone 20 made.
+- **The predicate** strictly increases proof coverage, and is what makes aggressive optimisation of
+  the mechanism defensible rather than merely tested.
+
 ## The risk is not where it looks, and this is the part worth arguing about
 
 The assembly is not the dangerous part. **The scheduling semantics are.**
