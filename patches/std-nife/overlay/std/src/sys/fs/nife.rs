@@ -21,9 +21,13 @@
 //! 2. **A program granted no directory capability gets `Unsupported` from everything.** Not an
 //!    empty filesystem, not `NotFound`: the platform cannot do it, because no capability reaches a
 //!    filesystem. The same shape `std::net` uses when the `Stack` endpoint is absent.
-//! 3. **A nested path is refused too, and points at the milestone that fixes it.** The contract
-//!    carries one name resolved in the bound directory; a subdirectory needs its own directory
-//!    capability, which is milestone 31's per-file/per-directory grant.
+//! 3. **A nested path is a chain of descents, not a lookup** (milestone 122). `File::open("a/b/c")`
+//!    is `OPENDIR a`, `OPENDIR b`, then `OPEN c` against `b`'s handle, each hop attenuated by the
+//!    last. This used to be refused outright, which meant a program could list a subdirectory and
+//!    then not open what it found there. **The grant is exactly as tight as it was**: every hop
+//!    still resolves under the capability this process holds, rights only ever narrow, and there
+//!    are no symlinks to escape through. What changed is only whether the program has to spell the
+//!    descent itself.
 //!
 //! # What binds, and what stays honestly Unsupported
 //!
@@ -52,8 +56,13 @@
 //! second word instead of 0) and [`copy`] (no verb, and none needed: it is an open, a read/write
 //! loop and two closes).
 //!
+//! **And since milestone 122:** nested paths anywhere a name is taken, [`Dir`] (std's own
+//! `openat`-shaped API, unstable as `#![feature(dirfd)]`), and `remove_dir_all`, which needed no
+//! code at all: std's generic implementation is written in terms of `read_dir` and `remove_file`
+//! on paths it composes itself, so it started working the moment those paths resolved.
+//!
 //! Still Unsupported, each because no verb in the contract backs it: symlinks and hard links,
-//! `canonicalize`, `remove_dir_all`, permissions, file times, locks, and `duplicate` (a handle is a
+//! `canonicalize`, permissions, file times, locks, and `duplicate` (a handle is a
 //! token the server minted; there is no dup verb). `modified`/`accessed`/`created` are the ones to
 //! watch: the server keeps an mtime and §43 gave us a clock to read it against, so the only missing
 //! piece is a **wire-format change** to `FSTAT`'s reply, which is the expensive kind of decision
@@ -76,15 +85,25 @@ use crate::sys::{unsupported, unsupported_err};
 // contract links, canonicalizes or copies, so those keep the `unsupported` implementations rather
 // than gaining a nife-shaped copy of the same refusal. `FileTimes` comes from there too (the
 // server keeps an mtime but the contract does not carry one).
-//
-// `remove_dir_all` stays here for a reason worth stating, because it now looks like an omission
-// next to `rmdir`: the recursion needs to *descend*, and a nested path is refused by `one_name`
-// (§27 carries one name resolved in the bound directory). The loop belongs where it can hold a
-// directory capability per level, which is `user/src/rm.rs`, not in a PAL that has one.
 #[expect(dead_code)]
 #[path = "unsupported.rs"]
 mod unsupported_fs;
-pub use unsupported_fs::{Dir, FileTimes, canonicalize, link, readlink, remove_dir_all, symlink};
+pub use unsupported_fs::{FileTimes, canonicalize, link, readlink, symlink};
+
+/// **`remove_dir_all` needed no code** (milestone 122), and that is the whole finding.
+///
+/// It used to come from `unsupported.rs` with a note saying the recursion has to descend and a
+/// nested path is refused, so the loop belonged in `user/src/rm.rs` where a program can hold a
+/// directory capability per level. The second half of that was right and is now this module's
+/// business: [`walk`] holds one per level. std's own generic implementation is written entirely in
+/// terms of `read_dir`, `remove_file` and `remove_dir` on paths it composes with `DirEntry::path`,
+/// which is exactly the shape that started working when descent did.
+///
+/// It is the same finding milestone 64 recorded twice and this module records a fourth time: **a
+/// refusal outlived the reason for it**, and looked correct the whole while. The rights it needs at
+/// every level are `dir::REMOVE_TREE`'s (`ENUMERATE` to see, `DESCEND` to walk in, `REMOVE` to take
+/// the name out), asked for one verb at a time by the walk rather than all at once.
+pub use crate::sys::fs::common::remove_dir_all;
 
 /// The FS-service endpoint: this process's entire authority over files. Naming a file over it is a
 /// request the server resolves under the one directory the endpoint is bound to.
@@ -239,7 +258,7 @@ fn from_errno(errno: i32) -> io::Error {
         // than the parent holds, both answer it. It is the second errno in this map that is about
         // *you* rather than about the name, so it gets the kind that says so.
         //
-        // **`PermissionDenied` here is not the EPERM fiction the path refusals avoid**, and the
+        // **`PermissionDenied` here is not the EPERM fiction `count_names`' refusals avoid**, and the
         // difference is which side of the wire decided. Those refusals are this client saying "no
         // capability designates that name", where no permission was ever consulted. This is the
         // server saying "the capability you hold lacks the right that verb needs", which is a fact
@@ -276,23 +295,28 @@ fn from_errno(errno: i32) -> io::Error {
     }
 }
 
-// --- Paths: one name, under the granted directory ---------------------------------------------
+// --- Paths: a chain of names under the granted directory --------------------------------------
 
-/// Reduce a std path to the ONE name the contract can carry, or refuse it.
+/// Check every component of `path` and count the names that survive, or refuse the path.
 ///
 /// This is where "no global namespace" is enforced, on the client side, before a byte reaches the
-/// server. The server enforces it again (it resolves a single component in its bound directory and
-/// nothing else); doing it here as well is not redundant, it is what turns a would-be escape into
-/// a legible `io::Error` instead of an `ENOENT` that reads like a missing file.
+/// server. The server enforces it again (it resolves a single component under the handle it is
+/// given and nothing else); doing it here as well is not redundant, it is what turns a would-be
+/// escape into a legible `io::Error` instead of an `ENOENT` that reads like a missing file.
 ///
 /// Every refusal is [`io::ErrorKind::InvalidFilename`], never `PermissionDenied`: no permission was
 /// consulted, and there is no name for what was asked, because this process holds no capability
-/// that designates it. The message says which of the four cases it was.
-fn one_name(path: &Path) -> io::Result<&str> {
-    let mut name: Option<&str> = None;
+/// that designates it. The message says which case it was.
+///
+/// **A nested path is no longer one of them** (milestone 122). It is a chain of names, and [`walk`]
+/// spends one attenuated `OPENDIR` per link to reach the last one. What is still refused is what
+/// still names nothing: an absolute path, and `..` at any position.
+fn count_names(path: &Path) -> io::Result<usize> {
+    let mut n = 0;
     for c in path.components() {
         match c {
-            // "./motd" is "motd": the current directory IS the granted one.
+            // "./motd" is "motd", and "a/./b" is "a/b": the current directory IS the one the walk
+            // has reached.
             Component::CurDir => {}
             Component::RootDir | Component::Prefix(_) => {
                 return Err(io::const_error!(
@@ -301,6 +325,12 @@ fn one_name(path: &Path) -> io::Result<&str> {
                      capability, not a filesystem root"
                 ));
             }
+            // Refused at every position, not just the first. `sub/../other` would be a descent
+            // followed by an ascent, and there is no verb for the ascent and no capability that
+            // would designate what it reached: a handle names a directory, and nothing on the wire
+            // names its parent. This is the property that makes the walk safe by construction
+            // rather than by checking, and it is why `cap-primitives` has to work so much harder on
+            // Unix (see notes/std.md).
             Component::ParentDir => {
                 return Err(io::const_error!(
                     io::ErrorKind::InvalidFilename,
@@ -308,79 +338,185 @@ fn one_name(path: &Path) -> io::Result<&str> {
                 ));
             }
             Component::Normal(part) => {
-                if name.is_some() {
-                    return Err(io::const_error!(
-                        io::ErrorKind::InvalidFilename,
-                        "a nested path needs a directory capability for the subdirectory, which \
-                         this contract does not yet grant"
-                    ));
-                }
-                name = Some(part.to_str().ok_or_else(|| {
+                let name = part.to_str().ok_or_else(|| {
                     io::const_error!(
                         io::ErrorKind::InvalidFilename,
                         "a file name must be UTF-8 to cross this contract"
                     )
-                })?);
+                })?;
+                if name.len() > PAGE {
+                    return Err(io::const_error!(
+                        io::ErrorKind::InvalidFilename,
+                        "a name is longer than the page shared with the FS server"
+                    ));
+                }
+                n += 1;
             }
         }
     }
-    match name {
-        Some(n) if n.len() <= PAGE => Ok(n),
-        Some(_) => Err(io::const_error!(
-            io::ErrorKind::InvalidFilename,
-            "the name is longer than the page shared with the FS server"
-        )),
-        None => Err(io::const_error!(
+    Ok(n)
+}
+
+/// The names in `path`, in order. Only ever called after [`count_names`] has agreed there is
+/// nothing else in there, so the `to_str` that cannot fail is dropped rather than unwrapped.
+fn names(path: &Path) -> impl Iterator<Item = &str> {
+    path.components().filter_map(|c| match c {
+        Component::Normal(part) => part.to_str(),
+        _ => None,
+    })
+}
+
+/// A directory handle a request is issued against: [`proto::ROOT`] for the granted directory, or
+/// one a descent minted.
+///
+/// It closes what it minted and never closes `ROOT`, which is not this process's to close: `ROOT`
+/// is the directory the endpoint is bound to rather than a handle anybody handed out. The server's
+/// table has the bound directory in slot 0 and mints from 1 up, so `handle != ROOT` is exactly
+/// "we made this".
+struct At(u64);
+
+impl Drop for At {
+    fn drop(&mut self) {
+        if self.0 != proto::ROOT {
+            // A failure has nowhere to go: we are done with the handle either way, and a leaked
+            // server-side slot is the cost of a reply we could not have acted on.
+            let _ = request(proto::req(proto::CLOSE, self.0, 0), 0);
+        }
+    }
+}
+
+/// One hop: `OPENDIR name` under `parent`, asking for `want` on the child.
+///
+/// **`want` is the whole of the authority question** and the trap in this half of the PAL. The
+/// server intersects the request with the parent's rights and answers `EPERM` when the result comes
+/// up *short of the request* (§47's monotonicity is the intersection; the refusal is the server
+/// refusing to hand back less than was asked for without saying so). A client cannot read its own
+/// capability, so asking for more than the operation needs breaks under every narrowed grant while
+/// passing every test that grants the root's full rights, which is the mistake `readdir` records
+/// having nearly shipped.
+fn descend(p: &mut Page, parent: &At, name: &str, want: u64) -> io::Result<At> {
+    p.put(name.as_bytes());
+    let handle = request(proto::req(proto::OPENDIR, parent.0, name.len() as u64), want)?;
+    Ok(At(handle))
+}
+
+/// **Resolve `path` to the directory its last name lives in, plus that name** (milestone 122).
+///
+/// `File::open("a/b/c")` is `OPENDIR a`, `OPENDIR b`, then `OPEN c` against `b`'s handle. This is
+/// `openat` semantics, which is what the contract already was; what this function adds is that a
+/// path-shaped standard library can sit on top of it, which is the whole of milestone 122's option
+/// A. Unix answered the same question the same way and kept both interfaces, which is why [`Dir`]
+/// exists beside this.
+///
+/// **The rights story, because it looks like a widening and is not.** Every hop asks for
+/// `DESCEND | needs`, where `needs` is what the *final* verb requires on the directory it lands in
+/// (`fs_proto::verb::TABLE` is the list, and `OPEN`'s "READ or WRITE" is the one row a caller has
+/// to resolve from its own `OpenOptions`). Carrying `needs` down the whole chain rather than only
+/// asking for it at the end costs nothing that was ever available: a child's rights are its
+/// parent's intersected with the request, so a right an ancestor lacks is a right no descendant of
+/// it could have had either. The walk therefore asks for exactly the maximum the grant could give
+/// at the depth it is going to, and no more.
+///
+/// **At most two handles are open at once**, because the assignment in the loop drops the previous
+/// hop, which closes it. A deep path costs round trips rather than handle-table slots.
+fn walk<'a>(p: &mut Page, from: u64, path: &'a Path, needs: u64) -> io::Result<(At, &'a str)> {
+    let total = count_names(path)?;
+    if total == 0 {
+        return Err(io::const_error!(
             io::ErrorKind::InvalidFilename,
             "the granted directory itself is not a file this contract can open"
-        )),
+        ));
     }
+    let mut at = At(from);
+    let mut seen = 0;
+    for name in names(path) {
+        seen += 1;
+        if seen == total {
+            return Ok((at, name));
+        }
+        at = descend(p, &at, name, fsproto::dir::DESCEND | needs)?;
+    }
+    // `count_names` counted the same components this loop walks, so the return above always fires.
+    Err(io::const_error!(
+        io::ErrorKind::InvalidFilename,
+        "the granted directory itself is not a file this contract can open"
+    ))
 }
 
-/// Like [`one_name`], but **the granted directory itself is a legal answer**.
+/// Resolve `path` to a **directory** handle, asking for `want` on it.
 ///
-/// `File::open("")` names nothing, so `one_name` refuses an empty component list. `read_dir(".")`
-/// does name something: the directory this process was granted. The two callers want opposite
-/// answers to the same input, which is why this is a second function rather than a flag.
-fn dir_name(path: &Path) -> io::Result<Option<&str>> {
-    match one_name(path) {
-        Ok(name) => Ok(Some(name)),
-        // The one refusal that is not a refusal here: `""` and `"."` both reduce to no components,
-        // which `one_name` reports as "the granted directory itself is not a file" and which is
-        // precisely what a caller of `read_dir` meant. Every other message `one_name` produces
-        // (absolute, `..`, nested, non-UTF-8, too long) means the same thing for a directory as for
-        // a file, so it passes straight through.
-        Err(_) if path.components().all(|c| matches!(c, Component::CurDir)) => Ok(None),
-        Err(e) => Err(e),
+/// The empty path and `"."` name the granted directory itself, which is [`proto::ROOT`] and costs
+/// no message: it is the directory the endpoint is bound to rather than a name inside it. Anything
+/// else is [`walk`] followed by one more descent, since the last component of a path a caller wants
+/// listed is itself the directory rather than a name inside one.
+fn dir_at(p: &mut Page, path: &Path, want: u64) -> io::Result<At> {
+    if count_names(path)? == 0 {
+        return Ok(At(proto::ROOT));
     }
+    let (parent, name) = walk(p, proto::ROOT, path, want)?;
+    descend(p, &parent, name, want)
 }
 
-/// `OPEN` a name under the granted directory, returning the server's handle.
-fn open_handle(path: &Path) -> io::Result<u64> {
+/// The [`dir`] rights an `OPEN` needs on the directory holding the name.
+///
+/// `fs_proto::verb::TABLE` records `OPEN` as the contract's one "any of" row (`READ` *or* `WRITE`
+/// will do), so this is the one place a caller has to say which, and it says it from the options it
+/// was handed. Asking for both when the caller only reads would refuse a read through a read-only
+/// grant, which is the over-asking trap one level down from the one [`descend`] describes.
+///
+/// [`dir`]: fsproto::dir
+fn open_rights(opts: &OpenOptions) -> u64 {
+    let mut want = 0;
+    if opts.read {
+        want |= fsproto::dir::READ;
+    }
+    if opts.write || opts.append || opts.truncate {
+        want |= fsproto::dir::WRITE;
+    }
+    want
+}
+
+/// `OPEN` the last name in `path`, walking to the directory that holds it. Returns the server's
+/// handle.
+fn open_handle(path: &Path, opts: &OpenOptions) -> io::Result<u64> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let name = one_name(path)?;
     let mut p = page();
+    let (at, name) = walk(&mut p, proto::ROOT, path, open_rights(opts))?;
     p.put(name.as_bytes());
-    request(proto::req(proto::OPEN, 0, name.len() as u64), 0)
+    request(proto::req(proto::OPEN, at.0, name.len() as u64), 0)
 }
 
-/// Create `path` under the granted directory and return the handle. [`open_handle`]'s twin: the wire
-/// shape is identical, only the verb differs, which is why `CREATE` was specified to match `OPEN`.
+/// Create the last name in `path` and return the handle. [`open_handle`]'s twin: the wire shape is
+/// identical, only the verb and the rights the walk asks for differ, which is why `CREATE` was
+/// specified to match `OPEN`.
+///
+/// **The walk asks for `CREATE` *and* what the caller will do with the file**, and leaving the
+/// second half out is a bug the nested case finds and the flat case cannot. A file handle carries
+/// `parent & (READ | WRITE)` (`fs_server`'s `create_file_at`, the same arithmetic as `open_file_at`),
+/// so a descent that asked only for `CREATE` hands back a directory handle with no `WRITE` in it,
+/// which mints a file nobody can write. `std::fs::write("a/b")` created the file and then failed
+/// with `EROFS` on its own first write. Against the granted directory it never showed, because
+/// nothing is requested there: `ROOT` carries whatever the endpoint carries.
 ///
 /// The server answers `EEXIST` if the name is already there, and this is only ever called after an
 /// open reported `NotFound`, so that reply means somebody else created it in between. It surfaces as
 /// `AlreadyExists` rather than being retried, because a silent retry would turn a lost race into a
 /// caller writing over a file it believes it just made.
-fn create_handle(path: &Path) -> io::Result<u64> {
+fn create_handle(path: &Path, opts: &OpenOptions) -> io::Result<u64> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let name = one_name(path)?;
     let mut p = page();
+    let (at, name) = walk(
+        &mut p,
+        proto::ROOT,
+        path,
+        fsproto::dir::CREATE | open_rights(opts),
+    )?;
     p.put(name.as_bytes());
-    request(proto::req(proto::CREATE, 0, name.len() as u64), 0)
+    request(proto::req(proto::CREATE, at.0, name.len() as u64), 0)
 }
 
 // --- File ------------------------------------------------------------------------------------
@@ -533,8 +669,8 @@ impl DirBuilder {
         if !reachable() {
             return Err(unsupported_err());
         }
-        let name = one_name(p)?;
         let mut page = page();
+        let (at, name) = walk(&mut page, proto::ROOT, p, fsproto::dir::CREATE | fsproto::dir::DESCEND)?;
         page.put(name.as_bytes());
         // **The second word asks for rights on the child, and asking for too much is a refusal
         // rather than an attenuation.** The server intersects the request with the parent's rights
@@ -543,7 +679,7 @@ impl DirBuilder {
         // its own directory capability carries, so it must ask for the *minimum the operation
         // needs* or it breaks under every narrowed grant. `create_dir` needs nothing from the
         // handle it gets back, because it closes it.
-        let handle = request(proto::req(proto::MKDIR, proto::ROOT, name.len() as u64), 0)?;
+        let handle = request(proto::req(proto::MKDIR, at.0, name.len() as u64), 0)?;
         let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
         Ok(())
     }
@@ -569,10 +705,14 @@ impl Iterator for ReadDir {
 
 impl DirEntry {
     /// The path a caller would use to reach this entry, which is the path they passed to
-    /// `read_dir` with the name appended. **`read_dir(".")` therefore yields `./name`**, and that
-    /// is what `one_name` accepts, so feeding an entry's `path()` straight back to `File::open`
-    /// works. It would not if this returned a bare name, because `PathBuf` joining is std's job
-    /// and std joins against what it was given.
+    /// `read_dir` with the name appended, so feeding an entry's `path()` straight back to
+    /// `File::open` works. It would not if this returned a bare name, because `PathBuf` joining is
+    /// std's job and std joins against what it was given.
+    ///
+    /// **This is the call milestone 122 exists for.** `read_dir(".")` yields `./name` and always
+    /// opened; `read_dir("sub")` yields `sub/name`, which is two components, which was refused. A
+    /// std program could list a subdirectory and then not open one thing it had just been told was
+    /// there, and every walker in the ecosystem is built out of exactly this pair.
     pub fn path(&self) -> PathBuf {
         self.root.join(&self.name)
     }
@@ -648,7 +788,7 @@ impl File {
         // `create(true).truncate(true)`, so getting the order wrong would leave the old tail behind
         // on exactly the path that exists to replace a file's contents, which is the day-costing bug
         // this milestone is here to remove.
-        let handle = match open_handle(path) {
+        let handle = match open_handle(path, opts) {
             Ok(h) if opts.create_new => {
                 // `create_new` means "must not already exist", and it does. Close the handle the open
                 // just minted rather than leaking it for the life of the process: the error path is
@@ -663,7 +803,7 @@ impl File {
             // Not there, and the caller asked for it to be made. This is the case that used to be
             // Unsupported.
             Err(e) if (opts.create || opts.create_new) && e.kind() == io::ErrorKind::NotFound => {
-                create_handle(path)?
+                create_handle(path, opts)?
             }
             Err(e) => return Err(e),
         };
@@ -840,6 +980,210 @@ impl File {
     }
 }
 
+/// **A directory a program holds** (milestone 122): std's own `openat`-shaped API, `Dir::open` and
+/// `Dir::open_file`, bound to the capability it already is.
+///
+/// This is the half of milestone 122 that matters more than nested paths, and the reason is the
+/// mistake it avoids rather than the software it runs. If path composition were the only interface,
+/// no program would ever be written to hold a directory and the system's model would be invisible
+/// to everything running on it, which is a capability system quietly becoming an ambient one with
+/// extra steps.
+///
+/// **It is not an interface this project invented**, which was the surprise: `std::fs::Dir` exists
+/// upstream behind `#![feature(dirfd)]` (rust-lang/rust#120426) and is exactly `openat`. Until this
+/// milestone nife got std's generic fallback, which stores a `canonicalize`d path, so `Dir::open`
+/// on this system failed at the first call in the first line, and the type most aligned with what
+/// this OS *is* was the one type it could not offer. It is also what `cap-std` binds to, which is
+/// DECISIONS §84's first preference for porting real software.
+///
+/// # The rights it asks for, which is the whole design
+///
+/// Everywhere else in this module the rule is **ask for the minimum the verb needs**, because
+/// over-asking is `EPERM` rather than attenuation and a PAL cannot read its own capability. A held
+/// directory has no single verb to be the minimum of: it is an object, and what will be asked of it
+/// later is not knowable when it is minted.
+///
+/// So a `Dir` asks for **everything its parent carries**, which is what `openat(dirfd, name,
+/// O_DIRECTORY)` hands back on Unix and is the honest analogue. It cannot widen anything: the
+/// server's answer is `parent & requested`, so the result is the projection of an authority this
+/// process already holds onto one directory inside it.
+///
+/// Knowing what the parent carries is the awkward part, because **the contract has no way to say
+/// "attenuate to whatever you have"** and no verb that reports a handle's rights. The common case
+/// costs one message: ask for `dir::ALL`, and a full-rights grant answers with the handle. A
+/// narrowed grant answers `EPERM`, and then [`Dir::held_rights`] finds out exactly what is there by
+/// asking for one right at a time, six messages, once per `Dir::open` at the first hop only, since
+/// every hop after that descends from a parent whose rights are now known.
+///
+/// That probe is a workaround and is recorded as one: the fix is a sentinel in `OPENDIR`'s rights
+/// word meaning "the parent's, whatever they are", which is a contract change and therefore not a
+/// lane's to make. See the BUGS section of notes/std.md.
+pub struct Dir {
+    /// The server's handle, `proto::ROOT` for the granted directory itself.
+    at: At,
+    /// What [`Self::at`] is known to carry. [`Dir::UNKNOWN`] for the granted directory, whose
+    /// rights are the endpoint's and which nothing on the wire reports.
+    rights: u64,
+}
+
+impl Dir {
+    /// The rights of the granted directory: not a mask, a statement that we have not been told.
+    /// `u64::MAX` cannot be confused with a real one, since `dir::ALL` is six bits.
+    const UNKNOWN: u64 = u64::MAX;
+
+    /// The granted directory itself, which costs no message: it is what the endpoint is bound to
+    /// rather than a name inside anything.
+    fn root() -> Dir {
+        Dir { at: At(proto::ROOT), rights: Dir::UNKNOWN }
+    }
+
+    /// Descend one name, asking for everything this directory carries. See the type's header for
+    /// why "everything it carries" is the right ask for an object and the wrong ask for a verb.
+    fn child(&self, p: &mut Page, name: &str) -> io::Result<Dir> {
+        let want = if self.rights == Dir::UNKNOWN { fsproto::dir::ALL } else { self.rights };
+        match descend(p, &self.at, name, want) {
+            Ok(at) => Ok(Dir { at, rights: want }),
+            // The one recoverable refusal: we asked for more than this capability holds, and the
+            // server told us so rather than quietly handing back less (§42). Find out what is
+            // actually there and ask again. Only reachable from a directory whose rights we were
+            // never told, so it happens at most once per `Dir::open`.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && self.rights == Dir::UNKNOWN => {
+                let held = self.held_rights(p, name)?;
+                let at = descend(p, &self.at, name, held)?;
+                Ok(Dir { at, rights: held })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Which of the six rights this directory carries, found by asking for one at a time.
+    ///
+    /// Each `OPENDIR` here succeeds exactly when the parent holds that one right, because the
+    /// server's test is `parent & requested == requested`. Six messages and six closes, and the
+    /// handles are released as they are minted rather than held, so this never approaches the
+    /// contract's per-session handle budget.
+    ///
+    /// A parent that cannot be descended at all answers `ENOENT` rather than `EPERM` (§47 withholds
+    /// a naming right by denying the name, so a holder cannot map what it may not reach), and that
+    /// propagates out of the first probe as an ordinary `NotFound`.
+    fn held_rights(&self, p: &mut Page, name: &str) -> io::Result<u64> {
+        let mut held = 0;
+        for right in [
+            fsproto::dir::ENUMERATE,
+            fsproto::dir::READ,
+            fsproto::dir::WRITE,
+            fsproto::dir::CREATE,
+            fsproto::dir::REMOVE,
+            fsproto::dir::DESCEND,
+        ] {
+            match descend(p, &self.at, name, right) {
+                // Dropping the `At` closes it: this was a question, not a capability we wanted.
+                Ok(_) => held |= right,
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(held)
+    }
+
+    /// **Open a directory.** `""` and `"."` are the granted directory and cost nothing; anything
+    /// else is one descent per component, each carrying the last one's rights forward.
+    ///
+    /// The `OpenOptions` are upstream's and are ignored, which is the same answer Unix gives: a
+    /// `dirfd` opened `O_RDONLY` still unlinks and still opens a file for writing, because what it
+    /// carries is the authority over the directory rather than a mode. Here that authority is
+    /// literal.
+    pub fn open(path: &Path, _opts: &OpenOptions) -> io::Result<Dir> {
+        if !reachable() {
+            return Err(unsupported_err());
+        }
+        if count_names(path)? == 0 {
+            return Ok(Dir::root());
+        }
+        let mut p = page();
+        let mut cur = Dir::root();
+        for name in names(path) {
+            cur = cur.child(&mut p, name)?;
+        }
+        Ok(cur)
+    }
+
+    /// Open a file **under this directory**, which is the call the whole type exists for: the name
+    /// is resolved against a capability the program is holding, not against anything ambient. A
+    /// nested `path` walks from here exactly as [`walk`] walks from the granted directory.
+    pub fn open_file(&self, path: &Path, opts: &OpenOptions) -> io::Result<File> {
+        if !opts.read && !opts.write && !opts.append {
+            return Err(io::const_error!(
+                io::ErrorKind::InvalidInput,
+                "an open must ask for read, write, or append"
+            ));
+        }
+        let handle = {
+            let mut p = page();
+            let (at, name) = walk(&mut p, self.at.0, path, open_rights(opts))?;
+            p.put(name.as_bytes());
+            request(proto::req(proto::OPEN, at.0, name.len() as u64), 0)?
+        };
+        if opts.truncate {
+            if let Err(e) = request(proto::req(proto::TRUNCATE, handle, 0), 0) {
+                let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
+                return Err(e);
+            }
+        }
+        let file = File { handle, pos: AtomicU64::new(0), append: opts.append };
+        if opts.append {
+            let end = file.file_attr()?.size;
+            file.pos.store(end, Ordering::Relaxed);
+        }
+        Ok(file)
+    }
+
+    /// What there is to know about a directory over this contract, which is that it is one. The
+    /// size is the placeholder [`FileAttr`] describes: no verb reports a directory's size, and
+    /// inventing one would be a fact the contract does not carry.
+    pub fn metadata(&self) -> io::Result<FileAttr> {
+        Ok(FileAttr { size: 0, dir: true })
+    }
+
+    /// `UNLINK` a name under this directory. A directory is refused (`IsADirectory`), the same line
+    /// the path-shaped [`unlink`] draws.
+    pub fn remove_file(&self, path: &Path) -> io::Result<()> {
+        let mut p = page();
+        let (at, name) = walk(&mut p, self.at.0, path, fsproto::dir::REMOVE)?;
+        p.put(name.as_bytes());
+        request(proto::req(proto::UNLINK, at.0, name.len() as u64), 0)?;
+        Ok(())
+    }
+
+    /// **Rename across two held directories**, which is the shape `RENAME` was specified for: the
+    /// source handle rides in the request word and the destination's in the second, so this is one
+    /// atomic message rather than a copy and an unlink.
+    pub fn rename(&self, from: &Path, to_dir: &Dir, to: &Path) -> io::Result<()> {
+        let mut p = page();
+        let (src_at, src) = walk(&mut p, self.at.0, from, fsproto::dir::REMOVE)?;
+        let (dst_at, dst) = walk(&mut p, to_dir.at.0, to, fsproto::dir::CREATE)?;
+        if src.len() + dst.len() > PAGE {
+            return Err(io::const_error!(
+                io::ErrorKind::InvalidFilename,
+                "the two names together are longer than the page shared with the FS server"
+            ));
+        }
+        p.put(src.as_bytes());
+        p.put_at(src.len(), dst.as_bytes());
+        request(
+            proto::req(proto::RENAME, src_at.0, src.len() as u64),
+            proto::rename_dst(dst_at.0, dst.len() as u64),
+        )?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Dir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Dir").field("handle", &self.at.0).finish()
+    }
+}
+
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("File").field("handle", &self.handle).finish()
@@ -916,26 +1260,17 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let target = dir_name(p)?;
-
-    // One guard for the whole exchange, because `page()` is not reentrant: OPENDIR's name, every
-    // READDIR page, and the CLOSE all run under it. That also makes the listing a snapshot with no
-    // other operation of ours interleaved.
+    // One guard for the whole exchange, because `page()` is not reentrant: every OPENDIR name,
+    // every READDIR page, and the CLOSE all run under it. That also makes the listing a snapshot
+    // with no other operation of ours interleaved.
     let mut page = page();
 
-    let handle = match target {
-        None => proto::ROOT,
-        Some(name) => {
-            page.put(name.as_bytes());
-            // `ENUMERATE` and nothing more, for the reason `DirBuilder::mkdir` spells out: over-
-            // asking is `EPERM`, not attenuation, so a PAL that asked for `dir::ALL` here would
-            // work through the test's full-rights grant and fail through every narrowed one.
-            request(
-                proto::req(proto::OPENDIR, proto::ROOT, name.len() as u64),
-                fsproto::dir::ENUMERATE,
-            )?
-        }
-    };
+    // `ENUMERATE` and nothing more, for the reason `DirBuilder::mkdir` spells out: over-asking is
+    // `EPERM`, not attenuation, so a PAL that asked for `dir::ALL` here would work through the
+    // test's full-rights grant and fail through every narrowed one. Every hop on the way to a
+    // nested path asks for `DESCEND | ENUMERATE`, which is the same minimum one level up.
+    let at = dir_at(&mut page, p, fsproto::dir::ENUMERATE)?;
+    let handle = at.0;
 
     let mut entries: Vec<(OsString, bool)> = Vec::new();
     let mut buf = [0u8; PAGE];
@@ -975,9 +1310,8 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
         cursor += this_page;
     };
 
-    if handle != proto::ROOT {
-        let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
-    }
+    // `at` closes what it minted, and never closes `ROOT`.
+    drop(at);
     result?;
 
     Ok(ReadDir { root: p.to_path_buf(), entries: entries.into_iter() })
@@ -990,10 +1324,10 @@ pub fn unlink(p: &Path) -> io::Result<()> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let name = one_name(p)?;
     let mut page = page();
+    let (at, name) = walk(&mut page, proto::ROOT, p, fsproto::dir::REMOVE)?;
     page.put(name.as_bytes());
-    request(proto::req(proto::UNLINK, proto::ROOT, name.len() as u64), 0)?;
+    request(proto::req(proto::UNLINK, at.0, name.len() as u64), 0)?;
     Ok(())
 }
 
@@ -1005,10 +1339,10 @@ pub fn rmdir(p: &Path) -> io::Result<()> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let name = one_name(p)?;
     let mut page = page();
+    let (at, name) = walk(&mut page, proto::ROOT, p, fsproto::dir::REMOVE)?;
     page.put(name.as_bytes());
-    request(proto::req(proto::RMDIR, proto::ROOT, name.len() as u64), 0)?;
+    request(proto::req(proto::RMDIR, at.0, name.len() as u64), 0)?;
     Ok(())
 }
 
@@ -1017,27 +1351,33 @@ pub fn rmdir(p: &Path) -> io::Result<()> {
 /// and `fs_proto::fs::RENAME` is both concurrency-atomic and crash-atomic, which is what that idiom
 /// actually needs.
 ///
-/// Both names are under the granted directory (there is no second directory capability to name),
-/// and they travel in the shared page back to back, source first, because one request word cannot
-/// carry two lengths.
+/// The two names travel in the shared page back to back, source first, because one request word
+/// cannot carry two lengths.
+///
+/// **`RENAME` is the one verb that names two directories**, and since milestone 122 both of them
+/// can be somewhere other than the granted root: each side is walked separately and its handle goes
+/// into the request, which is what makes `rename("a/tmp", "b/final")` a single atomic message
+/// rather than something a caller has to build out of copy and unlink. The rights asked for differ
+/// by side, and that is the contract's rather than a nicety: the source directory loses a name
+/// (`REMOVE`) and the destination gains one (`CREATE`).
 pub fn rename(old: &Path, new: &Path) -> io::Result<()> {
     if !reachable() {
         return Err(unsupported_err());
     }
-    let src = one_name(old)?;
-    let dst = one_name(new)?;
+    let mut page = page();
+    let (src_at, src) = walk(&mut page, proto::ROOT, old, fsproto::dir::REMOVE)?;
+    let (dst_at, dst) = walk(&mut page, proto::ROOT, new, fsproto::dir::CREATE)?;
     if src.len() + dst.len() > PAGE {
         return Err(io::const_error!(
             io::ErrorKind::InvalidFilename,
             "the two names together are longer than the page shared with the FS server"
         ));
     }
-    let mut page = page();
     page.put(src.as_bytes());
     page.put_at(src.len(), dst.as_bytes());
     request(
-        proto::req(proto::RENAME, proto::ROOT, src.len() as u64),
-        proto::rename_dst(proto::ROOT, dst.len() as u64),
+        proto::req(proto::RENAME, src_at.0, src.len() as u64),
+        proto::rename_dst(dst_at.0, dst.len() as u64),
     )?;
     Ok(())
 }
