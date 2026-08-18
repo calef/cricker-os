@@ -33,14 +33,8 @@ What is bad about Unix's cwd is three specific things, and `cd` is none of them:
 2. **Relative paths resolve implicitly**, so a program's reach depends on invisible state.
 3. **`..` walks out**, so the cwd bounds nothing.
 
-## The three earned divergences
+## The two earned divergences, and the one that was retired
 
-- **No absolute paths.** There is no namespace to root one in. The refusal is that the name **cannot
-  be expressed**, not that a permission was checked, which is why the `std` PAL answers
-  `InvalidFilename` rather than `PermissionDenied` and why `grant_plan::Refusal::NoAbsolutePath` is its
-  own variant rather than a shape complaint. Plan 9 kept the syntax by making `/` the root of *your*
-  namespace; that is the roadmap's recommendation for later, and until it is built the syntax is
-  refused rather than quietly reinterpreted as relative.
 - **`..` stops at your root**, and it is worth being precise about *why*, because "we check for `..`"
   would be a worse answer. The shell holds a **stack of the directory capabilities it descended
   through**, one per level. `..` pops one. At the root there is nothing to pop, so nothing is sent
@@ -49,6 +43,32 @@ What is bad about Unix's cwd is three specific things, and `cd` is none of them:
   other. Chroot's shape, arrived at from the other direction.
 - **`pwd` is relative to your root**, because naming anything above it implies a namespace that does
   not exist.
+
+**The third was "no absolute paths", and it came out on 2026-08-18** (milestone 47's namespace half).
+It was never a position, it was the honest state of a system that had no namespace to root a path in:
+the syntax was refused rather than quietly reinterpreted as relative, and `grant_plan::nav::Refused`
+carried an `Absolute` variant saying so. What replaced it is Plan 9's answer, which this note's own
+first paragraph on the subject named as the recommendation for later:
+
+- **`/` is the root of *your* namespace.** `/logs/report.txt` starts at the directory capability you
+  were granted and descends from there, so two shells rooted in two subtrees type the same token and
+  open two different files, or one of them opens nothing.
+
+**It grants nothing, and that is the whole of the argument for it.** `/a/b` is `cd` to your root
+followed by two descents: exactly the walk you could already take, spelled in one token. `/..` is
+refused for the same reason `..` at the root is, because your root is the only root there is and
+there is no level above it to name. The negative control is in the guest suite rather than in this
+paragraph: the two shells run the same two probes with a leading slash
+(`navscape::ABSOLUTE_REACHED_INNER` and `ABSOLUTE_REACHED_SECRET`) and each reaches exactly the file
+its own root contains. A `/` rooted in anything global would set both bits in both reports.
+
+**What forced it was `pwd` printing a path nobody could type back.** `Cwd::render` has answered
+`/logs/2026` since the day it was written, because naming a position relative to your own root is the
+only honest rendering; and typing that same token back was a refusal. A round trip that does not
+close is the tell that a refusal has outlived its reason (§71's promotion trigger, met exactly).
+Milestone 64 supplied the second half of the demand from the other side: a `std` program is not a
+shell, cannot be told to `cd`, and builds paths with `Path::join`, so `current_dir()` had no answer
+it could give.
 
 One divergence that is *not* earned and was not taken: `cd` with no operand. Unix goes to `$HOME`;
 there is no environment here (that is out of this lane's scope), so bare `cd` goes to **your root**,
@@ -113,14 +133,16 @@ it exercised only the `create` path, so it now goes through both doors.
 The cost is stated where it is paid: **a handle nobody closes pins the node for the life of the
 server**, exactly as a leaked fd does on Unix, and this table outlives its clients.
 
-### `rm` refuses a directory, and there is no `rmdir`
+### `rm` refuses a directory, and `rmdir` removes only an empty one
 
-`UNLINK` answers `EISDIR` for a directory, which is POSIX's own answer. There is no `RMDIR` verb on
-this contract, so **`mkdir` can make a directory that nothing here can take away.** That is a real
-asymmetry and it is declared rather than papered over: a single verb that removed whatever it found
-would be how one word takes a subtree away from someone who typed it by accident, and adding `RMDIR`
-was a contract change this lane did not need to make its own builtins work. It is the obvious next
-thing, with `rm -r` behind it, and both belong to whoever picks up recursive removal.
+`UNLINK` answers `EISDIR` for a directory, which is POSIX's own answer. **This section said "there
+is no `RMDIR` verb on this contract" until 2026-08-18, and that stopped being true when DECISIONS
+§49 landed one** (`fs_proto::fs::RMDIR`, refusing a non-empty directory with `ENOTEMPTY`, and the
+two halves proven by `navscape::RMDIR_REFUSED_NON_EMPTY` and `RMDIR_REMOVED_EMPTY`). The reasoning
+this paragraph carried survived the change and is what shaped the verb: a single call that removed
+whatever it found is how one word takes a subtree away, so the recursion in `rm -r` lives in
+userspace as a loop of individually safe steps and **no single call on this contract can take a
+subtree away**.
 
 ## Two shells, two roots, and neither can name the other's files
 
@@ -178,7 +200,20 @@ should be able to answer for every capability rather than a flag on one verb.
 
 ## BUGS
 
-- **No `RMDIR`, so `mkdir` makes something no verb here removes.** Argued above.
+- **A namespace is one root, so `bind` is still not built.** `/` names the single directory
+  capability a process holds, which is the whole of what an absolute path can mean until a process
+  can hold **two**. DECISIONS §50 chose namespace composition over stored paths and left the
+  mechanism unbuilt; what this half found is that the missing piece is not the mount table (a bind
+  entry is a `nav::Cwd`, which is a value, costs no capability slot and cannot name above the root
+  by construction) but the **endowment**: nothing in this system grants a second directory
+  capability to one process, so a union would have exactly one member. See milestone 47's block for
+  what a second grant costs.
+- **There is still no environment, and `PATH` is still a closed enum.** `/` answers "where", and
+  nothing answers "what may I run" or "what was I configured with". Both need something to arrive
+  at spawn that nothing on the wire carries today.
+- **`rm -r` is a program's loop, not a verb.** `UNLINK` refuses a directory and `RMDIR` refuses a
+  non-empty one, so removing a subtree takes as many deliberate calls as it has entries, each one
+  bounded by the capabilities the walker holds at that level. Argued above.
 - **No revocation**, and the reason is the per-server handle table. Argued above.
 - **The interactive prompt still holds no directory**, so at a real keyboard every one of these five
   answers "this shell holds no directory capability; there is nothing here to name". That sentence is
@@ -211,14 +246,21 @@ $ pwd
   /
 $ cd ..
   you are at your root; there is nothing above it to name
-$ cd /other
-  no absolute path: there is no namespace here to root one in, so that name cannot be expressed
+$ cd /..
+  you are at your root; there is nothing above it to name
 $ ls
   deeper/
   inner
 $ cd deeper
 $ pwd
   /deeper
+$ cd /
+$ pwd
+  /
+$ cd deeper
+$ ls /
+  deeper/
+  inner
 $ cd ..
 $ mkdir logs
 $ rm logs

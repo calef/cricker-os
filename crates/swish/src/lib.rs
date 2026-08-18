@@ -1614,7 +1614,7 @@ mod tests {
         assert_eq!(shown(|o| write_say(Say::Nothing, o)), "");
         for s in [
             Say::Refused(Refused::AtYourRoot),
-            Say::Refused(Refused::Absolute),
+            Say::Refused(Refused::NotAName),
             Say::Failed(-2),
             Say::NoDirectory,
             Say::NeedsAName,

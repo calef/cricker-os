@@ -2457,6 +2457,14 @@ pub mod fixture {
         pub const OTHER: &str = "other";
         /// A file in the sibling, pinned by the post-run host check.
         pub const SECRET: &str = "secret";
+        /// [`INNER`] and [`SECRET`] **as absolute paths**, which the navigating witness types to
+        /// ask the same two questions with a leading slash (milestone 47's namespace half).
+        ///
+        /// Constants rather than bytes built at the call site because the witness runs on two
+        /// stack pages and has been one page short before now: a static string costs it nothing.
+        pub const ABS_INNER: &str = "/inner";
+        /// [`SECRET`] as an absolute path. See [`ABS_INNER`].
+        pub const ABS_SECRET: &str = "/secret";
         pub const SECRET_BODY: &[u8] = b"CRK47-SECRET: in a sibling of the granted directory\n";
 
         /// The name the writable attacker creates inside its grant, with a run index appended so
@@ -2736,11 +2744,15 @@ pub mod fixture {
         pub const CLAMPED_AT_ROOT: u64 = 1 << 1;
         /// `cd ..` at the root moved it somewhere. Never allowed, at any rights.
         pub const WALKED_UP: u64 = 1 << 2;
-        /// An absolute path was refused as unnameable, with no request made. The refusal is that the
-        /// name **cannot be expressed** (there is no namespace to root it in), not that a permission
-        /// was checked, which is why the `std` PAL answers `InvalidFilename` and not
-        /// `PermissionDenied`.
-        pub const ABSOLUTE_REFUSED: u64 = 1 << 3;
+        /// **`/` named this shell's own root**: from one level down, `cd /` came back to the root
+        /// and `pwd` rendered `/` again. Plan 9's answer rather than DOS's, and the round trip
+        /// `pwd` had always implied: the path it prints is one you can type back.
+        ///
+        /// It replaced an `ABSOLUTE_REFUSED` bit on 2026-08-18. That bit was true of a system with
+        /// no namespace to root a path in, and rooting one in the holder's own namespace grants
+        /// nothing, which [`ABSOLUTE_REACHED_INNER`] and [`ABSOLUTE_REACHED_SECRET`] are the
+        /// measurement of rather than the claim.
+        pub const ABSOLUTE_IS_MY_ROOT: u64 = 1 << 3;
         /// It opened [`super::tree::INNER`], which exists only in [`super::tree::SUB`].
         pub const REACHED_INNER: u64 = 1 << 4;
         /// It opened [`super::tree::SECRET`], which exists only in [`super::tree::OTHER`].
@@ -2783,6 +2795,21 @@ pub mod fixture {
         /// And once the name inside it was taken out, `RMDIR` removed it. Without this, the bit
         /// above is equally true of a `RMDIR` that refuses everything.
         pub const RMDIR_REMOVED_EMPTY: u64 = 1 << 19;
+        /// It opened [`super::tree::INNER`] **by absolute path**, `/inner`, which exists only in
+        /// [`super::tree::SUB`].
+        ///
+        /// The pair with [`ABSOLUTE_REACHED_SECRET`] is why absolute paths cost nothing here: the
+        /// same two probes as [`REACHED_INNER`] and [`REACHED_SECRET`], asked with a leading slash,
+        /// and each shell reaches exactly the one its own root contains. A `/` rooted in a global
+        /// namespace would make both shells reach both.
+        pub const ABSOLUTE_REACHED_INNER: u64 = 1 << 20;
+        /// It opened [`super::tree::SECRET`] by absolute path, `/secret`, which exists only in
+        /// [`super::tree::OTHER`].
+        pub const ABSOLUTE_REACHED_SECRET: u64 = 1 << 21;
+        /// **`cd /..` was refused and nothing moved.** The negative control on the syntax: an
+        /// absolute path meets the same wall `..` does, because your root is the only root there
+        /// is and there is no level above it to name.
+        pub const ABSOLUTE_CLAMPED_AT_ROOT: u64 = 1 << 22;
     }
 
     /// **What the globbing witness reports** (milestone 47's globbing lane): a bitmap, for the same
@@ -3748,6 +3775,17 @@ mod tests {
         }
     }
 
+    /// **The absolute forms of the two probe names are the relative ones with a slash on the
+    /// front**, and nothing else. Written down because they are two constants that must agree, and
+    /// a drift between them would not fail: the witness would simply open nothing and report a
+    /// clear bit, which reads exactly like the escape it is looking for having been prevented.
+    #[test]
+    fn the_absolute_probe_names_are_the_relative_ones_rooted() {
+        use fixture::tree::*;
+        assert_eq!(ABS_INNER, format!("/{INNER}"));
+        assert_eq!(ABS_SECRET, format!("/{SECRET}"));
+    }
+
     /// The navigating shell's bits, for the reason above, and one more that is specific to them:
     /// the headline test reads a property off **two** reports, so a bit that meant two things would
     /// let one shell's success stand in for the other's failure.
@@ -3758,7 +3796,7 @@ mod tests {
             PWD_IS_ROOT,
             CLAMPED_AT_ROOT,
             WALKED_UP,
-            ABSOLUTE_REFUSED,
+            ABSOLUTE_IS_MY_ROOT,
             REACHED_INNER,
             REACHED_SECRET,
             LISTED,
@@ -3775,6 +3813,9 @@ mod tests {
             NAVIGATION_FAILED,
             RMDIR_REFUSED_NON_EMPTY,
             RMDIR_REMOVED_EMPTY,
+            ABSOLUTE_REACHED_INNER,
+            ABSOLUTE_REACHED_SECRET,
+            ABSOLUTE_CLAMPED_AT_ROOT,
         ];
         let mut seen = 0u64;
         for b in bits {
@@ -4621,7 +4662,7 @@ mod tests {
             fixture::navscape::PWD_IS_ROOT,
             fixture::navscape::CLAMPED_AT_ROOT,
             fixture::navscape::WALKED_UP,
-            fixture::navscape::ABSOLUTE_REFUSED,
+            fixture::navscape::ABSOLUTE_IS_MY_ROOT,
             fixture::navscape::REACHED_INNER,
             fixture::navscape::REACHED_SECRET,
             fixture::navscape::LISTED,
@@ -4638,6 +4679,9 @@ mod tests {
             fixture::navscape::NAVIGATION_FAILED,
             fixture::navscape::RMDIR_REFUSED_NON_EMPTY,
             fixture::navscape::RMDIR_REMOVED_EMPTY,
+            fixture::navscape::ABSOLUTE_REACHED_INNER,
+            fixture::navscape::ABSOLUTE_REACHED_SECRET,
+            fixture::navscape::ABSOLUTE_CLAMPED_AT_ROOT,
         ]);
         all_distinct_bits(&[
             fixture::globscape::EXPANDED,

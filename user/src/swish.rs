@@ -322,19 +322,40 @@ impl Nav {
         call(self.dir.unwrap_or(DIR), fs::req(fs::CLOSE, handle, 0), 0);
     }
 
-    /// **Resolve a lead against where we stand, without moving.**
+    /// **Resolve a path without moving**, from this shell's root when the token began with `/` and
+    /// from where it stands otherwise.
     ///
     /// `..` is answered from the shell's own stack (a level up is a handle it already holds), and
     /// each `Down` is one `OPENDIR`, because the FS contract takes a single component per request
     /// and nothing here walks a path. The steps are validated by [`Cwd::apply`] *before* this runs,
     /// so an `Up` past the root and a path deeper than the shell tracks are already refused with
     /// nothing sent; the only failure left is the server's.
-    fn walk(&mut self, steps: &[Step<'_>]) -> Result<Walk, Say> {
-        let mut w = Walk {
-            handle: self.here(),
-            base: self.cwd.depth(),
-            tmp: [0; nav::MAX_DEPTH],
-            n: 0,
+    fn walk(&mut self, p: &nav::Path<'_>) -> Result<Walk, Say> {
+        self.walk_from(p.from_root(), p.steps())
+    }
+
+    /// [`Nav::walk`] with the lead of a path rather than the whole of it: the same walk, stopping
+    /// one component short, which is what every verb that acts on a *name* needs.
+    ///
+    /// `from_root` is carried separately because a lead is a bare step sequence and cannot say
+    /// where it started. **A walk from the root starts at [`fs::ROOT`]**, the capability the
+    /// endpoint itself designates, which is the only root this process has and the reason an
+    /// absolute path can reach nothing a `cd` could not.
+    fn walk_from(&mut self, from_root: bool, steps: &[Step<'_>]) -> Result<Walk, Say> {
+        let mut w = if from_root {
+            Walk {
+                handle: fs::ROOT,
+                base: 0,
+                tmp: [0; nav::MAX_DEPTH],
+                n: 0,
+            }
+        } else {
+            Walk {
+                handle: self.here(),
+                base: self.cwd.depth(),
+                tmp: [0; nav::MAX_DEPTH],
+                n: 0,
+            }
         };
         for step in steps {
             match step {
@@ -381,14 +402,13 @@ impl Nav {
     /// Parse and validate a path operand: the steps, and where they would leave us.
     fn plan_path<'a>(&self, token: &'a [u8]) -> Result<(nav::Path<'a>, Cwd), Say> {
         let p = nav::path(token).map_err(Say::Refused)?;
-        let mut target = self.cwd;
-        target.apply(p.steps()).map_err(Say::Refused)?;
+        let target = self.cwd.resolve(&p).map_err(Say::Refused)?;
         Ok((p, target))
     }
 
     /// **`cd`**: rebind where names resolve. An empty operand is your root, because there is no
     /// `HOME` here and the root is the one distinguished place you have: it is what you were
-    /// granted.
+    /// granted. `cd /` is the same place said out loud, which is what `pwd` has always printed.
     ///
     /// The move is all or nothing. A `cd a/b` that fails at `b` leaves the shell in the directory it
     /// started in, because the next command would otherwise act somewhere the user does not think
@@ -404,7 +424,7 @@ impl Nav {
             Ok(v) => v,
             Err(s) => return s,
         };
-        let w = match self.walk(p.steps()) {
+        let w = match self.walk(&p) {
             Ok(w) => w,
             Err(s) => return s,
         };
@@ -447,7 +467,7 @@ impl Nav {
                 Ok(v) => v,
                 Err(s) => return s,
             };
-            match self.walk(p.steps()) {
+            match self.walk(&p) {
                 Ok(w) => (w.handle, Some(w)),
                 Err(s) => return s,
             }
@@ -496,7 +516,7 @@ impl Nav {
             // The token ends in `..`, so it designates a directory rather than a name in one.
             return Say::Refused(Refused::NotAName);
         };
-        let w = match self.walk(lead) {
+        let w = match self.walk_from(p.from_root(), lead) {
             Ok(w) => w,
             Err(s) => return s,
         };
@@ -528,7 +548,7 @@ impl Nav {
         let Some((lead, pattern)) = p.split_last_component() else {
             return Err(Say::Refused(Refused::NotAName));
         };
-        let w = self.walk(lead)?;
+        let w = self.walk_from(p.from_root(), lead)?;
 
         // **The batched and unbatched expanders decide membership identically**, which is why the
         // sweep is a policy on this one function rather than a second path: `xargs rm *.txt` and
@@ -2847,14 +2867,15 @@ fn navigate(spec: u64) -> ! {
         v |= nb::CLAMPED_AT_ROOT;
     }
 
-    // 3. An absolute path. Refused as **unnameable**, with no request made: there is no namespace
-    //    to root it in, and nothing consulted a permission.
+    // 3. **An absolute path, rooted in this shell's own namespace** (milestone 47's namespace
+    //    half). `/..` first, because it is the negative control: your root is the only root there
+    //    is, so there is no level above it to name and the syntax meets the same wall `..` does.
     if matches!(
-        run_line(&mut nav, b"cd /other"),
-        Some(Say::Refused(Refused::Absolute))
+        run_line(&mut nav, b"cd /.."),
+        Some(Say::Refused(Refused::AtYourRoot))
     ) && pwd_is(&nav, b"/")
     {
-        v |= nb::ABSOLUTE_REFUSED;
+        v |= nb::ABSOLUTE_CLAMPED_AT_ROOT;
     }
 
     // 4. The two files, one from each root. Exactly one of these must open, and which one is the
@@ -2865,6 +2886,18 @@ fn navigate(spec: u64) -> ! {
     }
     if let Some(h) = opened(&nav, tree::SECRET.as_bytes()) {
         v |= nb::REACHED_SECRET;
+        nav.close(h);
+    }
+
+    // 4b. **The same two probes, asked with a leading slash.** This is what "an absolute path
+    //     grants nothing" is measured as rather than asserted: each shell reaches exactly the file
+    //     its own root contains, and a `/` rooted in a global namespace would make both reach both.
+    if let Some(h) = opened_token(&mut nav, tree::ABS_INNER.as_bytes()) {
+        v |= nb::ABSOLUTE_REACHED_INNER;
+        nav.close(h);
+    }
+    if let Some(h) = opened_token(&mut nav, tree::ABS_SECRET.as_bytes()) {
+        v |= nb::ABSOLUTE_REACHED_SECRET;
         nav.close(h);
     }
 
@@ -2903,6 +2936,23 @@ fn navigate(spec: u64) -> ! {
         Some(Say::Nothing)
     ) {
         v |= nb::MADE_DIR;
+    }
+
+    // 7b. **`cd /` is `pwd`'s output typed back**, which is the round trip the syntax exists for.
+    //     It descends into the directory step 7 just made and comes back with a leading slash, and
+    //     the middle check is what stops a shell that never moved from passing by accident. The
+    //     directory has to be one this shell made, because the two subtrees this script runs in
+    //     are not the same shape: only one of them ships a child directory, which is why an
+    //     earlier draft of this step passed for one shell and silently proved nothing for the
+    //     other.
+    if matches!(
+        run_line(&mut nav, line(&mut cmd, b"cd ", &dirname)),
+        Some(Say::Nothing)
+    ) && !pwd_is(&nav, b"/")
+        && matches!(run_line(&mut nav, b"cd /"), Some(Say::Nothing))
+        && pwd_is(&nav, b"/")
+    {
+        v |= nb::ABSOLUTE_IS_MY_ROOT;
     }
 
     // 8. Two files: one that stays, so the other's absence afterwards is a fact about `rm` rather
@@ -3150,6 +3200,21 @@ fn pwd_is(nav: &Nav, want: &[u8]) -> bool {
 /// `OPEN` a name where we stand; the handle, or `None` if it did not resolve.
 fn opened(nav: &Nav, name: &[u8]) -> Option<u64> {
     let r = nav.name_call(fs::OPEN, nav.here(), name, 0);
+    if r < 0 { None } else { Some(r as u64) }
+}
+
+/// `OPEN` what a **token** designates, resolved the way the prompt resolves one: from this shell's
+/// root when the token starts with `/`, from where it stands otherwise.
+///
+/// It goes through [`Nav::plan_path`] and [`Nav::walk_from`] rather than sending a name straight at
+/// [`Nav::here`], because the claim being witnessed is about the shell's own resolver. A helper
+/// that walked the path itself would prove that the *witness* can resolve a path.
+fn opened_token(nav: &mut Nav, token: &[u8]) -> Option<u64> {
+    let (p, _) = nav.plan_path(token).ok()?;
+    let (lead, name) = p.split_last_component()?;
+    let w = nav.walk_from(p.from_root(), lead).ok()?;
+    let r = nav.name_call(fs::OPEN, w.handle, name, 0);
+    nav.unwind(&w);
     if r < 0 { None } else { Some(r as u64) }
 }
 

@@ -610,7 +610,13 @@ mod tests {
         assert_eq!(magic_component(b"a/*/b"), Err(Refusal::PatternInPath));
         // The refusals a path already has still come first: the token is parsed before anything
         // asks whether it has magic in it.
-        assert_eq!(magic_component(b"/etc/*"), Err(Refusal::NoAbsolutePath));
+        assert_eq!(
+            magic_component(b"/*/report.txt"),
+            Err(Refusal::PatternInPath)
+        );
+        // An absolute pattern is an ordinary pattern, expanded against the directory its leading
+        // path names, which for a leading `/` is the holder's own root.
+        assert_eq!(magic_component(b"/etc/*"), Ok(true));
     }
 
     /// An expansion is placed at the positional it came from, and nowhere else.

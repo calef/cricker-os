@@ -1131,11 +1131,6 @@ pub enum Refusal {
     /// two argument words a grant's name rides in (`fs_proto::grant::MAX_NAME`), deeper than the
     /// shell tracks, or a path that designates a directory rather than a file.
     FileNotNameable,
-    /// **The name began with `/`.** Its own refusal rather than a shape complaint, because the
-    /// reason is the milestone's: there is no namespace here to root an absolute path in, so the
-    /// name cannot be *expressed*. Nothing checked a permission, which is why the `std` PAL answers
-    /// `InvalidFilename` and not `PermissionDenied` for the same token.
-    NoAbsolutePath,
     /// The program takes no memory grant, but `--mem` was given.
     MemForbidden,
     /// The program requires a memory grant, but none was given.
@@ -1293,7 +1288,6 @@ impl Refusal {
             Refusal::FileNotNameable => {
                 "that is not a name this shell can grant: at most 16 bytes a component, 8 deep"
             }
-            Refusal::NoAbsolutePath => nav::Refused::Absolute.message(),
             // Each of these says what the *pattern* designates, because that is the grant. None of
             // them can be phrased as a permission, and none should be: nothing was denied, the
             // command either named something grantable or it did not.
@@ -1989,7 +1983,15 @@ fn designate(
     let (lead, last) = parsed
         .split_last_component()
         .ok_or(Refusal::FileNotNameable)?;
-    let mut dir = cwd;
+    // **An absolute token is resolved from the holder's own root**, not from where it is standing,
+    // which is the one thing the steps cannot say for themselves. Everything downstream already
+    // re-walks a recorded position from the root (`swish::open_at`), so rooting it here is the
+    // whole of what the syntax needed.
+    let mut dir = if parsed.from_root() {
+        nav::Cwd::root()
+    } else {
+        cwd
+    };
     dir.apply(lead).map_err(nav_refusal)?;
 
     let names = if magic {
@@ -2011,14 +2013,15 @@ fn designate(
     Ok((dir, names))
 }
 
-/// A navigation refusal, in the vocabulary the prompt prints for a *grant*. Only the absolute path
-/// keeps its own line, because that one is a statement about the whole model rather than about the
-/// token's shape.
-pub(crate) fn nav_refusal(r: nav::Refused) -> Refusal {
-    match r {
-        nav::Refused::Absolute => Refusal::NoAbsolutePath,
-        _ => Refusal::FileNotNameable,
-    }
+/// A navigation refusal, in the vocabulary the prompt prints for a *grant*.
+///
+/// Every navigation refusal now reads as a fact about the token's shape, which it did not before
+/// 2026-08-18: `nav::Refused::Absolute` had its own line here because "there is no namespace to
+/// root a path in" was a statement about the model rather than about the token. A leading `/` roots
+/// in the holder's own namespace now (`nav::Path::from_root`), so the case is gone rather than
+/// re-worded.
+pub(crate) fn nav_refusal(_r: nav::Refused) -> Refusal {
+    Refusal::FileNotNameable
 }
 
 /// Which refusal to print for a token no declared slot can hold.
@@ -2728,13 +2731,32 @@ mod tests {
                 core::str::from_utf8(line).unwrap(),
             );
         }
-        // An absolute path gets its own refusal, because the reason is different in kind: the name
-        // cannot be expressed here at all. It must not read as a permission.
+        // **An absolute path is planned, and it is rooted in this shell's own namespace.** From
+        // `/logs`, `/etc/passwd` designates `passwd` under `/etc` and not under `/logs/etc`, which
+        // is the whole of what the leading slash means. It grants nothing extra: `/etc` is a
+        // directory this shell could have reached by walking, and if it cannot walk there the
+        // server says so at run time exactly as it would for `cd`.
+        let mut deep = WITH_DIR;
+        assert!(deep.cwd.apply(nav::path(b"logs").unwrap().steps()).is_ok());
         let Command::Run(r) = parse(b"wc /etc/passwd") else {
             panic!()
         };
-        let refused = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR);
-        assert_eq!(refused, Err(Refusal::NoAbsolutePath));
+        let g = plan_against(&r, Prog::Worker, READS_A_FILE, deep)
+            .unwrap()
+            .file
+            .unwrap();
+        assert_eq!(g.name.as_bytes(), b"passwd");
+        let mut buf = [0u8; nav::RENDER_MAX];
+        let n = g.dir.render(&mut buf);
+        assert_eq!(&buf[..n], b"/etc");
+
+        // And it stops at the root like everything else: `/..` names the level above the only root
+        // there is, so there is nothing to express and nothing was denied.
+        let Command::Run(r) = parse(b"wc /../passwd") else {
+            panic!()
+        };
+        let refused = plan_against(&r, Prog::Worker, READS_A_FILE, deep);
+        assert_eq!(refused, Err(Refusal::FileNotNameable));
         assert!(!refused.unwrap_err().message().contains("denied"));
     }
 
@@ -3229,11 +3251,16 @@ mod tests {
         let mut buf = [0u8; nav::RENDER_MAX];
         let n = g.dir.render(&mut buf);
         assert_eq!(&buf[..n], b"/logs/old");
-        // An absolute path is refused with the model's own sentence, not a shape complaint.
-        assert_eq!(
-            plan_line(b"date > /etc/report", holds),
-            Err((0, Refusal::NoAbsolutePath)),
-        );
+        // An absolute path resolves from this shell's root rather than from where it stands, so
+        // the same line typed in two directories names one file.
+        let line::Sink::File(g, _) = plan_line(b"date > /old/report.txt", holds).unwrap().0[0]
+            .unwrap()
+            .sink
+        else {
+            panic!("not a file sink")
+        };
+        let n = g.dir.render(&mut buf);
+        assert_eq!(&buf[..n], b"/old");
     }
 
     /// A `<` target is readable and a `>` target is writable, and that is the one direction this
@@ -3687,13 +3714,14 @@ mod tests {
         );
     }
 
-    /// The same shape refusals a file grant gets, because they are the same resolver: an absolute
-    /// path cannot be expressed, a name that cannot travel in a grant is refused where it was
-    /// typed, and `..` clamps at the shell's root so a grant cannot name its way out.
+    /// The same shape refusals a file grant gets, because they are the same resolver: a name that
+    /// cannot travel in a grant is refused where it was typed, and `..` clamps at the shell's root
+    /// so a grant cannot name its way out **whether or not it started at the root**.
     #[test]
     fn a_directory_grant_cannot_be_named_out_of_the_shells_root() {
         for (line, want) in [
-            (&b"rm /etc/passwd"[..], Refusal::NoAbsolutePath),
+            (&b"rm /.."[..], Refusal::FileNotNameable),
+            (b"rm /../passwd", Refusal::FileNotNameable),
             (b"rm ..", Refusal::FileNotNameable),
             (b"rm ../motd", Refusal::FileNotNameable),
             (

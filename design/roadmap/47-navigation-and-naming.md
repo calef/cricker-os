@@ -3,15 +3,19 @@
 **Status: PARTIAL.** The token read `IN-PROGRESS` with no branch anywhere and nobody holding it, found
 2026-08-17 by the status-accuracy sweep. Two claims in the "still to do" sentence below were also
 false, and both are corrected there rather than here: the glob caretaker was built 2026-07-31, and the
-`std` PAL's three namespace verbs were bound 2026-08-04. What is genuinely unbuilt is completion,
-environment and `PATH`, plus the sections further down this block that sentence never listed (`ln`,
-`touch`, absolute paths, and `bind`).
+`std` PAL's three namespace verbs were bound 2026-08-04.
 
 **Gate: NONE.** Discharged 2026-08-18. The navigation half is built. The namespace half (absolute paths,
 environment, `PATH`, and `bind`) had no forcing use case from the shell, and this block's own
 sequencing was to let milestone 64 measure first so a real crate's demands could size the remaining
 scope. **That measurement has landed and it did its job**, so the gate it was waiting for is
 discharged rather than merely aged.
+
+**Absolute paths were built 2026-08-18** (`milestone/47-namespace`), the first piece of the namespace
+half and the one the other three lean on: **`/` is the root of your own namespace**, Plan 9's answer,
+in the shell and in the `std` PAL together so that one fork was answered once. What remains genuinely
+unbuilt is completion, environment, `PATH`, `bind`, and the sections further down this block that the
+old sentence never listed (`ln` and `touch`).
 
 64's second pass (2026-08-18) reports that **nothing in this milestone was ever waiting on 64**, and
 hands over the sized demand this block asked for: named customers at ranks 16, 18 and 27 plus
@@ -54,7 +58,8 @@ name one directory entry outside the set and gets `ENOENT`. Witnessed from the h
 which has said "Built 2026-07-31" the whole time, and the sections below at "Built 2026-07-31: the
 matcher, then the grant", which contradicted the sentence from inside this same file.
 
-**Still to do**: completion, environment, and `PATH`. Completion is refused by design at the layer
+**Still to do**: completion, environment, and `PATH`. (Absolute paths came out of this list on
+2026-08-18; see the Status block.) Completion is refused by design at the layer
 below and deferred to the application (`crates/line_editor/src/lib.rs:32`), environment has no PAL and
 no shell support, and `PATH` needs `Prog` to stop being a closed enum, which this block calls half the
 mechanism. The `std` PAL's `rename`, `unlink` and `rmdir` **were** bindings rather than missing verbs,
@@ -93,11 +98,12 @@ shell's current directory *at the moment the grant is made*, and the child recei
 that one file. The child has no cwd, inherits nothing, and cannot re-resolve anything. The convenience
 is the shell's; the authority is explicit.
 
-## The three earned divergences
+## The earned divergences: three, then two
 
-- **No global absolute paths.** There is no namespace to root them in. Already true and already
-  correct in the `std` PAL, which answers `InvalidFilename` rather than `PermissionDenied`: nothing
-  checked a permission, the name simply cannot be expressed.
+- ~~**No global absolute paths.**~~ **Retired 2026-08-18**, and it was never a position: it was the
+  honest state of a system that had no namespace to root a path in. See "Absolute paths: Plan 9's
+  answer, not DOS's" below, which is now built. The `InvalidFilename` refusal it describes survives
+  for the two cases that still name nothing, `..` and a Windows-shaped prefix.
 - **`..` stops at your root.** You descend from what you hold and never ascend past it. This is
   chroot's shape arrived at from the other direction.
 - **`pwd` is relative to your root**, because naming anything above it implies a namespace that does
@@ -449,6 +455,45 @@ no capability reaches.
 
 ## Absolute paths: Plan 9's answer, not DOS's
 
+### Built 2026-08-18. The recommendation below was taken, and it cost less than it priced.
+
+**`/` is the root of your own namespace**, in the shell (`grant_plan::nav::Path::from_root`,
+`swish::Nav::walk_from`) and in the `std` PAL (`sys/fs/nife.rs`'s `count_names`, where a leading `/`
+joins `.` as a component that names the base rather than a place) together, which is what this block
+asked for when it said the resolution fork should be **one fork answered once**.
+
+**The resolver is the client's, as recommended, and it turned out to already be there.** A grant
+records a *position* rather than a token (`grant_plan::designate` resolves once, at plan time) and
+`swish::open_at` re-walks that position from the root at run time, so rooting a token at
+`Cwd::root()` instead of at the shell's position was the whole of the change on the planning side.
+The server still sees a single component against a handle it was given, and §27 is untouched.
+
+**Four things this section did not predict.**
+
+- **The forcing case was `pwd`, not a program.** `Cwd::render` has printed `/logs/2026` since the day
+  it was written, because a position relative to your own root is the only honest rendering, and
+  typing that token back was a refusal. A round trip that does not close is §71's promotion trigger
+  met exactly, and it was sitting in the tree for eighteen days.
+- **It grants nothing, and that is measurable rather than arguable.** `/a/b` is `cd` to your root
+  followed by two descents. The guest suite asks the same two probes with and without the slash from
+  two shells rooted in two subtrees (`navscape::ABSOLUTE_REACHED_INNER` / `ABSOLUTE_REACHED_SECRET`)
+  and each reaches exactly the file its own root holds; `/..` is refused exactly as `..` at the root
+  is, because your root is the only root there is.
+- **The `std` half is smaller than Plan 9's and should be described that way.** A nife process holds
+  **one** directory capability, so the slash selects nothing: there is nothing else to select. What
+  it buys is that `current_dir()` can answer (`/`, and `Unsupported` for a process that holds no
+  directory), that `temp_dir()` and `current_dir()` finally name the same place, and that a crate
+  which builds a path from `current_dir().join(..)` gets a path that resolves.
+- **A `Dir` handle is its own root, which is a deliberate divergence from `openat`.** POSIX makes an
+  absolute path ignore the `dirfd`; here `Dir::open_file("/x")` resolves under that `Dir`. The Unix
+  rule exists because `/` names one global thing and a `dirfd` is a shortcut into it, and neither
+  half is true here. It cannot widen anything either way, since a process holding a `Dir` holds the
+  root it descended from.
+
+**The honest cost this section priced is unpaid so far**, and it should be watched rather than
+declared avoided: "two processes seeing different files at one path is powerful and confusing". With
+one capability per process the confusion has nowhere to live yet. It arrives with `bind`.
+
 Distinguish a path as *authority* (`open()` resolving against a namespace nobody granted you: out
 permanently) from a path as a *name* (a string, and a name is not a capability). The syntax can
 survive even though the semantics cannot.
@@ -472,6 +517,10 @@ name it did not already own, and the namespace becomes another endowment, inspec
 which Unix cannot do, since you cannot enumerate what your paths could reach. The honest cost is that
 two processes seeing different files at one path is powerful and confusing, and Plan 9 users will
 attest to both halves.
+
+**The `caps` half of that recommendation is not built**, and it is worth saying why it would be
+empty: a namespace with one root has one row, which `caps` already prints as the directory grant. It
+becomes a real surface the moment there is more than one entry, which is `bind`'s question below.
 
 ## Environment variables, which are the same question wearing a string costume
 
@@ -520,13 +569,82 @@ manifest, the manifest grows from "what capabilities do I need" into "what do I 
 a larger claim than it makes today, and it is the sort of scope creep that is easier to accept early
 than to reverse later.
 
+### What it costs, measured 2026-08-18 rather than asserted (the absolute-paths lane)
+
+This section argues the shape well and never prices the wire, which is the half that cannot be
+undone. Four facts, each a lookup rather than an opinion, and the first changes the category:
+
+- **The spawn protocol is a userspace protocol, not the syscall surface.** `spawnproto`'s own header
+  says so: *"The kernel routes these words the way it routes any IPC; it never reads them. Adding a
+  field is a change here, not to the syscall surface."* So an environment endowment is a change two
+  **programs** agree on (the shell and init), which is still the irreversible category and is a rung
+  below §10 and §16.
+- **The protocol already carries data rather than capabilities, and there is a precedent to copy.**
+  `DIR_BIT` announces "expect two more `SEND`s" and `GRANT_WORDS` carries three opaque words each,
+  which is exactly the shape a bounded environment would take. Nothing new has to be invented to
+  announce one.
+- **A page-shaped endowment already exists twice**: the clock page a shell is granted read-only at a
+  slot init names, and §15's deferred **BootInfo** page, described there as "a structured block the
+  loader hands the program". Init is the ELF loader and already maps pages into a child before
+  starting it, so it is the one component that can place a table without a new mechanism.
+- **The receiving side is built and empty.** `std::env` on nife is a process-local table
+  (`sys/env/nife.rs`), and `notes/std.md` says of it: *"When milestone 47's namespace gives a program
+  an endowment, it seeds this table; the shape does not change."* `temp_dir` already reads `TMPDIR`
+  from it, so one variable steers a real behaviour the day anything writes one.
+
+**Three encodings, with what each costs.** They are not equivalent and the choice is calef's, because
+the shell and init both read whatever is chosen and a stranger's program is written against it.
+
+| Encoding | What it costs | Where it fails |
+|---|---|---|
+| **More `SEND`s on the spawn endpoint**, the `GRANT_WORDS` shape | No page, no capability, no new VA. Three words a message, so ~24 bytes a pair and a fixed maximum count | A `PATH`-shaped value does not fit in 24 bytes, and raising the count means more round trips per spawn |
+| **A read-only page init maps** (§15's BootInfo) | One frame per process, one fixed VA constant, and a parser crate both `user_rt` and the `std` PAL depend on (rule 7: two binaries agree on it, so it is a crate) | A page is 4 KiB and an environment is unbounded in principle; the page is a fixed cost even for the programs that read nothing |
+| **An endpoint to a configuration service** | The most machinery by far: a server, a protocol, a slot | It is the right answer for the **secrets** third of this section and the wrong one for `TZ` |
+
+**Recommendation, and it is a recommendation rather than an option list because this half is
+reversible**: the page, for the inert-configuration third only, with the declaration in the manifest
+that closes the `LD_PRELOAD` class. The other two thirds are already answered elsewhere in this
+milestone: names become capabilities (the namespace above), and secrets become endpoints (§41's
+broker shape). **The irreversible part is the page's layout**, and that is what needs an answer
+before anything is built.
+
+## `bind` is not blocked on a mount table. It is blocked on a second grant (found 2026-08-18)
+
+DECISIONS §50 chose namespace composition over stored paths and priced the unbuilt half as "a mount
+table per process and resolution through it. That is real work". **Building absolute paths priced it
+again, from inside, and the mount table is the cheap half.**
+
+- **A bind entry is a value, not a capability.** Everything downstream of the shell's planner already
+  re-walks a *position* from the root (`swish::open_at`), so a bind is a `nav::Cwd` under a name: no
+  cspace slot, no handle to leak, no lifetime. And it cannot name above the root **by construction**
+  rather than by a check, because `Cwd` has exactly two constructors, `root()` and a `descend` that
+  refuses a bad component, and `ascend` returns false at depth zero. That is the ladder's first rung,
+  and it is why this half warrants no proof harness: a Kani harness would restate the type.
+- **What is missing is something to bind.** A shell holds **one** directory capability, so a
+  namespace assembled from what it holds has exactly one member and every bind is an alias inside one
+  tree. The interesting case, and the only one that pays for the mechanism, is a union of **two**
+  grants: `/photos` from one caretaker and `/backups` from another, in one process, with neither
+  able to name the other's parent.
+- **Nothing in this system grants a second directory capability to one process.**
+  `fs_service::start_granted_dir` starts one caretaker and hands one endpoint; a second means a
+  second caretaker, a second slot, and a spawn-protocol position to say which is which. That is an
+  **endowment** question, which is the category this milestone's own environment section says is
+  expensive, and it is where the work actually is.
+
+**Proposed milestone (provisional, the integrator mints the number): a process that holds two
+directory capabilities.** The deliverable is the wiring plus the negative control that only a union
+can state: one process, two subtrees, `/a/x` and `/b/y` both resolving, `/a/../b` refused, and
+neither caretaker able to see the other's tree. `bind` then falls out as a name on a `Cwd` per entry,
+and `caps` gains a namespace section with more than one row in it. Until that exists, building the
+mount table would be machinery whose one interesting case is missing.
+
 ## Milestone 64 is what forces the namespace half of this milestone
 
 Recorded here as well as in 64, so neither is picked up without it.
 
-**What remains open in this milestone is the namespace machinery**: absolute paths, environment
-variables, `PATH`, and `bind`, which §50 decided and explicitly did not build because it needs "a
-mount table per process and resolution through it" beyond the per-shell roots that exist today.
+**What remains open in this milestone is the namespace machinery**: ~~absolute paths~~ (built
+2026-08-18), environment variables, `PATH`, and `bind`, whose real blocker is the section above
+rather than the mount table §50 named.
 
 **None of it has a forcing use case from the shell.** `swish` works with per-shell roots; `bind` is
 a mechanism nobody currently has to have. That is why this milestone has sat IN-PROGRESS with its
@@ -712,5 +830,7 @@ the child directory carry, can they ever exceed the parent's, and who may call i
 the commands are the easy part once it exists.
 
 **Sequencing.** After milestone 37, which owns the FS server's block path. **Effort: 2 lanes
-estimated** (one for the descend/create verb and the builtins, one for namespaces), noting that
+estimated**, and the second estimate proved low: the namespace lane of 2026-08-18 spent itself on
+absolute paths alone and left environment, `PATH` and `bind` untouched, the last of those blocked on
+an endowment question rather than on effort (one for the descend/create verb and the builtins, one for namespaces), noting that
 estimates for unbuilt work are guesses on a scale calibrated from history, not measurements.

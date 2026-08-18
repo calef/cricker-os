@@ -395,7 +395,14 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 768]) -> usize {
         // file in a real sibling directory that this process CAN reach by naming `other/secret`,
         // refused through the `..` route. The refusal moved from "a path with two components" to
         // "there is no ascent", which is the property that was always the point.
-        b"absolute refused\ndotdot refused\ninner dotdot refused\n".as_slice(),
+        // Milestone 47's namespace half changed the first of these, on 2026-08-18. `/etc/passwd`
+        // used to be refused for having a leading slash, and a leading slash now names this
+        // process's own root, so the line that replaces it is a *positive*: `/motd` and `motd`
+        // opened the same file, and `current_dir` named the root they share. The refusal that
+        // carries the claim moved to `/../motd`, which asks for the level above the only root
+        // there is.
+        b"absolute is my root\n".as_slice(),
+        b"absolute dotdot refused\ndotdot refused\ninner dotdot refused\n".as_slice(),
         b"missing not found\n".as_slice(),
         // Milestone 31 phase 2: `create unsupported` became `write create ok`, plus the two
         // refusals that prove CREATE did not widen what a client can reach.

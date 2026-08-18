@@ -134,7 +134,11 @@ static REACHABLE: AtomicU8 = AtomicU8::new(0);
 
 /// True if this process holds a directory capability. See the note above for why the probe is an
 /// `FSTAT` on an impossible handle rather than anything that touches the shared page.
-fn reachable() -> bool {
+///
+/// `pub(crate)` for `sys/paths/nife.rs`, which needs the same fact for the same reason: naming a
+/// place a process has no capability for is the answer-instead-of-refusing failure this platform's
+/// own notes keep recording.
+pub(crate) fn reachable() -> bool {
     match REACHABLE.load(Ordering::Relaxed) {
         1 => true,
         2 => false,
@@ -309,8 +313,13 @@ fn from_errno(errno: i32) -> io::Error {
 /// that designates it. The message says which case it was.
 ///
 /// **A nested path is no longer one of them** (milestone 122). It is a chain of names, and [`walk`]
-/// spends one attenuated `OPENDIR` per link to reach the last one. What is still refused is what
-/// still names nothing: an absolute path, and `..` at any position.
+/// spends one attenuated `OPENDIR` per link to reach the last one. **Nor is a leading `/`**
+/// (milestone 47's namespace half, 2026-08-18): `/` is the root of *this process's* namespace,
+/// which is the directory it was granted, so `/motd` and `motd` name one file and neither can
+/// reach anything the grant does not. That is Plan 9's answer rather than DOS's, and here it is
+/// less than Plan 9's: a nife process has exactly one root, so there is nothing for the leading
+/// slash to select between. What is still refused is what still names nothing: `..` at any
+/// position, and a Windows-shaped prefix.
 fn count_names(path: &Path) -> io::Result<usize> {
     let mut n = 0;
     for c in path.components() {
@@ -318,11 +327,28 @@ fn count_names(path: &Path) -> io::Result<usize> {
             // "./motd" is "motd", and "a/./b" is "a/b": the current directory IS the one the walk
             // has reached.
             Component::CurDir => {}
-            Component::RootDir | Component::Prefix(_) => {
+            // `/motd` is `motd`, for the same reason `./motd` is: this process has exactly one
+            // root and it is the directory it was granted. The slash selects nothing, because
+            // there is nothing else to select; what it buys is that a path a program built from
+            // `current_dir()` resolves instead of being refused.
+            //
+            // **A leading slash is relative to the base the walk was given, and that is a
+            // deliberate divergence from `openat`.** POSIX makes an absolute path ignore the
+            // `dirfd`; here `Dir::open_file("/x")` resolves under that `Dir` rather than jumping
+            // back to the granted root. The Unix rule exists because `/` names one global thing
+            // and a `dirfd` is a shortcut into it. Neither half is true here: a handle is a
+            // namespace, `/` is the root of whichever one you are resolving in, and a rule that
+            // let a name climb out of the handle it was asked of would make a `Dir` useless for
+            // the one thing programs reach for it for. It also cannot widen anything either way,
+            // since a process that holds a `Dir` holds the root it descended from.
+            Component::RootDir => {}
+            // A Windows-shaped prefix (`C:`, `\\?\`) is still nothing here, and unlike a leading
+            // slash there is no root it could name.
+            Component::Prefix(_) => {
                 return Err(io::const_error!(
                     io::ErrorKind::InvalidFilename,
-                    "an absolute path names nothing here: this process holds a directory \
-                     capability, not a filesystem root"
+                    "a path prefix names nothing here: this process holds a directory \
+                     capability, not a drive or a share"
                 ));
             }
             // Refused at every position, not just the first. `sub/../other` would be a descent
