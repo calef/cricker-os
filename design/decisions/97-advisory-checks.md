@@ -61,24 +61,95 @@ queue.
 
 ## The options
 
-1. **Require four of the six** (recommended): `fastpath footprint`, `stack frames`, `verify scope`,
-   `cpu matrix`. All four are deterministic, all four already run on every pull request, and the
-   only thing that changes is whether their failure is authoritative. Cost is real but bounded:
-   `cpu matrix` is the slowest of the four and it is already on the critical path for anything
-   touching riscv64.
-2. **Require all six.** Refused, for a different reason each. **`fuzz` is time-boxed at 60 seconds
-   per target rather than exhaustive**, so a red is evidence and a green is not proof; making it
-   blocking makes every merge hostage to a sampling run and teaches people to re-run it until it
-   passes, which is worse than not having it. **`prove` is already the queue's long pole**, and
-   AGENTS.md says a group's CI goes green while `verify` is still running, every time; requiring it
-   before milestone 119's remaining half measures that would set queue throughput by accident.
-3. **Require none, and say so out loud.** Cheapest, and not dishonest as long as it is written: one
-   line in AGENTS.md or `notes/merge-queue.md` naming which checks are advisory, so a lane reading a
-   red check knows whether it is looking at a blocker or a note. This is strictly better than the
-   status quo, which is the same arrangement with nothing written down.
+**Sharpened 2026-08-18 by calef, who refused the first version of this section and was right to.**
+His question was the one that matters: *if we want a proven OS, how do we detect when we are no
+longer proven?* Answering it properly required reading `.github/workflows/verify.yml` rather than
+reasoning about it, and the reading moved two of the six and corrected the reason for a third.
 
-**The recommendation is 1, and 3 is the floor.** What is not acceptable is what we have, because it
-is 3 without the sentence.
+1. **Require four** (recommended): `fastpath footprint`, `stack frames`, `cpu matrix`, `fuzz`.
+   None carries a job-level `if:`, so each runs and reports on every change and none can leave a
+   required context unreported. The only thing that changes is whether their failure is
+   authoritative.
+
+2. **`fuzz` moved into that list** and the first version of this section was wrong to exclude it.
+   The argument against was that a 60-second-per-target run is a sample rather than an exhaustive
+   search. True, and it does not follow: **a fuzz red is never a false positive.** `cargo-fuzz`
+   goes red when it has an input that crashes; the sampling makes the *timing of discovery*
+   nondeterministic, not the finding. The two were being conflated. Its steps are guarded rather
+   than its job, with a comment saying exactly why, so it is structurally safe to require. The
+   residual cost is honest and small: a red can hold a change hostage to a pre-existing crash the
+   fuzzer surfaced on that run rather than one that change introduced, which is true of every gate
+   on a shared trunk.
+
+3. **`verify scope` comes OUT of the list, as redundant.** The aggregator below already refuses to
+   report green when the scope job did not succeed, so requiring it separately buys nothing.
+
+4. **`prove` stays unrequired, and the first version of this section gave the wrong reason.** It
+   said `prove` is the queue's long pole. That is true and it is not the argument. The argument is
+   that **requiring it would wedge the repository**, permanently, on exactly the changes that need
+   it least:
+
+   `prove` is a matrix job whose name is a template, `prove (shard ${{ matrix.shard }}/2)`, and the
+   matrix only expands **if the job runs**. It carries `if: needs.scope.outputs.needed == 'true'`,
+   so on a change that cannot reach a harness GitHub never expands it and emits one placeholder
+   check under the raw, uninterpolated name. Measured on two live pull requests the same afternoon:
+
+   | pull request | contents | the `prove` check's name |
+   |---|---|---|
+   | #327 | a `design/decisions/` edit, docs only | `prove (shard ${{ matrix.shard }}/2)`, skipping |
+   | #322 | kernel and crate code | `prove (shard 1/2)` and `prove (shard 2/2)`, pending |
+
+   A required context is a **string**, and an unreported one is not failed but *unsatisfied*, which
+   has no timeout. So requiring `prove (shard 1/2)` blocks every documentation change forever,
+   needing a ruleset override to land a typo fix. Under the merge queue it is worse than a block:
+   a group that can never satisfy a required context is **evicted and rebuilt forever**, which is
+   the loop that already happened here on 2026-08-15 when a lint rejected GitHub's own synthetic
+   branch names.
+
+5. **Require none, and say so out loud.** The floor rather than an option to prefer: one line naming
+   which checks are advisory, so a lane meeting a red check knows whether it is looking at a blocker
+   or a note. Strictly better than the status quo, which is this arrangement with the sentence
+   missing.
+
+## The proofs are already gated, which answers the question that prompted all of this
+
+`verify.yml` is three jobs and only the third is required. `verify scope` decides whether anything in
+the change can reach a harness; **`prove`** does the proving, sharded two ways; and
+**`verify (Kani proofs)`** is an *aggregator* that reads the other two and exits 1 unless every shard
+reports `success` or `skipped`:
+
+```sh
+case "$prove" in
+  success) echo "==> every shard proved its crates" ;;
+  skipped) echo "==> nothing in this change can reach a proof" ;;
+  *)       echo "==> a shard reported '$prove'" >&2; exit 1 ;;
+esac
+```
+
+It has a fixed name and `if: always()`, both load-bearing, and its own comment names the failure it
+exists to avoid. **So a broken proof already fails a required check**, and the detection calef asked
+after is present rather than missing. The aggregator is the pattern that converts a
+variable-shaped upstream into one stable required context, and it is the answer for any future job
+shaped like `prove`.
+
+## The follow-on: nothing checks that the aggregator watches every proving job
+
+**This is the real weakness, and it is the one worth spending on.** The aggregator's coverage is a
+hand-maintained `needs: [scope, prove]` list plus a shell `case`. Add a third proving job tomorrow,
+forget to add it to `needs:`, and **the required check reports green while the new job burns**. The
+proofs would stop being gated and the gate would keep saying they were, which is a worse state than
+the advisory checks this section is about: an advisory check that fails is at least visible.
+
+It is the same shape as the rest of this section one level in. `prove` is protected by structure (a
+matrix that expands or does not); the aggregator's *coverage* is protected by somebody remembering,
+which is rung four and is what AGENTS.md calls rung zero when written honestly.
+
+The mechanism is cheap and is not built: parse `.github/workflows/verify.yml`, find every job whose
+steps run `script/verify`, and fail if any of them is absent from the aggregator's `needs:`. That is
+a `script/lint` check over one YAML file with no network and no GitHub API, which is the same shape
+as the branch-prefix and counted-claims checks already there. **It should be built whichever way the
+ruleset question is answered**, because it protects a property that is true today rather than
+proposing a new one.
 
 ## What decides it
 
@@ -93,6 +164,10 @@ the hours of trunk-red that the current arrangement will keep producing while no
   A check added to CI is advisory by default, so the list grows silently in the direction of less
   enforcement. A gate comparing the workflow's job names against the ruleset's required contexts is
   conceivable and is not built.
-- **`prove` and `verify (Kani proofs)` are different checks and only the second is required**, which
-  is easy to misread as "the proofs are gated". What is gated is the harness run, not the shard
-  matrix.
+- **This section's first version got `fuzz` and `prove` wrong**, and was corrected only because
+  calef refused it and asked how we would detect being no longer proven. Both errors were the same
+  error: reasoning about CI from the shape of the check names instead of reading the workflow. The
+  corrected text is above; the failure is recorded here because a section that reads as though it
+  were right the first time teaches the wrong method.
+- **The follow-on above is unbuilt.** Until it exists, "the proofs are gated" rests on the
+  aggregator's `needs:` list being complete, and nothing checks that it is.
