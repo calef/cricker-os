@@ -3974,9 +3974,23 @@ mod tests {
     /// the fix for a hazard this test had twice. The list said "every variant" in its own comment and
     /// was short of `Wc` once; by milestone 126 it was also short of `Doc`, `Ps` and `Pgrep`, so the
     /// three newest programs were the three nothing here checked. A list somebody has to extend is
-    /// the bottom rung of CLAUDE.md's ladder. Counting up to the constant init sizes its array with
-    /// cannot go stale: a variant added without an arm in [`Prog::from_id`] fails here, and one added
-    /// without widening [`PROG_COUNT`] fails the `from_name` sweep below.
+    /// the bottom rung of CLAUDE.md's ladder.
+    ///
+    /// **What this actually catches, corrected 2026-08-18 by measurement rather than by reading.**
+    /// The sentence here used to claim that a variant added without an arm in [`Prog::from_id`]
+    /// fails here, and one added without widening [`PROG_COUNT`] fails the `from_name` sweep below.
+    /// The first half is true only on a condition it did not state, and the second half is false.
+    /// Adding a variant with a new id and skipping [`Prog::from_id`], [`Prog::from_name`] **and**
+    /// [`PROG_COUNT`] compiles and passes every test in this crate: the sweep counts up to the
+    /// constant, so it never reaches the new id, and `from_id(PROG_COUNT)` answers `None` precisely
+    /// *because* the arm is missing. Widening [`PROG_COUNT`] is what arms this test, and it then
+    /// names both missing arms in turn.
+    ///
+    /// So [`PROG_COUNT`] is the keystone rather than one item of three, and nothing in this crate
+    /// enforces it: Rust gives no way to count an enum's variants without a derive macro this tree
+    /// has not taken. That is a real gap and it is recorded where a reader meets it, in
+    /// notes/adding-a-program.md's `BUGS` and in its step 6, which says to edit the constant first
+    /// and let this test find the rest.
     #[test]
     fn prog_id_round_trips() {
         for id in 0..PROG_COUNT as u64 {

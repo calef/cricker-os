@@ -1109,6 +1109,164 @@ fn screendump(sock: &str, out: &Path) -> bool {
     true
 }
 
+/// **The host's load average across one emulated leg**, so a red timing assertion says whether the
+/// machine was busy (milestone 117's third stranger run, 2026-08-18).
+///
+/// # Why the harness and not the guest
+///
+/// The whole family of assertions in notes/load-sensitive-assertions.md has one signature: a claim
+/// whose truth depends on the host, written from inside a guest that cannot see the host. The guest
+/// can measure how late it was; it cannot know whether eleven other QEMUs were on the same eight
+/// cores. **This process can**, and it is the only participant that can, which is why the number is
+/// printed here rather than woven into a panic message.
+///
+/// The run that asked for it: `script/test` went red in 2 of 13 aarch64 legs while other lanes had
+/// this laptop at a one-minute load average of 45 to 63, and nothing in the transcript said so, so
+/// an hour went into a defect that was not there. One line at the failure would have decided it.
+///
+/// # What it does and does not claim
+///
+/// It **suggests**, and it says so in its own output. A loaded host does not make a failure
+/// spurious; a quiet host does not make it real. What it removes is the reader having to guess,
+/// and the peak matters as much as the number at the end: a suite runs for minutes and the
+/// one-minute average decays, so a burst of contention halfway through is invisible by the time
+/// the leg fails.
+///
+/// min/mean/peak is `script/repeat-under-load`'s vocabulary, deliberately: the acceptance harness
+/// already reports contention in those three numbers, and a reader who has seen one table should
+/// recognise this line without learning a second shape.
+///
+/// # BUGS
+///
+/// Sampled only while a leg is *running*. A host that was quiet during the leg and thrashing during
+/// the build before it produces an honest, unhelpful line. The subprocess is one `uptime` every
+/// five seconds, which is free next to QEMU, but it is a subprocess: on a host where `uptime` is
+/// missing or prints an unfamiliar shape, every field stays `None` and the report says "unavailable"
+/// rather than guessing.
+struct HostLoad {
+    min: f64,
+    max: f64,
+    total: f64,
+    samples: u32,
+    last: std::time::Instant,
+}
+
+impl HostLoad {
+    /// Every five seconds. The callers poll on a 100 ms cadence for the scanout referee, and one
+    /// `fork`/`exec` per poll would be 3,000 of them over a five-minute leg to resolve a number
+    /// that moves on a sixty-second decay.
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Start sampling, taking the first reading now so a leg that fails in its first second still
+    /// reports something.
+    fn new() -> Self {
+        let mut load = Self {
+            min: f64::INFINITY,
+            max: 0.0,
+            total: 0.0,
+            samples: 0,
+            // Back-dated so the first `sample()` call fires rather than waiting out the interval.
+            // `checked_sub` rather than `-`: `Instant` counts from boot on both our platforms, and
+            // subtracting past zero is a panic. A machine that booted four seconds ago is a real
+            // CI shape, and a harness that panicked there would be a mystery worth more than the
+            // one sample it costs to fall back to waiting the interval out.
+            last: std::time::Instant::now()
+                .checked_sub(Self::EVERY)
+                .unwrap_or_else(std::time::Instant::now),
+        };
+        load.sample();
+        load
+    }
+
+    /// Take a reading if the interval has elapsed. Cheap enough to call from a 100 ms poll loop or
+    /// from a line-at-a-time transcript reader, which is what the two legs do.
+    fn sample(&mut self) {
+        if self.last.elapsed() < Self::EVERY {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        let Some(now) = one_minute_load_average() else {
+            return;
+        };
+        self.min = self.min.min(now);
+        self.max = self.max.max(now);
+        self.total += now;
+        self.samples += 1;
+    }
+
+    /// Say what the host was doing, but only when the leg went red. On a green leg this is noise,
+    /// and a diagnostic that prints on every run is a diagnostic readers learn to skip.
+    fn report_if_failed(&self, ok: bool, arch: &str) {
+        if ok {
+            return;
+        }
+        eprintln!();
+        if self.samples == 0 {
+            eprintln!(
+                "host load ({arch}): unavailable (`uptime` did not answer in a shape this parses)"
+            );
+            return;
+        }
+        let mean = self.total / f64::from(self.samples);
+        let cores = std::thread::available_parallelism().map_or(0, |n| n.get());
+        eprintln!(
+            "host load ({arch}): 1-minute average {:.2} / {:.2} / {:.2} (min/mean/peak over {} \
+             samples), on {} cores",
+            self.min, mean, self.max, self.samples, cores,
+        );
+        if cores > 0 && self.max > cores as f64 {
+            eprintln!(
+                "  {:.1}x oversubscribed at the peak. A timing assertion that failed above may be \
+                 measuring this machine rather than this kernel; `script/icount` asserts the timer \
+                 claims in instructions, which nothing the host does can move. See \
+                 notes/load-sensitive-assertions.md.",
+                self.max / cores as f64,
+            );
+        } else {
+            eprintln!(
+                "  Not oversubscribed, so contention is the less likely explanation for a failure \
+                 above. See notes/load-sensitive-assertions.md."
+            );
+        }
+    }
+}
+
+/// The host's one-minute load average, from `uptime`.
+///
+/// `uptime` rather than `getloadavg(3)` because reaching the libc call means taking the `libc`
+/// crate, and §46 makes a dependency a decision rather than a convenience: this is one number, read
+/// once every five seconds, on a machine that is already running an emulator. `script/repeat-under-load`
+/// parses the same command with the same trick, and this is deliberately the same parse in Rust:
+/// macOS prints `load averages: 4.14 4.86 4.29` and Linux prints `load average: 0.50, 0.40, 0.30`,
+/// so stripping commas first lets one scan serve both.
+fn one_minute_load_average() -> Option<f64> {
+    let out = Command::new("uptime").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_load_average(std::str::from_utf8(&out.stdout).ok()?)
+}
+
+/// The pure half of [`one_minute_load_average`], split out so it can be tested on the host without
+/// an `uptime` to run.
+///
+/// **The two formats are not both reachable from one machine**, which is what makes the test worth
+/// having rather than filler: development is macOS and CI is `ubuntu-24.04-arm`, so a parse that
+/// only understood the shape in front of its author would keep working here and quietly report
+/// "unavailable" on every CI run, which is exactly the silence this whole feature exists to end.
+fn parse_load_average(uptime_output: &str) -> Option<f64> {
+    // Commas out first: Linux separates the three figures with them and macOS does not, so one
+    // scan serves both once they are gone. This is `script/repeat-under-load`'s `load_now` in Rust.
+    let text = uptime_output.replace(',', " ");
+    let mut fields = text.split_whitespace();
+    while let Some(f) = fields.next() {
+        if f == "average:" || f == "averages:" {
+            return fields.next()?.parse().ok();
+        }
+    }
+    None
+}
+
 /// **Run the kernel test suite for `arch` and prove BOTH scanouts while it runs.** `test_args` is the
 /// cargo invocation the caller would otherwise have handed to [`run`].
 ///
@@ -1154,6 +1312,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     // nothing, because the guest said "nobody ever asked me anything" and the host side, which
     // knew precisely why it had stopped asking, was never given the chance to say so.
     let mut child_ok = false;
+    // Sampled here, in the loop that already exists, because the number worth having is the one
+    // from *while the leg ran*: a suite takes minutes and the one-minute average has decayed by the
+    // time the verdict is in. Reported only if something below goes red.
+    let mut load = HostLoad::new();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -1167,6 +1329,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
             }
         }
         referee.poll();
+        load.sample();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     // All four, and not short-circuited: a run that lost the scanout AND a network answer should
@@ -1175,7 +1338,9 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let inbound = prober.report();
     let multicast = mcast.report();
     let smb = smb_prober.report();
-    child_ok && scanout && inbound && multicast && smb
+    let ok = child_ok && scanout && inbound && multicast && smb;
+    load.report_if_failed(ok, arch);
+    ok
 }
 
 /// **The host-side referee for one booted suite**: presses a key through QEMU's monitor and watches
@@ -5362,6 +5527,11 @@ fn hvf_kernel_leg() -> bool {
     let stdout = child.stdout.take().expect("piped stdout");
     let reader = std::io::BufReader::new(stdout);
     let mut verdict: Option<bool> = None;
+    // Sampled from the transcript reader rather than from the referee thread, because this is the
+    // loop that runs for the length of the leg and the sampler is rate-limited anyway. **This leg
+    // needs it more than the TCG one does**: HVF runs the guest on the physical cores, so the
+    // host's other work competes with it directly rather than through an interpreter.
+    let mut load = HostLoad::new();
     // How much more transcript to relay once something has failed. The watchdogs print a thread
     // dump after the line that names the failure and that dump is the diagnosis, so we cannot stop
     // at the marker; but we cannot read to the end either, because **there is no end**. The
@@ -5377,6 +5547,7 @@ fn hvf_kernel_leg() -> bool {
         // Stream it, because a test suite you cannot watch is a test suite you cannot debug. The
         // TCG leg inherits stdio and prints as it goes; this leg has to relay.
         println!("{line}");
+        load.sample();
         if line.starts_with("test result: ok.") {
             verdict = Some(true);
             break;
@@ -5413,7 +5584,7 @@ fn hvf_kernel_leg() -> bool {
     let _ = child.kill();
     let _ = child.wait();
 
-    match verdict {
+    let ok = match verdict {
         Some(true) => scanout_ok && inbound_ok && mcast_ok && smb_ok,
         Some(false) => {
             eprintln!();
@@ -5430,7 +5601,9 @@ fn hvf_kernel_leg() -> bool {
             );
             false
         }
-    }
+    };
+    load.report_if_failed(ok, "aarch64 --hvf");
+    ok
 }
 
 /// Ask cargo to build the kernel's test binary and say where it put it, without running it.
@@ -6969,6 +7142,25 @@ fn run(program: &str, args: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Both operating systems' `uptime`, because only one of them is ever in front of you.**
+    /// Development happens on macOS and CI runs on `ubuntu-24.04-arm`, so the format not under the
+    /// author's nose is the one that breaks silently: a failed parse reports "unavailable" rather
+    /// than erroring, which is right at run time and useless as a signal.
+    ///
+    /// The real strings, copied from each system rather than reconstructed.
+    #[test]
+    fn the_load_average_parse_serves_macos_and_linux() {
+        let macos = "11:07  up 5 days, 22:33, 3 users, load averages: 4.14 4.86 4.29";
+        let linux = " 18:02:11 up 12 days,  3:41,  2 users,  load average: 0.50, 0.40, 0.30";
+        assert_eq!(parse_load_average(macos), Some(4.14));
+        assert_eq!(parse_load_average(linux), Some(0.50));
+        // A shape nothing here recognises is `None`, not a wrong number: the report says so out
+        // loud, and a made-up load average would be worse than no line at all.
+        assert_eq!(parse_load_average("up 3 days"), None);
+        assert_eq!(parse_load_average("load average:"), None);
+        assert_eq!(parse_load_average("load average: n/a"), None);
+    }
 
     /// The copy into the patched std sysroot must drop a `# Examples` section and keep everything
     /// else, including the `text` diagrams the protocol crates lead with. The two cases worth

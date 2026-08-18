@@ -99,9 +99,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   preemption being billed to the thread it interrupted, and is honest that the static bound moved
   by 256 bytes while the *shape* of the cost changed entirely.
 - [Adding a user program](adding-a-program.md): the six steps, task-oriented, written because
-  milestone 117's first stranger run found that no file described them. The two initrd lists in
-  two different shapes, the wire id that is expensive to change, and the manifest that declares a
-  direction rather than a name.
+  milestone 117's first stranger run found that no file described them. The seven names the program
+  is spelled out under, which of them the compiler catches and which it does not, the wire id that
+  is expensive to change, and the manifest that declares a direction rather than a name. Walked and
+  corrected three times; its `BUGS` says why that keeps being necessary.
 - [The stranger test](stranger-test.md): milestone 117's instrument, written before its first
   run so the result cannot be graded generously afterwards. The protocol (a fresh context, no
   brief, no help mid-run, every question a defect), the eight-question rubric for the mental

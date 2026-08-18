@@ -159,13 +159,15 @@ meets it.
    that host load is the discriminator for this whole family and has already measured the rate
    against a load average; the harness is in a position to sample `uptime` and does not. Today a
    contended host produces a message that blames the kernel and the reader has to think of `uptime`
-   unprompted, which cost run 3 an hour.
+   unprompted, which cost run 3 an hour. ***Done 2026-08-18, and it took an afternoon.***
 2. **Correct `notes/adding-a-program.md` step 4**, and count `manifest()` as the seventh
    `grant_plan` edit. Five minutes, and it belongs to whoever lands the next program, per that
-   page's own convention.
+   page's own convention. ***Done 2026-08-18, and the five minutes was the wrong estimate for the
+   right reason: walking the page rather than reading it found three more defects.***
 3. **Stop `timer.rs`'s panic message asserting a false dichotomy.** Fifteen minutes, both ISAs. Do
    not widen the bound; the tree has rejected that twice and is right. The sentence just should not
-   claim something the code cannot support.
+   claim something the code cannot support. ***Done by milestone 62, which deleted the assertion
+   carrying the sentence on both ISAs rather than rewording it, the bound untouched as asked.***
 4. **Adding a program should not need five hand-maintained lists.** A milestone, and it is the one
    run 3's stranger nominated as the highest-value thing a newcomer could offer. A `Prog` variant
    could carry its archive name and its manifest as data and both initrd tables could be generated
@@ -175,6 +177,39 @@ meets it.
 5. **Run 4, with the harness's logs in a sibling directory**, and with `CONTRIBUTING.md` and the
    reading order in the tree it is handed. Neither has been seen by a stranger: run 3's clone
    predates both.
+
+## The handoffs lane, 2026-08-18
+
+**Status does not move: still `PARTIAL`.** This lane took the three cheap items run 3 recorded and
+did not fix, and none of them is the milestone's own sentence ("fix what the run finds, then run it
+again"). Handoffs 4 and 5 above are untouched: run 4 is still owed, and so is the design fork.
+
+- **Print the host load average beside a timing-assertion failure: done.** `HostLoad` in
+  `xtask/src/main.rs` samples `uptime` every five seconds for the length of an emulated leg and
+  reports min/mean/peak, the core count and the oversubscription factor when the leg goes red, on
+  both the TCG and the `--hvf` legs. Recorded in notes/load-sensitive-assertions.md, under the
+  diagnostic section it belongs to, with its own `BUGS`.
+- **Correct `notes/adding-a-program.md` step 4, and count `manifest()` as the seventh `grant_plan`
+  edit: done, and the page was wrong in three further places** nobody had found. `cargo xtask build`
+  claimed to pack both archives and packs one, the `SHELL_CHECK_SCRIPT` example it gives does not
+  compile against that array's type, and the page said which edits exist without ever saying which
+  ones the machine catches. The page was verified by walking it with a scratch program, added and
+  removed, rather than by reading it.
+- **Stop `timer.rs`'s panic message asserting a false dichotomy: already done by milestone 62**, in
+  the branch that was live while this lane ran. 62 deletes `the_handler_keeps_up_when_no_lock_is_held`
+  on both ISAs, which is where that sentence lived, and replaces the sibling test's exhausted-budget
+  panic with an `UNMEASURED` report. Nothing was re-fixed here.
+
+**One thing measured here that changes what a reader should believe.** Run 3 recorded that a missing
+`from_name()` arm fails silently. It does, but only on a condition nobody had stated: `PROG_COUNT` is
+the keystone, and `prog_id_round_trips`' own doc comment claimed the opposite of what it does. A
+variant added with its three compiler-forced arms and none of `from_id`, `from_name` or `PROG_COUNT`
+**compiles and passes every host test**. The doc comment is corrected in place and step 6 now carries
+the measured table.
+
+That sharpens handoff 4 rather than answering it: the mechanism it asks for would make all three of
+those unnecessary, and Rust offers no way to count an enum's variants without a derive macro this
+tree has not taken, so the gap cannot be closed with a gate.
 
 ## Scope note
 
