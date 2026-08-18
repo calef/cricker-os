@@ -5,10 +5,14 @@ target beside milestone 66's Vaultwarden and milestone 99's git, chosen for a re
 has: it is the workload that pushes on **enumeration**, which is the one authority this system treats
 as dangerous.
 
-**Gate: MILESTONE 64, MILESTONE 122.** 64 measured the crates.io surface and bound `read_dir`; 122
-gives `std` a directory handle it can hold, without which a walker cannot open what it lists. Every
-dependency this milestone needs was already measured as building, so the gate is about the platform
-rather than about the crates.
+**Gate: MILESTONE 64.** 64 measured the crates.io surface and bound `read_dir`. The second half of
+this gate was `MILESTONE 122`, which landed on 2026-08-18: `std` now holds a directory handle and a
+walker can open what it lists, and `std::fs::Dir` is the object `cap-std` would bind to. What 122
+leaves this milestone is the half of its own recommendation it could not discharge, because pricing
+the walk *is* this milestone's benchmark: **nobody has measured what per-component IPC costs**, and
+whether the answer argues for a multi-component resolve in the contract. Every dependency this
+milestone needs was already measured as building, so the gate is about the platform rather than about
+the crates.
 
 ## Why this workload rather than another
 

@@ -17,7 +17,7 @@ use super::*;
 /// Shared by every std test on both ISAs (the arch-gated test modules reach it here), so all of
 /// them assert the same way and a drift in one is a diff in one place.
 pub(super) fn assert_std_transcript(report: crate::sched::EpId, want: &[u8], what: &str) {
-    let mut got = [0u8; 512];
+    let mut got = [0u8; 768];
     let len = drain_sink(report, &mut got, what);
     assert_eq!(
         &got[..len],
@@ -377,7 +377,7 @@ pub(super) fn assert_smb_held_no_key(had_fs: bool) {
 /// `buf`; returns the length. Not a `const` because the motd's contents are spliced in from the
 /// shared fixture, and that is the load-bearing part: those bytes came off the RedoxFS image,
 /// through the FS server, through `std::fs`, and out the stdout endpoint.
-pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
+pub(super) fn std_fs_expected(buf: &mut [u8; 768]) -> usize {
     // The lengths spelled out below are the motd's; if the fixture changes, fail here rather
     // than in a byte comparison nobody can read.
     assert_eq!(
@@ -390,7 +390,12 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
         b"std fs on nife\n".as_slice(),
         fs_proto::fixture::MOTD,
         b"read_to_string 70\nmetadata len 70\n".as_slice(),
-        b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
+        // Milestone 122 changed the third of these. `sub/motd` used to be refused for being
+        // nested, which is no longer a category; what replaces it is `sub/../other/secret`, a real
+        // file in a real sibling directory that this process CAN reach by naming `other/secret`,
+        // refused through the `..` route. The refusal moved from "a path with two components" to
+        // "there is no ascent", which is the property that was always the point.
+        b"absolute refused\ndotdot refused\ninner dotdot refused\n".as_slice(),
         b"missing not found\n".as_slice(),
         // Milestone 31 phase 2: `create unsupported` became `write create ok`, plus the two
         // refusals that prove CREATE did not widen what a client can reach.
@@ -407,6 +412,21 @@ pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
         // `fs::copy` (no verb, and none needed). Same shape of finding as the nine lines above, one
         // milestone later: the refusal outlived the reason for it.
         b"set_len ok\ncopy ok\n".as_slice(),
+        // **Milestone 122: descent.** The first three lines are a nested path resolving, a second
+        // descent below it, and the pair that was actually broken: list a subdirectory, then open
+        // every file the listing named through the `path()` the listing handed back. That pair is
+        // what every filesystem walker is built out of, and one level down it used to fail.
+        b"descend read ok\ndescend twice ok\nwalk entry ok\n".as_slice(),
+        // A path may only walk *through* directories, and a held directory is bound exactly as the
+        // granted one is. `dir handle ok` is `std::fs::Dir`, std's own `openat`-shaped API, running
+        // on the capability it already is: nife used to get std's generic fallback, which stores a
+        // `canonicalize`d path and therefore failed at its first call.
+        b"through a file refused\ndir handle ok\n".as_slice(),
+        // `rename` across two directories is one atomic message, because `RENAME` carries both
+        // handles and both are now walked. `remove_dir_all` needed no nife code at all: std's
+        // generic recursion is written in terms of `read_dir` and `remove_file` on paths it
+        // composes itself, so it started working the moment those paths resolved.
+        b"rename across ok\nremove_dir_all ok\n".as_slice(),
         b"fs ok\n".as_slice(),
     ] {
         buf[n..n + part.len()].copy_from_slice(part);

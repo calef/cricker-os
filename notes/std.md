@@ -216,8 +216,11 @@ else); doing it here as well is not redundant, it is what turns a would-be escap
   capability, not a filesystem root.
 - **Any `..` is refused.** It would leave the granted directory, and no capability designates what is
   out there.
-- **A nested path is refused**, and the message points at milestone 31: a subdirectory needs its own
-  directory capability, which the contract does not yet grant.
+- **A nested path is a chain of descents** (milestone 122). `File::open("a/b/c")` is `OPENDIR a`,
+  `OPENDIR b`, then `OPEN c` against `b`'s handle. It used to be refused outright. The grant is
+  exactly as tight as it was: every hop resolves under the capability this process holds, rights only
+  ever narrow, and there are no symlinks to escape through. What changed is only whether the program
+  has to spell the descent itself.
 - **A name that IS expressible but absent is an ordinary `NotFound`**, which is what makes the three
   refusals above meaningfully different from "no such file".
 
@@ -241,13 +244,18 @@ and it is an `FSTAT` on a handle number the server's table can never contain:
 
 The answer is cached, because a cspace slot's contents are fixed at spawn on this ABI.
 
-**A wart of the contract, recorded.** The wire's error space (a negated errno) overlaps the kernel's
-invoke-error space (-1..-8), so `-2` is both `ENOENT` and `WrongObject`, and `-5` is both `EIO` and
-`BadMethod`. It is harmless in practice: only `-1` and `-3` are read as "you hold no such
-capability", and neither `EPERM` nor `ESRCH` is in the FS server's vocabulary, while `-2` is left to
-the errno mapping so a missing file reads as `NotFound`. The clean fix is a tag or an offset in the
-reply word, which is a contract change (`fs_proto`, the FS server, and `fs_test_client`), reported up
-rather than papered over here.
+**A wart of the contract, and this paragraph used to be wrong about it.** The wire's error space (a
+negated errno) overlaps the kernel's invoke-error space (-1..-8), so `-2` is both `ENOENT` and
+`WrongObject`, `-5` is both `EIO` and `BadMethod`, and **`-1` is both `EPERM` and `NoSuchSlot`**.
+This note said the overlap was harmless because neither `EPERM` nor `ESRCH` is in the FS server's
+vocabulary; `EPERM` has been since milestone 47 and nobody noticed for four milestones. Milestone 122
+resolved `-1` in favour of the server (see the descent section below): every entry point checks
+reachability first, so a kernel `NoSuchSlot` cannot follow a reply. The cost of that choice is that a
+**revoked** FS endpoint now reads as `PermissionDenied` rather than `Unsupported`, which is a trade
+made deliberately, because `EPERM` is reachable every day and revoking the FS endpoint is milestone
+108's open question. `-3` still reads as the kernel's, because `ESRCH` really is not in the server's
+vocabulary. The clean fix is a tag or an offset in the reply word, which is a contract change
+(`fs_proto`, the FS server, and `fs_test_client`), reported up rather than papered over here.
 
 ### What binds, and what stays Unsupported
 
@@ -338,13 +346,10 @@ because they all grant the root's full rights, and failed through every narrowed
 
 Still Unsupported, and now genuinely because **no verb in the contract backs it**:
 
-- **`remove_dir_all`**, which looks like an omission next to `remove_dir` and is not: the recursion
-  has to descend, and a nested path is refused (§27 carries one name resolved in the bound
-  directory). The loop belongs where it can hold a directory capability per level, which is
-  `user/src/rm.rs`.
 - `canonicalize`, `hard_link`, symlinks and `read_link`. **`copy` is bound** (milestone 64's second
   pass) and needed no verb: it is an open, a read/write loop and two closes, both names under the
-  granted directory.
+  granted directory. **`remove_dir_all` is bound since milestone 122** and needed no code either;
+  see below.
 - **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb
   reports one. The second half of that reason is now stale and is recorded as such: there **is** a
   wall clock to interpret a timestamp against since milestone 51, so what stands between
@@ -356,6 +361,128 @@ Still Unsupported, and now genuinely because **no verb in the contract backs it*
 - **`fsync`/`datasync` succeed rather than refuse**, and that is honest rather than a shrug: nothing
   is buffered on the client side, and the server commits a RedoxFS transaction per write (that is
   what makes a kill mid-write recoverable), so a returned write is already durable.
+
+### Descent: a nested path, and a directory a program can hold (milestone 122)
+
+Until this milestone the PAL called `OPENDIR` in exactly one place, inside `read_dir`, against
+`fs::ROOT`, and then let the handle go. Nothing in `std` held a directory, so a name had to be one
+component and a nested path was refused as a class.
+
+The consequence was sharp and is worth stating before the fix, because it is the shape of the bug
+rather than its size. `read_dir(".")` yields `./name` and feeding that back to `File::open` works;
+one level down an entry's `path()` is `sub/name`, which is two components, which was refused. **A
+`std` program could list a subdirectory and could not open what it had just been told was in there.**
+That pair is what every filesystem walker is built out of, so `walkdir` and `ignore` built and could
+not walk.
+
+Two answers, and they are not alternatives. The milestone's block argues both and this is what
+landed.
+
+#### The walk: `File::open("a/b/c")` is `OPENDIR a`, `OPENDIR b`, `OPEN c`
+
+Every name-taking verb goes through one function now (`walk` in `sys/fs/nife.rs`), which resolves a
+path to **the directory its last name lives in**, plus that name. `open`, `create`, `mkdir`,
+`unlink`, `rmdir`, `rename` and `readdir` all use it, so the shape is the same everywhere and there
+is one place to be wrong.
+
+**The rights it asks for are the design**, and they look like a widening until you do the
+arithmetic. Each hop asks for `DESCEND | needs`, where `needs` is what the *final* verb requires on
+the directory it lands in (`fs_proto::verb::TABLE` is the list; `OPEN`'s "READ or WRITE" is the one
+row a caller has to resolve from its own `OpenOptions`). Carrying `needs` down the whole chain rather
+than asking for it only at the end costs nothing that was ever available, because a child's rights
+are its parent's *intersected* with the request: a right an ancestor lacks is a right no descendant
+of it could have had either. So the walk asks for exactly the maximum the grant could give at the
+depth it is going to, and no more.
+
+**`..` is refused at every position, not only the first**, and that is what makes the walk safe by
+construction rather than by checking. There is no verb for an ascent and no capability that would
+designate what one reached: a handle names a directory and nothing on the wire names its parent.
+`cap-primitives` solves this same problem on Unix and has to work far harder, because there it is
+defending against a hostile namespace rather than standing on one that cannot express the attack.
+
+**At most two handles are open at once.** Each hop drops the one before it, which closes it, so a
+path's depth costs round trips rather than handle-table slots. The milestone block forecast one per
+level and was wrong in the cheap direction.
+
+#### `std::fs::Dir`: the object, and the surprise that it already existed
+
+The other answer is that a program should be able to **hold** a directory and open one name under
+it, which is this system's actual model and what `cap-std` binds to. The surprise was that this is
+not an interface anyone here had to invent: **`std::fs::Dir` exists upstream** behind
+`#![feature(dirfd)]` (rust-lang/rust#120426), with `open`, `open_file`, `open_file_with`,
+`metadata`, `remove_file` and `rename`, and it *is* `openat`.
+
+nife was getting std's generic fallback, which stores a `canonicalize`d path. `canonicalize` is
+`Unsupported` here, so **`Dir::open` on this system failed at its first call**, and the std type most
+aligned with what this OS *is* was the one type it could not offer. It is now a held `OPENDIR`
+handle: `Dir::open(".")` is the granted directory and costs no message at all, and anything else is
+one attenuated descent per component.
+
+**Why a `Dir` asks for everything its parent carries, when everything else here asks for the
+minimum.** The rule in the rest of this PAL is to ask for exactly what the verb needs, because
+over-asking is `EPERM` rather than attenuation and a client cannot read its own capability. A held
+directory has no single verb to be the minimum of: it is an object, and what will be asked of it
+later is not knowable when it is minted. So it asks for the projection of the authority the process
+already holds onto one directory inside it, which cannot widen anything (`parent & requested`) and is
+exactly what `openat(dirfd, name, O_DIRECTORY)` hands back on Unix.
+
+Knowing what the parent carries is the awkward part, because **the contract has no way to say
+"attenuate to whatever you have"** and no verb reporting a handle's rights. The common case is one
+message: ask for `dir::ALL`, and a full-rights grant answers with the handle. A narrowed grant
+answers `EPERM`, and the PAL then finds out what is there by asking for one right at a time, six
+messages, at most once per `Dir::open` because every hop after the first descends from a parent whose
+rights are now known. **That probe is a workaround, not a design.** The fix is a sentinel in
+`OPENDIR`'s rights word meaning "the parent's, whatever they are", which is a wire-format change and
+therefore not a lane's to make.
+
+#### `remove_dir_all` needed no code
+
+It had been refused with a note saying the recursion has to descend, a nested path is refused, and
+the loop therefore belongs where it can hold a directory capability per level, which is
+`user/src/rm.rs`. The second half of that was right and is now this module's business, because the
+walk holds one per level. std's own generic implementation is written entirely in terms of
+`read_dir`, `remove_file` and `remove_dir` on paths it composes with `DirEntry::path`, so switching
+one re-export was the whole change.
+
+That is the **fourth** refusal in this PAL found to have outlived its own reason, after milestone
+64's three. Each looked correct while it was wrong, which is the property that makes this class hard:
+a refusal that is correct-looking reads exactly like a refusal that is correct.
+
+#### Two live bugs the walk found
+
+Both were in the tree before this milestone and neither could show against the granted directory,
+because nothing is *requested* there: `fs::ROOT` carries whatever the endpoint carries.
+
+- **A created file was unwritable one directory down.** A file handle carries
+  `parent & (READ | WRITE)` (`create_file_at`, the same arithmetic as `open_file_at`), so a descent
+  that asked only for `CREATE` hands back a directory handle with no `WRITE` in it, which mints a
+  file nobody can write. `std::fs::write("a/b")` created the file and then failed `EROFS` on its own
+  first write. The fix is that `create_handle` asks for `CREATE` *and* what the caller will do with
+  the file.
+- **`dir::EPERM` was reaching std programs as `Unsupported`.** The PAL read a `-1` reply as the
+  kernel refusing the invoke, on the recorded ground that `EPERM` is not in the FS server's
+  vocabulary. **It has been since milestone 47**, where it is what a directory capability answers
+  when a verb's right is withheld and when a descent asks for more than the parent holds. So the one
+  reply meaning "this capability does not carry that right" arrived as "this platform cannot do
+  that", which is §42's silent degradation and would have made a narrowed grant indistinguishable
+  from no grant at all. It is now `ErrorKind::PermissionDenied`, which is not the EPERM fiction the
+  path refusals avoid: those are the client saying no capability designates that name, where nothing
+  consulted a permission; this is the server stating a fact about authority. What makes `-1`
+  unambiguous is that every entry point checks reachability first, so a server has already answered
+  by the time a request is issued.
+
+#### What is proven, and what is not
+
+`std_exerciser`'s fs transcript walks all of it on both ISAs: a file one directory down, a file two
+down, a subdirectory listed and every file in it opened **through the `path()` the listing handed
+back**, a path refused for walking through a file, `std::fs::Dir` opening a file under a held
+directory and refusing `..` through it, a rename between two directories in one message, and
+`remove_dir_all` over a tree the program builds.
+
+**The rights discipline is exercised only under a full-rights grant**, and that is the honest gap.
+Every std test grants the mount root, so a walk that over-asked would pass all of them, which is
+precisely the trap this PAL records nearly falling into once already. A std program spawned on an
+`fs_subtree_caretaker` endpoint is the test that would close it.
 
 ### The write path: a correction to the record
 
@@ -476,7 +603,10 @@ completes, not why the poll path did not.
 
 ## The proof
 
-`std_exerciser/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It is
+`std_exerciser/src/main.rs` is an ordinary Rust program, no `no_std`, no `unsafe`, and two
+`#![feature]` gates that are both about **an API's stability upstream rather than about this
+platform**: `std::random` (rust-lang/rust#130703) and, since milestone 122, `std::fs::Dir`
+(rust-lang/rust#120426). A program on any target calling those opts in the same way. It is
 **one binary with three behaviours, chosen by the authority it was granted**: on start it probes for
 a directory capability (`File::open` on the fixture name) and then for the network (a single
 `UdpSocket::bind`), and the results branch it.
@@ -494,7 +624,16 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
   lists the granted directory and finds both the fixture (a file) and the directory it just made
   (marked as one), descends into that directory and finds it empty, gets refused unlinking a
   directory and rmdir-ing a file, renames the file it created and asserts the *source name is gone*
-  as well as the destination's contents, then removes both. It cleans up before it starts rather
+  as well as the destination's contents, then removes both. Since milestone 122 it then **descends**:
+  it reads a file one directory down and another two down, builds a small tree of its own and lists
+  it, opens every file that listing named through the `path()` the listing handed back (the pair that
+  used to break), gets refused a path that walks through a file, opens a file under a held
+  `std::fs::Dir` and gets refused `..` through it, renames between two directories in one message,
+  and removes the tree with `remove_dir_all`. **The tree it lists is one it built**, deliberately,
+  and not the fixture's `sub`: milestone 47's directory-capability attacker is granted exactly that
+  directory and writes into it, so `sub`'s contents depend on which tests ran first in this boot, and
+  the first version of this transcript asserted them and failed. `sub/inner` and `sub/deeper/leaf`
+  are safe to *read* because the post-run host check pins them. It cleans up before it starts rather
   than after, because `NIFE_KEEP_REDOXFS=1` runs the suite against an image a previous boot
   wrote. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability` spawns it this
   way.

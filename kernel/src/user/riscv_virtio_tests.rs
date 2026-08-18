@@ -235,7 +235,7 @@ fn std_fs_reads_a_file_through_a_granted_directory_capability() {
     };
     assert_fs_service_ready(readiness);
 
-    let mut want = [0u8; 512];
+    let mut want = [0u8; 768];
     let n = std_fs_expected(&mut want);
     assert_std_transcript(report, &want[..n], "std fs");
 }

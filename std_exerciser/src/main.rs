@@ -4,10 +4,11 @@
 //! counter, `SystemTime` reads the clock page slot 5 grants (milestone 51), `std::random` asks the
 //! entropy service slot 6 grants (milestone 56), and `fs` returns honestly `Unsupported`.
 //!
-//! The one `#![feature]` below is about **the API's stability upstream, not about this platform**:
-//! `std::random` is still unstable in Rust (rust-lang/rust#130703), so any program on any target
-//! that calls it opts in the same way. Everything else here is stable Rust.
-#![feature(random)]
+//! The two `#![feature]`s below are about **the APIs' stability upstream, not about this platform**:
+//! `std::random` (rust-lang/rust#130703) and `std::fs::Dir` (rust-lang/rust#120426) are both still
+//! unstable in Rust, so any program on any target that calls them opts in the same way. Everything
+//! else here is stable Rust.
+#![feature(dirfd, random)]
 //!
 //! **One binary, three behaviours, chosen by the authority it was granted.** A std program reaches
 //! the network only if it holds the network, and the filesystem only if it holds a directory (no
@@ -27,7 +28,7 @@
 //! byte for byte, on both ISAs.
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{Dir, File};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::path::PathBuf;
@@ -282,7 +283,20 @@ fn fs_demo(mut motd: File) {
 
     refused("/etc/passwd", "absolute");
     refused("../motd", "dotdot");
-    refused("sub/motd", "nested");
+    // **`..` is refused at every position, not only the first** (milestone 122, where nested paths
+    // stopped being refused as a class). This one names a file that really exists and that this
+    // process really can reach through the root grant it holds, by a route the contract has no verb
+    // for: a handle names a directory and nothing on the wire names its parent, so there is no
+    // ascent to perform and no capability that would designate what it reached.
+    refused(
+        &format!(
+            "{}/../{}/{}",
+            fs_proto::fixture::tree::SUB,
+            fs_proto::fixture::tree::OTHER,
+            fs_proto::fixture::tree::SECRET
+        ),
+        "inner dotdot",
+    );
 
     match File::open("definitely-not-here") {
         Err(e) if e.kind() == ErrorKind::NotFound => println!("missing not found"),
@@ -357,6 +371,7 @@ fn fs_demo(mut motd: File) {
     println!("write readback ok");
 
     namespace_transcript();
+    descent_transcript();
 
     println!("fs ok");
 }
@@ -558,6 +573,168 @@ fn set_len_and_copy() {
 
     std::fs::remove_file(ORIGINAL).expect("cleanup of the set_len subject failed");
     std::fs::remove_file(DUPLICATE).expect("cleanup of the copy destination failed");
+}
+
+/// **Descent** (milestone 122): a nested path is a chain of `OPENDIR`s, and a directory is a thing a
+/// program can hold.
+///
+/// The sharp bug this closes is the one a walker hits on its first step. `read_dir` has worked since
+/// milestone 64, and every entry it hands back carries a `path()`; one level down that path is two
+/// components, and two components were refused. **A std program could list a subdirectory and then
+/// not open what it had just been told was in there**, which is most of what filesystem software
+/// does.
+///
+/// Nothing here widens the grant, and the fixture is chosen so that can be seen rather than
+/// asserted. `sub/deeper/leaf` is two descents inside the directory this process holds, and each hop
+/// is an `OPENDIR` whose rights are the last hop's intersected with what was asked for.
+/// `sub/../other/secret` is a file in a *sibling* of `sub` that this process can reach perfectly
+/// well by naming `other/secret`, and it is refused through the `..` route, because the refusal is
+/// about there being no ascent rather than about what is at the end.
+fn descent_transcript() {
+    use fs_proto::fixture::tree;
+
+    // One descent, and the bytes are the fixture's own, so this is the whole stack again (disk,
+    // block server, FS server, contract, PAL) with a directory capability minted in the middle.
+    let inner = std::fs::read(format!("{}/{}", tree::SUB, tree::INNER))
+        .expect("a file one directory down would not open");
+    assert_eq!(
+        inner,
+        tree::INNER_BODY,
+        "the descent read the wrong file's bytes"
+    );
+    println!("descend read ok");
+
+    // Two descents. `deeper` exists in the fixture precisely so that a second one has somewhere to
+    // go, and so that `dir::DESCEND` has something to withhold.
+    let leaf = std::fs::read(format!("{}/{}/{}", tree::SUB, tree::DEEPER, tree::LEAF))
+        .expect("a file two directories down would not open");
+    assert_eq!(
+        leaf,
+        tree::LEAF_BODY,
+        "the second descent read the wrong file"
+    );
+    println!("descend twice ok");
+
+    // **The tree this program owns**, built before anything lists it. It cannot be the fixture's
+    // `sub`: milestone 47's directory-capability attacker is granted exactly that directory and
+    // writes into it, so its contents depend on which tests ran first in this boot. `sub/inner` and
+    // `sub/deeper/leaf` above are safe to read because the post-run host check pins them; the
+    // *listing* of `sub` is not a fact this program can assert.
+    //
+    // Building it also exercises the walk on the way in: `create_dir` on a nested name is a walked
+    // `MKDIR`, and `write` to one is a walked `CREATE`.
+    const TREE: &str = "walked-by-std";
+    match std::fs::remove_dir_all(TREE) {
+        Ok(()) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {}
+        other => panic!("cleaning up {TREE} failed: {other:?}"),
+    }
+    std::fs::create_dir(TREE).expect("create_dir failed");
+    std::fs::create_dir(format!("{TREE}/{}", tree::DEEPER)).expect("a nested create_dir failed");
+    std::fs::write(format!("{TREE}/top"), tree::LEAF_BODY).expect("a nested write failed");
+
+    // **The pair that was broken.** List a subdirectory, then open every file the listing named,
+    // through the `path()` the listing itself handed back. One level down that path is two
+    // components, and two components used to be refused, so a program could be told what was there
+    // and then not reach it. Every filesystem walker is built out of exactly this pair.
+    let mut opened = 0;
+    let mut dirs = 0;
+    for entry in std::fs::read_dir(TREE).expect("read_dir of a subdirectory failed") {
+        let entry = entry.expect("a directory entry did not decode");
+        if entry.file_type().expect("file_type failed").is_dir() {
+            dirs += 1;
+            continue;
+        }
+        let bytes = std::fs::read(entry.path())
+            .expect("a file read_dir listed would not open by the path read_dir gave");
+        assert_eq!(
+            bytes,
+            tree::LEAF_BODY,
+            "an entry opened by its listed path read the wrong bytes",
+        );
+        opened += 1;
+    }
+    assert_eq!(opened, 1, "the tree this program made holds one file");
+    assert_eq!(dirs, 1, "the tree this program made holds one directory");
+    println!("walk entry ok");
+
+    // A name in the middle of a path has to be a directory. The server answers `ENOTDIR` for an
+    // `OPENDIR` of a file, and that is a fact about the name rather than about the capability, so it
+    // does not read as a refusal.
+    match File::open(format!("{}/{}", fs_proto::fixture::MOTD_NAME, tree::INNER)) {
+        Err(e) if e.kind() == ErrorKind::NotADirectory => println!("through a file refused"),
+        other => panic!("a path walking through a file was not refused: {other:?}"),
+    }
+
+    // **`std::fs::Dir`**: std's own `openat`-shaped API, holding a capability this process was
+    // handed. This is the half of milestone 122 that matters most, because it is the interface that
+    // makes the system's model visible to the software running on it: the name `inner` is resolved
+    // against a directory the program is *holding*, and there is no path composition anywhere in it.
+    let dir = Dir::open(tree::SUB).expect("Dir::open of a subdirectory failed");
+    let mut f = dir
+        .open_file(tree::INNER)
+        .expect("Dir::open_file under a held directory failed");
+    let mut held = Vec::new();
+    f.read_to_end(&mut held)
+        .expect("reading through a held directory failed");
+    assert_eq!(
+        held,
+        tree::INNER_BODY,
+        "the held directory opened the wrong file"
+    );
+    drop(f);
+
+    // A held directory is bound exactly as the granted one is: `..` names nothing through it either.
+    match dir.open_file(format!("../{}", fs_proto::fixture::MOTD_NAME)) {
+        Err(e) if e.kind() == ErrorKind::InvalidFilename => {}
+        other => panic!("`..` through a held directory was not refused: {other:?}"),
+    }
+
+    // `Dir::open(".")` is the granted directory itself and costs no message at all, because it is
+    // what the endpoint is bound to rather than a name inside anything.
+    let granted = Dir::open(".").expect("Dir::open of the granted directory failed");
+    let mut motd = granted
+        .open_file(fs_proto::fixture::MOTD_NAME)
+        .expect("the granted directory would not open its own file");
+    let mut bytes = Vec::new();
+    motd.read_to_end(&mut bytes).expect("read failed");
+    assert_eq!(
+        bytes,
+        fs_proto::fixture::MOTD,
+        "the granted directory read the wrong file"
+    );
+    println!("dir handle ok");
+
+    // **A move between two directories**, which is one atomic message rather than a copy and an
+    // unlink: `RENAME` carries a handle on each side and both of them are now walked to.
+    std::fs::rename(
+        format!("{TREE}/top"),
+        format!("{TREE}/{}/{}", tree::DEEPER, tree::LEAF),
+    )
+    .expect("renaming between two directories failed");
+    assert!(
+        !std::fs::exists(format!("{TREE}/top")).expect("exists after rename failed"),
+        "the source name survived a rename",
+    );
+    assert_eq!(
+        std::fs::read(format!("{TREE}/{}/{}", tree::DEEPER, tree::LEAF))
+            .expect("the renamed file would not open"),
+        tree::LEAF_BODY,
+        "the rename moved a name without its bytes",
+    );
+    println!("rename across ok");
+
+    // **`remove_dir_all` needed no nife code at all.** std's generic recursion is written in terms
+    // of `read_dir`, `remove_file` and `remove_dir` on paths it composes with `DirEntry::path`, so
+    // it started working the moment those paths resolved. It was `Unsupported` here for two
+    // milestones with a note explaining why, which is the fourth refusal in this PAL to have
+    // outlived its own reason.
+    std::fs::remove_dir_all(TREE).expect("remove_dir_all failed");
+    assert!(
+        !std::fs::exists(TREE).expect("exists after remove_dir_all failed"),
+        "remove_dir_all left the tree behind",
+    );
+    println!("remove_dir_all ok");
 }
 
 /// Assert that a path is refused as un-nameable, and say which case it was.
