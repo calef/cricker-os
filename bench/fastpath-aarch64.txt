@@ -2,5 +2,5 @@
 # Written by script/fastpath-footprint --save. Updating this file is a statement that a
 # footprint change is intended and understood; do it in the commit that causes it.
 # See notes/benchmarks.md for what the two numbers mean and what they are measured against.
-ipc_fastpath 5780
+ipc_fastpath 5792
 syscall_entry 4168
