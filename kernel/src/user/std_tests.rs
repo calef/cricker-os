@@ -451,7 +451,8 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
     wall clock ok\n\
     entropy ok\n\
     env ok\n\
-    paths ok\n";
+    paths ok\n\
+    exiting through process::exit\n";
 
 /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
 ///
@@ -486,11 +487,45 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
 /// the program asserted two draws differ. Before that milestone the same call returned
 /// splitmix64 seeded from boot-relative time, which would also have passed any test that only
 /// checked it did not crash.
+///
+/// The `exiting through process::exit` line, and the two assertions after the transcript, are
+/// milestone 64's fourth pass and the same shape a fourth time. `std::process::exit` fell through
+/// to `crate::intrinsics::abort()`, so a program ending the way almost every CLI-shaped `main`
+/// ends executed a trap and was reported to its supervisor as a crash. It was invisible to the
+/// three earlier passes for a reason worth keeping: `sys/exit.rs` is not a `sys/<module>/mod.rs`
+/// backend, so "read every module the PAL falls through" does not reach it, and `_start` calls
+/// the PAL's own exit directly, so the *usual* way a program ends never went near the broken one.
 #[test_case]
 fn a_whole_std_program_runs_on_the_native_abi() {
+    use core::sync::atomic::Ordering;
+
+    use crate::arch::exceptions::USER_FAULTS;
+
     let image = program("std_exerciser").expect("no std_exerciser program in the initrd archive");
     let clock = program("clock").expect("no clock program in the initrd archive");
     let entropy = program("entropy").expect("no entropy program in the initrd archive");
-    let report = std_service::start(image, clock, entropy);
+    let faults_before = USER_FAULTS.load(Ordering::Relaxed);
+    let (report, tid) = std_service::start(image, clock, entropy);
     assert_std_transcript(report, EXPECTED, "std_exerciser");
+
+    // **The exit is part of the transcript's claim, and it was not being checked** (milestone 64,
+    // fourth pass). The last line the program prints is the one before `std::process::exit(0)`,
+    // whose `_ =>` arm in `sys/exit.rs` was `crate::intrinsics::abort()`: a `brk`, which the kernel
+    // takes as a fault. So this program used to print a perfect transcript and then die as a crash,
+    // and every byte above passed while it did.
+    //
+    // Waiting for the thread to be *gone* rather than for a timeout is what makes this cheap and
+    // race-free. The transcript ends inside `rt::cleanup`, which runs before the process leaves, so
+    // reading the last byte proves nothing about how it left; both a clean exit and a fault reap an
+    // unsupervised thread, so the departure is the synchronisation and the fault counter is the
+    // verdict.
+    assert!(
+        super::tests::wait_for(|| !crate::sched::thread_present(tid)),
+        "the std program never left: it is neither exited nor faulted",
+    );
+    assert_eq!(
+        USER_FAULTS.load(Ordering::Relaxed),
+        faults_before,
+        "std::process::exit trapped instead of exiting: a clean exit reported as a crash",
+    );
 }

@@ -228,7 +228,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-nife", "riscv64-unknown-nife"];
 const NIFE_TOOLCHAIN: &str = "nife-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 7;
+const STD_SRC_PATCH_VERSION: u32 = 8;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/nife-farm")
@@ -724,6 +724,29 @@ fn std_patch_dispatch() -> bool {
         &sys.join("process/mod.rs"),
         "cfg_select! {",
         "    target_os = \"nife\" => {\n        #[allow(dead_code)]\n        mod unsupported;\n        mod nife;\n        mod imp {\n            pub use super::nife::getpid;\n            pub use super::unsupported::{\n                ChildPipe, Command, CommandArgs, EnvKey, ExitCode, ExitStatus, ExitStatusError,\n                Process, Stdio, output, read_output,\n            };\n        }\n    }",
+    ) && patch_after(
+        // **exit: `std::process::exit` was a trap instruction** (milestone 64, fourth pass).
+        //
+        // `sys/exit.rs` is not a `sys/<module>/mod.rs` backend dispatcher; it is one file whose
+        // `cfg_select!` sits *inside* `pub fn exit`, and its `_ =>` arm is
+        // `crate::intrinsics::abort()`. So a nife program calling `std::process::exit(0)` compiled
+        // perfectly and then executed `brk`, which the kernel reports as `EVENT_FAULT` with a pc
+        // and an address: a clean exit arriving at its supervisor as a crash, and a fault report on
+        // the console for a program that did nothing wrong.
+        //
+        // Nothing noticed because the normal path never goes through here. `sys/pal/nife/mod.rs`'s
+        // `_start` calls `rt::exit` on `main`'s return value directly, and `std::process::exit` is
+        // the *only* caller of `sys::exit::exit` in the whole of std. The two ways a Rust program
+        // ends took different exits, and only one of them was wired.
+        //
+        // The arm is what `_start` already does, which is why this needs no new decision: the same
+        // `SYS_EXIT` with the same code. The kernel discards the code (`sched::exit` is
+        // `depart(EVENT_EXIT, 0, 0)`), which is a real limitation recorded in notes/std.md rather
+        // than something this arm can fix; what it fixes is exit-versus-fault, which is observable
+        // today and which `a_whole_std_program_runs_on_the_native_abi` now asserts.
+        &sys.join("exit.rs"),
+        "pub fn exit(code: i32) -> ! {\n    cfg_select! {",
+        "        target_os = \"nife\" => {\n            crate::sys::pal::nife::rt::exit(code as i64)\n        }",
     ) && patch_after(
         // io/error has no fallback arm; route nife to the generic backend.
         &sys.join("io/error/mod.rs"),

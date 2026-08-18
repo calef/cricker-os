@@ -232,6 +232,28 @@ fn offline_demo() {
         "home_dir answered, but nobody gave this program a home",
     );
     println!("paths ok");
+
+    // **Leave through `std::process::exit`, which used to be a trap instruction** (milestone 64,
+    // fourth pass). This is the same finding as `env::vars` and `temp_dir` one layer down, and it
+    // is the one that argues for a gate rather than another careful reading: `sys/exit.rs` is not a
+    // `sys/<module>/mod.rs` backend, so no amount of "read every module the PAL falls through"
+    // would have reached it. Its `_ =>` arm is `crate::intrinsics::abort()`, so this call compiled
+    // perfectly and then executed `brk`. The kernel reports that as `EVENT_FAULT` with a pc and an
+    // address: a clean exit arriving at a supervisor as a crash.
+    //
+    // Nothing noticed because the two ways a Rust program ends took different exits and only one
+    // was wired. Returning from `main` reaches `_start`, which calls the PAL's `rt::exit`
+    // directly; `std::process::exit` is the *only* caller of `sys::exit::exit` anywhere in std.
+    //
+    // So this transcript now ends the way a CLI-shaped program ends rather than the way a demo
+    // does, and the line above is what proves the call was reached: without it a later edit could
+    // drop the exit and the fault-count assertion in `a_whole_std_program_runs_on_the_native_abi`
+    // would still pass, having watched nothing happen.
+    //
+    // `process::exit` runs `rt::cleanup` first, so stdout is flushed and the sink contract's
+    // end-of-stream still goes out; the receiver sees exactly this transcript and then EOF.
+    println!("exiting through process::exit");
+    std::process::exit(0);
 }
 
 /// The same sanity window `clock_proto::policy` applies, restated here because a std program links
