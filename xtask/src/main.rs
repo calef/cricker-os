@@ -6117,6 +6117,17 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 55] = [
 /// How long to wait for the banner, for one line's echo, and for the whole transcript. Generous:
 /// under TCG on a loaded machine a cold boot to the prompt is seconds, and a gate that flakes on a
 /// busy laptop is a gate people learn to ignore.
+///
+/// # BUGS
+///
+/// **It flakes anyway, and the thirty seconds is a *per-echo* budget rather than a per-line one.**
+/// On 2026-08-18 the riscv64 leg failed with "the prompt never echoed `caps date 2> err.txt`" after
+/// echoing thirteen characters of it, on a machine running four other lanes; the same commit passed
+/// on a rerun with nothing else changed. So a failure of this shape is a load report and not a
+/// finding, and the way to tell them apart is to rerun the one leg before reading the transcript.
+/// Raising the number is not obviously the fix: a real hang would then take proportionally longer
+/// to report, and the honest measurement (how long an echo actually takes under load, versus the
+/// budget) has not been made.
 const SHELL_CHECK_BOOT_SECS: u64 = 120;
 const SHELL_CHECK_LINE_SECS: u64 = 30;
 

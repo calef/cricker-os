@@ -211,7 +211,11 @@ searching for: capability
   16 of 302 pages, strongest first
 ```
 
-Three things about that are deliberate.
+Every number in that block moves whenever anything in the tree is edited, this page included, and
+that is the same property the store's own table has: **the documentation is the data.** What does
+not move is which page came first.
+
+Three things about it are deliberate.
 
 **It is the same code**, `manual::index::build` and `manual::index::search`, one shard per part of
 the tree and the same merge across shards the shell does with one 4 KiB page. Not a second
