@@ -5,6 +5,13 @@ failed on pull requests that changed no executable code, two of them documentati
 fixed the one that was a real bug. What followed was a family rather than one problem, and it took
 five rounds and an instrument.
 
+**A fourth claim was added on 2026-08-18** by milestone 62, and it corrects this block rather than
+extending it: the three claims below **could not see the timer drift bug at all**. The defect was
+injected and `script/icount` went green with every number byte-identical to a clean run, because
+claim 1 compares each arrival against the deadline that fired and a kernel re-anchoring the whole
+grid arms the timer with the very word it records. The instrument now asserts the re-arm law
+directly. See notes/instruction-clock.md.
+
 **What closed it: `script/icount`**, on both ISAs. The two claims this block was last left holding
 are asserted there: that the timer fired at the deadline the kernel armed (on riscv64, that SBI was
 armed with the `DEADLINE` word rather than with something else that leaves the array looking right),

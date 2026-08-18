@@ -206,9 +206,14 @@ pub const ARRIVAL_BOUND: u64 = 2_000;
 /// write.
 ///
 /// This is the claim the missed-tick assertions could never make. A miss is this number exceeding
-/// one tick period (625,000 instructions of virtual time at 100 Hz), so the bound here is more than
-/// two orders of magnitude tighter than the thing it replaces, and unlike it, nothing the host does
-/// can move it.
+/// one tick period, which is **10,000,000 instructions** of virtual time at 100 Hz: ten
+/// milliseconds, and one instruction is one nanosecond. So the bound here is about **4,000 times**
+/// tighter than the thing it replaces, and unlike it, nothing the host does can move it.
+///
+/// *(Corrected 2026-08-18. This said "625,000 instructions of virtual time", which is the interval
+/// in **counter ticks** wearing instructions' units; at 16 instructions per counter tick the two
+/// differ by that factor, and `script/icount` prints both side by side as `tick_interval 625000
+/// 10000000`. notes/instruction-clock.md carried the same slip and is fixed with it.)*
 #[cfg(feature = "icount")]
 pub const HANDLER_BOUND: u64 = 2_500;
 
