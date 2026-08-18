@@ -18,6 +18,15 @@
 # for `-Zbuild-std` (already in rust-toolchain.toml for the kernel), and it adds three crates to a
 # graph nothing ships. None of them enter the kernel, `user`, or any binary that boots.
 
+# Name: ratified 2026-08-18 (calef). `fuzz`, matching the directory, because AGENTS.md's table says a
+# directory holding a Rust package is named exactly as the package and the DIRECTORY is the fixed half
+# here: cargo-fuzz finds it by convention. It was `nife_fuzz` until then; the prefix was retired on the
+# evidence that of fifty-odd package names exactly three carried `nife`, two of which are the proper
+# noun `nifefs`. Refused: `nife_fuzz` (a project prefix inside its own project), and renaming the
+# directory to `nife_fuzz/` with `--fuzz-dir` (which works, and costs cargo-fuzz's default layout). The
+# full argument, including why a generic word is right here where it was wrong for `compose` and
+# `measure`, is in the `[package]` comment below.
+
 [package]
 # `fuzz`, matching the directory, because AGENTS.md's table says a directory holding a Rust package is
 # named exactly as the package, and **the directory is the fixed half here**: `cargo-fuzz` finds it by

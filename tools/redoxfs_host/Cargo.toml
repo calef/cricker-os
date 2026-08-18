@@ -7,6 +7,11 @@
 # vendor/README.md.
 [workspace]
 
+# Name: unrecorded, and descriptive rather than chosen: the host-side tool built on the vendored
+# RedoxFS engine, so `redoxfs` names the engine and `host` names the side. Milestone 63 renamed the
+# DIRECTORY from `tools/redoxfs-host/` to match the package on 2026-08-01, which is the recorded half;
+# the package name itself was never put to calef.
+
 [package]
 name = "redoxfs_host"
 version = "0.1.0"

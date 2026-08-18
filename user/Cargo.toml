@@ -1,3 +1,10 @@
+# Name: unrecorded, and the weakest of the four structural ones. `user` is the package holding every
+# EL0 program, so it is named for the privilege level its contents run at, which a reader meets as
+# `user/src/<program>.rs` far more often than as a package name. It is generic in the way AGENTS.md
+# flags (`compose`, `measure`, `regions` were all renamed away from words like it), and it survives on
+# the same argument `kernel` does: position supplies the meaning and the name appears in one manifest.
+# If any of these four wants revisiting, this is the one.
+
 [package]
 name = "user"
 version = "0.1.0"

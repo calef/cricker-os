@@ -12,6 +12,12 @@
 # `entropy` and `entropy_proto` are this tree's words for the domain, and a third participant takes
 # the same stem. The refusals are recorded in src/lib.rs.
 
+# Name: ratified 2026-08-18 (calef). `entropy` is this tree's word for the domain (`entropy` the
+# service, `entropy_proto` its contract) and a third participant takes the same stem. Refused:
+# `getrandom_backend` (upstream's word for the slot, and the strongest rival, but it names the slot
+# rather than the thing), `getrandom_nife`, and `entropy_shim`. The full argument, and why this package
+# is neither in `patches/` nor in `crates/`, is in src/lib.rs.
+
 [package]
 name = "entropy_backend"
 version = "0.1.0"

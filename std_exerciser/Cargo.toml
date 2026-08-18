@@ -6,6 +6,11 @@
 # toolchain with build-std flags the workspace crates must never inherit, and its target dir is
 # its own. `cargo xtask std-exerciser` is the front door.
 
+# Name: unrecorded. It exercises `std` on nife, which is what the name says, and nothing in the
+# history records a decision or an alternative. It is the package the `script/names` blind spot was
+# discovered through: it sat here for weeks answering "neither a name in the tree nor a recorded
+# refusal", because this tool only looked in `crates/`, `user/src/` and `script/`.
+
 [package]
 name = "std_exerciser"
 version = "0.1.0"
