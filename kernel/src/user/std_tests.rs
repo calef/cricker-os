@@ -495,6 +495,7 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
 /// three earlier passes for a reason worth keeping: `sys/exit.rs` is not a `sys/<module>/mod.rs`
 /// backend, so "read every module the PAL falls through" does not reach it, and `_start` calls
 /// the PAL's own exit directly, so the *usual* way a program ends never went near the broken one.
+/// `cargo xtask std-aborts` is the mechanism that replaces that reading.
 #[test_case]
 fn a_whole_std_program_runs_on_the_native_abi() {
     use core::sync::atomic::Ordering;
