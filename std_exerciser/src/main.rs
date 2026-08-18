@@ -18,7 +18,12 @@
 //!     through `std::fs`, and proves that a path trying to leave the granted directory is refused.
 //!   - **granted the network** (a `Stack` endpoint and a frame untyped in slots 2 and 3): it runs a
 //!     real UDP DNS query and a TCP echo round trip through `std::net` (milestone 27 phase two),
-//!     the same net_stack socket contract the hand-written client uses.
+//!     the same net_stack socket contract the hand-written client uses. And if its stack also
+//!     carries a **listen grant**, it serves: `TcpListener` binds the granted port, refuses the
+//!     one nobody granted, and answers connections a host process opens into the guest (milestone
+//!     64's inbound half). That is a fourth behaviour chosen by a fourth authority, on the same
+//!     principle as the three above; the grant is `net_stack`'s spawn word, not anything this
+//!     program can ask for.
 //!   - **granted neither** (only the heap and stdout slots): both return `Unsupported`, and the
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
 //!     refusals.
@@ -30,10 +35,12 @@
 use std::collections::HashMap;
 use std::fs::{Dir, File};
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpStream, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::random::{Rng, SystemRng};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use socket_proto::fixture;
 
 fn main() {
     // Probe for a directory capability first: an `Unsupported` open means no FS-service endpoint in
@@ -757,6 +764,25 @@ const ECHO_PEER: &str = "10.0.2.9:7777";
 fn net_demo(sock: UdpSocket) {
     println!("std net on nife");
 
+    // **The inbound half is chosen by authority, exactly as this program's three top-level
+    // branches are** (milestone 64). A listening port is a grant `net_stack` was spawned with, so
+    // asking for one is the probe: granted means serve, and `PermissionDenied` means this stack was
+    // never told which ports it may serve. Neither answer is a fallback, and the refusal is
+    // *printed* rather than absorbed, so a run that silently lost the grant is a diff in the
+    // pinned transcript rather than a program quietly doing less than it was asked to.
+    match TcpListener::bind(("0.0.0.0", fixture::LISTEN_PORT)) {
+        Ok(listener) => {
+            // **The granted run serves and stops**, rather than also doing the outbound work. Each
+            // of the two boots this binary gets on the network proves one thing, because a boot is
+            // the expensive unit here: a net test spends minutes in `net_stack`'s userspace smoltcp
+            // poll, and the outbound half is already proven by the run that is refused the port.
+            drop(sock);
+            return inbound_demo(&listener);
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => println!("listen refused"),
+        Err(e) => panic!("the listen probe failed for a reason that is not a refusal: {e:?}"),
+    }
+
     // Assertions rather than printed status keep the transcript byte-stable: a failure faults (the
     // panic path), which the kernel test sees as a missing line and a timeout, not a wrong answer.
     assert!(udp_ok(&sock), "the UDP round trip through std::net failed");
@@ -772,6 +798,73 @@ fn net_demo(sock: UdpSocket) {
     );
     println!("tcp echo ok");
     drop(sock);
+}
+
+/// **The inbound transcript** (milestone 64): this program is a *server*, through `std::net` and
+/// nothing else.
+///
+/// Everything else here is the guest as a client. This is the mirror, and it is what a file
+/// service is made of: bind a port the spawn granted, accept a connection a **host** process opened
+/// through QEMU's `hostfwd`, read the request, compose an answer, and do it again on the same
+/// listener. Nothing in this function names a capability, a socket id, or a shared frame.
+///
+/// Three claims, in the order they are printed, and the first two are the ones that matter most:
+///
+/// - **`denied refused`**: a port outside the grant is `PermissionDenied`. If this program could
+///   bind a port nothing granted it, the whole inbound authority would be decoration, and that is
+///   the one failure on this path that would not show up as a missing line somewhere else.
+/// - **`in use refused`**: the granted port, asked for twice, is `AddrInUse`. Exclusivity is what
+///   makes a port a grantable thing rather than a number, and this is what enforcing it feels like
+///   through `std::io::ErrorKind`.
+/// - **`served N`**: `ROUNDS` connections, one after another, on one listener. The second is the
+///   load-bearing one: a listener that goes deaf after one connection would pass a one-round gate
+///   and is exactly what milestone 55's Samba-shaped workload cannot use.
+///
+/// The host's half of this is `xtask`'s inbound prober, which requires its own bytes back and fails
+/// the leg if the guest never answered. Neither side alone is the gate.
+fn inbound_demo(listener: &TcpListener) {
+    println!("listen ok");
+
+    match TcpListener::bind(("0.0.0.0", fixture::DENIED_PORT)) {
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => println!("denied refused"),
+        Ok(_) => panic!("bound a port this program was never granted"),
+        Err(e) => panic!("a port outside the grant was refused, but not as a refusal: {e:?}"),
+    }
+
+    match TcpListener::bind(("0.0.0.0", fixture::LISTEN_PORT)) {
+        Err(e) if e.kind() == ErrorKind::AddrInUse => println!("in use refused"),
+        Ok(_) => panic!("two listeners bound one port"),
+        Err(e) => panic!("a second bind of a held port failed, but not as a collision: {e:?}"),
+    }
+
+    for round in 0..fixture::ROUNDS {
+        serve_one_inbound(listener, round);
+    }
+    println!("served {}", fixture::ROUNDS);
+}
+
+/// Accept one inbound connection, check what the host sent, answer it, and close.
+///
+/// `read_exact` rather than one `read`: a segment boundary is the host's business and a server that
+/// assumed one read per request would be asserting something about slirp. Dropping the stream is
+/// the close, and `net_stack` drains the handshake inside it, so the answer is on the wire before
+/// this returns.
+fn serve_one_inbound(listener: &TcpListener, round: usize) {
+    let (mut conn, _peer) = listener
+        .accept()
+        .unwrap_or_else(|e| panic!("round {round}: nobody connected: {e:?}"));
+
+    let mut got = vec![0u8; fixture::IN_MSG.len()];
+    conn.read_exact(&mut got)
+        .unwrap_or_else(|e| panic!("round {round}: reading the request failed: {e:?}"));
+    assert_eq!(
+        got,
+        fixture::IN_MSG,
+        "round {round}: something connected and said something else",
+    );
+
+    conn.write_all(fixture::OUT_MSG)
+        .unwrap_or_else(|e| panic!("round {round}: answering failed: {e:?}"));
 }
 
 /// **The gating UDP round trip: slirp's own TFTP server**, the `std::net` twin of `socket_test_client`'s

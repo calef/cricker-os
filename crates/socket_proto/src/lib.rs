@@ -262,6 +262,41 @@ pub const MAX_SOCKETS: usize = 6;
 /// The largest payload the frame carries (a 4 KiB frame minus the header).
 pub const DATA_MAX: usize = 4096 - OFF_PAYLOAD as usize;
 
+/// **The inbound gate's shared facts**, in one place because four programs have to agree on them
+/// and three of them are separate binaries: `socket_test_client` (the hand-written client),
+/// `std_exerciser` (the `std::net` client, in its own workspace), and the kernel test that decides
+/// which ports each stack is granted. The same discipline as `fs_proto::fixture`, and rule 7's
+/// reason verbatim: a port number two binaries agree on is a crate, never a literal repeated per
+/// call site.
+///
+/// **What is deliberately NOT here is the host's copy**, and that is the interesting half.
+/// `xtask`'s prober spells `IN_MSG` and `OUT_MSG` again as its own literals, exactly as the
+/// pinned [MS-NLMP] vectors beside the credential tests are spelled twice: the gate's claim is that
+/// two independently-written sides agree, and a shared constant would let one edit move both. The
+/// port is spelled a third time in `scripts/qemu-runner-*.sh`, where a `hostfwd` names the guest
+/// side, because a shell script cannot read a Rust crate. A drift in either is loud (the prober
+/// reports "the guest served 0 of N"), which is the honest cost of the split.
+pub mod fixture {
+    /// The port the inbound gate listens on, and the guest side of the runners' `hostfwd`. Both
+    /// ISA legs use the same number because they run one after the other and never hold it at once.
+    pub const LISTEN_PORT: u16 = 7778;
+    /// A port deliberately **outside** every listen grant the tests hand out, so asking for it
+    /// proves the grant *refuses* rather than that nothing happened to bind. It is the whole of the
+    /// authority claim: a client that could bind this bound a port nothing granted.
+    pub const DENIED_PORT: u16 = 8080;
+
+    /// What the host sends in, and what the guest answers with. Different strings on purpose: an
+    /// echo would pass even if the guest were only reflecting the host's own bytes, and the point
+    /// of the gate is that the guest *composed* an answer to a connection it did not make.
+    pub const IN_MSG: &[u8] = b"nife-in!";
+    pub const OUT_MSG: &[u8] = b"nife-out!";
+
+    /// How many connections one listener serves before the client stops. **Two, and the second is
+    /// the load-bearing one**: a listener that accepts exactly one connection would pass a
+    /// one-round gate and is precisely what a file server cannot use.
+    pub const ROUNDS: usize = 2;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +526,28 @@ mod tests {
         let top = udp_bind_grant(65535, 65535);
         assert!(udp_grant_allows(top, 65535));
         assert!(!udp_grant_allows(top, 65534));
+    }
+
+    /// **The inbound fixture's own claim, checked**: the port the gate is granted is inside the
+    /// grant the tests hand out and the port it probes is outside it. Both device legs spend
+    /// minutes proving the refusal on real hardware-shaped paths, and neither of them would notice
+    /// if somebody edited [`fixture::DENIED_PORT`] to a number inside the range: the client would
+    /// bind it, print that it bound it, and every assertion would still pass. This is the check
+    /// that a "denied" port is denied.
+    #[test]
+    fn the_inbound_fixture_probes_a_port_no_test_grants() {
+        let g = listen_grant(fixture::LISTEN_PORT, fixture::LISTEN_PORT);
+        assert!(grant_allows(g, fixture::LISTEN_PORT));
+        assert!(
+            !grant_allows(g, fixture::DENIED_PORT),
+            "the port the gate calls denied is inside the grant it is handed",
+        );
+        // And the wider range the combined inbound boot hands out (the SMB port rides beside the
+        // listen port) must not reach it either.
+        let wide = listen_grant(fixture::LISTEN_PORT, fixture::LISTEN_PORT + 1);
+        assert!(!grant_allows(wide, fixture::DENIED_PORT));
+        // The default admits neither, which is what "granted, never assumed" means for the fixture.
+        assert!(!grant_allows(NO_LISTEN_GRANT, fixture::LISTEN_PORT));
     }
 
     /// A grant round-trips through the one word a spawn argument carries, up to the top of the

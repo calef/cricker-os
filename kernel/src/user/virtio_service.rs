@@ -674,9 +674,18 @@ const STD_NET_STACK_PAGES: u64 = 32;
 /// same binary spawned without slots 2 and 3 runs the offline transcript instead, which is what
 /// makes "no ambient network" visible: authority, not the code, decides. Returns the program's
 /// stdout endpoint for the test to reassemble, or `None` if no NIC is attached.
+///
+/// `listen_grant` is the **inbound authority** the std program gets, and it is decided here rather
+/// than asked for (milestone 64, `socket_proto::listen_grant`). It is the difference between a std
+/// program that may accept connections and one that may not, and it is visible at this call site
+/// before the program exists: `socket_proto::NO_LISTEN_GRANT` is a `std::net::TcpListener::bind`
+/// that answers `PermissionDenied` for every port there is. This parameter used to be a hardcoded
+/// `NO_LISTEN_GRANT` with a comment saying the PAL could not spend a grant; the PAL can now, so the
+/// decision moved out to the caller where it belongs.
 pub fn start_net_std(
     net_stack_image: &'static [u8],
     std_image: &'static [u8],
+    listen_grant: u64,
 ) -> Option<(EpId, Holding)> {
     use crate::cap::untyped_cap;
 
@@ -684,16 +693,8 @@ pub fn start_net_std(
     let transport = crate::virtio::Transport::Mmio {
         mmio_phys: dev.mmio_phys,
     };
-    // No listen grant: `std::net`'s PAL binds `TcpStream` and `UdpSocket` today, not `TcpListener`
-    // (milestone 107's scope note), so a stack that granted ports would be granting authority
-    // nothing on the other side can spend.
-    let (net_stack_report, stack, mut held) = wire_net_server(
-        net_stack_image,
-        transport,
-        dev.intid,
-        None,
-        socket_proto::NO_LISTEN_GRANT,
-    );
+    let (net_stack_report, stack, mut held) =
+        wire_net_server(net_stack_image, transport, dev.intid, None, listen_grant);
 
     let std_eps = crate::untyped::create(2).expect("no endpoint region for the std net client");
     let report = crate::sched::create_endpoint_from(std_eps).expect("no std net report endpoint");

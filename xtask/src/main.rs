@@ -1511,15 +1511,30 @@ impl ScanoutReferee {
 }
 
 /// The bytes the inbound prober sends into the guest and the answer it requires back. They must
-/// match `user/src/socket_test_client.rs` (`IN_MSG`/`OUT_MSG`), and they are deliberately different
-/// strings: an echo would pass even if the guest were only reflecting our own bytes, and the point
-/// of this gate is that the guest **composed** an answer to a connection it did not make.
+/// match `socket_proto::fixture` (`IN_MSG`/`OUT_MSG`), which is what the two guest programs read
+/// them from, and they are deliberately different strings: an echo would pass even if the guest
+/// were only reflecting our own bytes, and the point of this gate is that the guest **composed** an
+/// answer to a connection it did not make.
+///
+/// **Spelled again here rather than imported**, which is the same call the pinned [MS-NLMP] vectors
+/// beside the credential tests make: the claim is that two independently-written sides agree, and a
+/// shared constant would let one edit move both. A drift is loud, because the guest's answer would
+/// not match and the prober says exactly what came back instead.
 const INBOUND_IN: &[u8] = b"nife-in!";
 const INBOUND_OUT: &[u8] = b"nife-out!";
-/// How many connections the prober must complete. **Two, and the second is the load-bearing one:**
-/// a listener that accepts one connection and then goes deaf is a listener a file server cannot
-/// use, and nothing but a second accept proves the re-arm (milestone 107).
-const INBOUND_ROUNDS: usize = 2;
+/// How many connections the prober must complete across a whole boot. **Two per listening guest
+/// program, and the second of each is the load-bearing one:** a listener that accepts one
+/// connection and then goes deaf is a listener a file server cannot use, and nothing but a second
+/// accept proves the re-arm.
+///
+/// Four since milestone 64, because the suite now runs **two** programs that listen on the
+/// forwarded port, one after the other: `socket_test_client`'s hand-written accept role (milestone
+/// 107) and `std_exerciser`'s `std::net::TcpListener` half. This counts answers, not programs, and
+/// deliberately does not try to tell them apart: the host cannot see which guest process answered,
+/// and it does not need to, because **each guest test asserts its own two rounds** in its own
+/// transcript. What this number adds is the half no in-guest assertion can make, that the bytes
+/// reached a process outside the machine.
+const INBOUND_ROUNDS: usize = 4;
 
 /// Ask the OS for a free TCP port on the loopback and let it go again.
 ///
@@ -1598,7 +1613,8 @@ impl InboundProber {
                 eprintln!(
                     "inbound check ({arch}): {INBOUND_ROUNDS} host connections to 127.0.0.1:{port} \
                      were forwarded into the guest, accepted, and answered with the guest's own \
-                     bytes. The second one is the proof the listener re-arms."
+                     bytes. Two apiece for two listeners, the hand-written one and \
+                     `std::net::TcpListener`, and the second of each is the proof it re-arms."
                 );
                 true
             }

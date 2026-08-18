@@ -26,6 +26,13 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 fs_proto = { path = "../crates/fs_proto" }
 
+# The socket contract's shared fixture (milestone 64's inbound half): the port the runners forward
+# a host port to, the port no test grants, and the two strings the gate trades. Same reasoning as
+# `fs_proto` above and rule 7's: a port number two binaries agree on is a crate. The demo touches
+# only `socket_proto::fixture` and never the wire constants, because speaking the wire is
+# `std::net`'s job now, which is this milestone's whole point.
+socket_proto = { path = "../crates/socket_proto" }
+
 # The kernel's ELF loader maps whole pages per segment and the initrd carries the file; keep the
 # binary small and the build deterministic.
 [profile.release]
