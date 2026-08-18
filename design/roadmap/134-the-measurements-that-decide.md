@@ -198,8 +198,8 @@ what cuts, because it separates a measure from a decision.
 **Also built, folded in at calef's direction the same day**, from a separate question about unsafe:
 the unsafe census, in notes/unsafe-obligations.md, and the `count-at-most` relation in `script/lint`
 that it needed. The census's own result is the argument for having taken it: outside
-`kernel/src/arch/` the raw count went 171 to 747 since 2026-07-15 while the **density fell from 22.8
-to 9.3 per 10,000 lines, at every sample**, so the tree has been getting proportionally safer and
+`kernel/src/arch/` the raw count went 171 to 747 since 2026-07-15 while the **density fell from 228
+to 93 per 10,000 lines, at every sample**, so the tree has been getting proportionally safer and
 nothing was measuring it. A single commit two days earlier, `d5a969a2`, moved that count by 94 in
 one change and nothing recorded it.
 

@@ -431,11 +431,14 @@ than a boundary and the register's BUGS says so.
 
 | | 2026-07-15 | 2026-07-28 | 2026-08-04 | 2026-08-14 | 2026-08-18 |
 |---|---|---|---|---|---|
-| `unsafe {}` outside `kernel/src/arch/` | 171 | 426 | 723 | 763 | 747 |
-| code lines outside it | 7,508 | 19,223 | 58,805 | 64,452 | 80,359 |
-| **blocks per 10,000 lines** | 22.8 | 22.2 | 12.3 | 11.8 | **9.3** |
-| `unsafe {}` inside `kernel/src/arch/` | 34 | 102 | 125 | 134 | 139 |
-| `unsafe impl Send`/`Sync` | 7 | 13 | 17 | 17 | 17 |
+| `unsafe {}` outside `kernel/src/arch/` | 171 | 426 | 728 | 763 | 747 |
+| code lines outside it | 7,508 | 19,223 | 58,351 | 64,452 | 80,359 |
+| **blocks per 10,000 lines** | 227.8 | 221.6 | 124.8 | 118.4 | **93.0** |
+| `unsafe {}` inside `kernel/src/arch/` | 34 | 102 | 128 | 134 | 139 |
+| `unsafe impl Send`/`Sync` | 7 | 12 | 15 | 15 | 17 |
+
+(`script/lint` prints the density as an integer, truncated: 92 rather than 93.0. Truncated on
+purpose, so a ceiling can never fail a tree that sits exactly on it.)
 
 **The absolute count more than quadrupled and the density more than halved, falling at every
 sample.** Both facts are true and only the second one is about this kernel's soundness: the first is
@@ -455,8 +458,9 @@ invariant **96 times** and now asserts it once.
 outside `kernel/src/arch/`, which is one per hundred lines of code. The direction is down, because
 unsafe outside `arch/` is not paying for hardware access: it is a raw syscall, a shared page, or a
 hand-rolled data structure, and each of those has a safe wrapper somebody could write. The ceiling
-is written at a threshold the tree crossed **two days ago** rather than at slack: every sample
-before 2026-08-16 would have failed it. That is what makes it a ratchet instead of decoration.
+is written at a threshold the tree crossed **the day before this was written** rather than at
+slack: every sample before 2026-08-18 would have failed it, 2026-08-16 included at 111.7. That is
+what makes it a ratchet instead of decoration.
 
 **At most 17 `unsafe impl Send`/`Sync` claims** <!--count-at-most:unsafe-thread-safety-claims-->,
 and this one has no headroom at all. Each is a hand-written assertion that the compiler is wrong
@@ -485,17 +489,19 @@ point the same direction.
 aggregate, as a hard error through `-D warnings` across all fourteen configurations this script
 builds. A count check cannot be stronger than that; it can only disagree with it.
 
-And it disagrees badly. A regex that looks for `SAFETY:` at the head of the comment block above
-each `unsafe {}` reports 65 undocumented blocks in code the gate compiles clean. Every one read is
-a false positive: the comment is mid-line (`// ... the frame was retyped with GRANT. SAFETY:
-svc.`), or it is above a `#[cfg]` attribute that sits between it and the block, or the block is the
-second on a line the comment already covers. A gate whose failures are all documents that are right
-is the gate somebody deletes, which notes/counted-claims.md names as the way this convention dies.
+And it disagrees badly, in a way that gets worse the harder you try. A regex anchoring `SAFETY:`
+to the head of the comment block above each `unsafe {}` reports **65** undocumented blocks in code
+the gate compiles clean. Loosening it to accept the comment mid-line, which is how most of this
+tree writes it (`// ... the frame was retyped with GRANT. SAFETY: svc.`), still reports **38**. The
+ones read are all false positives: a `#[cfg]` attribute sits between the comment and the block, or
+the comment covers a closure whose body holds the block, or it covers the first of two blocks on
+one line. A gate whose failures are documents that are right is the gate somebody deletes, which
+notes/counted-claims.md names as the way this convention dies.
 
-The residue after those is worth knowing rather than gating: the 15 blocks in
-`patches/std-nife/overlay/` are linted by nothing at all, because that code is compiled into `std`
-by the farm and never by a clippy configuration here. That is a coverage hole, not a comment
-shortage, and it is recorded in the register's BUGS.
+One residue is worth knowing rather than gating: `patches/std-nife/overlay/` holds 37 blocks and
+**15 of them carry no `SAFETY:` comment in any form**, because that code is compiled into `std` by
+the farm and by no clippy configuration here. That is a coverage hole in the lint policy rather
+than a comment shortage, and it is recorded in the register's BUGS.
 
 ### What `user/`'s share is actually made of
 

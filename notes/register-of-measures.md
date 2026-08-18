@@ -74,7 +74,7 @@ named it, which is why milestone 134 added `count-at-most` rather than inventing
 
 The four ceilings are rows 2, 3, 4 and 7, and each one's threshold is a different kind of thing:
 5% is a tolerance, 4,096 is a hardware fact, 24,576 is a configuration constant, and 100 per 10,000
-is a **claim about the tree that was false until two days before it was written**. Only the last is
+is a **claim about the tree that was false until the day before it was written**. Only the last is
 a direction rather than a limit, which is what the `count-at-most` relation exists to express. See
 notes/unsafe-obligations.md for the measurement behind it.
 
@@ -92,7 +92,7 @@ row pretending to be one.
 |---|---|---|
 | IPC round trip in nanoseconds, both planes | 2026-08-04 | `script/bench --real` |
 | filesystem throughput, milestone 38's four phases | 2026-08-18 | `script/bench --real --smp`, with a RedoxFS disk attached |
-| primitives against Linux and macOS on the same host | 2026-07-29 | `bench/host/run_linux.sh`, then `script/bench --real` |
+| primitives against Linux and macOS on the same host | **no date recorded** | `bench/host/run_linux.sh`, then `script/bench --real` |
 | `unsafe {}` blocks inside `kernel/src/arch/` | every run | `script/lint`, which prints it and asserts nothing |
 
 **The filesystem row is the one on the customer path**, and it is the clearest case in the register
@@ -102,6 +102,14 @@ that used to finish overnight and now does not, reported by a person rather than
 in this tree would have said a word. It is `dated` because taking it needs a boot with a disk
 attached, which is not a thing to put on every push; the honest promotion is a scheduled run rather
 than a gate, and it wants a lane.
+
+**The cross-OS row is the register earning its keep on its first pass.** Its section in
+notes/benchmarks.md, "The first cross-OS numbers (nife vs Linux vs macOS)", **carries no date at
+all**, and the numbers in it are the ones a stranger is most likely to quote back at us: they are
+the comparison against Linux and macOS. A dated measurement with no date is a `gated` row's opposite
+and a `dated` row's failure mode at once, and nothing in this tree would have said so. Dating it
+means re-taking it, because nobody now knows which run it was; that is a small lane and it is named
+in this milestone's handoff.
 
 **The arch row is the odd one and it is deliberate.** There is no ceiling on unsafe inside
 `kernel/src/arch/`, because driving that number down means either writing assembly wrong or moving
@@ -135,7 +143,7 @@ next person does not add them back.
 | lines of Rust, crates, user programs, commits | **no consumer.** AGENTS.md's method figures are rhetoric about scale, and that file says so; a gate on them would be measuring a paragraph |
 | `nifefs`'s `NAME_LEN = 32` | **does not move on its own.** It is a decision with a cost per directory block, not a measurement |
 | the number of `#[cfg(kani)]` unsafe blocks (14) | **already gated**, by milestone 113's fourteenth clippy configuration, per block rather than in aggregate |
-| `unsafe {}` against `// SAFETY:` parity | **measured and refused.** `clippy::undocumented_unsafe_blocks` already enforces it per block as a hard error, and a count comparison disagrees with it in 65 places, every one of them a document that is right. notes/unsafe-obligations.md carries the reading |
+| `unsafe {}` against `// SAFETY:` parity | **measured and refused.** `clippy::undocumented_unsafe_blocks` already enforces it per block as a hard error, and a count comparison disagrees with it in 65 places (38 after the regex is loosened), every one read a document that is right. notes/unsafe-obligations.md carries the reading |
 | the CoreMark score | **already gated**, as a row in `bench/baseline-*.txt` |
 
 The parity row is the one worth reading before proposing a new gate. A count check that fails
@@ -159,10 +167,10 @@ from a level, and here it inverted the answer:
 
 ```sh
 # blocks outside kernel/src/arch/, at four points in the tree's history
-2026-07-15   171 blocks in   7,508 lines    22.8 per 10,000
-2026-08-04   723 blocks in  58,805 lines    12.3 per 10,000
-2026-08-16   817 blocks in  73,129 lines    11.2 per 10,000
-2026-08-18   747 blocks in  80,359 lines     9.3 per 10,000
+2026-07-15   171 blocks in   7,508 lines   227.8 per 10,000
+2026-08-04   728 blocks in  58,351 lines   124.8 per 10,000
+2026-08-16   817 blocks in  73,129 lines   111.7 per 10,000
+2026-08-18   747 blocks in  80,359 lines    93.0 per 10,000
 ```
 
 The count more than quadrupled and the density more than halved. A ceiling on the count would have
