@@ -1112,9 +1112,45 @@ considerably more. What changed in our favour is not headroom so much as **L2**:
 means overflowing L1 now costs tens of cycles rather than a trip to DRAM, which is a real safety net
 that Liedtke's low-end targets did not have.
 
-**These hardware figures are from general knowledge and are not measured here.** They should be
-confirmed against the boards, and the TX1's are worth taking from the silicon when it arrives rather
-than from a datasheet summary.
+**These board figures should still be confirmed against the silicon**, and the TX1's are worth
+taking from the machine when it arrives rather than from a datasheet summary.
+
+### Where the frontier actually is, which sharpens the paragraph above (2026-08-18)
+
+calef asked the obvious follow-up: where are frontier RISC-V, ARM and x86_64 caches now. Looked up
+rather than recalled, because the paragraph above was written from memory and one of its claims does
+not survive contact with the numbers.
+
+| core | ISA | L1i | L1d | L2 (per core) |
+|---|---|---|---|---|
+| AMD Zen 5 | x86_64 | **32 KB** (8-way) | 48 KB (12-way) | 1 MB (16-way) |
+| Intel Lion Cove / Cougar Cove | x86_64 | **64 KB** | 192 KB, plus a 48 KB L0 | 2.5 to 3 MB |
+| Arm Cortex-X925 | aarch64 | **64 KB** (4-way) | | 2 or 3 MB, private |
+| SiFive P870 | riscv64 | **64 KB** | | configurable, 4 MB in their example |
+| Apple M4 / M5 P-core | aarch64 | **192 KB** | 128 KB | shared, several MB |
+
+**The correction: L1i has not been growing.** The paragraph above says capacity grew four to six
+times and implies the trend continues. It does not. Frontier L1i clusters at **64 KB**, Zen 5 is
+still at **32 KB** and unchanged from Zen 4, and only Apple is an outlier at 192 KB. L1i is
+latency-critical and area-expensive, so it has sat between 32 and 64 KB across every vendor for
+roughly a decade. **What actually ballooned is L2**, from nothing or a small off-die cache in
+Liedtke's era to 1 to 3 MB private per core today.
+
+So the constraint loosened once, decades ago, and then stopped. The right reading is the one the
+paragraph above reaches for and undershoots: the win is not L1 headroom, it is that **L2 turned an
+L1 overflow from a DRAM trip into tens of cycles**. The fastpath discipline still applies to L1i,
+and the number to respect there is 32 to 64 KB, not something that grows every generation.
+
+**One figure was rejected rather than repeated.** A search result claimed the Ventana Veyron V2 has
+512 KB of L1 instruction cache. No shipping core has an L1i anywhere near that, and it is
+inconsistent with every other datapoint in the table, so it is almost certainly a garbled or
+mis-attributed number. Recorded here as refused rather than silently dropped, because the next
+person to look this up will hit the same result.
+
+**This does not move the target.** The machines this project runs on are not frontier parts: the
+U74's 32 KB L1i remains the binding constraint, and it happens to sit exactly at the bottom of the
+frontier range anyway. A 4 KiB fastpath is about an eighth of that, a sixteenth of a 64 KB frontier
+L1i, and a rounding error against Apple's 192 KB.
 
 ### The target
 
