@@ -61,6 +61,42 @@ emphasis, and a closer must not be preceded by a space.
 corpus, many full of the exact characters the other rules hunt for. If that ordering were wrong,
 `*ptr` inside backticks would open emphasis and eat the rest of the paragraph.
 
+### The bug the corpus test could not see, and the honest filter that kept it findable
+
+**A fenced code block opened inside a block quote never closed**, from phase 1 until 2026-08-18. The
+closing test ran against the raw line, so this:
+
+> A transcript quoted from somewhere else, with its own fence inside the quote:
+>
+> ```text
+> $ doc glob.md | wc
+>   1 4 26
+> ```
+>
+> and prose after it, which used to render as code.
+
+left the renderer in code mode to the end of the document. One quoted transcript misrendered every
+line after it.
+
+**`every_character_survives` could not find it**, and the reason is worth keeping: verbatim output
+loses no characters, so a page rendered entirely as code still passes a subsequence check. What the
+test *did* see was the opening fence's info string going missing, because its filter excluded a
+fence by looking for backticks after `trim_start` and a quoted fence does not start with one. That
+is the renderer being **right** about one line inside a page it was then ruining.
+
+The filter was left wrong on purpose, with a `BUGS` comment saying why: widening it would have
+silenced one false failure by hiding three hundred misrendered lines, and nobody had answered
+whether the renderer kept its quote state across a nested fence. It did not. So the answer came
+first and the filter second, which is the order that entry existed to enforce.
+
+**And the corpus test still cannot guard it**, which was measured rather than assumed. Reverting the
+fix leaves this very page ruined from the block above onward, and `every_character_survives` passes:
+verbatim output loses no characters, and `Renderer::unclosed_fence` (added here, and the strongest
+thing the corpus check can assert) misses it too, because a bare closing fence three sections later
+matches the stuck one and lets the renderer out. A unit test is the guard. The lesson generalises
+past this bug: **a subsequence check proves nothing was dropped and nothing about what was ruined**,
+so a renderer wants both kinds of test and this one had only the first.
+
 ## Installed
 
 **A doc bundle is a package's pages plus its index shard, installed as a unit.** `doc/<bundle>/` in
@@ -98,6 +134,31 @@ model argues against adding one: *enumeration is authority*, and a viewer that c
 can discover what it was not given. So "what pages exist" is not discoverable at runtime. It is
 computed on the host at image time and shipped, which is what Unix's `mandb` does for a different
 reason (scanning was slow).
+
+### The writer and the reader must agree on what a word is, and did not
+
+`manual::index::normalize` folds a query by dropping every byte that is not a letter or a digit, so
+a reader who types `line_editor` looks up `lineeditor`. `manual::index::tokens` split the *text* on
+that same byte, so the builder only ever wrote `line` and `editor`. **The term the query asks for
+was one no page could ever have.** In a repository whose prose is full of `snake_case` identifiers,
+that is most of what anybody would search for: `apropos fs_proto` and `apropos grant_plan` both
+answered "nothing says that" while dozens of pages said exactly that.
+
+The test that should have caught it asserted the property in its own first comment, *"the builder's
+tokeniser and the reader's query normaliser must agree, byte for byte, on what a term is"*, and
+then checked a word with no underscore in it. Same shape as the fence: a claim in prose, a weaker
+thing checked.
+
+The fix is in the writer rather than the reader, and that is the choice worth recording.
+`line_editor` now yields three terms, `line`, `editor` **and** `lineeditor`, so `apropos editor`
+keeps working and `apropos line_editor` starts. Narrowing `normalize` to stop at the underscore
+would have been smaller and would have made `apropos line_editor` silently search for `line`, which
+is a worse answer than no answer.
+
+**Only the underscore joins.** It is unambiguous in this tree and the hyphen is not: joining across
+`-` would manufacture a term out of every hyphenated phrase in the corpus, and `notes/glob-grant.md`
+is a filename rather than a word. The renderer narrowed emphasis on exactly this reasoning and
+records it in its own `BUGS`.
 
 ### The layout is designed for a reader that holds one page
 
@@ -151,6 +212,54 @@ through the same one-page-at-a-time `Pages`. The **rendering** is `swish::write_
 with the rest of what the prompt says. What is left in `user/src/swish.rs` is four filesystem
 requests and a 4 KiB page buffer.
 
+### And the same index, pointed at the repository
+
+`script/apropos <word>` is the guest's builtin with a checkout underneath it instead of a
+filesystem image. **It is milestone 117's finding rather than a convenience.** Three stranger runs
+have measured what a newcomer cannot reach by following this tree while doing ordinary work, and it
+is a list rather than an impression: `notes/net.md`, `notes/capabilities.md`, **any**
+`design/decisions/` file, and `crates/abi/src/lib.rs`, which is four syscall numbers and the whole
+design on one screen. None of them is hidden. Nothing a person would type led to them.
+
+```text
+$ script/apropos capability
+512 pages, 5049711 bytes of documentation in this repository
+
+searching for: capability
+
+     46  notes/capabilities.md                             Capabilities, and why the kernel has no `open()`
+     43  notes/README.md                                   Concept notes
+     37  design/roadmap/47-navigation-and-naming.md        47. Navigation and naming: `cd`, `pwd`, `ls`, `m
+     33  notes/std.md                                      Rust `std` on the native ABI
+     32  notes/pipes.md                                    Pipes and redirection: `>`, `<` and `|` are one
+
+  16 of 302 pages, strongest first
+```
+
+Every number in that block moves whenever anything in the tree is edited, this page included, and
+that is the same property the store's own table has: **the documentation is the data.** What does
+not move is which page came first.
+
+Three things about it are deliberate.
+
+**It is the same code**, `manual::index::build` and `manual::index::search`, one shard per part of
+the tree and the same merge across shards the shell does with one 4 KiB page. Not a second
+implementation, so a defect in the layout shows up in both places and a fix lands in both. What
+differs is what a result *names*: a guest result names `doc/<bundle>/<page>`, because that is what a
+shell there can designate, and this one names a path in this repository, because that is what a
+person with a checkout opens. Both come out of the same `Found`; the store location and the origin
+are two fields it already carried.
+
+**Crate and program module headers are pages.** That is the half that makes `crates/abi/src/lib.rs`
+findable at all, and no markdown page was ever going to do it: the document a reader wants about the
+ABI *is* that file's header. A `//!` block is markdown already, so it indexes with no conversion and
+no copy, and the result names the source file, which is the thing to open. A header shorter than a
+paragraph is skipped, because indexing it would put noise in front of the pages that answer.
+
+**There is no cache**, and a run is about a second over five megabytes. A cache that can be stale is
+worse here than a second of work, for the same reason `script/catch-up` and `script/names` are
+derived views: a maintained one rots and nothing says so.
+
 ### The store's own layout is a thing two programs agree on
 
 `doc/bundles` lists what is installed, one name per line; `doc/<bundle>/index` is a shard;
@@ -165,15 +274,17 @@ which is this whole milestone in one constant.
 
 | bundle | pages | terms | postings | markdown | index | probes |
 |---|---|---|---|---|---|---|
-| `manual` | 1 | 872 | 872 | 20625 | 40960 | 4 |
-| `swish` | 2 | 1730 | 2046 | 88088 | 73728 | 5 |
-| `kernel` | 2 | 1829 | 2115 | 63639 | 81920 | 5 |
-| `glob` | 1 | 861 | 861 | 20019 | 40960 | 4 |
+| `manual` | 1 | 1119 | 1119 | 29690 | 53248 | 5 |
+| `swish` | 2 | 1807 | 2130 | 88772 | 81920 | 5 |
+| `kernel` | 3 | 2461 | 3369 | 101022 | 106496 | 6 |
+| `glob` | 1 | 882 | 882 | 20019 | 40960 | 4 |
 
-**192,371 bytes of markdown produce 237,568 bytes of index**, which is 1.24x, and that is the number
-worth arguing with rather than the pleasant ones. (It was 1.56x when phase 1 measured it, and the
-improvement is not an optimisation: the notes it indexes grew, and page alignment's fixed floor is a
-smaller share of a bigger bundle.) Two things pay for it. A term record stores its
+**239,503 bytes of markdown produce 282,624 bytes of index**, which is 1.18x, and that is the number
+worth arguing with rather than the pleasant ones. (It was 1.56x when phase 1 measured it and 1.24x
+in the middle, and the improvement is not an optimisation: the notes it indexes grew, and page
+alignment's fixed floor is a smaller share of a bigger bundle. It went the other way on 2026-08-18,
+from 1.14x, and that one *is* a cost: underscore-joined terms are a third term for every
+`snake_case` identifier in the prose, which is what makes those identifiers findable.) Two things pay for it. A term record stores its
 term **inline** in 24 bytes so a probe is one page read rather than two, which is most of the bulk.
 And page alignment puts a four-page floor (16 KiB) under every bundle however small, so a bundle of
 one short page still costs 16 KiB to index.
@@ -193,16 +304,17 @@ $ cargo xtask manual capability
 documentation store: target/redoxfs-tree/doc
 
   bundle     pages   terms postings  markdown    index probes
-  manual         1     872      872     20625    40960      4
-  swish          2    1730     2046     88088    73728      5
-  kernel         2    1829     2115     63639    81920      5
-  glob           1     861      861     20019    40960      4
+  manual         1    1119     1119     29690    53248      5
+  swish          2    1807     2130     88772    81920      5
+  kernel         3    2461     3369    101022   106496      6
+  glob           1     882      882     20019    40960      4
 
-  192371 bytes of markdown, 237568 bytes of index
+  239503 bytes of markdown, 282624 bytes of index
 
 search: capability
+    46  doc/kernel/capabilities.md    Capabilities, and why the kernel has no `open()`  notes/capabilities.md
     32  doc/swish/pipes.md            Pipes and redirection: `>`, `<` and `|` are one   notes/pipes.md
-    15  doc/manual/manual.md          The manual: documentation as a system service   notes/manual.md
+    14  doc/manual/manual.md          The manual: documentation as a system service   notes/manual.md
     11  doc/kernel/ipc-naming.md      Who does IPC name?                              notes/ipc-naming.md
      8  doc/glob/glob.md              The glob matcher                                notes/glob.md
      3  doc/swish/line-discipline.md  The line discipline as a userspace component    notes/line-discipline.md
@@ -216,9 +328,10 @@ Search the same store from the prompt, where the answer is what a person acts on
 
 ```text
 $ apropos capability
+    46  doc/kernel/capabilities.md    Capabilities, and why the kernel has no `open()`
     32  doc/swish/pipes.md            Pipes and redirection: `>`, `<` and `|` are one
+    14  doc/manual/manual.md          The manual: documentation as a system service
     11  doc/kernel/ipc-naming.md      Who does IPC name?
-     8  doc/manual/manual.md          The manual: documentation as a system service
      8  doc/glob/glob.md              The glob matcher
      3  doc/swish/line-discipline.md  The line discipline as a userspace component
 $ caps wc doc/kernel/ipc-naming.md
@@ -249,29 +362,53 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 
 ## BUGS
 
-- **`doc <page>` on its own deadlocks at the interactive prompt.** Found by running it, and it is a
-  property of the shell rather than of the viewer. `swish` sends a spawned stage its **whole** input
-  and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a program
-  that writes while it is still reading blocks against a shell that is still writing. `wc` never
-  meets this because it produces nothing until end of stream; a renderer cannot do that without
-  holding the whole document, which is exactly the memory grant this design exists without. So `doc
-  page.md | wc` and `doc page.md > out.txt` work and `doc page.md` hangs.
+- **`doc <page>` on its own is refused, and the refusal names the fix.** It used to deadlock; that
+  was true when phase 1 shipped and stopped being true when milestone 50's chain check landed, and
+  this entry said it anyway until 2026-08-18. What happens now is
+  `grant_plan::check_chain` answering before anything is spawned:
 
-  `MAX_TEXT_CHUNKS = 32` in `user/src/swish.rs` is the second half of it: even with no deadlock the
-  prompt would print only the first 512 bytes of a rendered page. **A shell that can show a document
-  is a lane of its own**, and it is a scheduling change (drain while writing) rather than a
-  capability one.
-- **Neither workaround for that deadlock delivers the file.** `doc gate.txt | wc` and
-  `doc gate.txt > page.txt` both run and both answer `0 0 0`, which is the viewer rendering an
-  *empty* input: the named file reaches a stage only on the plain `doc gate.txt` path, the one that
-  deadlocks. So there is currently **no line a person can type that shows a rendered page**, and the
-  boot gate asserts only what is true: `doc` is in the image, is spawnable, and is refused at the
-  prompt when given no stream.
+  ```text
+  $ doc glob.md
+  refused
+    doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+    reader that is not this shell, as in '| wc'
+  ```
 
-  All three of these are the shell, not the viewer, and they are one lane: teach `swish` to drain a
-  stage while it is still writing to it, raise `MAX_TEXT_CHUNKS`, and carry the file source into a
-  pipeline and a redirection. The renderer underneath is proven on 100+ real pages by
-  `every_character_survives` and does not change.
+  The constraint underneath is the kernel's rather than the shell's, and it is worth reading
+  before reaching for a scheduling fix. A process has **one wait point**: `SEND` blocks until a
+  receiver takes the message, `RECV` blocks until one arrives, and there is no select and no timed
+  wait. So a shell feeding a chain cannot also be receiving from it, and **no interleaving schedule
+  fixes it**: alternating one send with one receive deadlocks whenever the stage reads twice before
+  it writes, and the other way round deadlocks whenever it writes twice before it reads. The shell
+  cannot know which, because the whole point of the sink contract is that neither end knows anything
+  about the other.
+
+  So the fix is not "drain while writing", which this note used to prescribe. It is **somewhere for
+  the viewer's output to go that is not this shell**, and the tree already has that thing:
+  `terminal_sink_caretaker`, the terminal's own sink adapter, which is where a declared second
+  stream goes by default with no `2>` on the line. Handing it a tail stage's *output* slot is a
+  spawn-protocol decision rather than a shell change, and notes/pipes.md has been carrying it as an
+  open question since milestone 50: *"a shell that wanted a program to print straight to the screen
+  rather than through its own result endpoint could hand it over, and would lose the ability to
+  redirect that program at all."* That trade is the milestone's remaining fork. See
+  **Where this goes next**.
+- **`doc <page> | wc` and `doc <page> > out.txt` deliver the file now.** Both
+  answered `0 0 0` when phase 1 measured them, because a pipeline's head was wired off the `Line`,
+  which carries no `<`, so the planned input operand was dropped and the stage counted an empty
+  stream. That was fixed in `user/src/swish.rs` (the head's input comes off the plan now) and the
+  fix is pinned at the real prompt on both architectures:
+
+  ```text
+  $ wc gate.txt
+    2 4 24
+  $ doc gate.txt | wc
+    1 4 26
+  ```
+
+  Two source lines are one paragraph re-flowed to one output line, and the two extra bytes are the
+  body indent, so the counts are what separate a rendered page from silence. `MAX_TEXT_CHUNKS = 32`
+  was the other half of this entry and is also gone: the shell drains `MAX_OUTPUT_CHUNKS = 4096`
+  messages, which is 64 KiB rather than 512 bytes.
 - **No pager, and the reason is authority rather than effort.** Paging needs a keypress; a keypress
   needs `line_editor::proto::OP_READLINE`; and that opcode rides on the terminal endpoint whose read
   side *is* the keyboard. The spawn protocol has no way to hand a child the right to read one line
@@ -287,6 +424,10 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
   read at a prompt before deciding what to open, and one of this system's two terminals is sixteen
   rows tall. A term nearly every page mentions therefore answers with the sixteen that mention it
   most, which for `capability` is a fair answer and for `the` would not be.
+- **A hyphenated name is not one term, and a path is not searchable.** Only the underscore joins,
+  so `apropos line-discipline` searches `line` and then `discipline` separately (as two queries;
+  this verb takes one word), and `apropos notes/glob.md` folds to `notesglobmd`, which no page
+  says. A search is for words, and the location a result prints is what you hand to `doc`.
 - **Ranking is occurrence count and nothing else.** A long page that mentions a word in passing can
   outrank a short page about it. Dividing by document length would be one division and needs the
   page's length, which the layout does not store.
@@ -310,10 +451,15 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 - **`apropos` searches from the root of what the shell holds, not from the cwd.** The store is
   installed at that root and a `cd` does not move the manual. A shell granted a *subtree* that does
   not contain `doc/` therefore cannot search at all, and says so with the filesystem's own errno.
-- **The index is 1.25x the markdown it indexes**, per the table above.
+- **The index is 1.18x the markdown it indexes**, per the table above, and it was 1.56x when
+  phase 1 measured it. The floor is what moves it: page alignment costs every bundle 16 KiB
+  however small, so the ratio improves as the bundles grow rather than because anything got better.
 - **A source line longer than `manual::LINE_MAX` (2048) loses its tail.** The longest line in this
-  repository is 1835 bytes, so the corpus fits; a document from elsewhere may not, and
-  `Renderer::truncated` reports it while `doc` does not print it.
+  repository is 1841 bytes <!--count:longest-markdown-line-->, so the corpus fits; a document from
+  elsewhere may not, and `Renderer::truncated` reports it while `doc` does not print it. The number
+  carries a marker because it drifted: these three places said 1835 for as long as the two gated
+  ones said 1841, which is the margin this milestone is measured against going stale in the prose
+  that explains it.
 - **Table cells are truncated to their column width**, so a wide table on an 80-column terminal
   loses text. This is a formatting choice, not a parsing failure, and the corpus test runs at 4000
   columns to keep the two apart. A table too large for the renderer's buffers spills into a second
@@ -327,18 +473,43 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 The guest-side `apropos` that used to head this list is built (phase 2, above), and it went to the
 builtin the entry predicted. What is left, in the order it pays off:
 
-1. **A shell that can show a document.** The three limitations at the top of `BUGS` are one lane and
-   they are the reason there is still no line a person can type that renders a page: teach `swish` to
-   drain a stage while it is still writing to it, raise `MAX_TEXT_CHUNKS`, and carry the file source
-   into a pipeline and a redirection. This is now the milestone's biggest gap, because `apropos`
-   hands a reader a page name and the next thing they type does not work.
-2. **A wiring bit in the spawn protocol** that says "this stage's output ends at the terminal", which
-   turns colour on and is the honest replacement for `isatty`.
-3. **The pager**, which is the same protocol decision seen from the other side: what it takes to
-   grant a child one line of input without granting it the keyboard.
-4. **The store as something a package installs**, rather than a table in `xtask`. `DOC_BUNDLES` is
+1. **One spawn-protocol decision, and it is three of this list's old entries at once.** Two of them
+   have been closed by other lanes since this list was written (the file does reach a pipeline's
+   head, and the prompt does not truncate at 512 bytes), and what is left is not a shell change.
+   There is still no line a person can type that renders a page, because the shell would be both
+   the writer and the reader of it and has one wait point. The fix is **somewhere for a tail
+   stage's output to go that is not the shell**, and `terminal_sink_caretaker` is already that
+   thing for a declared second stream: init endows it from the manifest, the bytes reach the screen
+   without passing through the shell, and a child holding it is the *default* for `2>` today, so
+   the authority increment for a program that already declares diagnostics is zero.
+
+   The same bit turns colour on, which is the honest replacement for `isatty`, and the pager is the
+   same decision seen from the other side: what it takes to grant a child one line of *input*
+   without granting it the keyboard. notes/pipes.md has been holding the question open since
+   milestone 50 and states the cost plainly: *"a shell that wanted a program to print straight to
+   the screen rather than through its own result endpoint could hand it over, and would lose the
+   ability to redirect that program at all."* The obvious narrowing is that the shell hands it over
+   **only** on a line with no `>` and no `|`, which it can decide from the plan before it spawns
+   anything, so nothing loses its redirection. That narrowing is a proposal and not a decision:
+   what a spawned program holds at this prompt is calef's, and it is the syscall-adjacent kind of
+   choice the *move fast on what can be undone* tenet puts on the expensive side.
+
+   **And there is a cost that is not the one notes/pipes.md names**, which is the part worth
+   deciding rather than discovering. A child holding the terminal's sink can write to the screen
+   *after* its line has ended, so a stage that outlives its command can paint a prompt nobody
+   typed. Today that cannot happen through this path because only a declared second stream reaches
+   it and the shell drains the tail before printing again; a tail stage whose output goes straight
+   to the screen gives the shell nothing to wait on, so it would have to wait for the child to
+   exit instead. That is a second question inside the first one, and it is a security question
+   rather than a plumbing one.
+2. **The store as something a package installs**, rather than a table in `xtask`. `DOC_BUNDLES` is
    the shape milestone 40 asked for minus a package manager, and milestone 39 is where the manifest,
    the hash and the version it should hang off already live.
+3. **Ranking that divides by length.** `script/apropos` made this matter: over six pages occurrence
+   count is fine, and over 512 a long page that mentions a word in passing can outrank a short page
+   about it. A page record is 128 bytes and holds 122, so a token count fits in the spare six with
+   no format growth at all. Not taken here because it changes what the guest answers and this lane
+   was already correcting a record rather than writing one.
 
 Phase 3 of the roadmap (a graphical viewer as a compositor client) is untouched and still wants
 milestone 33's rungs.

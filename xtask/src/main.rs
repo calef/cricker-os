@@ -141,6 +141,9 @@ fn main() -> ExitCode {
         // The documentation store (milestone 40): build it, print what it costs, and optionally
         // answer a query against it with the same reader the guest uses.
         "manual" => manual_store(std::env::args().nth(2)),
+        // The tree-wide search (milestone 40, script/apropos): the same index and the same reader,
+        // pointed at this repository instead of at what the image installs. See `tree_apropos`.
+        "apropos" => tree_apropos(std::env::args().nth(2)),
         "std-src" => std_src(),
         // Print the farm's input stamp and exit. Exists so that "the stamp does not depend on where
         // the checkout lives" is a claim anyone can CHECK rather than one they have to believe:
@@ -168,7 +171,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|icount|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|manual|apropos|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|icount|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(
@@ -4118,7 +4121,20 @@ fn mkfs_elf(triple: &str) -> String {
 const DOC_BUNDLES: &[(&str, &[&str])] = &[
     ("manual", &["notes/manual.md"]),
     ("swish", &["notes/pipes.md", "notes/line-discipline.md"]),
-    ("kernel", &["notes/ipc-naming.md", "notes/stack.md"]),
+    // **`notes/capabilities.md` is here because of milestone 117 rather than because of symmetry.**
+    // Three stranger runs found it unreachable by following the tree, and it is the page that
+    // answers what this system's central word means. A store that can be searched from the prompt
+    // and does not carry it is a manual with the first chapter missing. It is the kernel's own
+    // document, so it is in the kernel's bundle; `script/apropos` is the other half, for the reader
+    // who has a checkout rather than a prompt.
+    (
+        "kernel",
+        &[
+            "notes/ipc-naming.md",
+            "notes/stack.md",
+            "notes/capabilities.md",
+        ],
+    ),
     ("glob", &["notes/glob.md"]),
 ];
 
@@ -5785,7 +5801,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 55] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5816,20 +5832,35 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
     ("caps wc gate.txt", &["input    gate.txt"]),
-    // **Milestone 40 at the same interface, and only this much of it.** `doc` is in the image, is
-    // spawnable, and declares that it reads a stream, so bare `doc` is refused at the prompt before
-    // anything is spawned, exactly as `wc` is and for the same reason: a viewer that could open the
-    // page it renders could open any page.
-    //
-    // What is deliberately NOT here is `doc gate.txt`, and the reason is a shell limitation this
-    // lane found by typing it rather than by reading. `swish` sends a spawned stage its **whole**
-    // input and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a
-    // program that writes while it is still reading blocks against a shell that is still writing.
-    // `wc` never meets it because it produces nothing until end of stream. Both workarounds fail
-    // for a second reason: neither `doc gate.txt | wc` nor `doc gate.txt > page.txt` delivers the
-    // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
-    // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
+    // **Milestone 40 at the same interface.** `doc` is in the image, is spawnable, and declares that
+    // it reads a stream, so bare `doc` is refused at the prompt before anything is spawned, exactly
+    // as `wc` is and for the same reason: a viewer that could open the page it renders could open
+    // any page.
     ("doc", &["name a file"]),
+    // **The named file reaches the viewer and comes back rendered**, which two of this gate's own
+    // comments said it did not until 2026-08-18. Both halves of that were fixed elsewhere and the
+    // record was never corrected: the input operand now comes off the plan rather than off the
+    // `Line` (`user/src/swish.rs`, the same fix `wc gate.txt | wc` above pins), and
+    // `MAX_OUTPUT_CHUNKS` is 4096 rather than the 32 that would have truncated a page to 512 bytes.
+    //
+    // The numbers are the assertion and not decoration. `gate.txt` is 2 lines, 4 words, 24 bytes
+    // (`wc gate.txt`, above). What comes back is **1 line, 4 words, 26 bytes**: the two source
+    // lines are one paragraph re-flowed to one output line, and the two bytes are the body indent.
+    // A viewer handed an empty stream would answer `0 0 0`, which is what this line answered when
+    // the operand was being dropped, so the count is what separates rendering from silence.
+    ("doc gate.txt | wc", &["1 4 26"]),
+    // **And the line a person actually wants is still refused, honestly.** `doc gate.txt` on its
+    // own would make this shell both the writer and the reader of one line, and it has one wait
+    // point; the refusal names the fix rather than hanging, which is the refusal Unix cannot
+    // produce. See `grant_plan::check_chain` and notes/manual.md: closing this needs a place for
+    // the viewer's output to go that is not the shell, and that is a spawn-protocol decision.
+    ("doc gate.txt", &["writes while it reads"]),
+    // **The negative control on the viewer itself**, and it is the whole milestone in one screen: a
+    // documentation viewer is exactly the program a reader expects to go and fetch things, and this
+    // one is handed a stream. `caps` prints what would be granted before anything is spawned, and
+    // there is no file capability, no directory and no filesystem endpoint in it. The manifest is
+    // byte-identical to `wc`'s, which is why the assertion is the same string.
+    ("caps doc gate.txt", &["input    gate.txt"]),
     // **Milestone 40 phase 2, at the same interface**: the documentation store is installed, and a
     // search of it answers with pages a person can then open.
     //
@@ -6094,6 +6125,17 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
 /// How long to wait for the banner, for one line's echo, and for the whole transcript. Generous:
 /// under TCG on a loaded machine a cold boot to the prompt is seconds, and a gate that flakes on a
 /// busy laptop is a gate people learn to ignore.
+///
+/// # BUGS
+///
+/// **It flakes anyway, and the thirty seconds is a *per-echo* budget rather than a per-line one.**
+/// On 2026-08-18 the riscv64 leg failed with "the prompt never echoed `caps date 2> err.txt`" after
+/// echoing thirteen characters of it, on a machine running four other lanes; the same commit passed
+/// on a rerun with nothing else changed. So a failure of this shape is a load report and not a
+/// finding, and the way to tell them apart is to rerun the one leg before reading the transcript.
+/// Raising the number is not obviously the fix: a real hang would then take proportionally longer
+/// to report, and the honest measurement (how long an echo actually takes under load, versus the
+/// budget) has not been made.
 const SHELL_CHECK_BOOT_SECS: u64 = 120;
 const SHELL_CHECK_LINE_SECS: u64 = 30;
 
@@ -7145,6 +7187,293 @@ fn run(program: &str, args: &[&str]) -> bool {
             eprintln!("failed to run {program}: {e}");
             false
         })
+}
+
+// ---- the tree-wide search (milestone 40, script/apropos) -----------------------------------
+
+/// **The same index, the same reader, pointed at this repository instead of at the image.**
+///
+/// Milestone 117 has run three strangers at this tree, and what all three could not do is a list
+/// rather than an impression: reach `notes/net.md`, `notes/capabilities.md` or **any**
+/// `design/decisions/` file by following the tree while doing ordinary work, and find
+/// `crates/abi/src/lib.rs`, which is four syscall numbers and the whole design on one screen. None
+/// of those is hidden. They are unreachable in the sense that matters, which is that nothing a
+/// person would type leads to them, and a signpost read once does not count.
+///
+/// Milestone 40 already owns the machinery for that: an inverted index over markdown, a reader that
+/// merges shards, and a ranking. It was pointed only at what the filesystem image installs, which
+/// is six pages, because that is where a *guest* can search. A person with a checkout is not a
+/// guest and has no such limit, so this points the same code at all of it.
+///
+/// **It is deliberately not a second implementation.** `manual::index::build` writes these shards
+/// and `manual::index::search` reads them, exactly as `cargo xtask manual` and the guest's
+/// `apropos` builtin do, so a defect in the layout shows up in both places and a fix lands in both.
+/// What differs is the corpus and what a result names: a guest result names a page in the store it
+/// can open, and a result here names a **path in this repository**, because that is what a person
+/// with a checkout opens.
+///
+/// See notes/manual.md.
+fn tree_apropos(term: Option<String>) -> bool {
+    let Some(term) = term else {
+        eprintln!("usage: script/apropos <word>");
+        eprintln!("       searches every markdown page in this repository, and every crate's and");
+        eprintln!("       program's own module documentation, and says where each one lives.");
+        return false;
+    };
+
+    let sections = tree_sections();
+    if sections.is_empty() {
+        eprintln!("apropos: found no documentation to index, which means this is not a checkout");
+        return false;
+    }
+
+    let mut ranked = manual::index::Ranked::new();
+    let mut pages = 0usize;
+    let mut bytes = 0usize;
+    let mut long = Vec::new();
+    for shelf in &sections {
+        pages += shelf.docs.len();
+        bytes += shelf.docs.iter().map(|d| d.text.len()).sum::<usize>();
+        // A path the record cannot hold is reported rather than silently shortened, because the
+        // path is the whole answer here: a result a reader cannot open is worse than no result.
+        for d in &shelf.docs {
+            if d.path.len() > manual::index::PATH_MAX {
+                long.push(d.path.clone());
+            }
+        }
+        let sources: Vec<manual::index::Source<'_>> = shelf
+            .docs
+            .iter()
+            .map(|d| manual::index::Source {
+                path: &d.path,
+                title: &d.title,
+                text: &d.text,
+            })
+            .collect();
+        let shard = manual::index::build(&sources);
+        if let Err(e) = manual::index::search(
+            shelf.name.as_bytes(),
+            term.as_bytes(),
+            &mut manual::index::Slice(&shard),
+            &mut ranked,
+        ) {
+            eprintln!("apropos: {}: {e:?}", shelf.name);
+            return false;
+        }
+    }
+
+    println!("{pages} pages, {bytes} bytes of documentation in this repository");
+    println!();
+    println!("searching for: {term}");
+    println!();
+    for f in ranked.results() {
+        // **The origin, not the location.** A guest result names `doc/<bundle>/<page>`, because
+        // that is what a shell there can designate; the reader of this command holds a checkout, so
+        // the openable name is the path the page came from.
+        println!(
+            "  {:>5}  {:<48}  {}",
+            f.count,
+            String::from_utf8_lossy(f.origin()),
+            String::from_utf8_lossy(f.title())
+        );
+    }
+    if ranked.offered() == 0 {
+        println!("  nothing in this repository says that");
+    } else if ranked.offered() > ranked.results().len() {
+        println!();
+        println!(
+            "  {} of {} pages, strongest first",
+            ranked.results().len(),
+            ranked.offered()
+        );
+    }
+    for p in &long {
+        eprintln!(
+            "apropos: {p} is longer than the {} bytes a page record holds, so its result would be \
+             truncated",
+            manual::index::PATH_MAX
+        );
+    }
+    long.is_empty()
+}
+
+/// One document offered to the tree index: where it lives, what it is called, and its text.
+struct Doc {
+    /// Path relative to the workspace root, which is the openable name a result prints.
+    path: String,
+    title: String,
+    text: Vec<u8>,
+}
+
+/// One shard of the tree index, named for the part of the tree it covers.
+struct Shelf {
+    name: &'static str,
+    docs: Vec<Doc>,
+}
+
+/// The corpus, in shards, because the merge across shards is what the reader does.
+///
+/// The shard names are the reader's map of the tree and are the only new vocabulary here; they are
+/// the directories a person already sees.
+fn tree_sections() -> Vec<Shelf> {
+    let root = workspace_root();
+    let mut out = Vec::new();
+
+    // The markdown, in the four places this project keeps it. The repository root is included
+    // because `README.md` and `DECISIONS.md` are where a stranger starts, and a search that could
+    // not return the front page would be odd about it.
+    for (shard, dir, recurse) in [
+        ("notes", "notes", false),
+        ("decisions", "design/decisions", false),
+        ("roadmap", "design/roadmap", false),
+        ("design", "design", false),
+        ("guides", "", false),
+    ] {
+        let mut docs = Vec::new();
+        collect_markdown(&root.join(dir), &root, &mut docs, recurse);
+        if !docs.is_empty() {
+            out.push(Shelf { name: shard, docs });
+        }
+    }
+
+    // **And the module documentation, which is the finding this exists for.** A stranger could not
+    // find `crates/abi/src/lib.rs`, and no markdown page is going to fix that, because the document
+    // it wants *is* that file's header. A `//!` block is markdown already, so it indexes as a page
+    // with no conversion and no copy: the result names the source file, which is the thing to open.
+    for (shard, dir, file) in [
+        ("crates", "crates", "src/lib.rs"),
+        ("programs", "user/src", ""),
+    ] {
+        let mut docs = Vec::new();
+        collect_module_docs(&root.join(dir), &root, file, &mut docs);
+        if !docs.is_empty() {
+            out.push(Shelf { name: shard, docs });
+        }
+    }
+
+    out
+}
+
+/// Every `.md` file directly in `dir`, as `(path relative to the root, title, bytes)`.
+fn collect_markdown(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    out: &mut Vec<Doc>,
+    recurse: bool,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut found: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    // Sorted, so two runs on one checkout offer the same pages in the same order and a tie between
+    // two pages breaks the same way twice. `Ranked` keeps ties in offer order by design.
+    found.sort();
+    for path in found {
+        if path.is_dir() {
+            if recurse {
+                collect_markdown(&path, root, out, recurse);
+            }
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rel = rel.display().to_string();
+        let title = manual::index::title_of(&bytes)
+            .unwrap_or(&rel)
+            .trim()
+            .to_string();
+        out.push(Doc {
+            path: rel,
+            title,
+            text: bytes,
+        });
+    }
+}
+
+/// The `//!` header of every Rust file under `dir`, as a page.
+///
+/// `file` is the path inside each subdirectory to read (`src/lib.rs` for a crate), or empty to read
+/// the `.rs` files in `dir` itself (the programs).
+fn collect_module_docs(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    file: &str,
+    out: &mut Vec<Doc>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut found: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    found.sort();
+    for entry in found {
+        let path = if file.is_empty() {
+            if entry.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            entry
+        } else {
+            entry.join(file)
+        };
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let doc = module_doc(&src);
+        // A file whose header is a line or two says nothing worth ranking, and indexing it would
+        // put noise in front of the pages that do. Three hundred bytes is about a paragraph.
+        if doc.len() < 300 {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rel = rel.display().to_string();
+        // **Named for what it is, not for its first heading.** A crate header rarely opens with a
+        // level-one heading, and falling back to the path would print the path twice. `crate abi`
+        // is what a reader calls the thing.
+        let what = if file.is_empty() { "program" } else { "crate" };
+        let name = if file.is_empty() {
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
+        } else {
+            path.parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+        };
+        out.push(Doc {
+            path: rel,
+            title: format!("{what} {name}"),
+            text: doc.into_bytes(),
+        });
+    }
+}
+
+/// The leading `//!` block of a Rust file, with the markers stripped, which is markdown.
+fn module_doc(src: &str) -> String {
+    let mut out = String::new();
+    for line in src.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("//!") {
+            out.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            out.push('\n');
+        } else if t.is_empty() && out.is_empty() {
+            // Leading blank lines before the header, which nothing in this tree writes but which
+            // cost nothing to tolerate.
+            continue;
+        } else if !out.is_empty() {
+            // The header ends at the first line that is not part of it. Attributes and `use` lines
+            // below are code, and a searcher that indexed them would rank a crate by its imports.
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]

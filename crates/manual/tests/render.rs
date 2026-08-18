@@ -178,6 +178,30 @@ fn an_attribute_never_survives_a_newline() {
 }
 
 #[test]
+fn a_fence_inside_a_block_quote_closes() {
+    // The defect this replaces: `is_closing` was matched against the raw line, so a quoted closing
+    // fence never matched its own opener and the renderer stayed in code mode to the end of the
+    // document. A page with one quoted transcript in it rendered its next three hundred lines as
+    // quoted code, and the corpus test could not see it, because verbatim output loses no
+    // characters. What that test *did* see was the opening fence's info string, which is why the
+    // filter below strips quote markers now: the renderer is right about that line, and it was the
+    // filter that was wrong to keep it as evidence.
+    let src = "> intro\n>\n> ```text\n>   code here\n> ```\n\nAfter.\n\n## A heading\n";
+    let out = plain(src, 80);
+    assert_eq!(
+        out, "  | intro\n\n    |   code here\n\n  After.\n\nA heading\n",
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_code_line_that_starts_with_a_quote_marker_keeps_it() {
+    // The other side of the same rule. Outside a block quote the depth is zero, so nothing is
+    // stripped and a mail quote, a diff or a shell transcript inside a fence survives intact.
+    assert_eq!(plain("```text\n> quoted\n```\n", 80), "    > quoted\n");
+}
+
+#[test]
 fn framing_does_not_matter() {
     // The property `doc` depends on: input arrives as sixteen-byte sink messages, and a renderer
     // that produced different output for different chunkings would need a reassembly buffer, which
@@ -218,6 +242,18 @@ fn an_overlong_line_is_reported_rather_than_hidden() {
     r.feed(long.as_bytes(), &mut out);
     r.finish(&mut out);
     assert!(r.truncated());
+}
+
+/// Is this source line a fence opener or closer, quoted or not?
+///
+/// A quoted fence is a fence: the renderer strips the markers before it classifies the line, so
+/// `> ` followed by three backticks opens a code block exactly as three backticks alone do.
+fn is_fence(line: &str) -> bool {
+    let mut s = line.trim_start();
+    while let Some(rest) = s.strip_prefix('>') {
+        s = rest.trim_start();
+    }
+    s.starts_with("```")
 }
 
 /// Every letter and digit in the repository's own markdown reaches the rendered output, in order.
@@ -265,21 +301,47 @@ fn every_character_survives() {
             // than the buffer spills into another chunk rather than losing rows, which is exactly
             // the behaviour this test exists to hold in place.
             //
-            // BUGS: **the exclusion misses a fence nested in a blockquote.** `> ```text` does not
-            // start with a backtick after `trim_start`, so its info string stays in the evidence
-            // while the renderer correctly drops it, and this test fails a page that rendered
-            // fine. Found 2026-08-18, by writing one in notes/crates-io-on-nife.md; the note was
-            // rewritten to avoid the construct rather than the filter widened, because whether
-            // the renderer keeps blockquote state across a nested fence is a separate question
-            // nobody has answered and a wider filter here would hide it.
+            // **Block-quote markers come off first**, and the order that happened in matters. This
+            // filter used to miss a quoted fence, so a page containing one failed a test it had
+            // rendered fine for; the entry that recorded that refused to widen the filter until
+            // somebody answered whether the renderer keeps its quote state across a nested fence.
+            // It did not: the fence never closed, and the rest of the page rendered as quoted code
+            // (2026-08-18, `crates/manual`'s BUGS). Widening the filter first would have hidden
+            // that, which is exactly what the refusal was protecting.
             let want: Vec<char> = src
                 .lines()
-                .filter(|l| !l.trim_start().starts_with("```"))
+                .filter(|l| !is_fence(l))
                 .flat_map(|l| l.chars().chain(core::iter::once('\n')))
                 .filter(char::is_ascii_alphanumeric)
                 .map(|c| c.to_ascii_lowercase())
                 .collect();
-            let have: Vec<char> = plain(&src, 4000)
+            // **No page ends inside a fence.** Every page in this repository closes the fences it
+            // opens, so a renderer that thinks otherwise at the end of one is wrong about the
+            // renderer rather than about the page.
+            //
+            // It is a **partial** guard and the limit is worth knowing, because it was measured
+            // rather than assumed. A renderer stuck in code mode still emits every character
+            // verbatim, so the subsequence check below cannot see it at all; this one sees it only
+            // if nothing later in the page happens to close the stuck fence. Reverting the
+            // quoted-fence fix leaves notes/manual.md ruined from its own worked example onward and
+            // **this assertion still passes**, because a bare closing fence three sections later
+            // matches. `a_fence_inside_a_block_quote_closes` is the guard; this is a cheap
+            // invariant that catches the case where the stuck fence is the last one.
+            let mut out = Buf(Vec::new());
+            let mut r = Renderer::new(Style {
+                width: 4000,
+                color: false,
+            });
+            r.feed(src.as_bytes(), &mut out);
+            r.finish(&mut out);
+            assert!(
+                !r.unclosed_fence(),
+                "{}: the renderer ended inside a code fence",
+                path.display()
+            );
+
+            let have: Vec<char> = String::from_utf8(out.0)
+                .unwrap()
                 .chars()
                 .filter(char::is_ascii_alphanumeric)
                 .map(|c| c.to_ascii_lowercase())
