@@ -1166,30 +1166,66 @@ The reasoning behind the fraction is Liedtke's rather than a round number: the c
 that the kernel fits, it is that the kernel leaves most of L1 intact for the application, because
 cache pollution is what Mach actually charged its users.
 
-### Tracking it, so a solved problem stays solved
+### Tracking it: `script/fastpath-footprint`, built 2026-08-18
 
-Nothing measures any of this today, and a footprint that is right once and unwatched is the shape of
-regression this tree has been bitten by before. The mechanism should be the one the tree already
-uses twice.
+The paragraph this replaces proposed a gate and named the thing blocking it: **which symbols the hot
+path is**, given assembly with no symbol sizes and inlined callees with no symbols at all. That
+question is answered below and the gate exists.
 
-`script/stack-frame-check` is the precedent worth copying exactly: it derives a per-symbol number
-from the built kernel, compares it against a rule, and fails the build. It exists because
-`sched::reap_region_objects` grew a 6,816-byte frame that compiled without a warning and was found
-only when CI faulted one run in five. A hot-path footprint has the same shape: it grows by
-accident, silently, and nothing in the build notices.
+**The mechanism.** `script/fastpath-footprint` walks the call graph out of the disassembly, exactly
+as `script/stack-depth-check` already does for stack chains, and reports two numbers per ISA:
 
-**The proposed gate**, not built:
+- **`ipc_fastpath`**, the transitive closure of non-cold calls from the IPC and switch roots
+  (`ipc_send`, `ipc_recv`, `schedule`, `finish_switch`, `current_cap`).
+- **`syscall_entry`**, the trap vector plus the exception dispatcher plus `syscall::dispatch`,
+  summed **flat with no closure**. A syscall traverses one path through a decoder, so closing over
+  `dispatch` would pull in every object and method in the ABI and measure the syscall surface rather
+  than this path. Its own bytes are on every syscall, so they count; its other arms are not, so they
+  do not.
 
-1. Name the hot path explicitly, as a list of symbols in one file, so the thing being measured is a
-   decision rather than a heuristic. A regex over `ipc_` would quietly include or drop functions as
-   they are renamed.
-2. Sum their sizes from the built kernel with `llvm-nm --print-size`, per ISA.
-3. Compare against a committed baseline the way `bench/baseline-*.txt` works, with a tolerance, and
-   with the same rule that updating the baseline is a statement that the change is intended.
+Gated at **5% growth** against `bench/fastpath-<arch>.txt`, tighter than the icount tripwire's 10%
+because these numbers are static: icount drifts when the compiler remakes inlining decisions for
+unrelated reasons, where a symbol size moves only when the code moves.
 
-The open question that stops this being a lane today is **what the list should contain**, because
-the honest hot path includes assembly with no symbol sizes and inlined callees that no longer have
-their own symbols. That is a real design question and not a scripting one.
+### The numbers, on `main` at 2026-08-18
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| `ipc_fastpath` (closure, 9 symbols each) | 5,780 | 5,074 |
+| `syscall_entry` (flat) | 4,168 | 2,692 |
+| **total, an upper bound** | **9,948 (9.71 KiB)** | **7,766 (7.58 KiB)** |
+
+The closure's aarch64 members: `ipc_recv`, `schedule`, `ipc_send`, `finish_switch`, `wake`,
+`current_cap`, `kmem::recycle`, `memcpy`, `switch_to`. Every one of them is defensible as something
+an IPC round trip actually runs, which is the test the root list has to pass.
+
+**Against the target above, we are over it.** The target is a fastpath under 4 KiB, an eighth of the
+U74's 32 KB L1i; `ipc_fastpath` alone is 5.6 KiB and the total with entry is 9.7. That is the gap
+the gate now holds still while somebody decides whether to close it, and `syscall::dispatch` at
+2,024 bytes remains the largest single item and the obvious candidate, being exactly what seL4's
+hand-written fastpath exists to skip.
+
+**One finding worth keeping, because it is what made the number honest.** Closing naively from
+`finish_switch` returned **11.2 KiB**, because that function's reap branch drags in
+`KernelStack::drop`, `untyped::destroy`, `revoke_region`, `delete_frame_caps` and the unmap path.
+Those run when a thread *exits* and never during an IPC. Classifying the teardown family as cold
+took the figure to 5.6 KiB. A gate shipped at 11.2 would have been measuring thread death and
+calling it IPC, and would have been quiet about a doubling of the real path.
+
+### BUGS
+
+- **It is an upper bound, not a footprint.** Whole symbol sizes are summed, so a cold tail parked at
+  the end of a hot function counts even though its cache lines are never fetched. The direction is
+  deliberate: a tripwire that over-counts consistently still catches growth.
+- **Indirect calls are invisible**, the same blind spot `script/stack-depth-check` records. A call
+  through a function pointer contributes nothing to the closure.
+- **The riscv64 tail instruction is assumed to be 4 bytes.** That ISA mixes 2- and 4-byte
+  instructions, so the last instruction of each symbol may be over-counted by two bytes. Conservative,
+  and lost in the noise at this scale.
+- **The cold list is a judgement, and a wrong entry is silent.** If a symbol that an IPC really does
+  reach ever matches the cold pattern, it drops out of the number with no warning. The list is in the
+  script with a reason per family for exactly this reason.
+- **It is not a cache measurement.** See below.
 
 ### What cannot be measured yet, and the machine that changes it
 
