@@ -1287,6 +1287,13 @@ reader would look. The symptom is always a data abort one word below the lowest 
   declares two of them, and `grant_plan` is where that stops being true. A program endowed a budget
   *and* an input, or a clock *and* an input, needs a numbered slot convention rather than an ordered
   one.
+- **And slot 0 is the output except behind a directory grant** (milestone 31 phase 3, 2026-08-17),
+  where the caretaker's narrowed endpoint takes it and the output moves to slot 1. That is not a
+  second convention invented at the spawn service: it is the contract `user/src/rm.rs` documents and
+  the kernel's `start_granted_dir` already wired, so one program means one thing in a guest test and
+  at the real prompt. It is still an *exception* to an ordered convention, which is one more reason
+  the numbered one above is owed. `grant_plan::PROG_COUNT`'s manifests are what keep it safe today:
+  the one program with `DirSpec::Required` declares no input, no clock and no budget.
 - **A pipeline is full lockstep.** There is no buffer: every sixteen bytes is a rendezvous. Unix's
   64 KB pipe buffer lets a producer run ahead and this does not. *(This entry used to end "and
   nothing here has been benchmarked against a Unix pipeline", which stopped being true on 2026-08-03

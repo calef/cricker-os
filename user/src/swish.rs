@@ -72,7 +72,8 @@ use grant_plan::expand::{Expander, NameSet, Resume};
 use grant_plan::line::{self, Line, Source};
 use grant_plan::nav::{self, Cwd, Refused, Step};
 use grant_plan::{
-    Action, Command, Endowment, Escalation, Refusal, RunSpec, Streams, jobframe, spawnproto,
+    Action, Command, DirGrant as GrantDir, Endowment, Escalation, Refusal, RunSpec, Streams,
+    jobframe, spawnproto,
 };
 use line_editor::proto;
 use swish::{Route, Say, Status, Untimed, sequence};
@@ -1436,6 +1437,99 @@ fn refuse(spec: RunSpec, refusal: Refusal) {
     swish::write_refusal(&spec, refusal, &mut print);
 }
 
+/// One process's three `START` argument words, packed by this shell and forwarded by init without
+/// being read. `fs_proto::grant`'s layout: two words of name, and a spec carrying the length plus
+/// either a rights mask (a caretaker's) or an option mask (a program's).
+type StartWords = (u64, u64, u64);
+
+/// **What a directory grant travels as**: one process's `START` words each, for the two processes a
+/// grant is made of.
+///
+/// Named rather than a bare pair of tuples because the order is the wire's, and getting it backwards
+/// would start `rm` with a directory's name and a caretaker with a file's, which comes up serving a
+/// namespace nobody meant. `spawnproto::GRANT_WORDS` is the count on the other side.
+struct DirWords {
+    /// The `fs_subtree_caretaker`'s: the granted directory, and the rights to ask for.
+    caretaker: StartWords,
+    /// The confined program's: the operand inside that directory, and the options typed with it.
+    child: StartWords,
+}
+
+/// **Turn a planned directory grant into the two triples init needs**, or into the sentence that
+/// says why this one cannot be delivered (milestone 31 phase 3).
+///
+/// The `Ok` half is the whole of the delivery: `(the caretaker's START words, the program's)`. The
+/// caretaker is told the directory and the `fs_proto::dir` rights to ask for; the program is told
+/// the operand and the options that were typed. Neither triple is decoded by anything between here
+/// and the process it starts, which is why `spawnproto` can carry them without linking the
+/// filesystem contract.
+///
+/// **The rights are computed from what was typed, and that is the point of `-r` being an option
+/// rather than a mode.** Without it the capability is `REMOVE` alone: the program may take a name
+/// out of this one directory and cannot enumerate it, read it, or walk into it. With it the
+/// capability is `REMOVE_TREE`, which adds exactly the walk. Typing one letter visibly widens the
+/// grant, and `caps rm -r logs` prints the difference before anything happens.
+///
+/// # The two shapes this cannot deliver, and neither is a permission
+///
+/// Both are facts about what a `fs_subtree_caretaker` is, so both are refused here with nothing
+/// spawned rather than half-granted.
+///
+/// **A grant on the root of this shell's namespace.** A caretaker's whole attenuation is one
+/// `OPENDIR` *into* the granted directory, and the root has no name to descend into: `fs_proto`'s
+/// contract resolves a single component under a handle, and there is no verb for "the directory I
+/// already hold, with fewer rights". So `rm gate.txt` typed at the top prompt cannot be narrowed at
+/// all, and handing the program the unnarrowed service would be granting it the whole disk. The
+/// answer is a design fork rather than a line of code (a `NARROW` verb on the contract, or a boot
+/// whose shell is rooted one level down), and it is recorded in the roadmap rather than guessed at
+/// here.
+///
+/// **A set of more than one name.** That grant is a `fs_nameset_caretaker`, which is a different
+/// program taking its set in a frame; init builds the subtree one today. `rm *.txt` is planned,
+/// previewed by `caps`, and refused at the point of delivery.
+fn dir_grant(g: &GrantDir, flags: u64) -> Result<DirWords, &'static [u8]> {
+    // The directory the caretaker descends into. One component, because that is one `OPENDIR`; a
+    // deeper path is a *chain* of caretakers (DECISIONS §92 names it as the case supervision was
+    // chosen for) and init builds one.
+    let dir = match g.dir.depth() {
+        0 => {
+            return Err(
+                b"  that names the root of this shell's namespace, and a caretaker is built by \n  descending into a directory; there is no name here to descend into\n",
+            );
+        }
+        1 => g.dir.component(0),
+        _ => {
+            return Err(
+                b"  that directory is more than one level down, and init builds one caretaker \n  per grant; a deeper grant is a chain of them, which is not built\n",
+            );
+        }
+    };
+    let Some(name) = g.names.only() else {
+        return Err(
+            b"  a set of names is delivered by a nameset caretaker, and init builds the subtree \n  one; name a single file\n",
+        );
+    };
+    if !fs_proto::grant::fits(dir) || !fs_proto::grant::fits(name) {
+        return Err(b"  that name does not fit in a grant's two argument words\n");
+    }
+    // What `-r` buys, stated as the difference between two capabilities rather than as a branch in
+    // the program: REMOVE alone cannot even look at what is under the directory.
+    let rights = if g.subtree {
+        fs_proto::dir::REMOVE_TREE
+    } else {
+        fs_proto::dir::REMOVE
+    };
+    let (dir_lo, dir_hi) = fs_proto::grant::pack_name(dir);
+    let (name_lo, name_hi) = fs_proto::grant::pack_name(name);
+    Ok(DirWords {
+        // `fs_subtree_caretaker::_start(name_lo, name_hi, spec)`.
+        caretaker: (dir_lo, dir_hi, fs_proto::grant::spec(dir.len(), rights)),
+        // `rm::_start(spec, name_lo, name_hi)`, whose spec carries the options where a caretaker's
+        // carries rights: both are "what this process was started with".
+        child: (fs_proto::grant::spec(name.len(), flags), name_lo, name_hi),
+    })
+}
+
 /// Grant and spawn. The one moment authority moves: split any memory grant off our own budget,
 /// direct init to load the program, delegate the grant, and read the one answer that comes back.
 fn spawn(e: Endowment) {
@@ -1451,18 +1545,23 @@ fn spawn(e: Endowment) {
         );
         return;
     }
-    // The same rule one rung up, and `rm` is the first shipped program it applies to. A directory
-    // grant is delivered by a `fs_subtree_caretaker`, and **init is the only process that can build
-    // one**: this shell's file-service endpoint carries no GRANT, so it holds nothing it could hand
-    // a caretaker. Since milestone 50 this shell does hold a directory, so `plan` no longer refuses
-    // the line, and this is what stops `rm` being spawned with no capability at all. A silently
-    // ungranted `rm` would be the worst possible failure of this model: a program told to destroy
-    // something, holding nothing, saying nothing.
-    if e.dir.is_some() {
-        refused();
-        print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
-        return;
-    }
+    // **The directory grant, which init delivers** (milestone 31 phase 3). This shell's file-service
+    // endpoint carries no GRANT, so it holds nothing it could hand a caretaker; what it can do is
+    // say what the grant *is*, and init, which holds the service, builds a `fs_subtree_caretaker`
+    // for it. [`dir_grant`] is where the shape of the grant meets the shape of what can be
+    // delivered, and it returns the words rather than sending them so a refusal happens here, with
+    // nothing spawned.
+    let dir_words = match e.dir {
+        None => None,
+        Some(g) => match dir_grant(&g, e.flags) {
+            Ok(words) => Some(words),
+            Err(sentence) => {
+                refused();
+                print(sentence);
+                return;
+            }
+        },
+    };
     // A memory grant is carved from the shell's own untyped. If our budget is spent, say so plainly
     // rather than sending init a promise we cannot keep.
     let mem_slot = if e.mem_pages > 0 {
@@ -1493,9 +1592,18 @@ fn spawn(e: Endowment) {
             sink: false,
             source: false,
             diagnostics: false,
+            dir: dir_words.is_some(),
         },
     );
     send(SPAWN, w0, w1, w2);
+
+    // **The grant's two data messages, before any delegation** (`spawnproto::GRANT_WORDS`): the
+    // caretaker's three `START` words, then the confined program's. They go first because they are
+    // data and the delegation is capabilities, and both sides read the order off the one wiring word.
+    if let Some(DirWords { caretaker, child }) = dir_words {
+        send(SPAWN, caretaker.0, caretaker.1, caretaker.2);
+        send(SPAWN, child.0, child.1, child.2);
+    }
 
     // If a budget rode along, delegate it now, narrowed to WRITE|GRANT so init can re-insert it into
     // the child (init narrows it again to WRITE there: the child spends it, it does not lend it).
@@ -2388,6 +2496,13 @@ fn spawn_stage(
         sink: sink.is_some(),
         source: source.is_some(),
         diagnostics: diagnostics.is_some(),
+        // **A stage of a pipeline is never directory-granted**, and it is the manifest that says so
+        // rather than a rule here: the one program with `DirSpec::Required` writes a byte stream and
+        // takes no input, so `rm x | wc` puts it at the head of a line this path runs. Delivering a
+        // grant here would mean a second copy of `dir_grant`'s refusals, so the honest answer is
+        // that it is not delivered and `spawn` is where a directory grant is met. See this file's
+        // `dir_grant` and notes/dir-capability.md's BUGS.
+        dir: false,
     };
     let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, wiring);
     send(SPAWN, w0, w1, w2);
@@ -2517,6 +2632,10 @@ fn spawn_interruptible(e: Endowment) {
             // demonstrator declares a second one. `OutputSpec::Silent` and a diagnostic endpoint
             // would be a contradiction the manifest can already refuse.
             diagnostics: false,
+            // Neither demonstrator declares a directory either, and a supervised job is built out of
+            // *this shell's* untyped rather than init's pool, so there is no region a caretaker
+            // could share with it (DECISIONS §92).
+            dir: false,
         },
     );
     send(SPAWN, w0, w1, w2);

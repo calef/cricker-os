@@ -183,6 +183,15 @@
 //! has cost were that, once when the kernel grew two grants and once when a boot component was built
 //! one step too early. The order below is load-bearing and the comments say where.
 //!
+//! **It is now nine at rest and fifteen at peak, which is one slot from the wall** (milestone 31
+//! phase 3, 2026-08-17). Keeping the file service and its shared page for the life of the boot took
+//! the resting endowment from seven to nine, and a directory-granted spawn adds the job region, the
+//! narrowed endpoint, the readiness endpoint, and a `build_child` retyping an address space and a
+//! TCB. Anything that wants a tenth permanent capability here has to buy it from something, and the
+//! honest candidates are the readiness endpoint (it could be retyped after the caretaker's build
+//! rather than before, if the caretaker learned to take it another way) and the file page (nothing
+//! but a second frame per grant retires it, which is `notes/shared-page-audit.md`'s proposed lane).
+//!
 //! Name: ratified 2026-08-04 (calef, milestone 96), and it is the ratification that raised
 //! milestone 115. Refused `system_builder` (milestone 63 had already refused it, for a reason still
 //! true: `builder.rs` calls itself "a minimal init: the system builder", so two programs would
@@ -296,6 +305,42 @@ pub const INIT_OWN_PAGES: u64 = 128;
 /// per *live* job rather than per job ever run.
 const JOB_REGION_PAGES: u64 = 40;
 
+/// **One directory-granted job's region**: the program *and* the `fs_subtree_caretaker` that carries
+/// its grant, plus the two endpoints between them, all out of one carve.
+///
+/// One region rather than two is DECISIONS §92 read through §40's mechanism. A caretaker's serve loop
+/// never returns, so it never dies of its own accord; built in a region of its own, that region never
+/// comes home and §16's LIFO rule then pins the region above it too, and six `rm`s would end the
+/// prompt. Built out of the region it serves, it is inside the client's subtree, and the one reclaim
+/// `job_undertaker` already performs ends both. **The two endpoints are retyped from this region too,
+/// and that is load-bearing rather than tidy**: `sched::reap_region_objects` sweeps a region's
+/// endpoints before it looks at its threads, and that sweep is what wakes a caretaker parked in
+/// `RECV` so it can be collected. An endpoint carved from init's own budget would leave it blocked on
+/// something the teardown never touches, and a blocked thread never reaches the `schedule()` that
+/// spends §16's kill.
+///
+/// **Ninety-six rather than eighty**, and the extra is not slack for its own sake: the caretaker is
+/// a second address space with its own tables and its own stack, and the failure mode of getting it
+/// wrong is `build_child` answering `Err(())` mid-boot-command, which reads at the prompt as "could
+/// not spawn" with no way to tell a small region from an empty pool.
+const DIR_JOB_REGION_PAGES: u64 = 96;
+
+/// The stack a `fs_subtree_caretaker` gets, beyond the one page `build_child` maps for it.
+///
+/// Four rather than [`CHILD_STACK_PAGES`]'s twelve, and it is a measurement of the program rather
+/// than a guess: it has no allocator, no recursion, and one frame that matters, a
+/// `[Option<u64>; 16]` handle table plus a `grant::MAX_NAME` name buffer. Twelve pages per caretaker
+/// would be 32 KiB of a region this crate is already sizing carefully.
+const CARETAKER_STACK_PAGES: u64 = 4;
+
+/// Where a `fs_subtree_caretaker` and the program it serves both map the FS contract's shared page.
+/// Must match `user/src/fs_subtree_caretaker.rs`'s `PAGE_VA` and `user/src/rm.rs`'s.
+///
+/// One address for both because they are two ends of one contract and neither is the other's parent:
+/// a request travels caretaker-to-server and program-to-caretaker through the same frame, so a
+/// second VA would only be a second name for the same page.
+const FS_CLIENT_PAGE_VA: u64 = 0x0060_0000;
+
 /// **The job pool.** Six live jobs at once, which is far more than a prompt has ever needed and is
 /// deliberately small: the whole claim of this increment is that a *bounded* budget is enough once
 /// the regions come back, so a budget nobody could exhaust would prove nothing. `script/shell-check`
@@ -367,6 +412,15 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     // rather than optional, unlike the adapter above: without it a bounded job pool fills and the
     // prompt stops spawning, which is a broken system and not a missing feature.
     let reaper_elf = measured(&fs, table, "job_undertaker");
+    // **The subtree caretaker** (milestone 31 phase 3), which is not a boot component and not a
+    // spawnable program: it is what a *directory grant* is made of, one per invocation, so it is
+    // read here with the rest and built by the spawn service far below.
+    //
+    // Optional in exactly `terminal_sink_caretaker`'s sense, and the missing-component rule decides
+    // it rather than a second policy: without one, a directory grant cannot be delivered and the
+    // prompt says so, which costs `rm` and nothing else. A refusal by the measurement table costs
+    // the same, because init treats what it cannot vouch for as what is not there.
+    let care_elf = measured(&fs, table, "fs_subtree_caretaker").elf;
 
     // **The programs the shell can spawn** (milestone 31), measured and parsed here rather than
     // after the giveaway: the announcement further down is the only thing init ever says, so the
@@ -620,14 +674,22 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
     // `CALL` on it. `term_out` is where that announcement stages its bytes. Both go back the moment
     // their last use is done, and after that this process holds no way to reach the terminal at all.
     cap_delete(term_in);
-    // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
-    // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
-    // init keeps the endpoint instead, because building a `fs_subtree_caretaker` is its job and not
-    // the shell's.
-    if with_fs {
-        cap_delete(g.fs_ep);
-        cap_delete(g.fs_page);
-    }
+    // **The filesystem stays** (milestone 31 phase 3, 2026-08-17). It used to go here, with a
+    // comment saying "the day `rm` is reachable from the prompt, init keeps the endpoint instead,
+    // because building a `fs_subtree_caretaker` is its job and not the shell's". This is that day.
+    //
+    // Two slots held for the life of the boot, and it is worth being precise about what they buy and
+    // what they cost. They buy the only delivery mechanism a directory grant has: the caretaker must
+    // hold the file service to attenuate it, the shell's copy carries no `GRANT`, and a program
+    // spawned without the capability its command line named would be the worst failure this model
+    // has. They cost two of init's sixteen cspace slots, permanently, which takes the spawn service's
+    // resting endowment from seven capabilities to nine and its peak from thirteen to fifteen. That
+    // peak is the number to watch: it is a directory-granted spawn, and it is one slot from the wall.
+    // See `spawn_dir_grant`, which counts it.
+    let fs = with_fs.then_some(Fs {
+        ep: g.fs_ep,
+        page: g.fs_page,
+    });
 
     // 5. **The terminal's sink adapter** (milestone 50's last remainder, notes/sink-protocol.md,
     // DECISIONS §67). It holds the terminal `WRITE` and serves the sink contract on an endpoint of
@@ -765,24 +827,23 @@ pub fn boot(g: &BootEndowment, initrd_len: u64, fs_rights: u64) -> ! {
             // `2>` and otherwise the bytes go straight to the screen, through a process that can do
             // nothing else with them.
             term_sink: sink_elf.is_some().then_some(term_sink),
+            fs,
         },
         &progs,
+        care_elf,
     )
 }
 
-/// The archive entry a spawnable program is loaded from, or `None` for one the prompt cannot reach.
+/// The archive entry a spawnable program is loaded from.
 ///
-/// `rm` (milestone 47) is packed in the archive and is deliberately not loadable here: it is endowed
-/// a **directory** capability, which means a `fs_subtree_caretaker` this init would have to build per
-/// invocation out of the FS endpoint it deletes during the boot. Until it does, the shell refuses the
-/// command before it reaches the spawn service, which is why an empty slot is honest rather than a
-/// hole: spawning `rm` with nothing to remove from would be the worst failure this model has, a
-/// program told to destroy something, holding nothing, saying nothing.
+/// It answered `None` for `rm` until 2026-08-17, because `rm` is endowed a **directory** capability
+/// and init had deleted the file service during the boot, so there was nothing to attenuate. Keeping
+/// the slot empty was the honest answer to that: spawning `rm` with nothing to remove from would be
+/// the worst failure this model has, a program told to destroy something, holding nothing, saying
+/// nothing. Milestone 31 phase 3 removed the cause rather than the symptom, so the exception is gone
+/// and every spawnable program is loaded the same way.
 fn archive_name(p: Prog) -> Option<&'static str> {
-    match p {
-        Prog::Rm => None,
-        other => Some(other.name()),
-    }
+    Some(p.name())
 }
 
 /// Turn a `recv_cap` slot into `Some(slot)`, or `None` if the message carried no capability.
@@ -815,6 +876,27 @@ struct Channels {
     /// this initrd carried no adapter, and then a declaring child simply gets no second stream.
     /// This is authority to *print*, and nothing else: the adapter holds the terminal, we do not.
     term_sink: Option<u64>,
+    /// **The file service and the page its clients share with it** (milestone 31 phase 3), or `None`
+    /// on a boot with no disk. `WRITE | GRANT` on the endpoint: this is the directory capability a
+    /// `fs_subtree_caretaker` attenuates, and the only reason init keeps it past the boot.
+    ///
+    /// It used to be dropped once the shell held its narrowed copy, with a comment saying why it
+    /// would have to come back. This is that day. The shell's copy carries no `GRANT`, so the shell
+    /// holds nothing it could hand a caretaker; init is the only process here that can build one,
+    /// which is what made `rm` a refusal at the prompt for six weeks.
+    fs: Option<Fs>,
+}
+
+/// The file service, as init holds it for the life of the boot.
+///
+/// A struct rather than two `Option<u64>` fields because the two are one fact: a boot either has a
+/// filesystem or it does not, and `Some(ep)` with `None` page is not a state that can exist.
+#[derive(Clone, Copy)]
+struct Fs {
+    /// The service endpoint, `WRITE | GRANT`. The directory capability, rooted at the image root.
+    ep: u64,
+    /// The frame every client of that service maps to trade bytes with it.
+    page: u64,
 }
 
 /// The spawn service loop: serve the shell's `run` requests forever. Init is the ELF loader the
@@ -835,7 +917,11 @@ struct Channels {
 /// region belongs to the shell, which tears it down itself on the second `^C` (§24's
 /// forcible tier) and after a clean finish; endowing it a supervision endpoint here would put a
 /// second party in the teardown path for memory that is not ours, racing the shell's `DESTROY`.
-fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]) -> ! {
+fn spawn_service(
+    c: Channels,
+    progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT],
+    care_elf: Option<elf::Elf>,
+) -> ! {
     let Channels {
         spawn_ep,
         result_ep,
@@ -844,6 +930,7 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
         jobs_ut,
         clock_page,
         term_sink,
+        fs,
     } = c;
     loop {
         let (w0, w1, w2) = recv(spawn_ep);
@@ -852,6 +939,12 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
         let mem_pages = spawnproto::mem_pages(w2);
         let wiring = spawnproto::wiring(w2);
         let interruptible = wiring.interruptible;
+
+        // **The directory grant's two data messages, before any capability** (milestone 31 phase 3).
+        // They are read here rather than inside the branch that uses them because the shell has
+        // already sent them: a request that announced them and an init that did not drain them would
+        // leave the endpoint holding words the *next* command would read as its own.
+        let grant = wiring.dir.then(|| (recv(spawn_ep), recv(spawn_ep)));
 
         // Receive the delegated caps in protocol order: the interrupt pair first (job untyped, job
         // frame), then the sink, then the source, then the diagnostics, then any --mem untyped. No
@@ -929,17 +1022,63 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
                 }
             }
         } else {
+            // **A region of its own, split first now** (milestone 31 phase 3). It used to be split
+            // just before the build; a directory grant needs it earlier, because the caretaker is
+            // built out of the **same** region as the program it serves. That is DECISIONS §92's
+            // decision and §40's mechanism: a child's resources come from its supervisor's region,
+            // so one reclaim ends both and the caretaker cannot outlive the grant it carries.
+            let region = untyped_split(
+                jobs_ut,
+                if wiring.dir {
+                    DIR_JOB_REGION_PAGES
+                } else {
+                    JOB_REGION_PAGES
+                },
+            )
+            .ok();
+
+            // **The caretaker, built before the program it serves**, because the program's slot 0 is
+            // the endpoint this returns. `None` means either that this is not a directory grant or
+            // that the delivery failed, and `dir_failed` below is what keeps those apart: a grant
+            // that could not be delivered must **not** spawn the program anyway.
+            let narrowed = if wiring.dir {
+                match (region, fs, care_elf.as_ref(), grant) {
+                    (Some(r), Some(fs), Some(care), Some((care_words, _))) => {
+                        build_caretaker(own_ut, r, care, fs, care_words)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            // A directory grant that produced no capability. The program is not built: it was told
+            // to act on something and holds nothing, which is the one outcome this model must never
+            // trade away.
+            let dir_failed = wiring.dir && narrowed.is_none();
+
             // **Slot 0 is the output**, and milestone 50 is the whole of what changed here: it is
             // the shared result endpoint unless the shell delegated a sink, in which case the sink
             // goes there instead and the child never learns that anything is different. `>` and the
             // left of a `|` are this line.
             //
+            // **Except behind a directory grant**, where the narrowed endpoint takes slot 0 and the
+            // output moves to slot 1. That is not a second convention invented here: it is the
+            // contract `user/src/rm.rs` already documents and the kernel's `start_granted_dir`
+            // already wires, so one program means one thing in a guest test and at the real prompt.
+            // The grant goes first because it is the authority the command line named, and the
+            // output is what every program gets whether it named anything or not.
+            //
             // Slot 1 is the input source when there is one, and otherwise the `--mem` untyped, which
             // is safe only because no manifest declares both today. `grant_plan` is where that stops
             // being true, and the order here is the contract; see notes/pipes.md's BUGS.
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
-            let mut caps = [out; 4];
+            let mut caps = [out; 5];
             let mut n = 1usize;
+            if let Some(dir_ep) = narrowed {
+                caps[0] = (dir_ep, abi::rights::WRITE);
+                caps[1] = out;
+                n = 2;
+            }
             // **The clock, which nothing on the command line asked for** (milestone 51's wiring).
             // It comes from the manifest rather than from the request, because a person does not
             // designate a clock: `date` declares that it reads one, and init is the only process
@@ -1008,17 +1147,28 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
             }
             let placed: &[(u64, u64, u64)] = &placed_buf[..placed_n];
             let clock_map = [(CHILD_CLOCK_VA, clock_page, abi::aspace::MAP_RO)];
-            let maps: &[(u64, u64, u64)] = if wants_clock { &clock_map } else { &[] };
-            // **A region of its own, so the job's memory can come home** (milestone 22, the
-            // interactive increment). Everything the child is made of comes out of this carve, and a
-            // single reclaim frees all of it; the alternative, building straight out of the pool,
-            // spends those pages for the life of the boot because a watermark only moves forward.
-            // An exhausted pool is the ordinary `SPAWN_FAILED` the shell already reports as "init is
-            // out of memory", which is the honest sentence for a bounded budget with jobs still in
-            // it. The clock frame is ours and is only *mapped* into the child, so it is untouched
-            // when the region goes.
-            let region = untyped_split(jobs_ut, JOB_REGION_PAGES).ok();
-            let built = match (elf, region) {
+            // **The FS contract's shared page, for a program behind a directory grant.** The same
+            // frame the caretaker maps and the same frame the FS server maps: one page for all three
+            // parties, sound because every request on both hops is a blocking `CALL`, so the client
+            // is parked inside its own call for the whole time the caretaker is using it.
+            let dir_map = [(
+                FS_CLIENT_PAGE_VA,
+                fs.map_or(0, |f| f.page),
+                abi::aspace::MAP_RW,
+            )];
+            // The region's own comment lives at the split above, which milestone 31 phase 3 moved
+            // earlier so a caretaker could be built out of it. Everything the child is made of comes
+            // out of that carve, and a single reclaim frees all of it; the clock frame and the FS
+            // page are ours and are only *mapped* into the child, so they are untouched when the
+            // region goes.
+            let maps: &[(u64, u64, u64)] = if narrowed.is_some() {
+                &dir_map
+            } else if wants_clock {
+                &clock_map
+            } else {
+                &[]
+            };
+            let built = match (elf.filter(|_| !dir_failed), region) {
                 (Some(e), Some(r)) => {
                     // Born supervised: `deaths` goes in the reserved fault slot, where `START` reads
                     // it and clears it, so the job cannot forge messages on its own death channel.
@@ -1043,12 +1193,26 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
             };
             let ok = match built {
                 Some(tcb) => {
-                    let started = tcb_start(tcb, 0, arg, 0);
+                    // **A program behind a directory grant is started with the grant's own three
+                    // words** rather than with an integer, which is `rm`'s shape: a spec carrying
+                    // the options and two words of name (`fs_proto::grant`). init forwards what the
+                    // shell packed and reads none of it; see `spawnproto::GRANT_WORDS`.
+                    let (a0, a1, a2) = match grant {
+                        Some((_, child)) => child,
+                        None => (0, arg, 0),
+                    };
+                    let started = tcb_start(tcb, a0, a1, a2);
                     cap_delete(tcb);
                     started
                 }
                 None => false,
             };
+            // The narrowed endpoint was only ever the means of wiring: the child holds its own copy
+            // and the caretaker holds the other end. Dropped whether or not the build worked, so a
+            // failed spawn does not cost this cspace a slot for the rest of the boot.
+            if let Some(dir_ep) = narrowed {
+                cap_delete(dir_ep);
+            }
             // Our capability to the job's region goes back now. It was only ever the means of
             // building: since §32 the reap is a method on the supervision endpoint, so nothing in
             // this system holds a capability to a *live* job's memory. A build or a start that
@@ -1056,7 +1220,7 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
             // for a death that will never come.
             if let Some(r) = region {
                 if !ok {
-                    supervision_proto::untyped_destroy(r);
+                    reclaim(r);
                 }
                 cap_delete(r);
             }
@@ -1104,6 +1268,118 @@ fn spawn_service(c: Channels, progs: &[Option<elf::Elf>; grant_plan::PROG_COUNT]
 // The thin shapes over the ABI. The loader itself is `supervision_proto`'s, which is the tree's
 // only one since milestone 96.
 // -------------------------------------------------------------------------------------------
+
+/// **Build a `fs_subtree_caretaker` for one directory grant and hand back the narrowed endpoint**
+/// (milestone 31 phase 3, DECISIONS §92).
+///
+/// This is the whole of what "the command line is a grant expression" needed and did not have. The
+/// FS service's unit of authority is a *directory* (§27) and `rm rmtree/rm-keep` says less than that,
+/// so the narrowing is a **caretaker**: a process that holds the file service, descends once into the
+/// granted directory asking for exactly the granted rights, and serves the same contract on an
+/// endpoint of its own. The program then holds that endpoint and **nothing that names the FS
+/// server**, so "it cannot reach a sibling directory" is a property of its cspace rather than of a
+/// branch it is trusted to take.
+///
+/// `region` is the client's region, and everything here comes out of it; see
+/// [`DIR_JOB_REGION_PAGES`] for why that is the lifetime rule rather than a convenience.
+/// `care_words` are the caretaker's three `START` words exactly as the shell packed them.
+///
+/// # The handshake is what makes this safe to call from init
+///
+/// init has no second thread: it is this loop, and a `RECV` that never completes is a machine that
+/// never takes another command. So the readiness endpoint is not an optimization, it is the thing
+/// that bounds this call, and `fs_subtree_caretaker` answers `DESCENT_REFUSED` rather than trapping
+/// precisely so that `rm nosuchdir/x` costs a refusal instead of the prompt.
+///
+/// # BUGS
+///
+/// **A caretaker that dies before it answers still parks init.** The handshake covers the refusal a
+/// person can cause by typing a name that is not there; it does not cover an image whose caretaker
+/// faults on its own stack, because a corpse sends nothing. Nothing in the ABI offers a receive with
+/// a deadline, and giving init one would mean a second thread inside the process this system's whole
+/// design keeps small. The exposure is a build defect rather than an input, and it is the same one
+/// `kernel::user::fs_service::wait_for_caretaker` has carried since milestone 47.
+fn build_caretaker(
+    own_ut: u64,
+    region: u64,
+    care: &elf::Elf,
+    fs: Fs,
+    care_words: (u64, u64, u64),
+) -> Option<u64> {
+    let narrow_ep = retype_obj(region, abi::objtype::ENDPOINT).ok()?;
+    let ready = retype_obj(region, abi::objtype::ENDPOINT).ok()?;
+    // Its whole authority, and reading these three lines is reading it: the file service to
+    // attenuate, the endpoint it will serve, and one place to say it is ready. No untyped, no clock,
+    // no terminal, and nothing that could name another process.
+    let built = build_child(
+        own_ut,
+        region,
+        care,
+        &ChildEndowment {
+            caps: &[
+                (fs.ep, abi::rights::WRITE),
+                (narrow_ep, abi::rights::READ),
+                (ready, abi::rights::WRITE),
+            ],
+            maps: &[(FS_CLIENT_PAGE_VA, fs.page, abi::aspace::MAP_RW)],
+            stack_pages: CARETAKER_STACK_PAGES,
+            ..ChildEndowment::new()
+        },
+    );
+    // **Deliberately unsupervised** (`fault: None`). A caretaker built into the client's region is
+    // already collected by the client's reap, and giving it a fault slot on `deaths` would put a
+    // second death message on that endpoint for a thread whose region the first reap had already
+    // taken away: `job_undertaker` would then be asked to collect a tid the scheduler no longer
+    // knows, which it reads as the kernel contradicting itself and traps on.
+    let tcb = built.ok()?;
+    let started = tcb_start(tcb, care_words.0, care_words.1, care_words.2);
+    cap_delete(tcb);
+    if !started {
+        cap_delete(ready);
+        cap_delete(narrow_ep);
+        return None;
+    }
+    // The one bounded wait. `READY` means the descent succeeded and everything the client can reach
+    // it will reach through the handle that one request minted.
+    let (verdict, _, _) = recv(ready);
+    cap_delete(ready);
+    if verdict == fs_proto::fixture::READY {
+        Some(narrow_ep)
+    } else {
+        // A refused descent. The caretaker has already exited; the endpoint goes back, and the
+        // caller answers the prompt without building the program.
+        cap_delete(narrow_ep);
+        None
+    }
+}
+
+/// **Give a failed job's region back, retrying while something in it can still run.**
+///
+/// A `DESTROY` of a region holding a live thread is refused with §16's kill armed, and one
+/// preemption later the retry succeeds; that is `sched::reclaim_region`'s documented contract and it
+/// is why the shell's `^C` escalation is a loop. It reaches this path when a directory grant's
+/// caretaker was built and the program behind it was not: the caretaker is parked in `RECV`, the
+/// endpoint sweep wakes it, and a single attempt would leave [`DIR_JOB_REGION_PAGES`] spoken for
+/// until the machine stops. That is the *out of memory* path, which is exactly where a leak hurts
+/// most.
+///
+/// Bounded and silent on failure, which is not the same call `job_undertaker` makes and the
+/// difference is who is running: that program's whole job is collecting, so giving up there means a
+/// leak nobody will see and trapping is the loud answer. This is the spawn service, and a trap here
+/// takes the prompt down over one command's memory. The pool is bounded and renewable, so a region
+/// this could not reclaim costs later commands and does not end them.
+fn reclaim(region: u64) {
+    for _ in 0..RECLAIM_ATTEMPTS {
+        if supervision_proto::untyped_destroy(region) {
+            return;
+        }
+        user_rt::yield_now();
+    }
+}
+
+/// How many times [`reclaim`] retries. Small, because the only resident it ever waits on is a
+/// caretaker that has already been woken and doomed, and one preemption is enough.
+const RECLAIM_ATTEMPTS: usize = 64;
 
 /// Carve `pages` off `ut` into a new child untyped we can delegate (milestone 31). The SPLIT grants
 /// full rights on the child, including GRANT, so a memory budget can be handed on. The error code

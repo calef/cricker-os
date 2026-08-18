@@ -198,7 +198,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 28 | BUILT | [A solid terminal: the line discipline as a component](28-line-discipline.md) | a terminal with real behaviour, which 27's stdio semantics need | 2026-07-28 |
 | 29 | BUILT | [A display terminal (framebuffer, virtio-gpu)](29-display-terminal.md) | the first pixels the demonstrator ever puts on a screen, and then the first letters | 2026-07-30 |
 | 30 | BUILT | [The network stack as a confined component](30-network-stack.md) | the canonical microkernel component, and the one people ask about first | 2026-07-30 |
-| 31 | PARTIAL | [A capability shell: designation is authorization](31-capability-shell.md) | no-ambient-authority made user-visible, at the one interface a human touches | |
+| 31 | BUILT | [A capability shell: designation is authorization](31-capability-shell.md) | no-ambient-authority made user-visible, at the one interface a human touches | 2026-08-17 |
 | 32 | BUILT | [A real filesystem: RedoxFS behind a capability FS server](32-redoxfs-fs-server.md) | the flagship userspace-reuse story: a real filesystem we did not write, confined | 2026-07-29 |
 | 33 | BUILT | [A compositor: one screen, mutually distrusting clients](33-compositor.md) | the canonical multiplexer of one device among mutually distrusting clients | 2026-07-29 |
 | 34 | NOT-STARTED | [GPU acceleration via virtio-gpu 3D (the display ladder's rung four)](34-gpu-acceleration.md) | how every VM gets a GPU without a hardware driver | |

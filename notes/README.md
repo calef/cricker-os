@@ -360,7 +360,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   in one direction, proven by a read-only and a writable attacker, and why the second one is what
   makes the first mean anything. Milestone 47 then deleted two words from the grammar (`run` and
   `file:`), because the manifest was already doing the work the designator claimed credit for, and
-  records what a shell that could delegate a **clock** to `date` would need.
+  records what a shell that could delegate a **clock** to `date` would need. Phase 3 (2026-08-17)
+  closes it: **init builds a `fs_subtree_caretaker` per directory grant**, so `rm` runs at the real
+  prompt, and the note now records how the four obstacles it predicted before building actually came
+  out, including the one it got wrong.
 - [Live component replacement](live-replacement.md): milestone 23, the flagship: a running
   component swapped under a client that is talking to it. Why there is **no broker in the fast path**
   (the endpoint is the stable name, so the swap costs nothing and the kernel's own sender queue
@@ -810,7 +813,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   directory that holds it), and why `-r` **widens the grant** rather than setting a flag: a program run
   without it holds no way to descend, so **its recursion is not disabled by a branch anybody has to get
   right**. Also `RMDIR` being empty-only, Unix's reporting checked against `rm(1)` rather than
-  remembered, and why we need no special case for `/` where Unix ships one.
+  remembered, and why we need no special case for `/` where Unix ships one. Since 2026-08-17 it runs
+  at the interactive prompt for a name one directory down, and the shape it still cannot be given is
+  a grant on the root of the shell's own namespace.
 
 - [Navigating with no global namespace](shell-navigation.md): milestone 47's commands: `cd`, `pwd`,
   `ls`, `mkdir`, `rm` as **builtins** (which retires the worry that a listing *program* would hold the

@@ -5498,7 +5498,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 50] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5680,28 +5680,40 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 50] = [
             "endpoint  directory",
         ],
     ),
-    // **Milestone 31 phase 3's one remaining item, gated as the gap it is.** The line above proves
-    // the shell holds a directory; these two prove what it can and cannot do with one, so the day
-    // init builds a caretaker per grant, both of these change and the gate says so.
+    // **Milestone 31 phase 3, at the one interface a human touches** (2026-08-17). Naming a
+    // directory in a command IS granting a capability to it, and until this landed the prompt could
+    // say so and not do it: init deleted the file service during the boot, so a directory grant had
+    // nothing to build a caretaker out of and `rm` was a refusal.
     //
-    // A directory grant is delivered by a `fs_subtree_caretaker`, and init is the only process that
-    // can build one (the shell's file-service endpoint carries no `GRANT`, so it holds nothing it
-    // could hand a caretaker). init deletes that endpoint during the boot, so the answer is a
-    // refusal at the prompt with **nothing spawned**, which is the one outcome this model must
-    // never trade away: a program told to destroy something, holding nothing, saying nothing.
-    // Neither line costs a job, so the pool arithmetic at the end of this script is unchanged.
-    ("rm gate.txt", &["needs init to build the caretaker"]),
-    // And the preview says exactly what the missing delivery would move, which is why the refusal
-    // is a gap rather than a hole: `caps` can name the grant before anything exists to carry it.
-    // The root is the interesting half. `caps rm globmany/m-*.txt` below designates a directory one
-    // component down, which is the only depth every wiring in this tree can build a caretaker for
-    // (`fs_service::narrow_dir` descends one name from the image root); a name typed at the top
-    // prompt designates the root itself, which has no name to descend into. See
-    // notes/grant-expression.md.
+    // Four lines, and they are one argument in order. **The preview first**, because the whole claim
+    // of this milestone is that the authority is legible before it moves: the row names the
+    // directory the grant is over and the sentence says what `-r` would have added, so a reader can
+    // see the narrower of the two capabilities being chosen.
     (
-        "caps rm gate.txt",
-        &["dir      /  (the directory holding gate.txt)"],
+        "caps rm rmtree/rm-solo",
+        &[
+            "dir      /rmtree  (the directory holding rm-solo)",
+            "and nothing under it: no -r, so it cannot even look",
+        ],
     ),
+    // **The removal, through a caretaker init built for this one command.** `-v` because `rm`'s
+    // default is silence and a gate needs something to read; the name it prints is the name the
+    // command line designated, which is the whole of the endowment.
+    ("rm -v rmtree/rm-solo", &["rm-solo"]),
+    // **And exactly that name went.** Two entries left in a directory that had three, so the grant
+    // took what was designated and not what it could reach: `rm-keep` and the whole `rm-doomed`
+    // subtree were inside the same capability and are still there, because nothing named them.
+    // Eleven bytes of `rm-doomed/` and eight of `rm-keep`, newlines included.
+    ("ls rmtree | wc", &["2 2 19"]),
+    // **The one shape this still cannot deliver, and the refusal now says what is true.** It used to
+    // read "needs init to build the caretaker", which stopped being true on the line above. A
+    // caretaker's whole attenuation is one `OPENDIR` *into* the granted directory, and a name typed
+    // at the top prompt designates the root of this shell's namespace, which has no name to descend
+    // into; the contract has no verb for "the directory I already hold, with fewer rights". So this
+    // is a refusal at the prompt with **nothing spawned**, which is the one outcome this model must
+    // never trade away, and it is a design fork rather than a missing line of code. See
+    // design/roadmap/31-capability-shell.md and notes/dir-capability.md's BUGS.
+    ("rm gate.txt", &["there is no name here to descend into"]),
     // **`xargs`, at the one interface a human touches** (milestone 109). `globmany` holds eleven
     // names one pattern matches, which is more than the eight a single grant can carry.
     //
@@ -5770,13 +5782,17 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 50] = [
     // **Init's job budget is bounded and comes back** (milestone 22, the interactive increment).
     // Init now holds a pool with room for six live jobs instead of the kernel's whole construction
     // budget, and every job runs in a region of its own that `job_undertaker` returns when the job ends.
-    // **Thirteen spawns above plus these six are nineteen jobs through a six-job pool**, so a boot
+    // **Fifteen spawns above plus these six are twenty-one jobs through a six-job pool**, so a boot
     // where nothing collected would answer "could not spawn (init is out of memory)" somewhere in
     // here rather than the arithmetic. (Eleven when milestone 22 wrote this line, `2>` added two
     // more spawning lines above, milestone 86's `time` added two more, milestone 67's quoting added
-    // three, and milestone 40 phase 2's `wc doc/bundles` added one; the count is a fact about the
-    // whole script, so it is taken at the merge and not
-    // from any one lane.) Six distinct arguments rather than one repeated, because the
+    // three, milestone 40 phase 2's `wc doc/bundles` added one, and milestone 31 phase 3 added two:
+    // an `rm` that really runs, and the `wc` that counts what is left. The `rm` is the one worth
+    // noticing, because it is the first job whose region holds **two**
+    // processes, the program and the `fs_subtree_caretaker` carrying its grant, and it is therefore
+    // the first thing in this script that would fail if `job_undertaker`'s retry did not collect
+    // both; the count is a fact about the whole script, so it is taken at the merge and not from any
+    // one lane.) Six distinct arguments rather than one repeated, because the
     // transcript is walked with a moving cursor and six identical answers would let a missed line
     // pass as its neighbour.
     ("worker 3", &["3*3 = 9"]),
@@ -6037,13 +6053,15 @@ fn shell_check_leg(riscv: bool) -> bool {
         eprintln!(
             "shell-check ({arch}): the prompt booted, piped, redirected, appended, named a \
              file to a reader, read the clock, timed a command with a clock of its own, kept \
-             a declared second stream off the redirection, printed a directory among the \
-             capabilities it holds and refused the one grant it cannot yet deliver, swept a \
+             a declared second stream off the redirection, previewed a directory grant and \
+             then removed exactly the name it designated through a caretaker init built for \
+             that one command, swept a \
              match too large to hand over in batches whose authority is exactly what each was \
              designated, named a file whose name has a space in it, searched an installed \
              documentation store and got back pages a following line could then designate, ran \
-             a && past a command that succeeded and not past one it refused, and ran nineteen \
-             jobs through init's six-job pool after init gave its construction budget away"
+             a && past a command that succeeded and not past one it refused, and ran \
+             twenty-one jobs through init's six-job pool after init gave its construction \
+             budget away"
         );
         return true;
     }

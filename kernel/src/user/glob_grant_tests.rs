@@ -1,5 +1,6 @@
 use fs_proto::dir;
 use fs_proto::fixture::{VERDICT, globscape as gb, rm as rr, tree};
+use sink_proto::eof;
 
 use super::*;
 use crate::sched;
@@ -125,7 +126,10 @@ fn run_rm(name: &str, flags: u64) -> (u64, u64) {
 
     for _ in 0..MAX_MESSAGES {
         let [w0, w1, w2, _, _] = sched::ipc_recv(report);
-        if w0 == VERDICT {
+        // The sink contract's end of stream, which is what `rm` ends with since 2026-08-17; the
+        // verdict rides in the two words `OP_EOF` leaves free. The shell phase above still reports
+        // a `VERDICT`, because that one is a witness's bitmap and not a byte stream.
+        if w0 == eof() {
             return (w1, w2);
         }
         assert!(w0 <= 16, "neither a verdict nor a text frame: {w0:#x}");

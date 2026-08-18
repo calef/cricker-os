@@ -17,7 +17,11 @@
 //! 1. **Request.** The shell `SEND`s three words on the spawn endpoint: the program id, the
 //!    integer argument, and the memory-grant page count. See [`request`] / [`prog_id`] /
 //!    [`arg`] / [`mem_pages`].
-//! 2. **Delegation.** The capabilities the request announced, in a fixed order: the supervised
+//! 2. **The directory grant, if the request announced one** ([`Wiring::dir`], milestone 31 phase 3):
+//!    [`GRANT_WORDS`] plain `SEND`s carrying the caretaker's `START` words and then the child's.
+//!    Before the delegation rather than after, because these are **data and not capabilities** and
+//!    mixing the two orders would put a `RECV` where a `RECV_CAP` belongs.
+//! 3. **Delegation.** The capabilities the request announced, in a fixed order: the supervised
 //!    job's pair (untyped, frame), then the **sink** (milestone 50), then the **source**, then the
 //!    **diagnostic endpoint** (DECISIONS §67), then the `--mem` untyped. Order rather than tags, because both sides read the same [`Wiring`] out of
 //!    the same word and a promise nobody receives would deadlock both.
@@ -26,7 +30,7 @@
 //!    untyped it split from *its own* budget, sized to `mem_pages`. This is the grant made real,
 //!    not parsed and dropped. Programs that grant no capability (worker) skip this step, and init
 //!    knows to skip the matching `RECV_CAP` from `mem_pages == 0`.
-//! 3. **Outcome.** init builds the child, endows it (the shared result endpoint always; the
+//! 4. **Outcome.** init builds the child, endows it (the shared result endpoint always; the
 //!    delegated untyped when present), and starts it. The child reports its own answer on the
 //!    result endpoint. If init cannot build it (its own budget is spent, or the program vanished),
 //!    it sends [`SPAWN_FAILED`] on the result endpoint so the shell's read completes instead of
@@ -59,6 +63,37 @@ const SOURCE_BIT: u64 = 1 << 34;
 /// "expect one more capability", which is what keeps the two sides in lockstep.
 const DIAG_BIT: u64 = 1 << 35;
 
+/// **A directory grant follows, and init is to build a caretaker for it** (milestone 31 phase 3).
+///
+/// The odd one out on this word, because it announces **data rather than a capability**. Every other
+/// bit here says "expect one more `SEND_CAP`"; this one says "expect two more `SEND`s", and the
+/// reason is that the shell has nothing to delegate. A directory grant is delivered by a
+/// `fs_subtree_caretaker`, the caretaker has to hold the file service to attenuate it, and **the
+/// shell's file-service endpoint carries no `GRANT`**, so the shell could not hand one over if it
+/// wanted to. What it can do is say what the grant *is*; init holds the endpoint and builds the rest.
+///
+/// See [`GRANT_WORDS`] for what the two messages carry and why they are opaque to this module.
+const DIR_BIT: u64 = 1 << 36;
+
+/// **The two messages a [`Wiring::dir`] request is followed by**, in order, each three words:
+///
+/// 1. **the caretaker's `START` words**, which init passes to `fs_subtree_caretaker` verbatim: the
+///    granted directory's name and the `fs_proto::dir` rights the subtree capability is to carry;
+/// 2. **the confined program's `START` words**, which init passes to the program verbatim: for `rm`,
+///    the operand's name and the options that were typed.
+///
+/// **This module does not decode either, deliberately.** They are `fs_proto::grant`'s packing, and
+/// `grant_plan` has no non-dev dependency on `fs_proto` on purpose (its own manifest says why: the
+/// shell must be able to check a command line without linking the filesystem contract). Passing them
+/// through as opaque triples keeps that true, and it means a change to how a grant is packed is a
+/// change in one crate rather than in the wire this one owns. The shell packs them; init forwards
+/// them; nothing in between reads them.
+///
+/// Two messages rather than one because the two processes are started with different names: the
+/// caretaker with the *directory*, the program with the *operand inside it*. Six words do not fit in
+/// three.
+pub const GRANT_WORDS: usize = 2;
+
 /// **Where the shell's operators end up on the wire**, alongside the parts of the endowment that
 /// were always here. `sink` and `source` are booleans rather than capabilities because the
 /// capability travels separately, over `SEND_CAP`: this word only says whether to expect it.
@@ -74,6 +109,10 @@ pub struct Wiring {
     pub source: bool,
     /// The child declares a second output stream, so one more endpoint follows (DECISIONS §67).
     pub diagnostics: bool,
+    /// **A directory grant follows as two data messages** ([`GRANT_WORDS`]), and init is to build a
+    /// `fs_subtree_caretaker` for it before it builds the child. The only entry here that announces
+    /// data instead of a capability; see [`DIR_BIT`].
+    pub dir: bool,
 }
 
 /// Build the three request words from a resolved endowment's parts.
@@ -91,6 +130,9 @@ pub fn request(prog_id: u64, arg: u64, mem_pages: u64, w: Wiring) -> (u64, u64, 
     if w.diagnostics {
         w2 |= DIAG_BIT;
     }
+    if w.dir {
+        w2 |= DIR_BIT;
+    }
     (prog_id, arg, w2)
 }
 
@@ -102,6 +144,7 @@ pub fn wiring(w2: u64) -> Wiring {
         sink: w2 & SINK_BIT != 0,
         source: w2 & SOURCE_BIT != 0,
         diagnostics: w2 & DIAG_BIT != 0,
+        dir: w2 & DIR_BIT != 0,
     }
 }
 
@@ -181,25 +224,28 @@ mod tests {
         assert_eq!(mem_pages(w2), 0);
     }
 
-    /// **The four flags are independent of each other and of the page count** (milestone 50, and
-    /// §67's fourth). They share one word, and the delegation order init reads depends on all of
-    /// them, so a bit that bled into another would make init receive the wrong capability into the
-    /// wrong slot and hang rather than fail.
+    /// **The five flags are independent of each other and of the page count** (milestone 50, §67's
+    /// fourth, and milestone 31 phase 3's fifth). They share one word, and what init reads next off
+    /// the endpoint depends on all of them, so a bit that bled into another would make init take a
+    /// capability for a data word (or the reverse) and hang rather than fail.
     #[test]
     fn the_wiring_flags_do_not_collide() {
         for &interruptible in &[false, true] {
             for &sink in &[false, true] {
                 for &source in &[false, true] {
                     for &diagnostics in &[false, true] {
-                        let w = Wiring {
-                            interruptible,
-                            sink,
-                            source,
-                            diagnostics,
-                        };
-                        let (_, _, w2) = request(3, 0, 64, w);
-                        assert_eq!(wiring(w2), w, "{w:?}");
-                        assert_eq!(mem_pages(w2), 64, "{w:?}");
+                        for &dir in &[false, true] {
+                            let w = Wiring {
+                                interruptible,
+                                sink,
+                                source,
+                                diagnostics,
+                                dir,
+                            };
+                            let (_, _, w2) = request(3, 0, 64, w);
+                            assert_eq!(wiring(w2), w, "{w:?}");
+                            assert_eq!(mem_pages(w2), 64, "{w:?}");
+                        }
                     }
                 }
             }

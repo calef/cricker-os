@@ -165,19 +165,28 @@ enforce. The same substitution works on `CREATE`, `UNLINK`, `RMDIR`, `MKDIR`, `O
 halves of `RENAME`, and on the *data* of a `WRITE`.
 
 **(d) Reachable? Not today, and the reason is the wiring rather than the check.** In the interactive
-boot exactly one process maps the file page: `crates/system_initializer` grants the shell
-`(SH_FS_VA, g.fs_page, MAP_RW)` and then deletes its own two copies (`cap_delete(g.fs_ep)`,
-`cap_delete(g.fs_page)`), and the shell holds `WRITE` without `GRANT` on the endpoint and no frame
-capability at all, so it can hand neither on. In the kernel test suite several caretaker chains do
-coexist on the one frame, but each is blocked on `recv_cap` between tests, and the confined clients
-`exit()` after reporting.
+boot three processes now map the file page, and the audit's first named event has happened:
+`crates/system_initializer` grants the shell `(SH_FS_VA, g.fs_page, MAP_RW)`, **keeps its own copy
+for the life of the boot** (milestone 31 phase 3, 2026-08-17), and maps it into both the
+`fs_subtree_caretaker` and the program behind a directory grant. What still closes the hole is that
+those three are never runnable at once on the same page: the shell is parked in `recv` on the
+spawned program's stream for the whole time that program exists, the program is inside a blocking
+`CALL` whenever the caretaker is forwarding, and the caretaker touches the page exactly once at
+startup and then only relays handles. **Init itself never writes it at all**, which is worth stating
+because it now holds the capability: it maps the frame into children and does not speak `fs_proto`.
+In the kernel test suite several caretaker chains do coexist on the one frame, but each is blocked on
+`recv_cap` between tests, and the confined clients `exit()` after reporting.
 
-**Two named events would open it, and both are on the roadmap.** `user/src/swish.rs:1188` says a
-file grant "needs init to build the caretaker; this shell cannot deliver one yet"; the day it can,
-a runnable shell holding the page coexists with a caretaker chain using it. And a confined program
-granted an untyped budget could retype a second `Tcb` into its own address space and scribble the
-page from a helper thread while its main thread is parked in `CALL`; today's confined programs are
-granted two endpoints and no budget, so they cannot.
+**The remaining opening is a runnable third party, and one of the two originally named is now gone.**
+This note used to say that the day init could build a caretaker per grant, "a runnable shell holding
+the page coexists with a caretaker chain using it". Init can, since 2026-08-17, and the coexistence
+is real while the *runnability* is not: `swish::spawn` blocks on the child's answer, so the shell has
+no instruction to execute between sending the request and reading the result. That is a property of
+one function rather than of the model, and it is the thing to check when the shell learns to run a
+job in the background. The second event is unchanged: a confined program granted an untyped budget
+could retype a second `Tcb` into its own address space and scribble the page from a helper thread
+while its main thread is parked in `CALL`; today's confined programs are granted two endpoints and no
+budget, so they cannot.
 
 **Disposition: proposed as a milestone.** See "What wants a lane" below. The fix is a frame per
 client channel rather than a frame per service, which is a wiring change across `fs_service.rs` and
