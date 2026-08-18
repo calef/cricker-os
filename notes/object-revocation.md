@@ -208,33 +208,75 @@ endpoint by definition), not the forcible tier's. Proven on both ISAs by
 `destroy_force_kills_a_runaway_and_reclaims_its_region` (`kernel/src/user.rs`): a one-instruction EL0
 runaway, reclaimed out from under itself.
 
+## Two names for one region, and the double free that found it
+
+**Fixed 2026-08-18.** `destroy_reclaims_a_region_whose_resident_is_blocked_in_recv` panicked once
+in 45 full-suite runs on riscv64 under load, in milestone 62's acceptance run
+(notes/load-sensitive-assertions.md):
+
+```
+[PANIC] panicked at crates/frames/src/lib.rs:315:9:
+double free of frame 0x82a3e000
+```
+
+That is `Frames::free`'s deliberate assertion, and its doc comment is right about the stakes: a
+kernel that keeps running past a double free corrupts memory somewhere else and blames innocent
+code. The note recorded it as unexplained, with the wake path as a hypothesis. **The hypothesis was
+wrong**, and the real cause is one step earlier: the region had two owners, and neither knew it.
+
+### The cause, and it takes two ingredients
+
+**One. A user-built address space was freeing a region it did not own.** `user_aspace_create` (the
+`RETYPE_OBJ(ASPACE)` engine, milestone 19b) builds a space *in a region the caller already holds an
+`Untyped` capability to*, unlike `AddressSpace::new`, which carves its own. Both stored a bare
+`u64`, and `AddressSpace::drop` called `untyped::destroy` on it unconditionally. So a region reached
+by `Untyped::DESTROY` and a region reached by a dying thread's address space were the same run of
+memory with two names.
+
+The old safety argument was the pin: `retype_object_page` pins the region, `destroy` refuses a
+pinned region, and only `sched::reclaim_region` unpins. It is true of a drop that happens *inside*
+`reap_region_objects`, under `SCHED`. It is false of the drop that matters. `sched::finish_switch`
+hoists a dead thread's address space out of the table, **releases `SCHED`**, and drops it
+afterwards, because `AddressSpace::drop` runs a §13 revocation sweep that takes `SCHED` itself. By
+then `reclaim_region` may already have run `unpin`, and the refusal the argument relied on does not
+happen.
+
+**Two. `untyped::destroy` was not a single-winner claim.** It checked the region under the `REGIONS`
+lock, released the lock, revoked, freed every page, and removed the slot *last*. Two callers that
+both entered that window both passed the refusal check and both ran the free loop over the same
+pages. That is the double free, arriving one frame at a time until `Frames::free` caught it.
+
+Both were needed. Either one alone is survivable: with one owner there is no second caller, and with
+an atomic claim the loser finds a stale name and returns. That is why it was one run in 45 rather
+than every run, and why it wanted two cores.
+
+### The fix, both halves at rung one
+
+`user::Backing` is a two-variant enum carrying the region name, `Owned` or `Lent`, so **an address
+space cannot be constructed without saying who frees its region** and the borrower's `Drop` cannot
+free memory it does not own, pin or no pin. And `untyped::destroy` now removes the slot under the
+same lock hold that decided to destroy it, so the generation bump happens before anything is freed:
+a second caller's name no longer resolves. That also makes a sentence already in the tree true,
+`reap_supervised`'s "a racing reap got there first and the name is now stale", which described a
+mechanism that did not yet exist.
+
+The gate is `force_kill_tests::an_address_space_never_frees_a_region_it_was_lent`, and it is
+deterministic where the original was not: it stages the window by hand (`unpin`, then drop the
+space) instead of racing for it. **Verified it can fail**: with the ownership guard removed it
+returns four frames it was only lent and trips its own assertion, on aarch64, which also answers the
+old note's question about whether the bug was riscv64-only. It was not; riscv64 is only where the
+timing exposed it.
+
 ## BUGS
 
-- **`destroy_reclaims_a_region_whose_resident_is_blocked_in_recv` double-freed a frame once, on
-  riscv64, under load, and nothing explains it yet.** Seen 2026-08-17 in milestone 62's acceptance
-  run (notes/load-sensitive-assertions.md), one occurrence in 45 full-suite runs at a one-minute
-  load average between 26 and 63 on an eight-core host, and zero in the quiet run before the loop:
-
-  ```
-  [PANIC] panicked at crates/frames/src/lib.rs:315:9:
-  double free of frame 0x82a3e000
-  ```
-
-  That is `Frames::free`'s deliberate assertion, and its doc comment is right about the stakes: a
-  kernel that keeps running past a double free corrupts memory somewhere else and blames innocent
-  code. So this is a memory-safety bug in the reclaim path, not a flaky test, and **load is the
-  reproducer rather than the cause**. The whole reason the rest of that acceptance run matters is
-  that this red arrived wearing the same colour as eight timing flakes.
-
-  What is known: the test builds a region, blocks its resident in `recv`, and reclaims the region
-  out from under it, so the suspects are the two paths this note describes meeting each other. A
-  blocked waiter is woken with an error (see above), and `DESTROY` reclaims the region's objects;
-  a frame freed by the wake path and again by the region teardown would produce exactly this.
-  **That is a hypothesis and nothing in the log confirms it.**
-
-  What is not known, and what a lane on this should establish first: whether it reproduces at all,
-  whether it is riscv64-only or merely first seen there (§19 says assume not), and whether the
-  frame is a page-table frame or the thread's. One in forty-five is a sighting, not a frequency;
-  assume the window is narrower and reach for `script/repeat-under-load` rather than for a single
-  re-run. `script/interleaving-check` is the other instrument worth pointing at it, since the shape
-  is a race between two teardown paths and loom searches orderings TCG never will.
+- **The regression gate proves the ownership half, not the overlap half.** The literal double free
+  needs two `untyped::destroy` calls to overlap between the refusal check and the slot removal, and
+  no test in this tree can schedule that; the deterministic test asserts the property that makes the
+  overlap harmless (a lent region is never freed by its borrower) rather than the overlap itself.
+  The single-winner claim in `untyped::destroy` is argued from the lock discipline at the call site
+  and is not separately gated. `script/interleaving-check` is the instrument that could gate it, and
+  it covers four crates today (`steal_request`, `clock_proto`, `wake_handshake`, `canary_gate`), none
+  of them this one. The route is the one every previous retrofit took: lift the claim protocol out of
+  `kernel/src/untyped.rs` into `crates/regions`, which already holds `destroy_outcome` and its Kani
+  proofs, and let loom search the orderings. That is a milestone rather than a `BUGS` line, and it is
+  proposed as one.
