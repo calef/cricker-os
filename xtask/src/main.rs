@@ -1091,7 +1091,7 @@ const ABORTS_ACCEPTED: &[(&str, &str, &str)] = &[
 
 /// Every `library/std/src/**` source cargo recorded as an input to this target's builds.
 ///
-/// **From the dep-info, not from reading `cfg_select!`.** Every `.d` file under the std_exerciser
+/// **From the dep-info, not from reading `cfg_select!`.** Every `.d` file under the `std_exerciser`
 /// target directories is scanned and the std paths unioned, which makes this robust to cargo
 /// moving where it files dep-info and to the two ISAs compiling slightly different sets: a union
 /// over both targets is exactly the set the sweep wants, since a body reachable on either ISA is
