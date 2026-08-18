@@ -1469,6 +1469,85 @@ if [ -n "$upward" ]; then
 fi
 echo "dependency direction: $(ls -d crates/*/ | wc -l | tr -d ' ') crates, none depends on a binary"
 
+# **The SMB server must not be able to compute an NTLMv2 proof** (milestone 54's identity item).
+#
+# The kernel suite asserts a test called
+# `an_smb_server_authenticates_a_session_without_ever_holding_the_key`, and the strongest form of
+# that claim is structural: `smb_proto` takes `ntlm` as a `[dev-dependencies]` entry, so the shipping
+# protocol code cannot compute a proof or a session key and Cargo is the mechanism. But a
+# dev-dependency is one line away from being a real one, and moving that line would break the claim
+# silently: everything would still compile, every test would still pass, and the only surviving
+# record would be a comment. That is rung four holding up rung one, so this check is the rung two in
+# between (AGENTS.md's ladder).
+#
+# Scoped to `ntlm` and `cred` by name rather than "smb_proto has no dependencies", because the crate
+# is allowed to grow ordinary ones; what it may never grow is the ability to hold a key.
+echo "==> the SMB server cannot compute a proof"
+python3 - <<'SMBKEY'
+import re
+import sys
+
+MANIFEST = "crates/smb_proto/Cargo.toml"
+FORBIDDEN = ("ntlm", "cred")
+
+sections = {}
+current = None
+for line in open(MANIFEST, encoding="utf-8"):
+    header = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+    if header:
+        current = header.group(1)
+        sections.setdefault(current, [])
+        continue
+    if current is not None:
+        sections[current].append(line)
+
+
+def keys(name):
+    out = []
+    for line in sections.get(name, []):
+        k = re.match(r"\s*([A-Za-z0-9_-]+)\s*(=|\.)", line)
+        if k:
+            out.append(k.group(1))
+    return out
+
+
+# Every real dependency section. `[dev-dependencies]` is deliberately excluded; a
+# `[target.<cfg>.dependencies]` is deliberately included, which is why the test is on the tail.
+bad = []
+for name in sections:
+    if not name.endswith("dependencies") or "dev-dependencies" in name:
+        continue
+    bad += [f"[{name}] {k}" for k in keys(name) if k in FORBIDDEN]
+
+if bad:
+    print(
+        f"lint: {MANIFEST} takes a real dependency on key material: " + ", ".join(bad),
+        file=sys.stderr,
+    )
+    print(
+        "\nThe SMB protocol crate must not be able to compute an NTLMv2 proof. `ntlm` belongs in\n"
+        "[dev-dependencies]: its tests need it because a CLIENT legitimately knows the password,\n"
+        "and the server asks the `authenticator` seam instead. See\n"
+        "crates/smb_proto/src/authenticator.rs and design/roadmap/54-network-file-service.md.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+if "ntlm" not in keys("dev-dependencies"):
+    print(
+        f"lint: {MANIFEST} has no dev-dependency on `ntlm`, so the identity tests in\n"
+        "crates/smb_proto/src/server.rs cannot be computing real proofs. Either they were deleted,\n"
+        "or they now assert against arithmetic this crate performed, which is not a test.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+print(
+    "the SMB server cannot compute a proof: `ntlm` is a dev-dependency of smb_proto, "
+    "not a dependency"
+)
+SMBKEY
+
 # Unused dependencies. DECISIONS §46 says taking a dependency is a decision, not a convenience; a
 # dependency nothing uses is that decision left un-revisited, and it still costs build time, audit
 # surface and a line in the supply-chain report. Our workspace was clean when this was added, so

@@ -94,18 +94,128 @@ pub fn session_setup_negotiate(msg_id: u64) -> Msg {
     session_setup(msg_id, 0, &token)
 }
 
-/// A `SESSION_SETUP` carrying a raw NTLMSSP AUTHENTICATE. Guest scope: the response fields are all
-/// empty, which the server accepts without looking, and honestly flags as guest.
-pub fn session_setup_authenticate(msg_id: u64, sid: u64) -> Msg {
-    let mut token = [0u8; 64];
-    token[..8].copy_from_slice(&ntlmssp::SIGNATURE);
-    w32(&mut token, 8, ntlmssp::AUTHENTICATE);
-    // Six empty field pairs (lm, nt, domain, user, workstation, session key), all offset 64.
-    for f in 0..6 {
-        w32(&mut token, 16 + 8 * f, 64);
+/// The largest NTLMSSP AUTHENTICATE these builders emit: the 64-byte fixed part plus two names and
+/// an NTLMv2 response with room for a real client's target info.
+pub const TOKEN_MAX: usize = 64 + 2 * 64 + ntlmssp::PROOF_LEN + 512;
+
+/// An owned NTLMSSP token, fixed capacity, for the same reason [`Msg`] is one.
+pub struct Token {
+    buf: [u8; TOKEN_MAX],
+    len: usize,
+}
+
+impl core::ops::Deref for Token {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.buf[..self.len]
     }
-    w32(&mut token, 60, 0x0000_0201);
-    session_setup(msg_id, sid, &token)
+}
+
+/// **A guest-shaped AUTHENTICATE**: every field pair empty. This is what `mount_smbfs -N` sends and
+/// what this crate's own guest tests send, so it stays a first-class builder rather than a
+/// degenerate case of the one below: a share with no authenticator admits it, and a share with one
+/// must refuse it, and both of those are assertions somebody has to be able to write.
+pub fn ntlmssp_authenticate_empty() -> Token {
+    let mut buf = [0u8; TOKEN_MAX];
+    buf[..8].copy_from_slice(&ntlmssp::SIGNATURE);
+    w32(&mut buf, 8, ntlmssp::AUTHENTICATE);
+    // Six empty field triples (lm, nt, domain, user, workstation, session key), all offset 64.
+    for f in 0..6 {
+        w32(&mut buf, 16 + 8 * f, 64);
+    }
+    w32(&mut buf, 60, 0x0000_0201);
+    Token { buf, len: 64 }
+}
+
+/// **A real NTLMv2 AUTHENTICATE** ([MS-NLMP] §2.2.1.3): the account, the domain, and
+/// `NtChallengeResponse` = `NTProofStr || blob`.
+///
+/// The proof is the caller's, and that is the whole point of this signature: **this crate computes
+/// no key material**, so a caller that wants a verifiable proof brings one (`ntlm::proof` under
+/// `ntlm::ntowfv2`, which is a `[dev-dependencies]` of this crate and a real dependency of xtask's
+/// prober). A caller that wants an unverifiable one flips a bit, which is what the refusal tests do.
+///
+/// The names go on the wire as UTF-16LE, uppercased by nobody: the derivation binds the exact bytes
+/// ([MS-NLMP] §3.3.2 uppercases the user *inside* the key derivation, not on the wire), so a builder
+/// that helpfully cased them would produce a message whose proof did not match its own names.
+pub fn ntlmssp_authenticate(
+    user: &[u8],
+    domain: &[u8],
+    proof: &[u8; ntlmssp::PROOF_LEN],
+    blob: &[u8],
+) -> Token {
+    let mut buf = [0u8; TOKEN_MAX];
+    buf[..8].copy_from_slice(&ntlmssp::SIGNATURE);
+    w32(&mut buf, 8, ntlmssp::AUTHENTICATE);
+    w32(&mut buf, 60, 0x0000_0201); // unicode | NTLM
+
+    // The payloads, in the order the field triples below name them. `p` is the running offset from
+    // the start of the message, which is what §2.2.2.10's `Offset` means.
+    let mut p = 64usize;
+    let nt_len = ntlmssp::PROOF_LEN + blob.len();
+    buf[p..p + ntlmssp::PROOF_LEN].copy_from_slice(proof);
+    buf[p + ntlmssp::PROOF_LEN..p + nt_len].copy_from_slice(blob);
+    let nt_at = p;
+    p += nt_len;
+    let dom_at = p;
+    let dom_len = ascii_to_utf16le(domain, &mut buf[p..]);
+    p += dom_len;
+    let user_at = p;
+    let user_len = ascii_to_utf16le(user, &mut buf[p..]);
+    p += user_len;
+
+    // LmChallengeResponse: absent, which is what an NTLMv2-only client sends.
+    w32(&mut buf, 16, 64);
+    for (at, len, off) in [
+        (20, nt_len, nt_at),
+        (28, dom_len, dom_at),
+        (36, user_len, user_at),
+        (44, 0, p), // Workstation: none
+        (52, 0, p), // EncryptedRandomSessionKey: no key exchange
+    ] {
+        w16(&mut buf, at, len as u16);
+        w16(&mut buf, at + 2, len as u16);
+        w32(&mut buf, at + 4, off as u32);
+    }
+    Token { buf, len: p }
+}
+
+/// A `SESSION_SETUP` carrying a raw NTLMSSP AUTHENTICATE with no credentials in it: the guest leg.
+pub fn session_setup_authenticate(msg_id: u64, sid: u64) -> Msg {
+    session_setup(msg_id, sid, &ntlmssp_authenticate_empty())
+}
+
+/// A `SESSION_SETUP` carrying a real NTLMv2 AUTHENTICATE. See [`ntlmssp_authenticate`] on why the
+/// proof is the caller's.
+pub fn session_setup_authenticate_ntlmv2(
+    msg_id: u64,
+    sid: u64,
+    user: &[u8],
+    domain: &[u8],
+    proof: &[u8; ntlmssp::PROOF_LEN],
+    blob: &[u8],
+) -> Msg {
+    session_setup(
+        msg_id,
+        sid,
+        &ntlmssp_authenticate(user, domain, proof, blob),
+    )
+}
+
+/// **The server challenge out of a `SESSION_SETUP` response's CHALLENGE message** ([MS-NLMP]
+/// §2.2.1.2 offset 24), which is what a client needs before it can compute anything.
+///
+/// `None` when the response carries no token or the token is not an NTLMSSP CHALLENGE. Lives here
+/// rather than in the prober because it is a wire offset, and every wire offset in this tree lives
+/// in this crate (rule 7).
+pub fn session_setup_challenge(resp: &[u8]) -> Option<[u8; 8]> {
+    let token = session_setup_token(resp)?;
+    // A SPNEGO-wrapped CHALLENGE is unwrapped first; a raw one is returned as itself.
+    let token = crate::spnego::unwrap_token(token)?;
+    if token.len() < 32 || token[..8] != ntlmssp::SIGNATURE || r32(token, 8) != ntlmssp::CHALLENGE {
+        return None;
+    }
+    token[24..32].try_into().ok()
 }
 
 /// A `SESSION_SETUP` around an arbitrary security token (the wrapped-token test uses this too).

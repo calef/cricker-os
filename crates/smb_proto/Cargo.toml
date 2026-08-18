@@ -8,3 +8,16 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+
+# **Deliberately a dev-dependency, and this is a security mechanism rather than tidiness.**
+# `ntlm` holds NTLMv2's keyed operations. The shipping `smb_proto` must not be able to compute a
+# proof or a session key: the kernel suite asserts that the SMB server authenticates a session
+# without ever holding the key (milestone 65), and the strongest available form of that claim is
+# that the code which would need one is not linked into the artifact. Cargo is the mechanism, so
+# nobody has to remember. The tests need it because a *client* legitimately knows the password, and
+# a test that could not compute a real proof would be asserting against its own arithmetic.
+#
+# If you find yourself wanting to move this line to [dependencies], that is the signal to stop and
+# read crates/smb_proto/src/authenticator.rs: the answer is an authenticator, not a hash.
+[dev-dependencies]
+ntlm = { path = "../ntlm" }

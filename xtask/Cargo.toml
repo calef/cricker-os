@@ -28,6 +28,15 @@ measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 # against the same pattern the guest painted, from the same definition, so the two cannot drift.
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 smb_proto = { version = "0.1.0", path = "../crates/smb_proto" }
+# NTLMv2's arithmetic (milestone 54's identity item). The prober is a *client*, so it legitimately
+# knows the password and computes a real proof over the challenge the guest issued; the guest's own
+# SMB adapter cannot, because `smb_proto` takes `ntlm` only as a dev-dependency. This crate being a
+# real dependency here and a dev-dependency there is the whole shape of the claim: the client holds
+# the secret, the server holds an endpoint.
+ntlm = { version = "0.1.0", path = "../crates/ntlm" }
+# The credential contract (milestone 65), for its `fixture` module only: the account the guest's
+# store is provisioned with, so this prober and the provisioning role agree on it down to the byte.
+cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 # The mDNS responder's configuration document (milestone 55). The gate's expectations are DERIVED
 # from the same file the guest ships, so editing what this machine advertises moves the assertion
 # with it and the two cannot drift. The wire-format side is deliberately NOT shared: the prober

@@ -2449,16 +2449,20 @@ impl SmbProber {
             Ok(Ok(())) => {
                 eprintln!(
                     "smb check ({arch}): {SMB_ROUNDS} SMB2 sessions to 127.0.0.1:{port} were \
-                     forwarded into the guest and served end to end: negotiate, guest session, \
-                     tree connect, a read of the FS-server-seeded file whose bytes matched \
-                     (RedoxFS to TCP), a create-write-truncate-close of a second file (TCP to \
-                     RedoxFS), and a subdirectory made over the wire with a file written inside \
-                     it and listed back by its leaf name. The volume reported real numbers \
-                     rather than the nominal constant, and the first CREATE's AAPL create context \
-                     came back claiming the Time Machine volume capability (milestone 55). The \
-                     guest's own verifier reads both files \
-                     back through the FS server, descending into the directory to prove a \
-                     directory is what landed. The second session is the proof the adapter \
+                     forwarded into the guest and served end to end: negotiate, an **NTLMv2 \
+                     session** (an anonymous login refused, a one-bit forgery refused, and a real \
+                     proof computed on this host over the challenge the guest issued accepted, \
+                     unflagged as guest), tree connect, a read of the FS-server-seeded file whose \
+                     bytes matched (RedoxFS to TCP), a create-write-truncate-close of a second \
+                     file (TCP to RedoxFS), and a subdirectory made over the wire with a file \
+                     written inside it and listed back by its leaf name. The volume reported real \
+                     numbers rather than the nominal constant, and the first CREATE's AAPL create \
+                     context came back claiming the Time Machine volume capability (milestone 55). \
+                     The guest's own verifier reads both files back through the FS server, \
+                     descending into the directory to prove a directory is what landed. The \
+                     password exists only on this host: the guest holds it as an NTOWFv2 in a \
+                     sealed store the SMB adapter cannot read, and the kernel test looks at the \
+                     page between them afterwards. The second session is the proof the adapter \
                      re-arms."
                 );
                 true
@@ -2574,6 +2578,146 @@ fn smb_recv(
     }
 }
 
+/// **The session-setup leg, and the reason milestone 54's last item is gated rather than asserted**
+/// (identity, 2026-08-17).
+///
+/// Three AUTHENTICATE messages down one connection, in the order that makes each one mean something:
+///
+/// 1. **Anonymous**, every field empty. This is what `mount_smbfs -N` sends and what this prober
+///    itself sent until identity landed, so it is the exact request the guest used to admit. It must
+///    now get `STATUS_LOGON_FAILURE`, and a `TREE_CONNECT` after it must fail, because a refusal that
+///    only changes a status word is not a gate.
+/// 2. **A real NTLMv2 proof with one bit flipped.** The proof is a MAC, so this is what every forgery
+///    looks like; it separates "the guest refuses what it cannot verify" from "the guest refuses
+///    everything".
+/// 3. **The real thing.** A proof this process computes on the host with `ntlm`, over the challenge
+///    the *guest* chose, under a key derived from `cred_proto::fixture`'s password. It must succeed
+///    and the session must **not** come back flagged guest.
+///
+/// **What the arrangement proves that a unit test could not.** The password exists only here, on the
+/// host. Inside the guest it exists only as an `NTOWFv2` inside a sealed credential store in a
+/// process that holds no network; the SMB adapter that answers this exchange holds one endpoint to
+/// that store and no key, and cannot compute any of the three proofs above. So a real proof crossing
+/// a real TCP connection and being verified is four processes' worth of the claim at once, and the
+/// kernel test then looks at the frame the adapter shares with the store and finds nothing in it.
+///
+/// The ids of the two refused attempts are deliberately out of sequence and high: this server echoes
+/// message ids and validates none of them (see the note at the end of `smb_session`), so a refused
+/// attempt does not consume one of the numbers the later legs use.
+fn smb_authenticate_leg(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+    sid: u64,
+    challenge: &[u8; 8],
+) -> Result<(), String> {
+    use smb_proto::{H_STATUS, HDR_LEN, client, r16, r32};
+
+    let status = |resp: &[u8]| r32(resp, H_STATUS);
+    // The blob is entirely the client's. Shaped like a real one (response version, timestamp,
+    // client challenge) rather than transcribed, because the server MACs it without reading it.
+    let blob: Vec<u8> = {
+        let mut b = vec![0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        b.extend_from_slice(&[0u8; 8]); // Time
+        b.extend_from_slice(&[0xaa; 8]); // ClientChallenge
+        b.extend_from_slice(&[0u8; 4]);
+        b.extend_from_slice(&[0u8; 4]); // MsvAvEOL
+        b
+    };
+
+    // 1. Anonymous, which is what this prober used to send and what a guest share admitted.
+    smb_send(s, &client::session_setup_authenticate(90, sid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_LOGON_FAILURE {
+        return Err(format!(
+            "an anonymous AUTHENTICATE got status {:#x}, wanted LOGON_FAILURE ({:#x}). If it \
+             SUCCEEDED, the guest is serving a guest share: is the boot wiring \
+             SMB_SHARE_FS_AUTHENTICATED, and did it get a credential endpoint?",
+            status(&resp),
+            smb_proto::STATUS_LOGON_FAILURE,
+        ));
+    }
+    // A refusal must leave nothing usable behind, which is the half a status word cannot show.
+    smb_send(s, &client::tree_connect(91, sid, b"\\\\10.0.2.15\\share"))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_USER_SESSION_DELETED {
+        return Err(format!(
+            "a TREE_CONNECT after a refused login got status {:#x}, wanted USER_SESSION_DELETED: \
+             the guest refused the login and then served the share anyway",
+            status(&resp),
+        ));
+    }
+
+    // The key a holder of the password derives. [MS-NLMP] 3.3.2, and the account is the one the
+    // guest's store was provisioned with; `ntlm`'s tests pin every value against the specification.
+    let key = ntlm::ntowfv2(
+        cred_proto::fixture::SMB_PASSWORD,
+        cred_proto::fixture::SMB_USER,
+        cred_proto::fixture::SMB_DOMAIN,
+    )
+    .map_err(|e| format!("the fixture account does not derive a key: {e:?}"))?;
+    let good = ntlm::proof(&key, challenge, &blob);
+
+    // 2. One bit off.
+    let mut bad = good;
+    bad[0] ^= 0x01;
+    smb_send(
+        s,
+        &client::session_setup_authenticate_ntlmv2(
+            92,
+            sid,
+            cred_proto::fixture::SMB_USER,
+            cred_proto::fixture::SMB_DOMAIN,
+            &bad,
+            &blob,
+        ),
+    )?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_LOGON_FAILURE {
+        return Err(format!(
+            "an NTLMv2 proof with one bit flipped got status {:#x}, wanted LOGON_FAILURE: the \
+             guest accepted a forgery",
+            status(&resp),
+        ));
+    }
+
+    // 3. The real thing, on the same connection and against the same challenge, which is what
+    //    macOS does after prompting for a password.
+    smb_send(
+        s,
+        &client::session_setup_authenticate_ntlmv2(
+            3,
+            sid,
+            cred_proto::fixture::SMB_USER,
+            cred_proto::fixture::SMB_DOMAIN,
+            &good,
+            &blob,
+        ),
+    )?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "session setup (auth leg): status {:#x} for a proof computed over the challenge the \
+             guest itself issued. A LOGON_FAILURE here means the guest's credential store does not \
+             hold the key for {:?} (is the credentialer wired and provisioned before the SMB \
+             spawn?), or the challenge did not survive the two refusals above",
+            status(&resp),
+            String::from_utf8_lossy(cred_proto::fixture::SMB_RESOURCE),
+        ));
+    }
+    // SessionFlags, at the start of the SESSION_SETUP response body. Bit 0 is IS_GUEST, and it is
+    // the only thing on the wire that tells a named session from an anonymous one; macOS shows it to
+    // the user. A server that verified a proof and then flagged the session guest would have made
+    // the whole exchange decorative.
+    let flags = r16(&resp, HDR_LEN + 2);
+    if flags & 0x0001 != 0 {
+        return Err(format!(
+            "the guest verified an NTLMv2 proof and then flagged the session as a GUEST \
+             (SessionFlags {flags:#06x})",
+        ));
+    }
+    Ok(())
+}
+
 /// One full mount-shaped exchange. Any protocol surprise is an `Err` naming the step, so a
 /// failing leg says which part of the mount broke rather than "it did not work".
 fn smb_session(
@@ -2605,18 +2749,13 @@ fn smb_session(
         ));
     }
     let sid = r64(&resp, H_SESSION_ID);
-    if client::session_setup_token(&resp).is_none() {
-        return Err(String::from("session setup carried no NTLMSSP challenge"));
-    }
-
-    smb_send(s, &client::session_setup_authenticate(3, sid))?;
-    let resp = smb_recv(s, stop)?;
-    if status(&resp) != smb_proto::STATUS_SUCCESS {
-        return Err(format!(
-            "session setup (auth leg): status {:#x}",
-            status(&resp)
+    let Some(challenge) = client::session_setup_challenge(&resp) else {
+        return Err(String::from(
+            "session setup carried no NTLMSSP CHALLENGE with 8 challenge bytes in it",
         ));
-    }
+    };
+
+    smb_authenticate_leg(s, stop, sid, &challenge)?;
 
     smb_send(s, &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"))?;
     let resp = smb_recv(s, stop)?;

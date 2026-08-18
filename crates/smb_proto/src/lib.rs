@@ -45,14 +45,16 @@
 //!
 //! ```
 //! use smb_proto::{
-//!     H_SESSION_ID, H_STATUS, H_TREE_ID, MAX_MESSAGE, STATUS_SUCCESS, client, r32, r64,
-//!     server::Connection, share::FIXTURE,
+//!     H_SESSION_ID, H_STATUS, H_TREE_ID, MAX_MESSAGE, STATUS_SUCCESS, authenticator::NoIdentity,
+//!     client, r32, r64, server::Connection, share::FIXTURE,
 //! };
 //!
 //! // One request through the state machine, the way a socket loop would drive it.
 //! fn exchange(c: &mut Connection, request: &[u8]) -> Vec<u8> {
 //!     let mut out = vec![0u8; MAX_MESSAGE];
-//!     let n = c.handle(request, &mut out, &FIXTURE).expect("SMB2 in, SMB2 out");
+//!     let n = c
+//!         .handle(request, &mut out, &FIXTURE, &NoIdentity)
+//!         .expect("SMB2 in, SMB2 out");
 //!     out.truncate(n);
 //!     out
 //! }
@@ -169,6 +171,7 @@
 //! says are already right (`elf`, `pci`, `ntlm`).
 
 pub mod apple;
+pub mod authenticator;
 pub mod client;
 pub mod create_context;
 pub mod ntlmssp;
@@ -333,6 +336,14 @@ pub const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
 /// `RMDIR` met a directory with something in it. Refused rather than emptied; the recursion belongs
 /// in the client, one refusable step at a time.
 pub const STATUS_DIRECTORY_NOT_EMPTY: u32 = 0xC000_0101;
+/// **The proof did not check out, or nobody offered one to a share that requires one**
+/// (milestone 54's identity item). One status for both, deliberately: see
+/// [`authenticator::Verdict::Refused`] on why distinguishing them would make session setup an
+/// oracle for which accounts exist.
+///
+/// It is what Windows and Samba answer, so a real client's retry logic already knows it: macOS
+/// prompts for a password on this and retries on the same connection.
+pub const STATUS_LOGON_FAILURE: u32 = 0xC000_006D;
 
 /// The one dialect this server offers and accepts: SMB 2.1. See the crate header for why.
 pub const DIALECT_0210: u16 = 0x0210;

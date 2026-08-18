@@ -1,14 +1,23 @@
 //! **NTLMSSP messages** ([MS-NLMP] §2.2): the three-message dance SMB2 session setup carries.
 //!
-//! This module is the *message framing* only. The arithmetic (`NTOWFv2`, proofs, session keys) lives
-//! in the `ntlm` crate, and this server does not call it: sessions are guest, nothing is verified,
-//! and the CHALLENGE this module builds exists so that a client following the protocol can finish
-//! it (macOS will not proceed to AUTHENTICATE without a well-formed CHALLENGE carrying target
-//! info). When identity arrives (milestone 65's `cred` service holds the key and the operation),
-//! the proof check slots in where [`parse`] returns [`Message::Authenticate`], and nothing on the
-//! wire moves.
+//! This module is the *message framing* only, and that is now a security property rather than a
+//! description of unfinished work. The arithmetic (`NTOWFv2`, proofs, session keys) lives in the
+//! `ntlm` crate, **which this crate does not depend on**: `ntlm` is a
+//! `[dev-dependencies]` entry, so the shipping `smb_proto` cannot compute a proof and the tests
+//! can. That is the strongest available form of "the SMB server never holds the key" (AGENTS.md's
+//! ladder, rung one): the code that would need one is not linked into the artifact, and Cargo is
+//! the mechanism.
+//!
+//! What this module does is take an AUTHENTICATE message apart ([`parse`] into
+//! [`Message::Authenticate`], carrying an [`Authenticate`]) and hand the pieces to the
+//! [`crate::authenticator`] seam, which answers yes or no. Every byte it extracts is either public
+//! (the account name, the domain, the client's blob) or a MAC (`NTProofStr`); none of it is a key,
+//! and none of it is useful without the key that verifies it.
+//!
+//! The CHALLENGE this module builds is what lets a real client get that far: macOS will not
+//! proceed to AUTHENTICATE without a well-formed CHALLENGE carrying target info.
 
-use crate::{ascii_to_utf16le, r32, w16, w32};
+use crate::{ascii_to_utf16le, r16, r32, w16, w32};
 
 /// `"NTLMSSP\0"`, the signature every NTLMSSP message opens with.
 pub const SIGNATURE: [u8; 8] = *b"NTLMSSP\0";
@@ -18,23 +27,110 @@ pub const NEGOTIATE: u32 = 1;
 pub const CHALLENGE: u32 = 2;
 pub const AUTHENTICATE: u32 = 3;
 
+/// The width of an NTLMv2 `NTProofStr`, in bytes ([MS-NLMP] §2.2.2.8). Sixteen, because it is an
+/// HMAC-MD5; the same number as `ntlm::KEY_LEN` and `cred_proto::KEY_LEN`, spelled here so this
+/// crate needs neither of them.
+pub const PROOF_LEN: usize = 16;
+
+/// **What a client's AUTHENTICATE said** ([MS-NLMP] §2.2.1.3), as borrows into the message.
+///
+/// Nothing here is secret. The two names are public identifiers, the blob is entirely the client's
+/// own and entirely public (`ntlm::proof`'s doc argues that), and the proof is a MAC that verifies
+/// only under a key this crate never sees. So an [`Authenticate`] can be handed to a seam, logged,
+/// or dropped, and the only thing it is good for is asking somebody who holds a key whether it
+/// checks out.
+///
+/// The names are **UTF-16LE as they arrived**, not decoded. That is deliberate: the key derivation
+/// binds the exact bytes the client encoded ([MS-NLMP] §3.3.2, and `ntlm::ntowfv2`'s asymmetric
+/// uppercasing), so re-encoding them here would be this crate inventing a spelling the client did
+/// not send. A consumer that needs them as text says so and converts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Authenticate<'a> {
+    /// `DomainName`, UTF-16LE. Empty when the client sent none, which is legal.
+    pub domain: &'a [u8],
+    /// `UserName`, UTF-16LE. Empty for an anonymous or guest-shaped AUTHENTICATE.
+    pub user: &'a [u8],
+    /// `Workstation`, UTF-16LE. Carried because it is there; nothing here reads it.
+    pub workstation: &'a [u8],
+    /// `NtChallengeResponse`: `NTProofStr` followed by the client's `temp` blob
+    /// ([MS-NLMP] §2.2.2.8). Empty for a guest-shaped AUTHENTICATE, which is exactly how the
+    /// server tells "I am nobody" from "here is who I am".
+    pub nt_response: &'a [u8],
+    /// `NegotiateFlags`.
+    pub flags: u32,
+}
+
+impl<'a> Authenticate<'a> {
+    /// The `NTProofStr` and the blob it was computed over, or `None` when the client sent no
+    /// NTLMv2 response at all (an empty or too-short `NtChallengeResponse`).
+    ///
+    /// `None` is the guest-shaped AUTHENTICATE the tree's own prober and `mount_smbfs -N` send. It
+    /// is a *distinct* answer from "a proof that did not verify", and keeping the two apart is what
+    /// lets a share with an authenticator refuse an anonymous client without pretending it did
+    /// arithmetic (see [`crate::authenticator`]).
+    pub fn proof(&self) -> Option<(&'a [u8; PROOF_LEN], &'a [u8])> {
+        if self.nt_response.len() < PROOF_LEN {
+            return None;
+        }
+        let (p, blob) = self.nt_response.split_at(PROOF_LEN);
+        Some((p.try_into().ok()?, blob))
+    }
+}
+
 /// What arrived in a session-setup security buffer, from NTLMSSP's point of view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Message {
+pub enum Message<'a> {
     /// Type 1: the client wants a CHALLENGE.
     Negotiate,
-    /// Type 3: the client answered the challenge. Guest scope: accepted without inspection.
-    Authenticate,
+    /// Type 3: the client answered the challenge.
+    Authenticate(Authenticate<'a>),
+}
+
+/// One `<len, maxlen, offset>` field triple at `at`, resolved to the payload it points at
+/// ([MS-NLMP] §2.2.2.10's `NTLMSSP_MESSAGE_FIELDS`: `Len` and `MaxLen` are `u16`, `Offset` a `u32`
+/// from the start of the message).
+///
+/// An empty slice for a field that is absent, and an empty slice for a field whose offset or length
+/// runs off the end of the message. Those two are treated alike **on purpose**: a truncated field
+/// is a client sending nonsense, and answering "you gave me nothing" is both true and the same
+/// refusal, where a distinct error would only add a branch nothing acts on. `MaxLen` is ignored,
+/// which is what every implementation does: it is the buffer the client allocated, not the data.
+fn field(msg: &[u8], at: usize) -> &[u8] {
+    if msg.len() < at + 8 {
+        return &[];
+    }
+    let len = r16(msg, at) as usize;
+    let off = r32(msg, at + 4) as usize;
+    msg.get(off..off + len).unwrap_or(&[])
 }
 
 /// Classify an NTLMSSP message, or `None` if these bytes are not one.
-pub fn parse(token: &[u8]) -> Option<Message> {
+///
+/// An AUTHENTICATE is taken apart here rather than at the call site, so the offsets in
+/// [MS-NLMP] §2.2.1.3 appear exactly once in this tree and are pinned by this module's tests.
+pub fn parse(token: &[u8]) -> Option<Message<'_>> {
     if token.len() < 12 || token[..8] != SIGNATURE {
         return None;
     }
     match r32(token, 8) {
         NEGOTIATE => Some(Message::Negotiate),
-        AUTHENTICATE => Some(Message::Authenticate),
+        AUTHENTICATE => {
+            // §2.2.1.3's fixed part: six field triples from offset 12, then the flags. A message
+            // too short to hold them is not an AUTHENTICATE, however it is labelled.
+            if token.len() < 64 {
+                return None;
+            }
+            Some(Message::Authenticate(Authenticate {
+                // 12: LmChallengeResponse, which NTLMv2 does not use and this server ignores.
+                nt_response: field(token, 20),
+                domain: field(token, 28),
+                user: field(token, 36),
+                workstation: field(token, 44),
+                // 52: EncryptedRandomSessionKey, meaningful only with key exchange, which this
+                // server does not negotiate.
+                flags: r32(token, 60),
+            }))
+        }
         _ => None,
     }
 }
@@ -130,12 +226,12 @@ mod tests {
 
     #[test]
     fn parse_classifies_the_three_message_types_by_their_wire_type_field() {
-        let mut m = [0u8; 16];
+        let mut m = [0u8; 64];
         m[..8].copy_from_slice(&SIGNATURE);
         w32(&mut m, 8, NEGOTIATE);
         assert_eq!(parse(&m), Some(Message::Negotiate));
         w32(&mut m, 8, AUTHENTICATE);
-        assert_eq!(parse(&m), Some(Message::Authenticate));
+        assert!(matches!(parse(&m), Some(Message::Authenticate(_))));
         // A CHALLENGE is a server's message; a client sending one is nonsense we refuse.
         w32(&mut m, 8, CHALLENGE);
         assert_eq!(parse(&m), None);
@@ -143,5 +239,85 @@ mod tests {
         w32(&mut m, 8, NEGOTIATE);
         assert_eq!(parse(&m), None, "a wrong signature is not NTLMSSP");
         assert_eq!(parse(&m[..8]), None, "too short to carry a type");
+    }
+
+    /// **A message labelled AUTHENTICATE that cannot hold the fields is not one.** §2.2.1.3's
+    /// fixed part is 64 bytes, and a shorter message would have `parse` reading the flags out of
+    /// somebody else's bytes; the field triples themselves are bounds-checked, but the flags word
+    /// is at a fixed offset and needs the length check to be safe.
+    #[test]
+    fn an_authenticate_too_short_for_its_own_fixed_fields_is_refused() {
+        let mut m = [0u8; 64];
+        m[..8].copy_from_slice(&SIGNATURE);
+        w32(&mut m, 8, AUTHENTICATE);
+        assert!(matches!(parse(&m), Some(Message::Authenticate(_))));
+        assert_eq!(parse(&m[..63]), None, "63 bytes cannot hold the flags word");
+    }
+
+    /// **The field triples resolve to their payloads**, which is the arithmetic this module exists
+    /// to hold in one place. Built with the client-side builder rather than transcribed, and then
+    /// asserted against the *payloads* [MS-NLMP] §4.2.4 publishes, which is the honest split: the
+    /// container is ours, the bytes inside it are Microsoft's.
+    #[test]
+    fn an_authenticate_carries_the_names_and_the_nt_response_it_was_built_with() {
+        // §4.2.4.1.3's NTProofStr and §4.2.4.1.3's `temp`, the two values the `ntlm` crate's own
+        // tests pin against the specification. Repeated here as the payload this parse must find,
+        // not as arithmetic: nothing in this crate computes them.
+        let proof: [u8; PROOF_LEN] = [
+            0x68, 0xcd, 0x0a, 0xb8, 0x51, 0xe5, 0x1c, 0x96, 0xaa, 0xbc, 0x92, 0x7b, 0xeb, 0xef,
+            0x6a, 0x1c,
+        ];
+        let blob = [0x01u8, 0x01, 0x00, 0x00, 0xaa, 0xaa, 0xaa, 0xaa];
+        let token = crate::client::ntlmssp_authenticate(b"User", b"Domain", &proof, &blob);
+
+        let Some(Message::Authenticate(a)) = parse(&token) else {
+            panic!("the builder's own AUTHENTICATE did not parse as one");
+        };
+        let mut want = [0u8; 32];
+        let n = ascii_to_utf16le(b"User", &mut want);
+        assert_eq!(a.user, &want[..n], "UserName");
+        let n = ascii_to_utf16le(b"Domain", &mut want);
+        assert_eq!(a.domain, &want[..n], "DomainName");
+        let (got_proof, got_blob) = a.proof().expect("an NT response was built in");
+        assert_eq!(got_proof, &proof);
+        assert_eq!(got_blob, &blob);
+    }
+
+    /// **A guest-shaped AUTHENTICATE has no proof**, and that is what `proof()` must say. The tree's
+    /// own prober and `mount_smbfs -N` both send this: every field pair empty. A share with an
+    /// authenticator has to be able to tell it from a failed verification, so this is the assertion
+    /// that keeps `Verdict::Refused` from being reached without any arithmetic happening.
+    #[test]
+    fn a_guest_shaped_authenticate_carries_no_proof_at_all() {
+        let token = crate::client::ntlmssp_authenticate_empty();
+        let Some(Message::Authenticate(a)) = parse(&token) else {
+            panic!("an empty AUTHENTICATE is still an AUTHENTICATE");
+        };
+        assert!(a.user.is_empty());
+        assert!(a.nt_response.is_empty());
+        assert_eq!(a.proof(), None);
+    }
+
+    /// **A field pointing off the end of the message resolves to nothing**, rather than panicking
+    /// or reading whatever follows. The interesting case is a length that is plausible and an
+    /// offset that is not: a client can write any pair of numbers there, and this is the one place
+    /// they are trusted enough to index with.
+    #[test]
+    fn a_field_that_runs_off_the_message_is_empty_rather_than_a_panic() {
+        let mut m = [0u8; 80];
+        m[..8].copy_from_slice(&SIGNATURE);
+        w32(&mut m, 8, AUTHENTICATE);
+        // UserName: 16 bytes at offset 0xFFF0.
+        w16(&mut m, 36, 16);
+        w32(&mut m, 40, 0xFFF0);
+        // NtChallengeResponse: a length past the end from a legal offset.
+        w16(&mut m, 20, 4096);
+        w32(&mut m, 24, 64);
+        let Some(Message::Authenticate(a)) = parse(&m) else {
+            panic!("a well-formed header with nonsense fields is still an AUTHENTICATE");
+        };
+        assert!(a.user.is_empty(), "an offset past the end resolves to none");
+        assert!(a.nt_response.is_empty(), "a length past the end likewise");
+        assert_eq!(a.proof(), None);
     }
 }

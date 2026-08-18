@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
 use super::std_tests::{
     assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
-    assert_smb_write_landed, assert_std_transcript, std_fs_expected,
+    assert_smb_held_no_key, assert_smb_write_landed, assert_std_transcript, std_fs_expected,
 };
 use super::*;
 use crate::sched;
@@ -563,6 +563,10 @@ fn mdns_responder_image() -> &'static [u8] {
 /// verdicts gating. See the aarch64 twin for the shape, for why all of it shares one exchange (a
 /// net server's spawn is frames nothing reclaims), and for what the stage codes mean.
 ///
+/// **And the session is authenticated here too** (milestone 54's identity item): the share is wired
+/// `SMB_SHARE_FS_AUTHENTICATED` and the credential service is the same sealed one the credential
+/// tests use, so the parity claim covers identity and not only the wire.
+///
 /// **The share is the real filesystem here too**: the FS service is wired first, the seed role
 /// writes `fs_proto::fixture::SMB_SEED` through it, and the adapter gets the directory
 /// capability, so the parity gate covers the fs_proto-backed share and not only the wire. The
@@ -588,9 +592,10 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
             program("fs_server").expect("no fs_server program in the initrd archive"),
         )
         .expect("the FS service was wired a moment ago");
-        // Read-write, as on the aarch64 twin: the write half of the gate needs the adapter to
-        // accept a write, and the read-only refusals are `smb_proto`'s host tests.
-        (ep, shared, virtio_service::SMB_SHARE_FS_READ_WRITE)
+        // Read-write **and authenticated**, as on the aarch64 twin: the write half of the gate
+        // needs the adapter to accept a write, the read-only refusals are `smb_proto`'s host
+        // tests, and since milestone 54's identity item the prober proves who it is first.
+        (ep, shared, virtio_service::SMB_SHARE_FS_AUTHENTICATED)
     });
     if fs.is_none() {
         crate::println!("    (no RedoxFS disk attached; the SMB adapter serves its fixture)");
@@ -602,6 +607,13 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // Taken before `fs` is handed to the spawn below: the write verifier needs to know whether
     // there was a filesystem at all, and the spawn consumes the capability.
     let had_fs = fs.is_some();
+    // The credential service, milestone 65's, sealed: the aarch64 twin documents why this is here
+    // and what it proves. Parity is the whole point of this file (DECISIONS §19): the same
+    // credentialer binary, the same Argon2id, the same NTLMv2 arithmetic, the same host prober.
+    let cred = had_fs.then(|| {
+        let (w, _, _) = super::credential_tests::provisioned();
+        (w.verify, super::credential_service::verify_frame())
+    });
     let Some((report, smb_report, mdns_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),
@@ -612,6 +624,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         2,
         MDNS_QUERIES,
         fs,
+        cred,
         socket_proto::udp_bind_grant(NET_MDNS_PORT, NET_MDNS_GRANT_TOP),
     ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
@@ -644,6 +657,7 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // Before the release: the verifier spawns a fresh FS client, and reclaiming the net
     // service's regions is the last thing this test should do.
     assert_smb_write_landed(had_fs);
+    assert_smb_held_no_key(had_fs);
     net.release_or_fail("a net test's net_stack");
 }
 

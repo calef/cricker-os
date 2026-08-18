@@ -95,9 +95,19 @@ type Share = (&'static [u8], &'static [u8], &'static [u8], &'static [u8]);
 ///
 /// The **first** uses [MS-NLMP] §4.2.1's account (`Domain\User`, password `Password`) on purpose:
 /// that is the account Microsoft publishes every intermediate value for, so the kernel test can
-/// assert against printed numbers rather than against something this tree computed.
+/// assert against printed numbers rather than against something this tree computed. It moved into
+/// `cred_proto::fixture` when milestone 54's SMB adapter and xtask's prober became its other two
+/// readers; this role is still the only thing that *stores* it.
 const SHARES: [Share; 3] = [
-    (b"backups-chris", b"Password", b"User", b"Domain"),
+    // Through `cred_proto::fixture` rather than spelled here, since milestone 54's identity item:
+    // the SMB adapter authenticates against this resource and xtask's prober computes a proof over
+    // this password, so three programs must agree on it down to the byte. The values did not change.
+    (
+        proto::fixture::SMB_RESOURCE,
+        proto::fixture::SMB_PASSWORD,
+        proto::fixture::SMB_USER,
+        proto::fixture::SMB_DOMAIN,
+    ),
     (
         b"backups-corinne",
         b"another share secret",

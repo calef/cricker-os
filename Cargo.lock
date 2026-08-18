@@ -653,6 +653,9 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smb_proto"
 version = "0.1.0"
+dependencies = [
+ "ntlm",
+]
 
 [[package]]
 name = "smoltcp"
@@ -978,6 +981,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "compositor",
+ "cred_proto",
  "fs_proto",
  "gfx_proto",
  "gpt",
@@ -985,6 +989,7 @@ dependencies = [
  "mdns_config",
  "measured_boot",
  "nifefs",
+ "ntlm",
  "smb_proto",
  "video_terminal",
 ]

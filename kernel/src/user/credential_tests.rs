@@ -17,7 +17,12 @@ use super::*;
 /// that had not reached its serve loop, and the whole boot would deadlock with a sender and a
 /// caller both waiting on nobody. The entropy service does not show this because its wiring
 /// receives immediately.
-fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
+/// **`pub(super)` since milestone 54's identity item**, because the SMB gate needs the same sealed
+/// store: its adapter authenticates a real NTLMv2 session against this service, so the SMB test
+/// calls this to get the verify endpoint. Calling it from either place is safe in either order,
+/// which is what the once-per-boot latch below is for; what would not be safe is a *second*
+/// wiring, and there is no way to ask for one.
+pub(super) fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     // Plain atomics rather than a lock or a `Once`: the only writer is the test thread, and
     // the tree's `spin` is built without the `once` feature. Release/Acquire on `DONE` is what

@@ -6,10 +6,19 @@
 //! by the tree's verification method. The `smb_server` role feeds it bytes from the socket
 //! contract and writes back what it returns; nothing else is between this machine and the wire.
 //!
-//! What it implements, and the shape of what it refuses, are the crate header's scope: SMB 2.1,
-//! guest sessions, a flat share, compounds with related operations (macOS opens files as
-//! CREATE + `QUERY_INFO` + CLOSE chains, so compounds are not optional). Everything refused is
-//! refused with a real NT status, because a client's retry logic keys on them.
+//! What it implements, and the shape of what it refuses, are the crate header's scope: SMB 2.1, a
+//! share tree, compounds with related operations (macOS opens files as CREATE + `QUERY_INFO` + CLOSE
+//! chains, so compounds are not optional). Everything refused is refused with a real NT status,
+//! because a client's retry logic keys on them.
+//!
+//! # Identity
+//!
+//! Sessions are guest **only when a caller asks for that**, by passing
+//! [`crate::authenticator::NoIdentity`] to [`Connection::handle`]. A caller that passes a real
+//! [`crate::authenticator::Authenticator`] gets a machine that refuses an unproven session with
+//! [`STATUS_LOGON_FAILURE`] and never sets `session_ready`, so every later command falls through the
+//! state gate below. This module does no cryptography of any kind; see
+//! [`crate::authenticator`] for why that is a property rather than a gap.
 //!
 //! # The write path, and where read-only is enforced
 //!
@@ -20,6 +29,7 @@
 //! file, and it means a read-only share is read-only even if its backing would have said yes.
 //! [`crate::share`]'s trait defaults are the independent second line.
 
+use crate::authenticator::{Attempt, Authenticator, Verdict};
 use crate::path::{MAX_PATH, Path, PathError};
 use crate::share::{Error, FileId, Node, ROOT_DIR, Share};
 use crate::{
@@ -29,12 +39,12 @@ use crate::{
     H_CREDIT, H_MESSAGE_ID, H_NEXT_COMMAND, H_SESSION_ID, H_TREE_ID, HDR_LEN, MAX_TRANSACT,
     STATUS_ACCESS_DENIED, STATUS_BAD_NETWORK_NAME, STATUS_DIRECTORY_NOT_EMPTY, STATUS_DISK_FULL,
     STATUS_END_OF_FILE, STATUS_FILE_CLOSED, STATUS_FILE_IS_A_DIRECTORY, STATUS_FS_DRIVER_REQUIRED,
-    STATUS_INVALID_PARAMETER, STATUS_MORE_PROCESSING_REQUIRED, STATUS_NO_MORE_FILES,
-    STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_COLLISION,
-    STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND,
-    STATUS_SUCCESS, STATUS_UNEXPECTED_IO_ERROR, STATUS_USER_SESSION_DELETED, apple,
-    ascii_to_utf16le, create_context, is_smb2, ntlmssp, r16, r32, r64, spnego,
-    utf16le_to_ascii_lower, w16, w32, w64, write_response_header,
+    STATUS_INVALID_PARAMETER, STATUS_LOGON_FAILURE, STATUS_MORE_PROCESSING_REQUIRED,
+    STATUS_NO_MORE_FILES, STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED,
+    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_OBJECT_PATH_NOT_FOUND, STATUS_SUCCESS, STATUS_UNEXPECTED_IO_ERROR,
+    STATUS_USER_SESSION_DELETED, apple, ascii_to_utf16le, create_context, is_smb2, ntlmssp, r16,
+    r32, r64, spnego, utf16le_to_ascii_lower, w16, w32, w64, write_response_header,
 };
 
 /// How many files (and the root) one connection may hold open at once. macOS keeps a handful open
@@ -67,8 +77,10 @@ pub const SHARE_NAME: &[u8] = b"share";
 const ATTR_DIRECTORY: u32 = 0x10;
 const ATTR_NORMAL: u32 = 0x80;
 
-/// `SESSION_SETUP` response flag: this session is a guest. Set on every session this server
-/// grants, which is the honest label for "nothing was verified".
+/// `SESSION_SETUP` response flag: this session is a guest, the honest label for "nothing was
+/// verified". Set on every session an [`crate::authenticator::NoIdentity`] share grants, and on none
+/// that a real authenticator let through; it is the only thing on the wire that tells the two apart,
+/// and macOS shows it to the user as the difference between a name and "Guest".
 const SESSION_FLAG_IS_GUEST: u16 = 0x0001;
 
 /// CREATE dispositions ([MS-SMB2] §2.2.13). The four that write are the write path's whole
@@ -197,6 +209,11 @@ pub struct Connection {
     /// The NTLMSSP server challenge for this connection, provided by the caller (it is the one
     /// input that should differ per connection, and this crate has no entropy of its own).
     challenge: [u8; 8],
+    /// Whether the established session belongs to somebody, which is only ever set by an
+    /// authenticator answering [`Verdict::Authenticated`]. Read once, to decide whether the response
+    /// carries [`SESSION_FLAG_IS_GUEST`]; kept as state rather than a local because a client may
+    /// re-run session setup on a live session and the flag must follow the latest answer.
+    authenticated: bool,
 }
 
 /// What one compound element needs from the chain: the file id CREATE produced, carried to
@@ -213,6 +230,7 @@ impl Connection {
             handles: [None; MAX_HANDLES],
             next_volatile: 1,
             challenge,
+            authenticated: false,
         }
     }
 
@@ -221,8 +239,19 @@ impl Connection {
     /// and the connection should be dropped; everything else, however wrong, gets an SMB2 status
     /// answer, because that is what a client can act on.
     ///
+    /// `auth` is asked exactly once per AUTHENTICATE and never otherwise. It is a parameter here
+    /// rather than a field of the [`Connection`] for the reason `share` is: both are seams a caller
+    /// implements with IO, and a state machine that held one would hold a borrow for the life of a
+    /// connection to no purpose. Pass [`crate::authenticator::NoIdentity`] for a guest share.
+    ///
     /// `out` must hold [`crate::MAX_MESSAGE`] bytes.
-    pub fn handle(&mut self, msg: &[u8], out: &mut [u8], share: &impl Share) -> Option<usize> {
+    pub fn handle(
+        &mut self,
+        msg: &[u8],
+        out: &mut [u8],
+        share: &impl Share,
+        auth: &impl Authenticator,
+    ) -> Option<usize> {
         // The one SMB1 message this server answers, because it is how every real client arrives:
         // macOS's own mount_smbfs opens with an SMB1 multi-protocol NEGOTIATE (captured
         // 2026-08-15; the bytes are pinned in the test below), offering "NT LM 0.12",
@@ -261,7 +290,7 @@ impl Connection {
             };
 
             let start = out_pos;
-            let n = self.dispatch(elem, &mut out[start..], share, &mut chain_fid);
+            let n = self.dispatch(elem, &mut out[start..], share, auth, &mut chain_fid);
             out_pos += n;
 
             if next == 0 {
@@ -284,6 +313,7 @@ impl Connection {
         req: &[u8],
         out: &mut [u8],
         share: &impl Share,
+        auth: &impl Authenticator,
         chain_fid: &mut Option<[u8; 16]>,
     ) -> usize {
         let cmd = r16(req, H_COMMAND);
@@ -322,7 +352,7 @@ impl Connection {
 
         match cmd {
             CMD_NEGOTIATE => self.negotiate(req, out, msg_id, credits, err),
-            CMD_SESSION_SETUP => self.session_setup(req, out, msg_id, credits, err),
+            CMD_SESSION_SETUP => self.session_setup(req, out, msg_id, credits, auth, err),
             CMD_TREE_CONNECT => self.tree_connect(req, out, msg_id, credits, share.writable(), err),
             CMD_TREE_DISCONNECT => {
                 self.tree_id = 0;
@@ -409,12 +439,22 @@ impl Connection {
         hint_at + hint_len
     }
 
+    /// `SESSION_SETUP`: the NTLMSSP dance, and since milestone 54's identity item the one place a
+    /// client's claim about who it is meets somebody who can check.
+    ///
+    /// **The whole check is four lines and no arithmetic**, which is the design rather than a
+    /// shortcut: take the AUTHENTICATE apart, hand the public parts to `auth`, and write the status
+    /// its answer names. Nothing in this function, in this module or in this crate can compute a
+    /// proof (`ntlm` is a `[dev-dependencies]`), so the assertion in the kernel suite that the SMB
+    /// server authenticates without ever holding the key is enforced by the dependency graph and not
+    /// by care taken here.
     fn session_setup(
         &mut self,
         req: &[u8],
         out: &mut [u8],
         msg_id: u64,
         credits: u16,
+        auth: &impl Authenticator,
         err: impl Fn(&mut [u8], u32) -> usize,
     ) -> usize {
         let sec_off = r16(req, 76) as usize;
@@ -462,12 +502,36 @@ impl Connection {
                 w16(out, b + 6, blen as u16);
                 buf_at + blen
             }
-            Some(ntlmssp::Message::Authenticate) => {
+            Some(ntlmssp::Message::Authenticate(a)) => {
+                // **Ask, then answer.** The two cases below are the two questions the seam has,
+                // and they are asked separately because "no proof was offered" is not a failed
+                // verification: see `Authenticator::anonymous`.
+                let verdict = match a.proof() {
+                    Some((proof, blob)) => auth.authenticate(&Attempt {
+                        challenge: &self.challenge,
+                        user: a.user,
+                        domain: a.domain,
+                        proof,
+                        blob,
+                    }),
+                    None => auth.anonymous(),
+                };
+                if verdict == Verdict::Refused {
+                    // **No session, and the connection lives.** `session_ready` is untouched, so
+                    // every later command meets the state gate above and gets
+                    // `STATUS_USER_SESSION_DELETED`; and `session_id` is left as it is so a client
+                    // can retry the AUTHENTICATE on the same connection against the same challenge,
+                    // which is what macOS does after prompting for a password.
+                    return err(out, STATUS_LOGON_FAILURE);
+                }
                 if self.session_id == 0 {
-                    // AUTHENTICATE with no prior exchange: tolerated, guest is guest either way.
+                    // AUTHENTICATE with no prior exchange, on a share that admitted it. There was no
+                    // CHALLENGE, so there is nothing a proof could have been computed over; only an
+                    // authenticator that does not check can get here.
                     self.session_id = 0x1D0_0001;
                 }
                 self.session_ready = true;
+                self.authenticated = verdict == Verdict::Authenticated;
                 write_response_header(
                     out,
                     CMD_SESSION_SETUP,
@@ -481,7 +545,15 @@ impl Connection {
                 let b = HDR_LEN;
                 out[b..b + 8].fill(0);
                 w16(out, b, 9);
-                w16(out, b + 2, SESSION_FLAG_IS_GUEST);
+                w16(
+                    out,
+                    b + 2,
+                    if self.authenticated {
+                        0
+                    } else {
+                        SESSION_FLAG_IS_GUEST
+                    },
+                );
                 let buf_at = b + 8;
                 let blen = if wrapped {
                     out[buf_at..buf_at + spnego::ACCEPT_COMPLETED_RESP.len()]
@@ -1576,6 +1648,7 @@ fn encode_dir_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authenticator::NoIdentity;
     use crate::share::{FIXTURE, MemoryShare};
     use crate::{H_NEXT_COMMAND, H_STATUS, MAX_MESSAGE, client, r32};
 
@@ -1591,8 +1664,23 @@ mod tests {
     /// The same against an arbitrary share, which the write path's tests need (`FIXTURE` is
     /// read-only by construction, which is the point of it).
     fn rt_on(c: &mut Connection, req: &[u8], share: &impl Share) -> Vec<u8> {
+        rt_as(c, req, share, &NoIdentity)
+    }
+
+    /// The same against an arbitrary share **and** an arbitrary authenticator, which the identity
+    /// tests need. Every other helper is this with [`NoIdentity`], so the guest behaviour every
+    /// earlier test asserts is now the explicit choice of a guest authenticator rather than the
+    /// absence of one.
+    fn rt_as(
+        c: &mut Connection,
+        req: &[u8],
+        share: &impl Share,
+        auth: &impl Authenticator,
+    ) -> Vec<u8> {
         let mut out = vec![0u8; MAX_MESSAGE];
-        let n = c.handle(req, &mut out, share).expect("smb2 in, smb2 out");
+        let n = c
+            .handle(req, &mut out, share, auth)
+            .expect("smb2 in, smb2 out");
         out.truncate(n);
         out
     }
@@ -1767,7 +1855,7 @@ mod tests {
         // CREATE + QUERY_INFO(all) + CLOSE, the second and third naming the related fid.
         let msg = client::compound_create_query_close(5, sid, tid, b"hello.txt");
         let mut out = vec![0u8; MAX_MESSAGE];
-        let n = c.handle(&msg, &mut out, &FIXTURE).unwrap();
+        let n = c.handle(&msg, &mut out, &FIXTURE, &NoIdentity).unwrap();
         let resp = &out[..n];
         // Three responses, chained by NextCommand.
         let r1 = resp;
@@ -2561,17 +2649,23 @@ mod tests {
         // Keep the SMB1 header valid; the byte-count field no longer matters to our scan.
         let mut fresh = conn();
         let mut out = vec![0u8; MAX_MESSAGE];
-        assert_eq!(fresh.handle(&only_smb1, &mut out, &FIXTURE), None);
+        assert_eq!(
+            fresh.handle(&only_smb1, &mut out, &FIXTURE, &NoIdentity),
+            None
+        );
     }
 
     #[test]
     fn not_smb2_drops_the_connection_rather_than_answering() {
         let mut c = conn();
         let mut out = vec![0u8; MAX_MESSAGE];
-        assert_eq!(c.handle(b"GET / HTTP/1.1\r\n", &mut out, &FIXTURE), None);
+        assert_eq!(
+            c.handle(b"GET / HTTP/1.1\r\n", &mut out, &FIXTURE, &NoIdentity),
+            None
+        );
         let mut smb1 = vec![0u8; 64];
         smb1[..4].copy_from_slice(&[0xFF, b'S', b'M', b'B']);
-        assert_eq!(c.handle(&smb1, &mut out, &FIXTURE), None);
+        assert_eq!(c.handle(&smb1, &mut out, &FIXTURE, &NoIdentity), None);
     }
 
     #[test]
@@ -2736,5 +2830,331 @@ mod tests {
         assert_ne!(second, 0);
         assert_eq!(r16(&resp[second..], H_COMMAND), CMD_ECHO);
         assert_eq!(status(&resp[second..]), STATUS_SUCCESS);
+    }
+
+    // ==========================================================================================
+    // Identity (milestone 54's last item). The state machine's side of it: an authenticator says
+    // yes or no and this proves the machine acts on the answer. What the *credential service* does
+    // with a proof is milestone 65's and is asserted in the kernel suite; what a real client does
+    // with all of it is the QEMU gate's.
+    // ==========================================================================================
+
+    /// [MS-NLMP] §4.2.1's account: the one Microsoft publishes every intermediate value for, and
+    /// the account milestone 65's provisioner stores for the SMB gate's share. Used here so this
+    /// crate's tests and the boot's fixture describe the same login.
+    const T_PASSWORD: &[u8] = b"Password";
+    const T_USER: &[u8] = b"User";
+    const T_DOMAIN: &[u8] = b"Domain";
+
+    /// A client's `temp` blob. Its contents do not matter to anything here (the proof is over it,
+    /// whatever it is), so it is short and recognisable rather than a transcribed vector.
+    const T_BLOB: &[u8] = &[0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xaa, 0xaa];
+
+    /// **A test authenticator standing in for milestone 65's credential service.**
+    ///
+    /// It holds the password, which is exactly the position the *credential service* is in and
+    /// exactly the position the SMB server is not: this type exists in `#[cfg(test)]` and is built
+    /// on `ntlm`, which is a `[dev-dependencies]` of this crate. So the shipping crate still cannot
+    /// compute what this verifies, which is the property the whole seam is for.
+    ///
+    /// It answers as the real service does: the same refusal for a bad proof and for an account it
+    /// has never heard of, and no key material in the verdict either way.
+    struct Credential;
+
+    impl Credential {
+        /// What a holder of the password computes for this challenge and blob. The client's half.
+        fn proof(challenge: &[u8; 8], blob: &[u8]) -> [u8; ntlmssp::PROOF_LEN] {
+            let key = ntlm::ntowfv2(T_PASSWORD, T_USER, T_DOMAIN).expect("ASCII fixture");
+            ntlm::proof(&key, challenge, blob)
+        }
+    }
+
+    impl Authenticator for Credential {
+        /// **The presented names are not read**, and that is the real service's shape rather than a
+        /// simplification. `cred_proto::verify::NTLM_PROOF` names a *resource*, and the key stored
+        /// under it was derived at provisioning time over the account that owns it, so the account
+        /// is bound cryptographically: a client that claims a different name derives under a
+        /// different key and its proof does not match. Nothing compares any names, ever, which is
+        /// what `a_proof_computed_for_another_account_does_not_verify` below is checking.
+        ///
+        /// The consequence, and it is worth seeing here rather than only in the notes: a share
+        /// authenticates *one* account, because it is configured with one resource. Several accounts
+        /// mean several shares.
+        fn authenticate(&self, a: &Attempt<'_>) -> Verdict {
+            let key = ntlm::ntowfv2(T_PASSWORD, T_USER, T_DOMAIN).expect("ASCII fixture");
+            if &ntlm::proof(&key, a.challenge, a.blob) == a.proof {
+                Verdict::Authenticated
+            } else {
+                Verdict::Refused
+            }
+        }
+    }
+
+    /// Negotiate and take the challenge, which is what a real client does before it can compute
+    /// anything. Returns the session id and the server's challenge.
+    fn challenge_leg(c: &mut Connection, auth: &impl Authenticator) -> (u64, [u8; 8]) {
+        let resp = rt_as(c, &client::negotiate(1), &FIXTURE, auth);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let resp = rt_as(c, &client::session_setup_negotiate(2), &FIXTURE, auth);
+        assert_eq!(status(&resp), STATUS_MORE_PROCESSING_REQUIRED);
+        let challenge =
+            client::session_setup_challenge(&resp).expect("the CHALLENGE carries 8 bytes at 24");
+        (r64(&resp, H_SESSION_ID), challenge)
+    }
+
+    /// **The headline of milestone 54's identity item.** A client that computes a real NTLMv2 proof
+    /// over the challenge this connection issued gets a session, the session is **not** flagged
+    /// guest, and the share works through it.
+    ///
+    /// The proof travels through the wire builders and the wire parser, so what this pins is the
+    /// whole chain of offsets between the two, not a function call.
+    #[test]
+    fn a_client_with_the_right_password_gets_a_session_that_is_not_a_guest() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &Credential);
+        let proof = Credential::proof(&challenge, T_BLOB);
+
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS, "a valid proof was refused");
+        assert_eq!(
+            r16(&resp, HDR_LEN + 2) & SESSION_FLAG_IS_GUEST,
+            0,
+            "a session somebody proved must not be labelled guest: the flag is the only thing on \
+             the wire that tells a named session from an anonymous one",
+        );
+
+        // And the session is usable, which is the assertion that would catch a machine that said
+        // SUCCESS without setting `session_ready`.
+        let resp = rt_as(
+            &mut c,
+            &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let tid = r32(&resp, H_TREE_ID);
+        let resp = rt_as(
+            &mut c,
+            &client::create(5, sid, tid, b"hello.txt"),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+    }
+
+    /// **A wrong proof gets no session, and the share is unreachable through the refusal.** The
+    /// second half is the one that matters: a machine that answered `LOGON_FAILURE` and then served
+    /// files anyway would pass a test that only read the session-setup status.
+    #[test]
+    fn a_wrong_proof_is_refused_and_leaves_nothing_a_client_can_use() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &Credential);
+        let mut proof = Credential::proof(&challenge, T_BLOB);
+        proof[0] ^= 0x01; // the proof is a MAC, so every forgery looks like this
+
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_LOGON_FAILURE);
+
+        for (id, req) in [
+            (4u64, client::tree_connect(4, sid, b"\\\\10.0.2.15\\share")),
+            (5, client::echo(5)),
+        ] {
+            let resp = rt_as(&mut c, &req, &FIXTURE, &Credential);
+            if id == 5 {
+                // ECHO is outside the session gate by design (it is a keepalive), so it still
+                // answers. Asserted rather than skipped, because "the refusal broke ECHO" and "the
+                // refusal did not gate TREE_CONNECT" are both regressions and they look alike.
+                assert_eq!(status(&resp), STATUS_SUCCESS, "ECHO is not session-gated");
+            } else {
+                assert_eq!(
+                    status(&resp),
+                    STATUS_USER_SESSION_DELETED,
+                    "a refused session must not connect a tree",
+                );
+            }
+        }
+    }
+
+    /// **A client may try again on the same connection**, which is not politeness: macOS prompts the
+    /// user for a password after a `LOGON_FAILURE` and sends the second AUTHENTICATE down the same
+    /// TCP connection, against the same challenge. A server that dropped the connection or the
+    /// challenge would make that prompt useless.
+    #[test]
+    fn a_refusal_leaves_the_challenge_standing_so_a_retry_can_succeed() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &Credential);
+        let good = Credential::proof(&challenge, T_BLOB);
+        let mut bad = good;
+        bad[15] ^= 0x80;
+
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &bad, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_LOGON_FAILURE);
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(4, sid, T_USER, T_DOMAIN, &good, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(
+            status(&resp),
+            STATUS_SUCCESS,
+            "the retry was refused, so either the session id or the challenge did not survive",
+        );
+        assert_eq!(r16(&resp, HDR_LEN + 2) & SESSION_FLAG_IS_GUEST, 0);
+    }
+
+    /// **The guest AUTHENTICATE every client sends is refused by a share with an authenticator.**
+    /// This is the assertion that stops identity from being decorative: `mount_smbfs -N` and this
+    /// tree's own prober both send an AUTHENTICATE with every field empty, and a machine that
+    /// treated "no proof" as "nothing to check, therefore fine" would admit exactly the caller the
+    /// milestone exists to shut out.
+    #[test]
+    fn an_anonymous_client_cannot_reach_a_share_that_has_an_authenticator() {
+        let mut c = conn();
+        let (sid, _) = challenge_leg(&mut c, &Credential);
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate(3, sid),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(
+            status(&resp),
+            STATUS_LOGON_FAILURE,
+            "an empty AUTHENTICATE is an anonymous client, not a verified one",
+        );
+        let resp = rt_as(
+            &mut c,
+            &client::tree_connect(4, sid, b"\\\\10.0.2.15\\share"),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_USER_SESSION_DELETED);
+    }
+
+    /// **A proof for one account does not open another**, and nothing in the authenticator compares
+    /// names to make that true: the account and the domain go into the key derivation, so a client
+    /// that presents somebody else's name computes under a different key. This is the property that
+    /// makes it safe for the *presented* name to reach the verifier at all.
+    #[test]
+    fn a_proof_computed_for_another_account_does_not_verify() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &Credential);
+        // The right password, the right challenge, the right blob, and the wrong domain.
+        let key = ntlm::ntowfv2(T_PASSWORD, T_USER, b"WORKGROUP").unwrap();
+        let proof = ntlm::proof(&key, &challenge, T_BLOB);
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(
+                3,
+                sid,
+                T_USER,
+                b"WORKGROUP",
+                &proof,
+                T_BLOB,
+            ),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(
+            status(&resp),
+            STATUS_LOGON_FAILURE,
+            "a key derived over a different domain must not authenticate",
+        );
+    }
+
+    /// **A captured proof does not work on the next connection.** The challenge is per connection,
+    /// and this is what that is for; the arithmetic is `ntlm`'s to prove, but that the *server*
+    /// actually varies its challenge and binds it in is this machine's.
+    #[test]
+    fn a_replayed_proof_fails_against_a_fresh_challenge() {
+        let mut first = Connection::new([0x11; 8]);
+        let (sid, challenge) = challenge_leg(&mut first, &Credential);
+        let proof = Credential::proof(&challenge, T_BLOB);
+        let resp = rt_as(
+            &mut first,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+
+        // A second connection, a different challenge, the same recorded proof.
+        let mut second = Connection::new([0x22; 8]);
+        let (sid2, challenge2) = challenge_leg(&mut second, &Credential);
+        assert_ne!(
+            challenge, challenge2,
+            "the challenge must be per connection"
+        );
+        let resp = rt_as(
+            &mut second,
+            &client::session_setup_authenticate_ntlmv2(4, sid2, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_LOGON_FAILURE);
+    }
+
+    /// **A guest share still admits a client that offers credentials.** macOS offers them to every
+    /// server it meets, so a share with no opinion about identity must not refuse the offer; it
+    /// admits the session and says guest, which is the truthful label.
+    #[test]
+    fn a_guest_share_admits_a_client_that_offered_a_proof_and_still_says_guest() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &NoIdentity);
+        let proof = Credential::proof(&challenge, T_BLOB);
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &NoIdentity,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert_eq!(
+            r16(&resp, HDR_LEN + 2) & SESSION_FLAG_IS_GUEST,
+            SESSION_FLAG_IS_GUEST,
+            "a share that verified nothing must say so however good the client's proof was",
+        );
+    }
+
+    /// **LOGOFF clears the identity**, so a connection reused after a logoff does not inherit a
+    /// session somebody else proved. The reset is `Connection::new`, which makes this true by
+    /// construction; pinned because "by construction" stops being true the moment a field is added
+    /// to the struct and not to `new`.
+    #[test]
+    fn logoff_forgets_that_anyone_was_authenticated() {
+        let mut c = conn();
+        let (sid, challenge) = challenge_leg(&mut c, &Credential);
+        let proof = Credential::proof(&challenge, T_BLOB);
+        let resp = rt_as(
+            &mut c,
+            &client::session_setup_authenticate_ntlmv2(3, sid, T_USER, T_DOMAIN, &proof, T_BLOB),
+            &FIXTURE,
+            &Credential,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert!(c.authenticated);
+        let resp = rt_as(&mut c, &client::logoff(4, sid), &FIXTURE, &Credential);
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        assert!(
+            !c.authenticated,
+            "a logged-off connection still claimed a name"
+        );
+        assert!(!c.session_ready);
     }
 }

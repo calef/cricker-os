@@ -339,7 +339,7 @@ pub fn start_net_stack(
 
     let (net_stack_report, stack, mut held) =
         wire_net_server(image, transport, intid, rid, listen_grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, &mut held);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, None, &mut held);
 
     // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
     // enters its serve loop (the client's first request blocks until it does). This also
@@ -368,13 +368,26 @@ const FS_VA_SMB: u64 = 0x0000_0000_00B0_0000;
 /// The fixture is the no-disk fallback and is read-only by construction, so it has no writable
 /// twin.
 pub const SMB_SHARE_FIXTURE: u64 = 0;
-/// No boot wires this yet, and it is spelled anyway: the encoding is a mirror of the program's,
-/// and a mirror with a hole in it is worse than no mirror. Both boots that exist want the write
-/// path (the test to gate it, `smb-serve` to demonstrate it); a read-only view of the real
-/// filesystem is the wiring a deployment would want and nothing in-tree needs.
+/// No boot wires this, and it is spelled anyway: the encoding is a mirror of the program's, and a
+/// mirror with a hole in it is worse than no mirror. A read-only view of the real filesystem is the
+/// wiring a deployment would want and nothing in-tree needs.
 #[allow(dead_code)]
 pub const SMB_SHARE_FS_READ_ONLY: u64 = 1;
+/// The guest-admitting write path, which is now only the **demo** boot's (`--features smb_serve`),
+/// so it is dead code in a test build. Both gates moved to [`SMB_SHARE_FS_AUTHENTICATED`] with
+/// milestone 54's identity item; `smb_server`'s BUGS records why the demo did not follow them.
+#[allow(dead_code)]
 pub const SMB_SHARE_FS_READ_WRITE: u64 = 2;
+/// The fs-backed share, read-write, admitting **nobody** without an NTLMv2 proof the credential
+/// service accepts (milestone 54's identity item). Requires the `cred` argument to
+/// [`spawn_stack_client`]: passing this mode without it is a wiring bug the adapter reports as a
+/// refused login on every connection, which is loud but late, so the two are paired at the one call
+/// site below rather than trusted.
+pub const SMB_SHARE_FS_AUTHENTICATED: u64 = 3;
+
+/// Where the SMB adapter expects the page it shares with the **credential** service
+/// (`user/src/smb_server.rs`'s `CRED_VA`). MUST match that program's source, like every VA here.
+const CRED_VA_SMB: u64 = 0x0000_0000_00C0_0000;
 
 /// Spawn one client of a `Stack` endpoint: WRITE on the shared endpoint, its own untyped, a
 /// report endpoint, [`NET_CLIENT_STACK_PAGES`] extra stack pages, no heap. The shared body of [`start_net_stack`]'s
@@ -389,6 +402,14 @@ pub const SMB_SHARE_FS_READ_WRITE: u64 = 2;
 /// [`SMB_SHARE_FIXTURE`] here rather than trusting a caller to pair the two, because a mode
 /// naming a filesystem the client was not granted is a wiring bug with no useful behaviour.
 ///
+/// `cred` is milestone 54's identity item: the credential service's **verify** endpoint and the
+/// physical frame of the page it shares with its client, granted as slot 4 and mapped at
+/// [`CRED_VA_SMB`]. `None` for every client that does not authenticate anybody, which is all of them
+/// except an adapter wired [`SMB_SHARE_FS_AUTHENTICATED`]. It is a separate parameter from `fs`
+/// rather than folded into it because it is a different authority over a different service: an
+/// adapter can have a filesystem and no opinion about identity, which is what every boot before this
+/// one had.
+///
 /// `held` is the caller's [`Holding`]: this client's thread and the three regions behind it are
 /// added to whatever the net server already put there, so one `release` at the end of a test ends
 /// the whole service rather than the server alone.
@@ -398,6 +419,7 @@ fn spawn_stack_client(
     arg1: u64,
     stack: EpId,
     fs: Option<(EpId, u64, u64)>,
+    cred: Option<(EpId, u64)>,
     held: &mut Holding,
 ) -> EpId {
     use crate::cap::untyped_cap;
@@ -413,14 +435,15 @@ fn spawn_stack_client(
         crate::untyped::create(NET_CLIENT_BUDGET_PAGES).expect("no untyped for the net client");
     let cli_stack_region =
         crate::untyped::create(NET_CLIENT_STACK_PAGES).expect("no stack region for the net client");
-    // One slot per stack page, plus the shared FS page an SMB adapter also gets. The FS page is
-    // the tail slot, so it moves with NET_CLIENT_STACK_PAGES rather than sitting at a literal
-    // index a raise of that constant would silently turn into a stack page.
+    // One slot per stack page, plus the two shared pages an SMB adapter may also get (the FS
+    // server's, and the credential service's when it authenticates). They are the tail slots, so
+    // they move with NET_CLIENT_STACK_PAGES rather than sitting at literal indices a raise of that
+    // constant would silently turn into stack pages.
     let mut maps = [Mapping {
         va: 0,
         phys: 0,
         flags: Flags::user_data(),
-    }; NET_CLIENT_STACK_PAGES as usize + 1];
+    }; NET_CLIENT_STACK_PAGES as usize + 2];
     for (k, m) in maps
         .iter_mut()
         .take(NET_CLIENT_STACK_PAGES as usize)
@@ -432,16 +455,23 @@ fn spawn_stack_client(
         m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
         m.phys = phys;
     }
-    let n_maps = if let Some((_, file_shared, _)) = fs {
-        maps[NET_CLIENT_STACK_PAGES as usize] = Mapping {
+    let mut n_maps = NET_CLIENT_STACK_PAGES as usize;
+    if let Some((_, file_shared, _)) = fs {
+        maps[n_maps] = Mapping {
             va: FS_VA_SMB,
             phys: file_shared,
             flags: Flags::user_data(),
         };
-        NET_CLIENT_STACK_PAGES as usize + 1
-    } else {
-        NET_CLIENT_STACK_PAGES as usize
-    };
+        n_maps += 1;
+    }
+    if let Some((_, cred_shared)) = cred {
+        maps[n_maps] = Mapping {
+            va: CRED_VA_SMB,
+            phys: cred_shared,
+            flags: Flags::user_data(),
+        };
+        n_maps += 1;
+    }
 
     let tid = crate::sched::spawn(move || {
         let mut grants = [
@@ -450,16 +480,24 @@ fn spawn_stack_client(
             // shared frame onto it (the frame it mints already carries GRANT).
             endpoint_cap(stack, Rights::WRITE),
             untyped_cap(cli_budget), // slot 2: mint and map the shared frame
-            // slot 3 (sliced away below unless `fs`): the directory capability. The array
-            // needs a fourth element either way; this placeholder is never granted.
+            // slots 3 and 4 (sliced away below unless `fs` and `cred`): the directory capability
+            // and the credential service's verify endpoint. The array needs the elements either
+            // way; these placeholders are never granted.
+            endpoint_cap(cli_report, Rights::WRITE),
             endpoint_cap(cli_report, Rights::WRITE),
         ];
-        let n_grants = if let Some((file_ep, _, _)) = fs {
+        let mut n_grants = 3;
+        if let Some((file_ep, _, _)) = fs {
             grants[3] = endpoint_cap(file_ep, Rights::WRITE);
-            4
-        } else {
-            3
-        };
+            n_grants = 4;
+            // Only reachable with `fs`, and that is the pairing rather than an oversight: an
+            // authenticated share is an fs-backed share, and a credential endpoint handed to a
+            // fixture-serving adapter would grant an authority nothing could use.
+            if let Some((cred_ep, _)) = cred {
+                grants[4] = endpoint_cap(cred_ep, Rights::WRITE);
+                n_grants = 5;
+            }
+        }
         run(
             image,
             Spawn {
@@ -507,6 +545,12 @@ fn spawn_stack_client(
 /// [`spawn_stack_client`] documents its two halves. With `Some` the adapter serves the RedoxFS
 /// share the seeding client just wrote; with `None` it serves its baked-in fixture.
 ///
+/// `cred` is milestone 54's identity item, and it is the difference between a share anyone on the
+/// forwarded port may change and one that wants a proof: the credential service's verify endpoint
+/// and the frame it shares with a client. Pair it with `fs`'s mode being
+/// [`SMB_SHARE_FS_AUTHENTICATED`]; the adapter refuses every login without the endpoint and admits
+/// every guest without the mode, so the two are only useful together.
+///
 /// `udp_bind_grant` is the third milestone in the same spawn (55's mDNS stack half): the UDP port
 /// range the socket client may `BIND_UDP`, [`socket_proto::udp_bind_grant`]'s half of the word, or
 /// zero when no client needs one. It is a *separate* parameter rather than folded into the port
@@ -529,6 +573,7 @@ pub fn start_net_stack_with_smb(
     smb_rounds: u64,
     mdns_queries: u64,
     fs: Option<(EpId, u64, u64)>,
+    cred: Option<(EpId, u64)>,
     udp_bind_grant: u64,
 ) -> Option<(EpId, EpId, EpId, Holding)> {
     let dev = crate::virtio::find_net_device()?;
@@ -539,9 +584,16 @@ pub fn start_net_stack_with_smb(
         | udp_bind_grant;
     let (net_stack_report, stack, mut held) =
         wire_net_server(image, transport, dev.intid, None, grant);
-    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, &mut held);
-    let smb_report =
-        spawn_stack_client(smb_image, smb_rounds, smb_port as u64, stack, fs, &mut held);
+    let cli_report = spawn_stack_client(image, cli_arg, 0, stack, None, None, &mut held);
+    let smb_report = spawn_stack_client(
+        smb_image,
+        smb_rounds,
+        smb_port as u64,
+        stack,
+        fs,
+        cred,
+        &mut held,
+    );
 
     // Drain the DHCP lease report, as in start_net_stack: the clients block on their first
     // request until the server enters its serve loop.
@@ -553,7 +605,15 @@ pub fn start_net_stack_with_smb(
     // lease is the only place anyone knows it, so the responder is spawned *after* this recv and
     // handed the address it reported.
     let lease = crate::sched::ipc_recv(net_stack_report)[0];
-    let mdns_report = spawn_stack_client(mdns_image, mdns_queries, lease, stack, None, &mut held);
+    let mdns_report = spawn_stack_client(
+        mdns_image,
+        mdns_queries,
+        lease,
+        stack,
+        None,
+        None,
+        &mut held,
+    );
 
     Some((cli_report, smb_report, mdns_report, held))
 }
@@ -586,9 +646,12 @@ pub fn start_smb_serve(
     let grant = socket_proto::listen_grant(445, 445) | socket_proto::udp_bind_grant(5353, 5353);
     let (report, stack, mut held) =
         wire_net_server(net_stack_image, transport, dev.intid, None, grant);
-    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs, &mut held);
+    // `None` for the credential endpoint: the demo boot serves guests, and its banner says so. See
+    // `smb_server`'s BUGS on why a flag is not what closes that (there is no way to tell this boot a
+    // password; the only provisioner in the tree is a test program with a published fixture in it).
+    let smb_report = spawn_stack_client(smb_image, 0, 445, stack, fs, None, &mut held);
     let lease = crate::sched::ipc_recv(report)[0];
-    let mdns_report = spawn_stack_client(mdns_image, 0, lease, stack, None, &mut held);
+    let mdns_report = spawn_stack_client(mdns_image, 0, lease, stack, None, None, &mut held);
     // The holding is dropped rather than released: this boot serves until the machine stops, so
     // nothing here ever hands the memory back, which is the one caller for which that is right.
     Some((lease, smb_report, mdns_report))
