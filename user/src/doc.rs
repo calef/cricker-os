@@ -57,35 +57,46 @@
 //!     11  doc/kernel/ipc-naming.md      Who does IPC name?
 //! ```
 //!
-//! At the prompt, this is the whole of what *this* program can be made to do today, and `BUGS`
-//! says why:
+//! And what a reader then types, with the one limitation `BUGS` explains under it:
 //!
 //! ```text
+//! $ doc gate.txt | wc
+//!   1 4 26
+//! $ doc gate.txt
+//! refused
+//!   doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+//!   reader that is not this shell, as in '| wc'
 //! $ doc
 //!   doc: reads an input stream: name a file, redirect with '<', or pipe into it
 //! ```
 //!
+//! `gate.txt` is two lines, four words, twenty-four bytes; what comes back is one line, four words,
+//! twenty-six, because two source lines are one paragraph re-flowed and the two bytes are the body
+//! indent. Those three lines are `script/shell-check`'s, on both architectures.
+//!
 //! # BUGS
 //!
-//! - **`doc <page>` on its own deadlocks at the interactive prompt, and needs a `|` or a `>` after
-//!   it.** This is a property of the shell rather than of this program, found by running it: `swish`
-//!   sends a stage its **whole** input and only then drains the stage's output, and `sink_proto` is
-//!   a rendezvous `SEND`. So a program that writes while it is still reading blocks against a shell
-//!   that is still writing, and both stop. `wc` never meets this because it produces nothing until
-//!   end of stream; a renderer cannot work that way without holding the document, which is the
-//!   memory grant this program exists without. With anything downstream the reader is a separate
-//!   process and the deadlock is gone. `swish`'s `MAX_TEXT_CHUNKS = 32` is the second half of the
-//!   same problem: even without the deadlock the prompt would print only the first 512 bytes.
-//! - **And neither workaround for that deadlock delivers the file.** `doc gate.txt | wc` and
-//!   `doc gate.txt > page.txt` both answer `0 0 0`, which is this program rendering an *empty*
-//!   input: the named file reaches a stage only on the plain `doc gate.txt` path, the one that
-//!   deadlocks. So today there is no line a person can type that shows a rendered page. All three
-//!   limitations are the shell's, they are one lane's work, and the renderer underneath is proven
-//!   on this repository's own pages by `every_character_survives`.
+//! - **`doc <page>` on its own is refused at the prompt, and the refusal names the fix.** It used
+//!   to deadlock, and this entry said so for two weeks after it stopped being true. What happens
+//!   now is `grant_plan::check_chain` answering before anything is spawned: this program declares
+//!   that it writes while it reads, the shell would be both the writer and the reader of the line,
+//!   and a process has one wait point. `doc page.md | wc` runs, because `wc` absorbs the stream
+//!   before it answers, and the refusal says exactly that.
 //!
-//!   **Phase 2 made this sharper without touching it.** `apropos` now hands a reader the name of a
-//!   page, and the very next thing they type is the line that does not work. It is the same lane
-//!   and it is now the milestone's biggest gap.
+//!   **No scheduling fix exists**, which is worth knowing before reaching for one: alternating a
+//!   send with a receive deadlocks whenever this program reads twice before it writes, and the
+//!   other way round deadlocks whenever it writes twice before it reads, and the shell cannot know
+//!   which, because the sink contract exists so that neither end knows anything about the other.
+//!   What would fix it is somewhere for these bytes to go that is not the shell, and
+//!   `terminal_sink_caretaker` is already that thing for a declared second stream. Putting it in a
+//!   tail stage's *output* slot is a spawn-protocol decision, and it is the same one the pager and
+//!   the colour bit below need. See notes/manual.md and notes/pipes.md.
+//! - **`doc <page> | wc` and `doc <page> > out.txt` do deliver the named file.** They answered
+//!   `0 0 0` when this program shipped, because a pipeline's head was wired off the `Line`, which
+//!   carries no `<`; the planner's input operand is what the shell reads now. `script/shell-check`
+//!   types `doc gate.txt | wc` on both architectures and asserts `1 4 26` against `gate.txt`'s
+//!   `2 4 24`: two source lines re-flowed into one, plus two bytes of body indent, which is what
+//!   separates a rendered page from silence.
 //! - **No pager, and the reason is authority rather than effort.** Paging needs a keypress, a
 //!   keypress needs `line_editor::proto::OP_READLINE`, and that opcode rides on the terminal
 //!   endpoint whose read side *is* the keyboard. The spawn protocol has no way to hand a child the

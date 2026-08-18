@@ -187,6 +187,50 @@ through the same one-page-at-a-time `Pages`. The **rendering** is `swish::write_
 with the rest of what the prompt says. What is left in `user/src/swish.rs` is four filesystem
 requests and a 4 KiB page buffer.
 
+### And the same index, pointed at the repository
+
+`script/apropos <word>` is the guest's builtin with a checkout underneath it instead of a
+filesystem image. **It is milestone 117's finding rather than a convenience.** Three stranger runs
+have measured what a newcomer cannot reach by following this tree while doing ordinary work, and it
+is a list rather than an impression: `notes/net.md`, `notes/capabilities.md`, **any**
+`design/decisions/` file, and `crates/abi/src/lib.rs`, which is four syscall numbers and the whole
+design on one screen. None of them is hidden. Nothing a person would type led to them.
+
+```text
+$ script/apropos capability
+512 pages, 5035511 bytes of documentation in this repository
+
+searching for: capability
+
+     46  notes/capabilities.md                             Capabilities, and why the kernel has no `open()`
+     43  notes/README.md                                   Concept notes
+     37  design/roadmap/47-navigation-and-naming.md        47. Navigation and naming: `cd`, `pwd`, `ls`, `m
+     33  notes/std.md                                      Rust `std` on the native ABI
+     32  notes/pipes.md                                    Pipes and redirection: `>`, `<` and `|` are one
+
+  16 of 302 pages, strongest first
+```
+
+Three things about that are deliberate.
+
+**It is the same code**, `manual::index::build` and `manual::index::search`, one shard per part of
+the tree and the same merge across shards the shell does with one 4 KiB page. Not a second
+implementation, so a defect in the layout shows up in both places and a fix lands in both. What
+differs is what a result *names*: a guest result names `doc/<bundle>/<page>`, because that is what a
+shell there can designate, and this one names a path in this repository, because that is what a
+person with a checkout opens. Both come out of the same `Found`; the store location and the origin
+are two fields it already carried.
+
+**Crate and program module headers are pages.** That is the half that makes `crates/abi/src/lib.rs`
+findable at all, and no markdown page was ever going to do it: the document a reader wants about the
+ABI *is* that file's header. A `//!` block is markdown already, so it indexes with no conversion and
+no copy, and the result names the source file, which is the thing to open. A header shorter than a
+paragraph is skipped, because indexing it would put noise in front of the pages that answer.
+
+**There is no cache**, and a run is about a second over five megabytes. A cache that can be stale is
+worse here than a second of work, for the same reason `script/catch-up` and `script/names` are
+derived views: a maintained one rots and nothing says so.
+
 ### The store's own layout is a thing two programs agree on
 
 `doc/bundles` lists what is installed, one name per line; `doc/<bundle>/index` is a shard;
@@ -201,15 +245,15 @@ which is this whole milestone in one constant.
 
 | bundle | pages | terms | postings | markdown | index | probes |
 |---|---|---|---|---|---|---|
-| `manual` | 1 | 872 | 872 | 20625 | 40960 | 4 |
-| `swish` | 2 | 1730 | 2046 | 88088 | 73728 | 5 |
-| `kernel` | 2 | 1829 | 2115 | 63639 | 81920 | 5 |
+| `manual` | 1 | 1001 | 1001 | 24620 | 45056 | 4 |
+| `swish` | 2 | 1738 | 2055 | 88772 | 77824 | 5 |
+| `kernel` | 3 | 2367 | 3271 | 101022 | 102400 | 6 |
 | `glob` | 1 | 861 | 861 | 20019 | 40960 | 4 |
 
-**192,371 bytes of markdown produce 237,568 bytes of index**, which is 1.24x, and that is the number
-worth arguing with rather than the pleasant ones. (It was 1.56x when phase 1 measured it, and the
-improvement is not an optimisation: the notes it indexes grew, and page alignment's fixed floor is a
-smaller share of a bigger bundle.) Two things pay for it. A term record stores its
+**234,433 bytes of markdown produce 266,240 bytes of index**, which is 1.14x, and that is the number
+worth arguing with rather than the pleasant ones. (It was 1.56x when phase 1 measured it and 1.24x
+in the middle, and the improvement is not an optimisation: the notes it indexes grew, and page
+alignment's fixed floor is a smaller share of a bigger bundle.) Two things pay for it. A term record stores its
 term **inline** in 24 bytes so a probe is one page read rather than two, which is most of the bulk.
 And page alignment puts a four-page floor (16 KiB) under every bundle however small, so a bundle of
 one short page still costs 16 KiB to index.
@@ -229,16 +273,17 @@ $ cargo xtask manual capability
 documentation store: target/redoxfs-tree/doc
 
   bundle     pages   terms postings  markdown    index probes
-  manual         1     872      872     20625    40960      4
-  swish          2    1730     2046     88088    73728      5
-  kernel         2    1829     2115     63639    81920      5
+  manual         1    1001     1001     24620    45056      4
+  swish          2    1738     2055     88772    77824      5
+  kernel         3    2367     3271    101022   102400      6
   glob           1     861      861     20019    40960      4
 
-  192371 bytes of markdown, 237568 bytes of index
+  234433 bytes of markdown, 266240 bytes of index
 
 search: capability
+    46  doc/kernel/capabilities.md    Capabilities, and why the kernel has no `open()`  notes/capabilities.md
     32  doc/swish/pipes.md            Pipes and redirection: `>`, `<` and `|` are one   notes/pipes.md
-    15  doc/manual/manual.md          The manual: documentation as a system service   notes/manual.md
+    14  doc/manual/manual.md          The manual: documentation as a system service   notes/manual.md
     11  doc/kernel/ipc-naming.md      Who does IPC name?                              notes/ipc-naming.md
      8  doc/glob/glob.md              The glob matcher                                notes/glob.md
      3  doc/swish/line-discipline.md  The line discipline as a userspace component    notes/line-discipline.md
@@ -252,9 +297,10 @@ Search the same store from the prompt, where the answer is what a person acts on
 
 ```text
 $ apropos capability
+    46  doc/kernel/capabilities.md    Capabilities, and why the kernel has no `open()`
     32  doc/swish/pipes.md            Pipes and redirection: `>`, `<` and `|` are one
+    14  doc/manual/manual.md          The manual: documentation as a system service
     11  doc/kernel/ipc-naming.md      Who does IPC name?
-     8  doc/manual/manual.md          The manual: documentation as a system service
      8  doc/glob/glob.md              The glob matcher
      3  doc/swish/line-discipline.md  The line discipline as a userspace component
 $ caps wc doc/kernel/ipc-naming.md
@@ -370,7 +416,9 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 - **`apropos` searches from the root of what the shell holds, not from the cwd.** The store is
   installed at that root and a `cd` does not move the manual. A shell granted a *subtree* that does
   not contain `doc/` therefore cannot search at all, and says so with the filesystem's own errno.
-- **The index is 1.25x the markdown it indexes**, per the table above.
+- **The index is 1.14x the markdown it indexes**, per the table above, and it was 1.56x when
+  phase 1 measured it. The floor is what moves it: page alignment costs every bundle 16 KiB
+  however small, so the ratio improves as the bundles grow rather than because anything got better.
 - **A source line longer than `manual::LINE_MAX` (2048) loses its tail.** The longest line in this
   repository is 1835 bytes, so the corpus fits; a document from elsewhere may not, and
   `Renderer::truncated` reports it while `doc` does not print it.
@@ -387,18 +435,34 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 The guest-side `apropos` that used to head this list is built (phase 2, above), and it went to the
 builtin the entry predicted. What is left, in the order it pays off:
 
-1. **A shell that can show a document.** The three limitations at the top of `BUGS` are one lane and
-   they are the reason there is still no line a person can type that renders a page: teach `swish` to
-   drain a stage while it is still writing to it, raise `MAX_TEXT_CHUNKS`, and carry the file source
-   into a pipeline and a redirection. This is now the milestone's biggest gap, because `apropos`
-   hands a reader a page name and the next thing they type does not work.
-2. **A wiring bit in the spawn protocol** that says "this stage's output ends at the terminal", which
-   turns colour on and is the honest replacement for `isatty`.
-3. **The pager**, which is the same protocol decision seen from the other side: what it takes to
-   grant a child one line of input without granting it the keyboard.
-4. **The store as something a package installs**, rather than a table in `xtask`. `DOC_BUNDLES` is
+1. **One spawn-protocol decision, and it is three of this list's old entries at once.** Two of them
+   have been closed by other lanes since this list was written (the file does reach a pipeline's
+   head, and the prompt does not truncate at 512 bytes), and what is left is not a shell change.
+   There is still no line a person can type that renders a page, because the shell would be both
+   the writer and the reader of it and has one wait point. The fix is **somewhere for a tail
+   stage's output to go that is not the shell**, and `terminal_sink_caretaker` is already that
+   thing for a declared second stream: init endows it from the manifest, the bytes reach the screen
+   without passing through the shell, and a child holding it is the *default* for `2>` today, so
+   the authority increment for a program that already declares diagnostics is zero.
+
+   The same bit turns colour on, which is the honest replacement for `isatty`, and the pager is the
+   same decision seen from the other side: what it takes to grant a child one line of *input*
+   without granting it the keyboard. notes/pipes.md has been holding the question open since
+   milestone 50 and states the cost plainly: *"a shell that wanted a program to print straight to
+   the screen rather than through its own result endpoint could hand it over, and would lose the
+   ability to redirect that program at all."* The obvious narrowing is that the shell hands it over
+   **only** on a line with no `>` and no `|`, which it can decide from the plan before it spawns
+   anything, so nothing loses its redirection. That narrowing is a proposal and not a decision:
+   what a spawned program holds at this prompt is calef's, and it is the syscall-adjacent kind of
+   choice the *move fast on what can be undone* tenet puts on the expensive side.
+2. **The store as something a package installs**, rather than a table in `xtask`. `DOC_BUNDLES` is
    the shape milestone 40 asked for minus a package manager, and milestone 39 is where the manifest,
    the hash and the version it should hang off already live.
+3. **Ranking that divides by length.** `script/apropos` made this matter: over six pages occurrence
+   count is fine, and over 512 a long page that mentions a word in passing can outrank a short page
+   about it. A page record is 128 bytes and holds 122, so a token count fits in the spare six with
+   no format growth at all. Not taken here because it changes what the guest answers and this lane
+   was already correcting a record rather than writing one.
 
 Phase 3 of the roadmap (a graphical viewer as a compositor client) is untouched and still wants
 milestone 33's rungs.

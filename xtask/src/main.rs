@@ -4113,7 +4113,20 @@ fn mkfs_elf(triple: &str) -> String {
 const DOC_BUNDLES: &[(&str, &[&str])] = &[
     ("manual", &["notes/manual.md"]),
     ("swish", &["notes/pipes.md", "notes/line-discipline.md"]),
-    ("kernel", &["notes/ipc-naming.md", "notes/stack.md"]),
+    // **`notes/capabilities.md` is here because of milestone 117 rather than because of symmetry.**
+    // Three stranger runs found it unreachable by following the tree, and it is the page that
+    // answers what this system's central word means. A store that can be searched from the prompt
+    // and does not carry it is a manual with the first chapter missing. It is the kernel's own
+    // document, so it is in the kernel's bundle; `script/apropos` is the other half, for the reader
+    // who has a checkout rather than a prompt.
+    (
+        "kernel",
+        &[
+            "notes/ipc-naming.md",
+            "notes/stack.md",
+            "notes/capabilities.md",
+        ],
+    ),
     ("glob", &["notes/glob.md"]),
 ];
 
