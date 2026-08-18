@@ -79,8 +79,24 @@ paragraph directly under its status, and `script/roadmap` fails on a file that d
 |---|---|
 | `NONE` | A lane could start today. No decision is owed and no dependency is missing. |
 | `DECISION` | Waits on calef. The prose says which decision, and cites `design/open-decisions.md` where an entry exists. |
-| `HARDWARE` | Waits on a machine: the VisionFive 2 (~2026-08-21), the milestone 87 x86 box, a rented instance, a real PMU. |
+| `HARDWARE` | Waits on a machine **or on somebody sitting at one**: the VisionFive 2, the milestone 87 x86 box, a rented instance, a real PMU. See below: an arrived board does not discharge this gate. |
 | `MILESTONE <n>` | Waits on work this roadmap already tracks, named by number. |
+
+**`HARDWARE` covers two different waits, and conflating them cost real time** (calef, 2026-08-18).
+The obvious one is that the machine does not exist here yet, and it discharges when a box arrives.
+The second is that the machine has arrived and **the work still needs a person at it**: flashing an
+image, watching a serial console, power-cycling a board that has wedged, reading a screen no emulator
+renders. That one never discharges by waiting.
+
+**A lane cannot do the second kind, and the roadmap could not say so.** Milestones 16 and 53 both
+carried gate `NONE` after the VisionFive 2 arrived on 2026-08-14, because the board was here and
+nothing was owed. Both then sat on the ready list for days: `script/roadmap --ready` was offering
+work no background lane could take, and every sweep that read it had to rediscover why by hand.
+
+**So `HARDWARE` is the right token for both**, and the prose after it must say which. "The board is
+not here" and "the board is here and this needs your hands" are the same answer to *"can a lane start
+this"* and a different answer to *"what would change it"*. Where the second applies, say what a person
+has to do, so a reader can tell an idle milestone from a blocked one.
 
 Four rules make it mechanical rather than decorative. A gate may name **more than one** token
 (`**Gate: MILESTONE 75, HARDWARE.**`), because milestone 74 genuinely waits on both. `NONE` stands

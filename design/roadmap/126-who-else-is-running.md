@@ -5,7 +5,17 @@ authority utilities become on this system. **Scoped to the whole package by cale
 consistency with milestone 123's approach to popular packages: the corpus is chosen by an external
 ordering and taken in the units that ordering uses, which is packages rather than programs we like.
 
-**Gate: NONE.** `ps` needs nothing that does not exist. The rest need work this milestone builds.
+**Gate: DECISION.** It was `NONE` while `ps` was the next thing to build, and `ps` and `pgrep` are
+now built. **Every remaining view program is blocked on something a lane cannot supply**, which the
+strata section names one by one: `pmap` on extending `ENUMERATE` to `Aspace`, which is calef's call
+and is the open decision this gate points at; `top` on per-thread CPU accounting that does not exist;
+`pwdx` and `w` on a process display name this system has no design for. The `sysctl` fork below is
+calef's too, and it decides whether "we implemented `procps`" is a true sentence.
+
+**What a lane could still take without waiting**, and it is the honest exception to the token: `watch`
+needs nothing (`line_editor` and the compositor exist), and the real `dpkg -L procps` file list is
+owed before anyone counts programs again. Neither is the milestone's next increment, which is why the
+gate reads `DECISION` rather than `NONE`.
 
 ## Built: the first stratum, 2026-08-16
 
