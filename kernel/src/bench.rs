@@ -76,6 +76,7 @@ pub fn run() -> ! {
     spawn_el0();
     smp_throughput();
     fs_read();
+    fs_throughput();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -788,6 +789,85 @@ fn fs_read() {
     }
     let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: fs_read {ticks} {iters}");
+}
+
+/// **Filesystem throughput through the confined FS server** (milestone 38, DECISIONS §34
+/// condition 2). Six phases over one file the client creates on the RedoxFS image: sequential
+/// write, sequential read, random read, a **record-aligned** read (the cheapest 4 KiB read RedoxFS
+/// can serve, which is what makes the record-geometry claim a measurement rather than arithmetic),
+/// random write, and the cost of producing a page of payload, which the write phases pay inside
+/// their window and a reader should be able to subtract. `fs_read` above answers "what does one file
+/// read cost"; this answers "how fast does this architecture move a file", which is the question a
+/// microkernel skeptic actually asks and the one the tree had no number for at all.
+///
+/// **It reports both a row and a probe line, and the split is deliberate.** The row
+/// (`bench: fs_seq_read <ticks> <transfers>`) is the harness's ordinary shape, so the table's
+/// ns/iter column is the per-request latency, which is the number that compares to `fs_read`. The
+/// probe line carries MiB/s, which is the number that compares to another operating system, and it
+/// is a probe rather than a row because the baseline gate must never see any of this: like
+/// `fs_read`, every phase here is device- and interrupt-driven, so it self-skips off the
+/// `--real --smp` boot and could not be deterministic if it did not.
+///
+/// **One transfer is 4096 bytes and cannot be more**, because a `fs_proto` request carries its
+/// payload through the one page the client shares with the server. So these figures are a request
+/// rate in disguise, and any comparison against a system whose client may pass a 64 KiB buffer is
+/// comparing two different things. notes/benchmarks.md states that next to the numbers rather than
+/// under them.
+fn fs_throughput() {
+    // The same gate as `fs_read`: this is meaningful only on the `--real --smp` boot, which is the
+    // one that attaches the RedoxFS disk and proves the stack.
+    if crate::smp::online_count() <= 1 {
+        return;
+    }
+    let (Some(blk_image), Some(fs_server), Some(fs_test_client)) = (
+        crate::user::program("init"),
+        crate::user::program("fs_server"),
+        crate::user::program("fs_test_client"),
+    ) else {
+        return;
+    };
+    // `start` reuses the service `fs_read` already wired, so this spawns one more client on the
+    // same FS server and the same shared page: `readiness` comes back `None` and there is nothing
+    // to wait for but the reports.
+    let Some((readiness, report)) = crate::user::fs_service::start(
+        blk_image,
+        fs_server,
+        fs_test_client,
+        fs_proto::fixture::throughput::ROLE,
+    ) else {
+        return; // no RedoxFS disk on this run
+    };
+    if let Some((blk_ready, ready)) = readiness {
+        let _ = sched::ipc_recv(blk_ready);
+        let _ = sched::ipc_recv(ready);
+    }
+    let hz = crate::arch::timer::frequency();
+    for _ in 0..fs_proto::fixture::throughput::PHASES {
+        let [ticks, transfers, phase, ..] = sched::ipc_recv(report);
+        let Some(name) = fs_proto::fixture::throughput::name(phase) else {
+            println!("bench-probe: fs_throughput unknown phase {phase}");
+            continue;
+        };
+        println!("bench: {name} {ticks} {transfers}");
+        // MiB/s, in integer arithmetic on the kernel's side because the kernel is where the counter
+        // frequency and the transfer size are both known. `bytes * hz / ticks` is bytes per second
+        // and the shift turns that into MiB/s; the extra factor of 100 buys two decimal places,
+        // without which the interesting figures here (1.52 and 2.59) both print as "2". Ticks of
+        // zero would mean the counter did not advance across a whole phase, which is a broken run
+        // rather than a fast one, so it reports zero instead of dividing.
+        let bytes = transfers * fs_proto::fixture::throughput::UNIT as u64;
+        let hundredths = bytes
+            .checked_mul(hz)
+            .and_then(|v| v.checked_mul(100))
+            .and_then(|v| v.checked_div(ticks))
+            .map(|v| v >> 20)
+            .unwrap_or(0);
+        println!(
+            "bench-probe: {name}_mib_per_s {}.{:02}",
+            hundredths / 100,
+            hundredths % 100
+        );
+    }
 }
 
 // --- Multi-hart aggregate throughput (DECISIONS §28, the SMP placement win) ---
