@@ -1569,6 +1569,231 @@ print(
 )
 SMBKEY
 
+# The region claim protocol has ONE decision path (milestone 136).
+#
+# Milestone 135 lifted the untyped region table out of `kernel/src/untyped.rs` into
+# `crates/regions` so that `script/interleaving-check` searches the thing the kernel runs rather
+# than a paraphrase of it. That is worth exactly as much as the claim "the kernel calls the
+# modelled code" stays true, and when 135 landed **nothing checked it**: a later lane could hand
+# the decision back to the kernel and every gate in this tree would stay green.
+#
+# The regrowth is not hypothetical arithmetic. Before pull request #316, `untyped::destroy` read a
+# region under the `REGIONS` lock, released it, revoked, freed, and removed the slot last; two
+# callers inside that gap each ran the free loop over the same pages, and it surfaced as
+# `double free of frame 0x82a3e000` in one of 45 loaded riscv64 runs.
+#
+# **What actually stops the kernel writing that again is that `crates/regions` does not export the
+# pieces.** `Region` and its fields are private, so from outside the crate there is no way to learn
+# that a region is reclaimable and still leave its name resolving. The loom harness that
+# reconstructs the pre-#316 shape (`the_pre_fix_protocol_double_frees_and_this_model_finds_it`) has
+# to sit *inside* the module to do it, and says so. So the kernel cannot regrow the gap on its own;
+# it can only regrow it if this crate's public surface widens to let it, which is what this pins.
+#
+# **The receiver is pinned as well as the name**, and that half is the reason to prefer this to a
+# count. `claim_for_destroy` takes `&mut self`, and the single exclusive borrow IS the mechanism:
+# there is no intermediate state in which a caller holds a decision about a table it no longer
+# holds. A lane that respelled it `&self` over an interior-mutable table would delete that argument
+# entirely while adding and removing nothing a name-set check could see.
+#
+# **This does not check that the kernel is free of check-then-act pairs, because it is not, and
+# should not be.** `sched::reclaim_region` reads `untyped::has_children` under one lock hold and
+# acts several holds later. That is safe, and the reason is worth stating rather than exempting:
+# the early read is a *hint* that avoids a destructive teardown, and correctness comes from
+# `claim_for_destroy` deciding again under the borrow that acts. So the property here is not "the
+# kernel never looks before it leaps" but "nothing releases a region's pages except under a claim",
+# which is why the second half of this check is about the free sites rather than about the reads.
+#
+# The escape hatch is one line, on purpose: add the item, with a reason, and say how it cannot be
+# the read half of a decision the table no longer knows it gave out. A gate whose only answer is
+# "no" is a gate people route around.
+echo "==> the region claim protocol has one decision path"
+python3 - <<'REGIONCLAIM'
+import re
+import sys
+
+TABLE = "crates/regions/src/table.rs"
+KERNEL = "kernel/src/untyped.rs"
+
+# (owner, name, receiver). Owner is the `impl` a method sits in, `-` for a free item; receiver is
+# `-` for an associated function with no self. Everything reachable from outside the crate is here,
+# because the narrowness of this list is the safety property rather than a side effect of it.
+PINNED = {
+    ("-", "NO_PARENT", "const"),
+    ("-", "DestroyClaim", "struct"),
+    ("-", "RegionTable", "struct"),
+    # The claim's own getters. `&self` on a claim is harmless: holding one already means the table
+    # removed the name, so there is nothing left to race with.
+    ("DestroyClaim", "base_page", "&self"),
+    ("DestroyClaim", "pages", "&self"),
+    ("DestroyClaim", "is_root", "&self"),
+    ("RegionTable", "new", "-"),
+    # The `&self` methods on the table are the observers, and they are the half to think hardest
+    # about: each answers a question about a region while leaving its name resolving, so a caller
+    # can hold the answer after it has stopped being true. All three are safe today because no
+    # caller acts on them without a claim, and `has_children` in particular is re-decided inside
+    # `claim_for_destroy`. A fourth wants that same argument written down before it lands.
+    ("RegionTable", "has_children", "&self"),
+    ("RegionTable", "usage", "&self"),
+    ("RegionTable", "bounds", "&self"),
+    ("RegionTable", "insert_root", "&mut self"),
+    ("RegionTable", "split", "&mut self"),
+    ("RegionTable", "retype_page", "&mut self"),
+    ("RegionTable", "retype_object_page", "&mut self"),
+    ("RegionTable", "unpin", "&mut self"),
+    # The protocol itself. `&mut self` is not a detail of the signature, it is the whole argument.
+    ("RegionTable", "claim_for_destroy", "&mut self"),
+    ("RegionTable", "return_to_parent", "&mut self"),
+}
+
+# The functions in the kernel module that may hand a region's pages back to the frame allocator:
+# the call each one must have made FIRST to have earned it, and why that call is the warrant. A
+# third site is one event this half catches; a site that frees without its warrant is the other,
+# and it is the one that nearly got past this gate.
+#
+# **The warrant is not decoration, and the measurement is on the record.** An earlier draft of this
+# check pinned only the SET of freeing functions, and it passed a rebuilt double free: `destroy`
+# was already a recorded site, so replacing its body with `has_children` + `bounds` + a free loop
+# and no slot removal changed nothing it looked at. That reconstruction needed no edit to
+# `crates/regions` at all, which is also why the surface pin above could not have saved it. Both
+# halves were needed and neither is sufficient.
+FREE_SITES = {
+    "create": (
+        "insert_root",
+        "the rollback taken when no region slot was free. `insert_root` returned None, so no name "
+        "was ever minted for this run and nobody else can be holding one.",
+    ),
+    "destroy": (
+        "claim_for_destroy",
+        "the claim-guarded free loop. A `DestroyClaim` is the only object in the system that "
+        "proves nobody else can be freeing the same run, because `claim_for_destroy` mints it in "
+        "the same borrow that removes the region's name.",
+    ),
+}
+
+
+def public_surface(path):
+    """Every item this module exports, as (owner, name, receiver).
+
+    Read lexically rather than with rustdoc's JSON because this has to run in `script/lint`, which
+    is seconds and needs no nightly rustdoc; the file is 400 lines of ordinary formatted Rust and
+    `cargo fmt` is a gate, so the shapes are stable. The `#[cfg(test)]` and `#[cfg(loom)]` modules
+    below are cut first: they are allowed the private internals (the falsification harness is built
+    from them) and they are not surface.
+    """
+    text = open(path, encoding="utf-8").read()
+    cut = text.find("#[cfg(all(test")
+    if cut > 0:
+        text = text[:cut]
+
+    owners = [(m.start(), m.group(1))
+              for m in re.finditer(r"^impl(?:<[^>]*>)? (?:\w+ for )?(\w+)", text, re.M)]
+    found = set()
+    for m in re.finditer(
+        r"^[ \t]*pub (?:const )?(fn|const|struct|enum|type|mod|use)\s+(\w+)([^{;]*)", text, re.M
+    ):
+        kind, name, rest = m.group(1), m.group(2), m.group(3)
+        owner = "-"
+        for start, who in owners:
+            if start < m.start():
+                owner = who
+        if kind != "fn":
+            found.add(("-", name, kind))
+            continue
+        args = rest[rest.find("(") + 1:].lstrip()
+        recv = ("&mut self" if args.startswith("&mut self")
+                else "&self" if args.startswith("&self")
+                else "self" if args.startswith("self") else "-")
+        found.add((owner, name, recv))
+    return found
+
+
+def free_sites(path):
+    """{function: calls it made before its first `memory::free`} for every freeing function.
+
+    Comment lines are dropped first, because this module explains the free loop in prose directly
+    above it and a gate that read the explanation would be reading itself. "Before" is line order
+    within the function, which is what a warrant means here: the claim has to be in hand when the
+    pages go, not mentioned somewhere in the same file.
+    """
+    code = [line for line in open(path, encoding="utf-8").read().split("\n")
+            if not line.lstrip().startswith("//")]
+    sites, seen, current = {}, set(), None
+    for line in code:
+        fn = re.match(r"(?:pub )?fn (\w+)", line)
+        if fn:
+            current, seen = fn.group(1), set()
+        for call in re.findall(r"\b(\w+)\s*\(", line):
+            seen.add(call)
+        if "memory::free(" in line and current not in sites:
+            sites[current] = set(seen)
+    return sites
+
+
+bad = []
+
+surface = public_surface(TABLE)
+for item in sorted(surface - PINNED):
+    bad.append(f"{TABLE}: {item[0]}::{item[1]} ({item[2]}) is public and is not pinned")
+for item in sorted(PINNED - surface):
+    bad.append(f"{TABLE}: {item[0]}::{item[1]} ({item[2]}) is pinned and is no longer public")
+
+if bad:
+    print("lint: the region claim protocol's public surface moved:", file=sys.stderr)
+    for line in bad:
+        print(f"  {line}", file=sys.stderr)
+    print(
+        "\nThis surface is what `kernel/src/untyped.rs` can reach, and its narrowness is why the\n"
+        "kernel cannot rebuild the pre-#316 check-then-remove gap that double-freed a region\n"
+        "(notes/interleaving.md, notes/object-revocation.md). Before editing the pin, answer the\n"
+        "question the pin exists to force:\n"
+        "\n"
+        "  Can a caller use this to learn that a region may be reclaimed, and still be holding\n"
+        "  that answer after the table has stopped agreeing with it?\n"
+        "\n"
+        "If it cannot, add it to PINNED here with a one-line reason. If it can, it belongs behind\n"
+        "`claim_for_destroy` instead: decide and remove the name in one borrow, so there is no\n"
+        "intermediate state for a second caller to race into. A `&self` method is the shape to\n"
+        "look hardest at, and a `&mut self` respelled `&self` is the change this pin exists for.\n"
+        "\n"
+        "Whatever you add, `script/interleaving-check` must search it. A public method loom has\n"
+        "never run is the blind spot milestone 135 closed, reopened.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+sites = free_sites(KERNEL)
+for name in sorted(set(sites) - set(FREE_SITES)):
+    bad.append(f"{KERNEL}: {name}() releases region pages and is not a recorded free site")
+for name in sorted(set(FREE_SITES) - set(sites)):
+    bad.append(f"{KERNEL}: {name}() no longer releases region pages, so its pin is stale")
+for name, calls in sorted(sites.items()):
+    warrant = FREE_SITES.get(name, (None, None))[0]
+    if warrant is not None and warrant not in calls:
+        bad.append(f"{KERNEL}: {name}() frees region pages without calling {warrant}() first")
+
+if bad:
+    print(f"lint: {KERNEL} releases region pages somewhere it has not earned:", file=sys.stderr)
+    for line in bad:
+        print(f"  {line}", file=sys.stderr)
+    print(
+        "\nReturning a region's pages to the frame allocator is the irreversible half of\n"
+        "reclamation, and pull request #316's double free was two callers reaching one such loop\n"
+        "for one region. Two functions may reach one, and each has a warrant it must take first:\n"
+        + "".join(f"\n  {n}(), warranted by {call}(): {why}\n"
+                  for n, (call, why) in FREE_SITES.items())
+        + "\nIf the pages came out of a live region, the warrant is a `DestroyClaim`. Deciding a\n"
+        "region is reclaimable and removing its name are one borrow (`claim_for_destroy`) exactly\n"
+        "so that there is no intermediate state for a second caller to race into; reading\n"
+        "`has_children` or `bounds` and then freeing puts that state back, and the two callers\n"
+        "that both pass the read both reach the loop. See notes/interleaving.md.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+print(f"the region claim protocol has one decision path: {len(PINNED)} public items pinned "
+      f"in {TABLE}, {len(FREE_SITES)} recorded free sites in {KERNEL}")
+REGIONCLAIM
+
 # Unused dependencies. DECISIONS §46 says taking a dependency is a decision, not a convenience; a
 # dependency nothing uses is that decision left un-revisited, and it still costs build time, audit
 # surface and a line in the supply-chain report. Our workspace was clean when this was added, so
