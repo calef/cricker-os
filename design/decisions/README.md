@@ -154,6 +154,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 93 | DECIDED | [The filesystem wire protocol is ours, and 9P is an adapter at the edge](93-filesystem-wire-protocol.md) |
 | 94 | DECIDED | [What may live in a userspace library, and what must be per-binary](94-what-may-live-in-a-library.md) |
 | 95 | PROPOSED | [A hand-written IPC fastpath, and whether it can stay proven](95-a-proven-ipc-fastpath.md) |
+| 96 | PROPOSED | [Process kernel or event kernel, and how to decide it](96-process-kernel-or-event-kernel.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
