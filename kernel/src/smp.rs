@@ -963,6 +963,20 @@ mod tests {
     /// running, already-preempted workers, migrating a framed kernel thread across harts. Every spin,
     /// each worker re-checks that `tp` still names the hart it runs on; one false reading is the bug.
     /// Pre-fix it trips within the first wave on RISC-V.
+    ///
+    /// # BUGS
+    ///
+    /// **Under host load this test loses coverage quietly rather than going red.** A worker's `life`
+    /// is a span of *counter* time, which advances whether or not the guest is executing, so a
+    /// worker descheduled through most of its 40 ms burns the span having run very little: it is
+    /// preempted fewer times, acquires a saved frame less often, and drives less of the migration
+    /// the test exists to provoke. Measured, not reasoned: one riscv64 wave took 1005 ms of wall
+    /// clock and was charged ten delivered ticks, so the guest ran for about a tenth of it. The
+    /// direction is safe (a loaded run passes having proven less; it does not fail having proven
+    /// nothing), which is why it is recorded rather than fixed. Denominating `life` in delivered
+    /// ticks too is the obvious repair and is not obviously right: it would stretch the workers as
+    /// well as the drain, and their product is what the harness's 90 s per-test ceiling has to
+    /// hold, where today only one factor grows. See notes/load-sensitive-assertions.md.
     #[test_case]
     fn a_migrated_kernel_thread_keeps_its_hart_pointer() {
         use core::sync::atomic::AtomicUsize;
