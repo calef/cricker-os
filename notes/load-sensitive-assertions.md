@@ -1050,6 +1050,14 @@ finds only the assertion itself. **One occurrence in forty-five loaded runs, and
 run that preceded the loop.** It is recorded in the BUGS section of notes/object-revocation.md,
 beside the `DESTROY` path it fired in.
 
+**Fixed 2026-08-18, and the instrument gets the credit rather than a re-run.** The cause was two
+names for one untyped region (a user-built address space freed a region it had only been lent) plus
+a `untyped::destroy` that removed the region's slot after freeing its pages instead of before, so
+two callers could both win. The write-up is now the "Two names for one region" section of
+notes/object-revocation.md. Worth keeping on this page: **the bug was found by reading, not by
+reproducing.** The lane that took it never saw the panic again, and did not need to; the
+deterministic test it landed stages the window by hand.
+
 Worth naming because it is the whole point of the milestone: a red run that means something. Eight
 of these nine reds are noise the instrument cannot yet remove, and the ninth is a memory-safety bug
 in the kernel. A suite that fails for reasons unrelated to the change trains everyone to re-run
@@ -1090,7 +1098,10 @@ fail here. Milestone 124's lane did 45 loaded full-suite runs without reproducin
 hunting.
 
 It does **not** establish a rate for the double free. One in forty-five is a sighting, not a
-frequency, and the next lane on it should assume the window is narrower than that.
+frequency, and the lane that took it assumed the window was narrower than that, correctly: a
+thirty-run attempt on 2026-08-18 never reached the test, because at a host load of 63 the suite died
+first on the riscv64 timer assertion two sections up. The bug was diagnosed by reading the reclaim
+path instead.
 
 And it does **not** transfer to CI. This is one laptop, one QEMU build, one load shape. GitHub's
 runners are a different machine with a different contention profile, which is the same caveat

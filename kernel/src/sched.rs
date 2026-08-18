@@ -2494,9 +2494,16 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // the running address space, out from under a thread that can still be scheduled. A `Dead`
     // corpse (milestone 22) is *not* live: it never runs again, so it is reapable here exactly like
     // an `Embryo` or a `Finished` thread, which is precisely what "reaped with §16 revocation"
-    // (DECISIONS §26) means. Its page's region stays pinned through this reap, so dropping its bound
-    // address space below refuses early in `untyped::destroy` (before that call's SCHED-taking
-    // sweep), the same property a configured embryo already relies on.
+    // (DECISIONS §26) means.
+    //
+    // **The pin is not what makes dropping a resident's address space safe, and saying it was cost
+    // us a double free.** This comment used to argue that the region stays pinned through the reap,
+    // so a bound space dropping here is refused by `untyped::destroy`. That is true for a drop that
+    // happens *inside* this function, under `SCHED`. It is false for the one that matters: the
+    // reaper (`finish_switch`) hoists a dead thread's space out, releases `SCHED`, and drops it
+    // afterwards, by which time `reclaim_region` may already have unpinned. What makes it safe is
+    // that a space built from a region it does not own never frees that region at all
+    // (`user::Backing`), which is a property of the space rather than of the timing.
     for t in sched.threads.iter_mut() {
         let phys = page_of(t);
         if !(base <= phys && phys < end) {

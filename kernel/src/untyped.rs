@@ -241,8 +241,11 @@ pub fn unpin(region: u64) {
     }
 }
 
-/// Return a region's whole backing to the frame allocator, **safely** (milestone 13). The region is
-/// emptied but its slot stays (indices are stable).
+/// Return a region's whole backing to the frame allocator, **safely** (milestone 13). The slot goes
+/// with it: its generation is bumped, so every `Untyped` capability minted for this region stops
+/// resolving and the slot is reused by the next `create`/`split`. (An older line here said the slot
+/// stays and indices are stable; that stopped being true when regions became generational, and the
+/// sentence outlived the fact.)
 ///
 /// # This was a tripwire, and revocation is what disarmed it
 ///
@@ -259,7 +262,7 @@ pub fn unpin(region: u64) {
 /// inverting the order.
 pub fn destroy(region: u64) {
     let (base, pages, parent, is_root) = {
-        let regions = REGIONS.lock();
+        let mut regions = REGIONS.lock();
         let Some(r) = regions.get(region) else {
             return;
         };
@@ -272,7 +275,21 @@ pub fn destroy(region: u64) {
         {
             return;
         }
-        (r.base, r.pages, r.parent, is_root)
+        let claim = (r.base, r.pages, r.parent, is_root);
+        // **Take the slot out under the same lock that decided to destroy it**, so destroying a
+        // region is a claim exactly one caller can win. This used to happen at the very end of the
+        // function, and the gap was a real double free rather than an untidiness: two callers with
+        // a name for one region (an owner's `Untyped::DESTROY` and a supervisor's `endpoint::REAP`,
+        // both landing in `sched::reclaim_region`) could each pass the refusal check above, each
+        // release this lock, and each run the free loop below over the same pages. `reap_supervised`
+        // already tells its caller that "a racing reap got there first and the name is now stale";
+        // removing the slot here is what makes that sentence true.
+        //
+        // Removing before the revoke and the frees is also the right order for everything else that
+        // resolves the name: a `retype_page` on a region whose pages are on their way back to the
+        // allocator now fails, where before it could hand out a page about to be freed.
+        regions.table.remove(region);
+        claim
     };
     // Unmap any page still mapped anywhere before the pages leave this region, whether they go back
     // to the allocator (a root) or back to the parent's budget (a child); a returned page that a
@@ -302,8 +319,4 @@ pub fn destroy(region: u64) {
             p.children = p.children.saturating_sub(1);
         }
     }
-
-    // Remove the slot, bumping its generation: every `Untyped` capability minted for this region now
-    // fails to resolve, and the slot is reused by the next `create`/`split`.
-    REGIONS.lock().table.remove(region);
 }

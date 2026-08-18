@@ -70,13 +70,58 @@ pub struct AddressSpace {
     /// `flush_asid` has made every entry so tagged vanish, which is what makes the number
     /// reusable.
     asid: u16,
-    /// **The untyped region every page of this address space comes from** (milestone 14 phase
-    /// B.4): the root table, the intermediate tables, and every owned leaf are retyped out of
-    /// one region carved at creation. The region *is* the record of what this address space
+    /// **The untyped region every page of this address space comes from, and who frees it**
+    /// (milestone 14 phase B.4): the root table, the intermediate tables, and every owned leaf
+    /// are retyped out of one region. The region *is* the record of what this address space
     /// owns, which is why there is no frame list: teardown is `untyped::destroy`, one call,
-    /// made safe by §13 revocation. The region has no capability minted for it, so userspace
-    /// can never retype or delegate from it; it is kernel bookkeeping with a budget.
-    region: u64,
+    /// made safe by §13 revocation.
+    ///
+    /// It carries the owner rather than just the name because **two different things build an
+    /// address space and only one of them owns its memory**. See [`Backing`].
+    backing: Backing,
+}
+
+/// **Who returns the region an [`AddressSpace`] spends, and the reason this is a type rather
+/// than a comment.**
+///
+/// A space is built two ways, and they differ in exactly this. [`AddressSpace::new`] carves its
+/// own region out of the frame allocator, so nobody else has a name for it and its `Drop` is the
+/// only thing that can ever free it. [`user_aspace_create`] is handed a region that the caller
+/// already holds an `Untyped` capability to (the `RETYPE_OBJ(ASPACE)` engine, milestone 19b), and
+/// that caller reclaims it with `Untyped::DESTROY`. **A lent region has two names for one run of
+/// memory, and only one of them may free it.**
+///
+/// Until 2026-08-18 both cases stored a bare `u64` and `Drop` called `untyped::destroy`
+/// unconditionally, on the theory that a lent region is still pinned (`retype_object_page` pins,
+/// `sched::reclaim_region` unpins) so the borrower's `destroy` is refused. That reasoning holds
+/// only while the pin is still set, and `reclaim_region` clears it **before** the reaper's
+/// deferred drop can land: `sched::finish_switch` hoists a dead thread's space out from under
+/// `SCHED`, releases the lock, and only then drops it. Two `untyped::destroy` calls for one
+/// region then overlap, both pass the refusal check, and both free every page of the run. That is
+/// the intermittent `double free of frame 0x82a3e000` in
+/// `force_kill_tests::destroy_reclaims_a_region_whose_resident_is_blocked_in_recv`
+/// (notes/object-revocation.md BUGS, one sighting in 45 runs on riscv64).
+///
+/// Making it a two-variant enum with the name inside is rung one of AGENTS.md's ladder: a space
+/// cannot be constructed without saying who frees its region, so the borrower's `Drop` cannot
+/// free memory it does not own even if the pin is gone.
+#[derive(Clone, Copy)]
+enum Backing {
+    /// The space carved this region itself and holds the only name for it. `Drop` frees it.
+    Owned(u64),
+    /// The region was handed in and belongs to whoever holds its `Untyped` capability. `Drop`
+    /// **must not** free it; the memory comes back at that owner's `sched::reclaim_region`.
+    Lent(u64),
+}
+
+impl Backing {
+    /// The region to retype from. Spending a lent region is correct and is the whole point of
+    /// `RETYPE_OBJ(ASPACE)`: the space runs on the caller's budget. Only *freeing* is restricted.
+    fn region(self) -> u64 {
+        match self {
+            Backing::Owned(region) | Backing::Lent(region) => region,
+        }
+    }
 }
 
 /// Page-table-and-slack overhead an address space needs beyond its content pages: the L0 root,
@@ -117,7 +162,7 @@ impl AddressSpace {
         Some(AddressSpace {
             root: Frame::from_addr(root),
             asid,
-            region,
+            backing: Backing::Owned(region),
         })
     }
 
@@ -131,7 +176,8 @@ impl AddressSpace {
         // Out of the address space's own region: the watermark is the ownership record, so
         // there is nothing to push anywhere. `retype_page` hands the page back zeroed, which is
         // what keeps `.bss` free for the loader.
-        let frame = crate::untyped::retype_page(self.region).ok_or(MapError::OutOfFrames)?;
+        let frame =
+            crate::untyped::retype_page(self.backing.region()).ok_or(MapError::OutOfFrames)?;
         self.map_at(va, frame, flags)?;
 
         // SAFETY: the frame is ours (retyped from our region), and the direct map is valid for
@@ -166,7 +212,7 @@ impl AddressSpace {
     /// they are covered by the one teardown call; the target page is whoever's it was.
     fn map_at(&mut self, va: u64, phys: u64, flags: Flags) -> Result<(), MapError> {
         let root = self.root.addr();
-        let region = self.region;
+        let region = self.backing.region();
 
         // SAFETY: `root` is a zeroed L0 table. Half::Low, so the mapper refuses a high address:
         // mapping the kernel's half into TTBR0 would build a translation the hardware never
@@ -235,7 +281,9 @@ pub fn user_aspace_create(region: u64) -> Option<u64> {
     let space = AddressSpace {
         root: Frame::from_addr(root),
         asid,
-        region,
+        // Lent, not owned: the caller holds the `Untyped` capability to this region and reclaims
+        // it with `DESTROY`. See `Backing` for the double free that taught us to say so.
+        backing: Backing::Lent(region),
     };
     let name = USER_SPACES.lock().insert_with(|_| space);
     if name.is_none() {
@@ -341,7 +389,14 @@ impl Drop for AddressSpace {
         // has no capability, so userspace could never retype from it), then return the whole
         // run, root and tables and leaves alike, to the allocator. This is the
         // "reclaim-on-process-death" wiring §13 deferred; the frame list it replaced is gone.
-        crate::untyped::destroy(self.region);
+        //
+        // **Only for a region we own.** A lent one (`user_aspace_create`) belongs to whoever
+        // holds its `Untyped` capability, and freeing it here is a double free of the whole run
+        // the moment `sched::reclaim_region` has already unpinned it. `Backing` carries the
+        // whole argument.
+        if let Backing::Owned(region) = self.backing {
+            crate::untyped::destroy(region);
+        }
 
         // The ASID contract (crates/asid): invalidate every TLB entry wearing our tag, THEN
         // hand the number back. In the other order, the next owner of this ASID could hit our

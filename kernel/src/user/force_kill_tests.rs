@@ -206,3 +206,75 @@ fn destroy_reclaims_a_region_whose_resident_is_blocked_in_recv() {
         "reclaiming a blocked resident's region did not return its frames to baseline",
     );
 }
+
+/// **A region lent to an address space is freed by its owner, and by nobody else.**
+///
+/// The deterministic half of the intermittent `double free of frame 0x82a3e000` that
+/// [`destroy_reclaims_a_region_whose_resident_is_blocked_in_recv`] hit once in 45 runs on riscv64
+/// (notes/object-revocation.md BUGS). That test needs two cores to disagree; this one needs
+/// nobody, because it stages the window by hand instead of racing for it.
+///
+/// The window, in the order the machine takes it. `sched::reclaim_region` reaps the region's
+/// threads under `SCHED`, then unpins, then destroys. The reaper (`sched::finish_switch`) takes a
+/// dead thread's address space out of the table under `SCHED`, **releases the lock**, and only then
+/// drops it, because `AddressSpace::drop` runs a revocation sweep that takes `SCHED` itself. So the
+/// unpin and the drop are unordered, and the old code's safety argument (the pin refuses the
+/// borrower's `destroy`) is exactly the thing the unpin has already withdrawn.
+///
+/// What this asserts is the property that makes the ordering irrelevant: **dropping a space built
+/// from a lent region returns nothing.** Called on the old code it fails on its own assertion
+/// rather than panicking in the allocator, which is the difference between a regression gate and a
+/// coin flip: the double free needs the two `untyped::destroy` calls to also overlap, and no test
+/// can schedule that.
+#[test_case]
+fn an_address_space_never_frees_a_region_it_was_lent() {
+    // Sample the baseline only once it has stopped moving. A thread reaped by an earlier test frees
+    // its space's region from `finish_switch`, on whatever core got there, a beat after the thread
+    // left the table; reading the count while that is in flight would make this assert on somebody
+    // else's arithmetic. Two agreeing samples a yield apart mean nothing is outstanding. Same
+    // lesson, same shape, as `sched::tests::a_finished_thread_is_reaped_and_its_memory_returned`.
+    let mut last = crate::memory::free_frames();
+    assert!(
+        super::tests::wait_for(|| {
+            sched::yield_now();
+            let prev = core::mem::replace(&mut last, crate::memory::free_frames());
+            prev == last
+        }),
+        "the free-frame count never settled, so this test cannot tell its own arithmetic from a \
+         neighbouring reap",
+    );
+    let frames_before = last;
+
+    // Four pages is enough for a root and one table; nothing is mapped here, so the space is only
+    // ever asked who owns its memory.
+    let region = crate::untyped::create(4).expect("no region for the lent-backing test");
+    let name = user_aspace_create(region).expect("no aspace from the region");
+    let allocated = frames_before - crate::memory::free_frames();
+    assert_eq!(
+        allocated, 4,
+        "the region should have cost exactly its 4 pages"
+    );
+
+    // Out of the registry, exactly as `Tcb::CONFIGURE` does: from here the space is an owned value
+    // whose `Drop` is the thing under test, which is the shape the reaper holds it in.
+    let space = take_user_aspace(name).expect("the space was not in the registry");
+
+    // `reclaim_region`'s unpin, arriving BEFORE the drop. This one line is the whole race.
+    crate::untyped::unpin(region);
+    drop(space);
+
+    assert_eq!(
+        crate::memory::free_frames(),
+        frames_before - 4,
+        "dropping an address space returned a region it was only lent: the region's real owner \
+         still has a name for those pages, and its `DESTROY` frees every one of them a second time",
+    );
+
+    // And the owner's reclaim still works, returning the run exactly once.
+    crate::untyped::destroy(region);
+    assert_eq!(
+        crate::memory::free_frames(),
+        frames_before,
+        "the region's owner could not return a run its borrower had let go of",
+    );
+}
