@@ -264,6 +264,14 @@ fn every_character_survives() {
             // content, so it is not offered as evidence. Nothing else is excluded: a table longer
             // than the buffer spills into another chunk rather than losing rows, which is exactly
             // the behaviour this test exists to hold in place.
+            //
+            // BUGS: **the exclusion misses a fence nested in a blockquote.** `> ```text` does not
+            // start with a backtick after `trim_start`, so its info string stays in the evidence
+            // while the renderer correctly drops it, and this test fails a page that rendered
+            // fine. Found 2026-08-18, by writing one in notes/crates-io-on-nife.md; the note was
+            // rewritten to avoid the construct rather than the filter widened, because whether
+            // the renderer keeps blockquote state across a nested fence is a separate question
+            // nobody has answered and a wider filter here would hide it.
             let want: Vec<char> = src
                 .lines()
                 .filter(|l| !l.trim_start().starts_with("```"))

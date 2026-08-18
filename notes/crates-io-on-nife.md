@@ -14,12 +14,9 @@ failed on one crate**, and it is not part of `std`.
 
 > **The split is 43/7 today, and it was 39/11 before `entropy_backend` landed** (re-derived
 > 2026-08-18, milestone 64's third pass, by `script/crate-probes`, which is now the measurement
-> rather than the recipe below). Both numbers are one command apart and both are real:
->
-> ```text
-> script/crate-probes                 -> 43 built, 7 failed
-> script/crate-probes --no-backend    -> the same fifty, minus this tree's getrandom answer
-> ```
+> rather than the recipe below). Both numbers are one command apart and both are real: bare
+> `script/crate-probes` gives 43 built and 7 failed, and `script/crate-probes --no-backend` runs
+> the same fifty without this tree's `getrandom` answer.
 >
 > The four crates between them are `rand`, `uuid`, `gix-object` and `gix-actor`, which is exactly
 > class A's remainder, and the second run was checked against those four rather than assumed: all
