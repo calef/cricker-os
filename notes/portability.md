@@ -128,3 +128,98 @@ on the real Apple Silicon core under Hypervisor.framework (`cargo xtask run --hv
 same `virt` devices but the real CPU, so it surfaces *CPU* assumptions while QEMU still holds the
 *devices*. It already caught one: we used the physical timer, which a hypervisor reserves, and
 switched to the virtual timer. See [virtualization.md](virtualization.md).
+
+## Measured against Liedtke's doctrine, 2026-08-18
+
+calef asked how true this OS is to Liedtke's position that a microkernel should be **rewritten per
+architecture**, exploiting whatever the specific processor gives you. Everything above this section
+describes how portable kernels are written; this one measures whether we are one, and against the
+one authority who argued we should not be.
+
+### What Liedtke actually claimed, and who withdrew it
+
+"On micro-Kernel Construction" (SOSP 1995) argues that a microkernel implementation should not
+strive for portability, because a hardware abstraction adds overhead and hides hardware-specific
+optimisation opportunities. His evidence was that the "compatible" i486 and Pentium had shifted the
+trade-offs enough to imply significantly different optimal implementations.
+
+**The position did not survive its own author.** Elphinstone and Heiser's 20-year retrospective
+(SOSP 2013) puts it flatly: the argument "was debunked by Liedtke himself, with the high-performance
+yet portable Hazelnut kernel and especially Pistachio", which reached 80 to 90 percent
+architecture-agnostic code. Their verdict table for this design principle reads **"Replaced:
+Non-portable implementation by significant portion of architecture-agnostic code."** Pistachio ports
+to MIPS, Alpha, 64-bit PowerPC and ARM each changed less than 10 percent of the code.
+
+So the doctrine to measure against is not "rewrite per architecture". It is the weaker and more
+interesting one that replaced it: be portable in structure, and specialise exactly where the
+hardware pays you to.
+
+### Where we sit
+
+Derived from the tree, not remembered (`find kernel/src -name '*.rs' | xargs wc -l`, against the same
+over `kernel/src/arch`):
+
+| | architecture-agnostic |
+|---|---|
+| Liedtke's original L4 (1993, i486) | ~0 percent, assembly per processor |
+| Pistachio | 80 to 90 percent |
+| **nife `kernel/src`** | **82 percent** (8,489 of 47,525 lines under `arch/`; 79 percent excluding the test and bench wiring) |
+| seL4, x86 against ARM | ~50 percent |
+
+Hand-written assembly is 1,152 lines, 2.4 percent of the kernel. Rule 1 holds: the only two `asm!`
+hits outside `arch/` are comments describing assembly that was removed.
+
+**We are at Pistachio's number and are less specialised than seL4.** The retrospective explains its
+own lower figure, and the explanation is not that seL4 is more Liedtke-true by intent: about half of
+its code is virtual memory, which is necessarily architecture-specific, and the fraction is high
+because seL4 is *smaller overall* with the agnostic resource management pushed to userland. Our
+`arch/` tree shows the same shape, with the two `mmu.rs` files at 2,781 lines making up a third of it.
+
+### Where we genuinely do exploit the processor
+
+The line count hides this, and it is the half of the doctrine that survived. The `arch/` directories
+do not abstract the two machines into a common denominator:
+
+- **TLB shootdown.** aarch64 issues `tlbi aside1is` and the *hardware* broadcasts it across the
+  inner-shareable domain. RISC-V has no such instruction, so it makes SBI RFENCE calls into firmware
+  that send IPIs. Two unrelated mechanisms for one intent, neither levelled down to the other.
+- **ASID width.** aarch64 mandates 8 bits, so the context-switch TLB flush disappears entirely.
+  RISC-V permits `satp.ASID` to be **zero bits wide**, so the kernel probes the width at boot and
+  keeps flushing on every switch when the field is absent (asids.md). That is per-processor
+  adaptation of exactly the kind Liedtke argued for, and the portable-looking alternative (always
+  flush) would have cost aarch64 the win.
+- **`TTBR0`/`TTBR1`.** On aarch64 the kernel lives in `TTBR1` and never moves, so a syscall needs no
+  address-space switch at all (higher-half.md). RISC-V has one `satp` and no such split.
+
+### Where we are not, and it is the one exception seL4 kept
+
+The retrospective, one sentence after the 50 percent figure: **"There is little architecture-specific
+optimisation except for the IPC fastpath."** That is the single place seL4 stayed Liedtke-true, and
+it is precisely the thing this tree does not have. On the narrow measure Liedtke cared most about,
+hand-tuning the hot path to the processor, we score zero. design/decisions/95-a-proven-ipc-fastpath.md
+is the open decision about whether to change that, and milestone 132 is the gate that measured the gap.
+
+**A finding worth stating because the opposite is the natural assumption: §19 does not forbid it.**
+The parity tenet says an architecture is a new `arch/` directory, "never a fork of the **feature
+matrix**", which governs which capabilities ship rather than whether implementations are shared. A
+hand-written per-arch fastpath is permitted outright, provided both ISAs get one or the gap goes in a
+scope note, and rule 1 actively gives it a home. The tenet a reader would expect to block
+Liedtke-style specialisation is orthogonal to it.
+
+### One constraint Liedtke did not have, and we share it with seL4
+
+§4.6 of the retrospective records that the traditional approach of hand-crafted assembler fast paths
+"was unsuitable for seL4, as the verification framework could only deal with C", which forced
+assembler down to the bare minimum. Our Kani boundary has the same shape for the same reason, which
+is why §95 recommends Rust over assembly and records that seL4's own assembly fastpath variant was
+written, never verified, and is not used.
+
+### An honest mark against the advice this note already gave
+
+"Port early, and port to something alien" is above, with the Alpha argument that porting to something
+*similar* teaches you nothing. **We ported to RISC-V**, which is another weakly-ordered load-store
+RISC. It found real bugs and reached full parity, so it was not wasted, but it validated less than
+the note's own standard asks for: it could not have exposed a hidden weak-ordering assumption,
+because it shares the assumption. The alien port this note called for is x86_64, which §19 names as a
+declared target that does not exist yet, and where TSO makes the weak-first discipline pay out in the
+direction rule 4 predicted.
