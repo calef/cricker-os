@@ -8,11 +8,13 @@ use crate::sched;
 const ROLE_NAVIGATE: u64 = 1;
 
 /// The bits every navigating shell must report whatever it was rooted in: `pwd` at its root,
-/// `..` clamped, an absolute path refused, a listing, and the whole `mkdir` / create / `rm`
+/// `..` clamped, `/` naming its own root and stopping there, a listing, and the whole `mkdir` / create / `rm`
 /// sequence including the two halves of "unlink is not revoke".
 const ALWAYS: u64 = nb::PWD_IS_ROOT
     | nb::CLAMPED_AT_ROOT
-    | nb::ABSOLUTE_REFUSED
+    // The namespace half (2026-08-18): `/` is the root of your own namespace, and it stops there.
+    | nb::ABSOLUTE_IS_MY_ROOT
+    | nb::ABSOLUTE_CLAMPED_AT_ROOT
     | nb::LISTED
     | nb::CREATED
     | nb::MADE_DIR
@@ -87,6 +89,9 @@ fn describe(v: u64) -> &'static str {
         "`..` climbed out of its root"
     } else if v & (nb::REACHED_SECRET | nb::REACHED_INNER) != 0 {
         "it opened a file that exists only in the OTHER shell's root"
+    } else if v & (nb::ABSOLUTE_REACHED_SECRET | nb::ABSOLUTE_REACHED_INNER) != 0 {
+        "an absolute path reached a file that exists only in the OTHER shell's root, so `/` is \
+         rooted in something wider than what this shell holds"
     } else if v & (nb::SAW_SECRET | nb::SAW_INNER) != 0 {
         "its listing held a name from the other shell's root"
     } else if v & nb::NAVIGATION_FAILED != 0 {
@@ -114,7 +119,12 @@ fn a_shell_navigates_its_own_subtree_and_clamps_at_its_root() {
     };
     assert_report(
         v,
-        ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+        ALWAYS
+            | nb::REACHED_INNER
+            | nb::ABSOLUTE_REACHED_INNER
+            | nb::SAW_INNER
+            | nb::DESCENDED
+            | nb::RETURNED,
         "sub",
     );
 }
@@ -143,13 +153,22 @@ fn two_shells_with_different_roots_cannot_name_each_others_files() {
 
     assert_report(
         a,
-        ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+        ALWAYS
+            | nb::REACHED_INNER
+            | nb::ABSOLUTE_REACHED_INNER
+            | nb::SAW_INNER
+            | nb::DESCENDED
+            | nb::RETURNED,
         "sub",
     );
     // The second holds a subtree with no child directory in it, so it cannot descend, and that
     // difference is the point: the same script against a different capability does different
     // things, and neither shell's world contains the other's.
-    assert_report(b, ALWAYS | nb::REACHED_SECRET | nb::SAW_SECRET, "other");
+    assert_report(
+        b,
+        ALWAYS | nb::REACHED_SECRET | nb::ABSOLUTE_REACHED_SECRET | nb::SAW_SECRET,
+        "other",
+    );
 
     // Stated once more as the crossing, because that is the sentence the milestone makes and an
     // exact-set assertion is easy to read as a list of unrelated facts.
@@ -160,4 +179,19 @@ fn two_shells_with_different_roots_cannot_name_each_others_files() {
     );
     assert_ne!(a & nb::REACHED_INNER, 0);
     assert_ne!(b & nb::REACHED_SECRET, 0);
+
+    // **And once more with a leading slash**, which is the namespace half's whole claim: `/` is
+    // the root of *your* namespace, so the same absolute token typed in two shells opens two
+    // different files, and neither can name the other's. A `/` rooted in anything global would
+    // set both of these bits in both reports.
+    assert_eq!(
+        (
+            a & nb::ABSOLUTE_REACHED_SECRET,
+            b & nb::ABSOLUTE_REACHED_INNER
+        ),
+        (0, 0),
+        "an absolute path named a file in the other shell's root",
+    );
+    assert_ne!(a & nb::ABSOLUTE_REACHED_INNER, 0);
+    assert_ne!(b & nb::ABSOLUTE_REACHED_SECRET, 0);
 }

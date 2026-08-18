@@ -66,12 +66,13 @@
 //! Recursive descent (`**/*.rs`) is **out of scope for this crate, permanently, not "not yet".** Two
 //! reasons, and the second is the real one.
 //!
-//! - **It needs a path separator, and milestone 47 has not settled path syntax.** The roadmap is
-//!   still weighing Plan 9's answer (absolute paths that are personal, resolved in the client's
-//!   `user_rt` against a table of prefix-to-directory-capability) against resolution in the FS
-//!   server. Baking `/` into the matcher now would be this lane guessing at another lane's decision,
-//!   and a matcher that has to be rewritten when the guess is wrong is worse than one that never
-//!   claimed to know.
+//! - **It needs a path separator, and the matcher still has no business owning one.** Milestone 47
+//!   settled the syntax on 2026-08-18 and it settled it Plan 9's way: a path is resolved in the
+//!   client, `/` is the root of the holder's own namespace, and the FS server still sees one
+//!   component per request. That answers the question this bullet was waiting on and does not
+//!   change the answer, because the resolution lives in `grant_plan::nav` and in the `std` PAL,
+//!   both of which walk components against capabilities. A matcher that also split paths would be
+//!   a second, unauthorised resolver.
 //! - **`**` is not a matching feature. It is a traversal feature.** `*` says "consider these bytes";
 //!   `**` says "and also descend into that directory, and the one below it". Descending means
 //!   opening a subdirectory, which in this system means holding a capability for it, which is

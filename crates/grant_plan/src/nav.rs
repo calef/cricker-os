@@ -25,9 +25,15 @@
 //! Divergence from Unix is a tax on every user forever, so it has to be forced by the model rather
 //! than chosen. Three are:
 //!
-//! - **No absolute paths** ([`Refused::Absolute`]). There is no namespace to root one in. The
-//!   refusal is that the name **cannot be expressed**, which is why the `std` PAL answers
-//!   `InvalidFilename` and not `PermissionDenied`: nothing checked a permission.
+//! - **`/` is the root of *your* namespace** ([`Path::from_root`]), which is Plan 9's answer and
+//!   not DOS's. There is no global namespace to root a path in, so an absolute path names the one
+//!   root you have: the directory capability you were granted. Two shells both type `/report.txt`
+//!   and open different files, or one of them opens nothing, because the syntax is rooted in what
+//!   each holds. It confers nothing: `/a/b` reaches exactly what `cd a; cd b` reaches, so this is
+//!   syntax for a walk you could already take. Until 2026-08-18 the syntax was refused outright
+//!   (`Refused::Absolute`), which was the honest statement of a namespace that did not exist yet
+//!   rather than a position; `pwd` has printed `/a/b` since the day it was written, and a shell
+//!   that prints a path you cannot type back is the tell that the refusal had outlived itself.
 //! - **`..` stops at your root** ([`Cwd::ascend`] returns `false`, and nothing is sent). You descend
 //!   from what you hold and never ascend past it. Chroot's shape, reached from the other direction,
 //!   and here it is not a check that could be wrong: the shell holds a *stack* of directory
@@ -60,11 +66,6 @@ pub const RENDER_MAX: usize = 1 + MAX_DEPTH * (1 + MAX_NAME);
 /// which is the distinction the whole model rests on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Refused {
-    /// It began with `/`. **There is no namespace to root an absolute path in**, so this is not a
-    /// refusal of access, it is that the name has no meaning here. Plan 9 kept the syntax by making
-    /// `/` the root of *your* namespace; that is the roadmap's recommendation and it is not built,
-    /// so the syntax is refused rather than quietly reinterpreted as relative.
-    Absolute,
     /// A component that is not a name: empty, longer than [`MAX_NAME`], or carrying a byte a name
     /// cannot carry.
     NotAName,
@@ -73,6 +74,10 @@ pub enum Refused {
     /// `..` at the root. The clamp, reported rather than silently ignored: at your root there is
     /// nothing above to name, and a shell that said nothing would leave a user believing they had
     /// moved.
+    ///
+    /// **An absolute path meets the same wall**, and that is the point of rooting one in your own
+    /// namespace rather than in a global one: `/..` is refused here exactly as `..` at the root is,
+    /// because both ask for the level above the only root there is.
     AtYourRoot,
 }
 
@@ -81,10 +86,6 @@ impl Refused {
     /// each says what *is*, never what was denied.
     pub fn message(self) -> &'static str {
         match self {
-            Refused::Absolute => {
-                "no absolute path: there is no namespace here to root one in, so that name cannot \
-                 be expressed"
-            }
             Refused::NotAName => "that is not a name: one component, at most 16 bytes",
             Refused::TooDeep => "too deep: this shell tracks at most 8 levels below its root",
             Refused::AtYourRoot => "you are at your root; there is nothing above it to name",
@@ -102,7 +103,8 @@ pub enum Step<'a> {
     Up,
 }
 
-/// A parsed relative path: a bounded sequence of [`Step`]s, validated before anything is sent.
+/// A parsed path: a bounded sequence of [`Step`]s and where they start from, validated before
+/// anything is sent.
 ///
 /// Validation is up front and total, so `cd a/b/c` fails at the prompt when `c` is unnameable rather
 /// than half way through, having already moved. The shell then walks the steps one at a time,
@@ -114,12 +116,23 @@ pub enum Step<'a> {
 pub struct Path<'a> {
     steps: [Step<'a>; MAX_DEPTH],
     n: usize,
+    from_root: bool,
 }
 
 impl<'a> Path<'a> {
     /// The steps, in order.
     pub fn steps(&self) -> &[Step<'a>] {
         &self.steps[..self.n]
+    }
+
+    /// **Whether the token began with `/`**, meaning it is resolved from the holder's own root
+    /// rather than from where the holder is standing.
+    ///
+    /// This is the whole of what an absolute path is here, and it is a fact about the *token*
+    /// rather than about any capability: the caller supplies the root, so a holder can only ever
+    /// root a path in the one it has. There is no second namespace for this bit to select.
+    pub fn from_root(&self) -> bool {
+        self.from_root
     }
 
     /// The last component, and the steps that lead to the directory holding it.
@@ -138,12 +151,11 @@ impl<'a> Path<'a> {
 /// Parse a token into a [`Path`], with no IO and no capability consulted.
 ///
 /// Empty components are skipped, so `a//b` and `deeper/` mean what they do everywhere else; that is
-/// Unix's behaviour and there is no divergence to earn. A leading `/` is [`Refused::Absolute`],
-/// which is checked first because it is the biggest fact about the token.
+/// Unix's behaviour and there is no divergence to earn. A leading `/` sets [`Path::from_root`],
+/// which is the biggest fact about the token and the only one the steps themselves cannot carry:
+/// `/a` and `a` parse to the same single step and mean different places.
 pub fn path(token: &[u8]) -> Result<Path<'_>, Refused> {
-    if token.first() == Some(&b'/') {
-        return Err(Refused::Absolute);
-    }
+    let from_root = token.first() == Some(&b'/');
     if token.is_empty() {
         return Err(Refused::NotAName);
     }
@@ -166,12 +178,20 @@ pub fn path(token: &[u8]) -> Result<Path<'_>, Refused> {
         };
         n += 1;
     }
-    if n == 0 {
-        // `.` or `/`-only: it names the place you already are, which no verb here needs and no
-        // verb here can act on. Refusing it beats acting on a name the user did not type.
+    if n == 0 && !from_root {
+        // `.` on its own: it names the place you already are, which no verb here needs and no verb
+        // here can act on. Refusing it beats acting on a name the user did not type.
+        //
+        // **`/` on its own is not that case**, which is why the two are told apart here. It names
+        // your root, which is a place you can go and a place you can list, and it is the one thing
+        // `pwd` prints that a user would otherwise be unable to type back.
         return Err(Refused::NotAName);
     }
-    Ok(Path { steps, n })
+    Ok(Path {
+        steps,
+        n,
+        from_root,
+    })
 }
 
 /// Whether one component can be a name at all. The same rule the FS server enforces at its own
@@ -337,6 +357,24 @@ impl Cwd {
         *self = next;
         Ok(())
     }
+
+    /// **Where a token leaves you**, which is [`apply`](Cwd::apply) with the one thing a token
+    /// carries that a step sequence does not: whether it started at your root.
+    ///
+    /// Every caller that resolves a *token* should use this rather than `apply`, because a path
+    /// that began with `/` means the same thing from anywhere and `apply` alone would silently
+    /// resolve it from wherever the holder happened to be standing. That failure would not be a
+    /// refusal, it would be an answer, and this file's own history says the dangerous refusal is
+    /// the one that answers.
+    ///
+    /// It returns a new position rather than mutating, because most callers want to know where a
+    /// name resolves *without moving*: a grant is planned against the position a token names, and
+    /// the shell stays where it is.
+    pub fn resolve(&self, p: &Path<'_>) -> Result<Cwd, Refused> {
+        let mut next = if p.from_root() { Cwd::root() } else { *self };
+        next.apply(p.steps())?;
+        Ok(next)
+    }
 }
 
 #[cfg(test)]
@@ -358,7 +396,8 @@ mod tests {
     /// Walk a token from a starting position, the way `cd` does.
     fn cd(cwd: &mut Cwd, token: &str) -> Result<(), Refused> {
         let p = path(token.as_bytes())?;
-        cwd.apply(p.steps())
+        *cwd = cwd.resolve(&p)?;
+        Ok(())
     }
 
     /// Capture `{:?}` without an allocator, for the same reason [`assert_pwd`] takes a buffer:
@@ -389,11 +428,6 @@ mod tests {
     /// drift here is user-visible; a containment check would also pass an empty string.
     #[test]
     fn each_refusal_is_its_own_exact_sentence() {
-        assert_eq!(
-            Refused::Absolute.message(),
-            "no absolute path: there is no namespace here to root one in, so that name cannot \
-             be expressed",
-        );
         assert_eq!(
             Refused::NotAName.message(),
             "that is not a name: one component, at most 16 bytes",
@@ -490,19 +524,81 @@ mod tests {
         assert_pwd(&cwd, b"/a/c/d");
     }
 
-    /// **An absolute path is refused as unnameable, not as forbidden.** The distinction is the whole
-    /// point: nothing checked a permission, the name has no referent here.
+    /// **`/` is the root of your own namespace**, which is Plan 9's answer: the syntax survives,
+    /// and what it roots in is the one directory capability the holder was granted.
     #[test]
-    fn an_absolute_path_cannot_be_expressed() {
-        assert_eq!(path(b"/etc/passwd"), Err(Refused::Absolute));
-        assert_eq!(path(b"/"), Err(Refused::Absolute));
-        assert!(
-            !Refused::Absolute.message().contains("denied"),
-            "an unnameable name must not be reported as a permission",
-        );
-        // A relative token that merely contains a slash is fine: it is a path, and the shell walks
-        // it one component at a time.
-        assert!(path(b"a/b").is_ok());
+    fn an_absolute_path_is_rooted_in_your_own_namespace() {
+        let p = path(b"/etc/passwd").unwrap();
+        assert!(p.from_root());
+        assert_eq!(p.steps(), &[Step::Down(b"etc"), Step::Down(b"passwd")]);
+
+        // `/` alone is your root: a place, not a name, so it has no final component to act on.
+        let root = path(b"/").unwrap();
+        assert!(root.from_root());
+        assert!(root.steps().is_empty());
+        assert_eq!(root.split_last_component(), None);
+
+        // A relative token that merely contains a slash is unchanged, and is *not* from the root.
+        assert!(!path(b"a/b").unwrap().from_root());
+    }
+
+    /// **An absolute path means the same place wherever you stand**, which is the whole of what
+    /// the leading `/` buys and the one thing a step sequence cannot say on its own.
+    #[test]
+    fn an_absolute_path_does_not_depend_on_where_you_are() {
+        let mut deep = Cwd::root();
+        cd(&mut deep, "a/b/c").unwrap();
+        let mut shallow = Cwd::root();
+
+        cd(&mut deep, "/logs/2026").unwrap();
+        cd(&mut shallow, "/logs/2026").unwrap();
+        assert_pwd(&deep, b"/logs/2026");
+        assert_pwd(&shallow, b"/logs/2026");
+
+        // And `pwd`'s output is now a token you can type back, which it was not before: this is
+        // the round trip, and its absence was the tell that the refusal had outlived its reason.
+        let mut buf = [0u8; RENDER_MAX];
+        let n = deep.render(&mut buf);
+        let mut elsewhere = Cwd::root();
+        cd(&mut elsewhere, "somewhere/else").unwrap();
+        let p = path(&buf[..n]).unwrap();
+        assert_eq!(elsewhere.resolve(&p).unwrap(), deep);
+    }
+
+    /// **An absolute path stops at your root exactly as `..` does**, which is why rooting the
+    /// syntax in your own namespace grants nothing: there is no level above the root to name, and
+    /// `/..` asks for the same nonexistent place that `..` at the root asks for.
+    #[test]
+    fn an_absolute_path_cannot_climb_above_your_root() {
+        let mut cwd = Cwd::root();
+        cd(&mut cwd, "a/b").unwrap();
+        assert_eq!(cd(&mut cwd, "/.."), Err(Refused::AtYourRoot));
+        assert_eq!(cd(&mut cwd, "/../../elsewhere"), Err(Refused::AtYourRoot));
+        assert_eq!(cd(&mut cwd, "/a/../../b"), Err(Refused::AtYourRoot));
+        // A refused absolute path moves nothing, the same all-or-nothing rule a relative one has.
+        assert_pwd(&cwd, b"/a/b");
+    }
+
+    /// **What an absolute path reaches, a walk could already have reached**: `/a/b` from anywhere
+    /// is `cd` to the root and then two descents, so the syntax adds no reach. That is the
+    /// property that keeps a namespace from becoming ambient authority, and it is stated here as
+    /// an equality between two ways of arriving rather than as a claim in prose.
+    #[test]
+    fn an_absolute_path_reaches_exactly_what_a_walk_from_the_root_reaches() {
+        for token in ["/a/b", "/logs/2026/july", "/", "/a/b/../c"] {
+            let mut absolute = Cwd::root();
+            cd(&mut absolute, "somewhere/deep").unwrap();
+            cd(&mut absolute, token).unwrap();
+
+            let mut walked = Cwd::root();
+            for step in path(token.as_bytes()).unwrap().steps() {
+                match step {
+                    Step::Down(name) => assert!(walked.descend(name)),
+                    Step::Up => assert!(walked.ascend()),
+                }
+            }
+            assert_eq!(absolute, walked, "{token} did not land where a walk lands");
+        }
     }
 
     /// The component rules, which are the FS server's own, checked at the prompt so a request that
@@ -511,6 +607,7 @@ mod tests {
     fn a_component_that_cannot_be_a_name_is_refused_before_anything_is_sent() {
         assert_eq!(path(b""), Err(Refused::NotAName));
         assert_eq!(path(b"."), Err(Refused::NotAName));
+        assert_eq!(path(b"/seventeen-bytes!!"), Err(Refused::NotAName));
         assert_eq!(path(b"a/seventeen-bytes!!"), Err(Refused::NotAName));
         assert_eq!(path(b"a/b\\c"), Err(Refused::NotAName));
         assert_eq!(path(b"a:b"), Err(Refused::NotAName));
