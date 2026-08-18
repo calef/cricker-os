@@ -1,0 +1,571 @@
+#!/bin/sh
+# script/crate-probes: build fifty crates.io crates against the nife `std` and report the split.
+#
+# Name: provisional, minted by milestone 64's third-pass lane on 2026-08-18 and not yet put to
+# calef, who names things. `crate-probes` is the measurement note's own word for what this builds
+# ("Candidate probes, roughly in order of how much they would teach", milestone 64's block), and it
+# is a noun and hyphenated per AGENTS.md's script convention. `std-probes` was considered and set
+# aside as naming the thing under test rather than the thing built, which would also have read as a
+# sibling of `std-src` and `std-exerciser`, which are xtask subcommands and not this;
+# `crates-io-probes` matches the note's filename and loses on length for no gain, since nothing here
+# probes anything but crates.io.
+#
+# This is milestone 64's measurement, which notes/crates-io-on-nife.md consumes and which milestones
+# 99 and 66 consume from there. It existed as a prose recipe in that note and was re-derived by hand
+# twice; the second re-derivation found the headline had been wrong for thirteen days. A measurement
+# a reader cannot re-run is a claim, so this is the mechanism.
+#
+# What a probe is, and both halves are load-bearing:
+#
+#   * a `[[bin]]`, never a `[lib]`, because a library target is never linked and a crate whose only
+#     blocker is a missing C library passes (`diesel` did, in the first pass), and
+#   * a `main` that CALLS the crate, because an unreferenced dependency is compiled and never
+#     linked (`diesel` passed again in the second pass with an empty `main`).
+#
+# The rule that covers both: a probe proves nothing the linker was not asked to do.
+#
+# EXAMPLES
+#
+#   script/crate-probes                 # all fifty, print the table and the split
+#   script/crate-probes regex tokio     # just these two
+#   script/crate-probes --list          # the crate names, one per line
+#   script/crate-probes --keep          # leave the generated probe crates for inspection
+#   script/crate-probes --no-backend    # measure the bare PAL, without entropy_backend
+#
+# BUGS
+#
+#   * It measures compile and link, and nothing else. `tempfile` passes here and every one of its
+#     operations returns "operation not supported" at run time. A green row is not a working crate.
+#   * Versions re-resolve on every run. The requirements below are the note's majors, so a probe can
+#     change its answer because crates.io moved rather than because this tree did; the run stamps
+#     the resolved version beside each result so a diff is readable.
+#   * It needs the network and it takes the account-wide `nife-dev` toolchain link (via
+#     `cargo xtask std-src`), so it is not a CI gate and is not wired into `script/test`.
+#   * `--target` is aarch64 only. The PAL is architecture-independent (it speaks the capability ABI,
+#     not an ISA), so a second target would re-measure the same thing at twice the cost; the ISA
+#     parity that matters is `std_exerciser`'s, which `script/test` runs on both.
+
+set -eu
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+WORK="$ROOT/target/crate-probes"
+SHARED="$WORK/.cargo-target"
+SPEC="$ROOT/targets/aarch64-unknown-nife.json"
+KEEP=0
+BACKEND_ON=1
+
+# Every probe carries `entropy_backend` and the `--cfg` that selects it, uniformly rather than only
+# for the eight crates that pull `getrandom`. A consumer cannot know in advance whether its
+# dependency closure reaches `getrandom`, so the configuration under measurement is the one a real
+# workspace would write once in its own `.cargo/config.toml`. See entropy_backend/src/lib.rs.
+BACKEND="$ROOT/entropy_backend"
+
+probe_names() {
+    cat <<'EOF'
+itertools
+bitflags
+memchr
+byteorder
+smallvec
+hashbrown
+nom
+regex
+httparse
+semver
+url
+serde
+serde_json
+toml
+csv
+base64
+sha2
+hex
+flate2
+miniz_oxide
+log
+anyhow
+thiserror
+once_cell
+bytes
+chrono
+time
+tempfile
+walkdir
+fs-err
+ignore
+crossbeam-channel
+rayon
+num_cpus
+mio
+tokio
+clap
+tracing
+gix-hash
+rand
+uuid
+gix-object
+gix-actor
+zip
+ring
+gix-config
+gix
+tar
+diesel
+rocket
+EOF
+}
+
+# The dependency line each probe's Cargo.toml gets. Where a crate has a pure-Rust option the probe
+# takes it (`flate2`'s `rust_backend`), and where a feature is the point of the probe it is named
+# (`tokio`'s `rt`, `diesel`'s `sqlite`); notes/crates-io-on-nife.md records that this is a choice
+# the measurement makes on the reader's behalf and that a different feature set gives a different
+# answer.
+probe_dep() {
+    case "$1" in
+    itertools) echo 'itertools = "0.14"' ;;
+    bitflags) echo 'bitflags = "2"' ;;
+    memchr) echo 'memchr = "2"' ;;
+    byteorder) echo 'byteorder = "1"' ;;
+    smallvec) echo 'smallvec = "1"' ;;
+    hashbrown) echo 'hashbrown = "0.15"' ;;
+    nom) echo 'nom = "8"' ;;
+    regex) echo 'regex = "1"' ;;
+    httparse) echo 'httparse = "1"' ;;
+    semver) echo 'semver = "1"' ;;
+    url) echo 'url = "2"' ;;
+    serde) echo 'serde = { version = "1", features = ["derive"] }' ;;
+    serde_json) echo 'serde_json = "1"' ;;
+    toml) echo 'toml = "0.9"' ;;
+    csv) echo 'csv = "1"' ;;
+    base64) echo 'base64 = "0.22"' ;;
+    sha2) echo 'sha2 = "0.10"' ;;
+    hex) echo 'hex = "0.4"' ;;
+    flate2) echo 'flate2 = { version = "1", default-features = false, features = ["rust_backend"] }' ;;
+    miniz_oxide) echo 'miniz_oxide = "0.8"' ;;
+    log) echo 'log = "0.4"' ;;
+    anyhow) echo 'anyhow = "1"' ;;
+    thiserror) echo 'thiserror = "2"' ;;
+    once_cell) echo 'once_cell = "1"' ;;
+    bytes) echo 'bytes = "1"' ;;
+    chrono) echo 'chrono = "0.4"' ;;
+    time) echo 'time = "0.3"' ;;
+    tempfile) echo 'tempfile = "3"' ;;
+    walkdir) echo 'walkdir = "2"' ;;
+    fs-err) echo 'fs-err = "3"' ;;
+    ignore) echo 'ignore = "0.4"' ;;
+    crossbeam-channel) echo 'crossbeam-channel = "0.5"' ;;
+    rayon) echo 'rayon = "1"' ;;
+    num_cpus) echo 'num_cpus = "1"' ;;
+    mio) echo 'mio = { version = "1", default-features = false }' ;;
+    tokio) echo 'tokio = { version = "1", default-features = false, features = ["rt"] }' ;;
+    clap) echo 'clap = { version = "4", default-features = false, features = ["std"] }' ;;
+    tracing) echo 'tracing = "0.1"' ;;
+    gix-hash) echo 'gix-hash = "0.20"' ;;
+    rand) echo 'rand = "0.9"' ;;
+    uuid) echo 'uuid = { version = "1", features = ["v4"] }' ;;
+    gix-object) echo 'gix-object = "0.51"' ;;
+    gix-actor) echo 'gix-actor = "0.36"' ;;
+    zip) echo 'zip = "5"' ;;
+    ring) echo 'ring = "0.17"' ;;
+    gix-config) echo 'gix-config = "0.48"' ;;
+    gix) echo 'gix = "0.74"' ;;
+    tar) echo 'tar = "0.4"' ;;
+    diesel) echo 'diesel = { version = "2", features = ["sqlite"] }' ;;
+    rocket) echo 'rocket = "0.5"' ;;
+    *) return 1 ;;
+    esac
+}
+
+# The `main` each probe gets. Every one of them calls the crate and prints something derived from
+# the call, so the linker is asked for real code rather than for a declaration.
+probe_main() {
+    case "$1" in
+    itertools) cat <<'EOF'
+use itertools::Itertools;
+fn main() { println!("{:?}", (1..4).map(|x| x * 2).collect_vec()); }
+EOF
+        ;;
+    bitflags) cat <<'EOF'
+bitflags::bitflags! { struct Flags: u32 { const A = 1; const B = 2; } }
+fn main() { println!("{}", (Flags::A | Flags::B).bits()); }
+EOF
+        ;;
+    memchr) cat <<'EOF'
+fn main() { println!("{:?}", memchr::memchr(b'a', b"xyza")); }
+EOF
+        ;;
+    byteorder) cat <<'EOF'
+use byteorder::{BigEndian, ByteOrder};
+fn main() { let mut b = [0u8; 4]; BigEndian::write_u32(&mut b, 7); println!("{}", BigEndian::read_u32(&b)); }
+EOF
+        ;;
+    smallvec) cat <<'EOF'
+fn main() { let mut v: smallvec::SmallVec<[u8; 4]> = smallvec::SmallVec::new(); v.push(1); println!("{}", v.len()); }
+EOF
+        ;;
+    hashbrown) cat <<'EOF'
+fn main() { let mut m = hashbrown::HashMap::new(); m.insert(1u8, 2u8); println!("{:?}", m.get(&1)); }
+EOF
+        ;;
+    nom) cat <<'EOF'
+use nom::{Parser, bytes::complete::tag};
+fn main() { let r: nom::IResult<&str, &str> = tag("ab").parse("abc"); println!("{:?}", r); }
+EOF
+        ;;
+    regex) cat <<'EOF'
+fn main() { println!("{}", regex::Regex::new("^a+$").unwrap().is_match("aaa")); }
+EOF
+        ;;
+    httparse) cat <<'EOF'
+fn main() {
+    let mut h = [httparse::EMPTY_HEADER; 4];
+    let mut r = httparse::Request::new(&mut h);
+    println!("{:?}", r.parse(b"GET / HTTP/1.1\r\n\r\n").is_ok());
+}
+EOF
+        ;;
+    semver) cat <<'EOF'
+fn main() { println!("{}", semver::Version::parse("1.2.3").unwrap()); }
+EOF
+        ;;
+    url) cat <<'EOF'
+fn main() { println!("{}", url::Url::parse("https://a.example/b").unwrap()); }
+EOF
+        ;;
+    serde) cat <<'EOF'
+use serde::Deserialize;
+use serde::de::IntoDeserializer;
+use serde::de::value::{Error, StrDeserializer};
+fn main() {
+    let d: StrDeserializer<Error> = "hi".into_deserializer();
+    println!("{:?}", String::deserialize(d));
+}
+EOF
+        ;;
+    serde_json) cat <<'EOF'
+fn main() {
+    let v: serde_json::Value = serde_json::from_str(r#"{"a":1}"#).unwrap();
+    println!("{}", serde_json::to_string(&v).unwrap());
+}
+EOF
+        ;;
+    toml) cat <<'EOF'
+fn main() { let v: toml::Value = "a = 1".parse().unwrap(); println!("{}", v); }
+EOF
+        ;;
+    csv) cat <<'EOF'
+fn main() {
+    let mut r = csv::Reader::from_reader("a,b\n1,2\n".as_bytes());
+    println!("{}", r.records().count());
+}
+EOF
+        ;;
+    base64) cat <<'EOF'
+use base64::Engine;
+fn main() { println!("{}", base64::engine::general_purpose::STANDARD.encode(b"hi")); }
+EOF
+        ;;
+    sha2) cat <<'EOF'
+use sha2::{Digest, Sha256};
+fn main() { println!("{:x}", Sha256::digest(b"hi")); }
+EOF
+        ;;
+    hex) cat <<'EOF'
+fn main() { println!("{}", hex::encode(b"hi")); }
+EOF
+        ;;
+    flate2) cat <<'EOF'
+use std::io::{Read, Write};
+fn main() {
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(b"hello").unwrap();
+    let c = e.finish().unwrap();
+    let mut d = flate2::read::GzDecoder::new(&c[..]);
+    let mut s = String::new();
+    d.read_to_string(&mut s).unwrap();
+    println!("{s}");
+}
+EOF
+        ;;
+    miniz_oxide) cat <<'EOF'
+fn main() {
+    let c = miniz_oxide::deflate::compress_to_vec(b"hello", 6);
+    println!("{}", miniz_oxide::inflate::decompress_to_vec(&c).unwrap().len());
+}
+EOF
+        ;;
+    log) cat <<'EOF'
+fn main() { log::info!("probe"); println!("{}", log::max_level()); }
+EOF
+        ;;
+    anyhow) cat <<'EOF'
+fn main() { let e: anyhow::Error = anyhow::anyhow!("boom"); println!("{e}"); }
+EOF
+        ;;
+    thiserror) cat <<'EOF'
+#[derive(thiserror::Error, Debug)]
+#[error("boom {0}")]
+struct E(u8);
+fn main() { println!("{}", E(1)); }
+EOF
+        ;;
+    once_cell) cat <<'EOF'
+fn main() { let c = once_cell::sync::OnceCell::new(); c.set(5u8).unwrap(); println!("{:?}", c.get()); }
+EOF
+        ;;
+    bytes) cat <<'EOF'
+use bytes::BufMut;
+fn main() { let mut b = bytes::BytesMut::new(); b.put_u8(7); println!("{}", b.len()); }
+EOF
+        ;;
+    chrono) cat <<'EOF'
+fn main() { println!("{}", chrono::Utc::now().timestamp()); }
+EOF
+        ;;
+    time) cat <<'EOF'
+fn main() { println!("{:?}", time::Date::from_ordinal_date(2026, 1)); }
+EOF
+        ;;
+    tempfile) cat <<'EOF'
+fn main() { println!("{:?}", tempfile::NamedTempFile::new().is_ok()); }
+EOF
+        ;;
+    walkdir) cat <<'EOF'
+fn main() { println!("{}", walkdir::WalkDir::new(".").into_iter().count()); }
+EOF
+        ;;
+    fs-err) cat <<'EOF'
+fn main() { println!("{:?}", fs_err::read_to_string("Cargo.toml").is_ok()); }
+EOF
+        ;;
+    ignore) cat <<'EOF'
+fn main() { println!("{}", ignore::WalkBuilder::new(".").build().count()); }
+EOF
+        ;;
+    crossbeam-channel) cat <<'EOF'
+fn main() {
+    let (s, r) = crossbeam_channel::unbounded();
+    s.send(1u8).unwrap();
+    println!("{:?}", r.recv());
+}
+EOF
+        ;;
+    rayon) cat <<'EOF'
+use rayon::prelude::*;
+fn main() { println!("{}", (1..10u32).into_par_iter().sum::<u32>()); }
+EOF
+        ;;
+    num_cpus) cat <<'EOF'
+fn main() { println!("{}", num_cpus::get()); }
+EOF
+        ;;
+    mio) cat <<'EOF'
+fn main() { println!("{:?}", mio::Token(1)); }
+EOF
+        ;;
+    tokio) cat <<'EOF'
+fn main() {
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    println!("{}", rt.block_on(async { 21 * 2 }));
+}
+EOF
+        ;;
+    clap) cat <<'EOF'
+fn main() {
+    let m = clap::Command::new("probe").try_get_matches_from(["probe"]);
+    println!("{:?}", m.is_ok());
+}
+EOF
+        ;;
+    tracing) cat <<'EOF'
+fn main() { tracing::info!("probe"); println!("{:?}", tracing::Level::INFO); }
+EOF
+        ;;
+    gix-hash) cat <<'EOF'
+fn main() { println!("{}", gix_hash::Kind::Sha1.len_in_hex()); }
+EOF
+        ;;
+    rand) cat <<'EOF'
+fn main() { println!("{}", rand::random::<u8>()); }
+EOF
+        ;;
+    uuid) cat <<'EOF'
+fn main() { println!("{}", uuid::Uuid::new_v4()); }
+EOF
+        ;;
+    gix-object) cat <<'EOF'
+fn main() { println!("{}", gix_object::Kind::Blob.as_bytes().len()); }
+EOF
+        ;;
+    gix-actor) cat <<'EOF'
+fn main() {
+    let s = gix_actor::SignatureRef::from_bytes::<()>(b"a <b@c> 1 +0000").unwrap();
+    println!("{:?}", s.name);
+}
+EOF
+        ;;
+    zip) cat <<'EOF'
+fn main() {
+    println!("{}", zip::ZipArchive::new(std::io::Cursor::new(Vec::new())).is_err());
+}
+EOF
+        ;;
+    ring) cat <<'EOF'
+fn main() { println!("{}", ring::digest::digest(&ring::digest::SHA256, b"hi").as_ref().len()); }
+EOF
+        ;;
+    gix-config) cat <<'EOF'
+fn main() {
+    let f = gix_config::File::from_bytes_owned(
+        &mut "[a]\n\tb = c".into(),
+        gix_config::file::Metadata::api(),
+        Default::default(),
+    )
+    .unwrap();
+    println!("{}", f.sections().count());
+}
+EOF
+        ;;
+    gix) cat <<'EOF'
+fn main() { println!("{}", gix::open(".").is_ok()); }
+EOF
+        ;;
+    tar) cat <<'EOF'
+fn main() {
+    let mut a = tar::Builder::new(Vec::new());
+    println!("{}", a.into_inner().unwrap().len());
+}
+EOF
+        ;;
+    diesel) cat <<'EOF'
+use diesel::prelude::*;
+fn main() { println!("{}", diesel::SqliteConnection::establish(":memory:").is_ok()); }
+EOF
+        ;;
+    rocket) cat <<'EOF'
+fn main() { println!("{:?}", rocket::build().figment().profile().as_str().to_string()); }
+EOF
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+# Generate one probe crate. `use entropy_backend as _;` is not tidiness: an rlib nothing references
+# is not linked, so without it a probe whose graph pulls `getrandom` stops at
+# `undefined symbol: __getrandom_v03_custom`.
+write_probe() {
+    name=$1
+    dir=$2
+    mkdir -p "$dir/src" "$dir/.cargo"
+    {
+        echo '[package]'
+        echo 'name = "probe"'
+        echo 'version = "0.1.0"'
+        echo 'edition = "2021"'
+        echo '[workspace]'
+        echo '[dependencies]'
+        probe_dep "$name"
+        if [ "$BACKEND_ON" -eq 1 ]; then echo "entropy_backend = { path = \"$BACKEND\" }"; fi
+        echo '[profile.release]'
+        echo 'panic = "abort"'
+    } >"$dir/Cargo.toml"
+    # Without the backend the cfg must go too, or `getrandom` selects a custom backend whose symbol
+    # nothing defines and the probe fails at link instead of showing its own `compile_error!`.
+    if [ "$BACKEND_ON" -eq 1 ]; then
+        {
+            echo '[build]'
+            echo 'rustflags = ["--cfg", "getrandom_backend=\"custom\""]'
+        } >"$dir/.cargo/config.toml"
+    fi
+    {
+        if [ "$BACKEND_ON" -eq 1 ]; then echo 'use entropy_backend as _;'; fi
+        probe_main "$name"
+    } >"$dir/src/main.rs"
+}
+
+# The resolved version of the probed crate, read out of the lockfile the build produced. Empty when
+# resolution itself failed, which is a distinguishable outcome: nothing was compiled at all.
+resolved_version() {
+    lock="$1/Cargo.lock"
+    [ -f "$lock" ] || return 0
+    awk -v want="$2" '
+        /^name = /  { gsub(/"/, "", $3); n = $3 }
+        /^version = / { gsub(/"/, "", $3); if (n == want) { print $3; exit } }
+    ' "$lock"
+}
+
+usage() {
+    echo "usage: script/crate-probes [--list] [--keep] [--no-backend] [crate...]" >&2
+    exit 2
+}
+
+targets=''
+for arg in "$@"; do
+    case "$arg" in
+    --list) probe_names; exit 0 ;;
+    --keep) KEEP=1 ;;
+    --no-backend) BACKEND_ON=0 ;;
+    -h | --help) usage ;;
+    -*) usage ;;
+    *)
+        probe_dep "$arg" >/dev/null 2>&1 || {
+            echo "crate-probes: no such probe: $arg (try --list)" >&2
+            exit 2
+        }
+        targets="$targets $arg"
+        ;;
+    esac
+done
+[ -n "$targets" ] || targets=$(probe_names)
+
+echo "==> refreshing the patched-std farm (this takes the account-wide nife-dev link)"
+(cd "$ROOT" && cargo xtask std-src) || {
+    echo "crate-probes: cargo xtask std-src failed" >&2
+    exit 1
+}
+
+mkdir -p "$WORK" "$SHARED"
+pass=0
+fail=0
+body=0
+results="$WORK/.results"
+: >"$results"
+
+for name in $targets; do
+    dir="$WORK/$name"
+    rm -rf "$dir"
+    write_probe "$name" "$dir"
+    printf '%-20s ' "$name"
+    log="$dir/build.log"
+    if (cd "$dir" && RUSTUP_TOOLCHAIN=nife-dev CARGO_TARGET_DIR="$SHARED" cargo build --release \
+        -Zjson-target-spec \
+        -Zbuild-std=core,alloc,std,panic_abort \
+        -Zbuild-std-features=compiler-builtins-mem \
+        --target "$SPEC") >"$log" 2>&1; then
+        v=$(resolved_version "$dir" "$name")
+        printf 'PASS  %s\n' "$v"
+        echo "PASS	$name	$v" >>"$results"
+        pass=$((pass + 1))
+    else
+        # A failing probe is built again for the host. If the host build fails too, the probe's own
+        # `main` is wrong and the row says nothing about nife: that distinction is the reason this
+        # harness can be trusted where fifty hand-written call sites could not.
+        if (cd "$dir" && cargo build --release --target-dir "$dir/host-target") >"$dir/host.log" 2>&1; then
+            why=$(grep -m1 -E '^error(\[|:)' "$log" || true)
+            v=$(resolved_version "$dir" "$name")
+            printf 'FAIL  %s  %s\n' "$v" "$why"
+            echo "FAIL	$name	$v	$why" >>"$results"
+            fail=$((fail + 1))
+        else
+            why=$(grep -m1 -E '^error(\[|:)' "$dir/host.log" || true)
+            printf 'BODY  %s\n' "$why"
+            echo "BODY	$name		$why" >>"$results"
+            body=$((body + 1))
+        fi
+    fi
+done
+
+echo
+echo "$pass built, $fail failed$([ "$body" -gt 0 ] && echo ", $body probe bodies broken (not a nife result)")"
+[ "$KEEP" -eq 1 ] || find "$WORK" -mindepth 1 -maxdepth 1 -type d ! -name '.cargo-target' -exec rm -rf {} +
+[ "$body" -eq 0 ]
