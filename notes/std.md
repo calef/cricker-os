@@ -66,6 +66,8 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
 | `std::env::consts::OS` | `"nife"` (patched into `env_consts.rs`) |
 | `std::env::var` / `vars` / `set_var` | a **process-local table, empty at start** (`sys/env/nife.rs`); nothing endows a nife process with variables |
+| `std::env::temp_dir` / `split_paths` / `join_paths` | `TMPDIR` or `.`, and a `:`-separated list (`sys/paths/nife.rs`); `current_dir`, `current_exe`, `chdir` refuse and `home_dir` is `None` |
+| `std::process::id` | `0`, because this system issues no process identifier (`sys/process/nife.rs`); everything else in `std::process` refuses |
 
 The syscall glue (`sys/pal/nife/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
@@ -364,6 +366,33 @@ completes, not why the poll path did not.
   build, or a gap list built from `Unsupported` counts said a word; the program simply died. It is
   the same lesson as `Path::is_dir()` returning `false` for every directory: the dangerous refusal is
   not the one that says `Unsupported`, it is the one that answers.
+- **The path half of `std::env` answers where it must and refuses where it can** (milestone 64,
+  `sys/paths/nife.rs`), and the split between those two is the whole design. `temp_dir` returns
+  `TMPDIR` if the program set one and `.` otherwise, because `PathBuf` carries no error and
+  something has to be named; `.` is `sys/fs/nife.rs`'s own answer restated (*"./motd is motd: the
+  current directory IS the granted one"*), so a temporary file goes where every other file goes,
+  which is the only directory the process has authority over. `split_paths` and `join_paths` are
+  ordinary string work over `:`. Meanwhile `current_dir`, `current_exe` and `chdir` return
+  `Unsupported` and `home_dir` is `None`: each of them **can** say no, and each needs a namespace to
+  resolve against, which is milestone 47's unbuilt half.
+
+  **Two of these used to abort the process**, which is why the file exists at all. nife had no
+  `paths` backend, and the shared fallback's `temp_dir()` is `panic!("no filesystem on this
+  platform")` while its `split_paths()` is `panic!("unsupported")`. So `tempfile::NamedTempFile::new()`
+  died inside `std::env::temp_dir` before it ever reached `tempfile`'s own "not supported" arm, and
+  notes/crates-io-on-nife.md had recorded the wrong one of those two as the failure for a fortnight.
+  It is `env::vars()`'s lesson a second time, and the rule that falls out of it is short enough to
+  remember: **fix the ones that abort, leave the ones that refuse.**
+- **`std::process::id()` is `0` and the rest of `std::process` refuses** (milestone 64,
+  `sys/process/nife.rs`). This was the third `panic!` of the same sweep: `getpid` in the shared
+  fallback is `panic!("no pids on this platform")`. There is no process identifier here to report,
+  the syscall surface issues none, and `u32` cannot say "there is none", so `0` is the answer,
+  chosen because no Unix assigns it to a user process. Every reachable call site in the fifty
+  measured dependency closures is a *fork* check (`gix-tempfile` compares an owning pid so cleanup
+  runs only in the creating process); nife has no `fork`, so a constant is what makes those
+  comparisons right rather than merely quiet. A scheme that wanted cross-process uniqueness from a
+  pid would be broken here with nothing reporting it, and a real per-process identity is a
+  syscall-surface decision rather than a PAL one.
 - **`fs` is bound, with the gaps listed above.** A program granted no directory capability still gets
   `Unsupported` from all of it, and the offline demo checks exactly that: same binary, no slot 4, and
   `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
