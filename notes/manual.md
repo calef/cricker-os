@@ -420,8 +420,11 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
   phase 1 measured it. The floor is what moves it: page alignment costs every bundle 16 KiB
   however small, so the ratio improves as the bundles grow rather than because anything got better.
 - **A source line longer than `manual::LINE_MAX` (2048) loses its tail.** The longest line in this
-  repository is 1835 bytes, so the corpus fits; a document from elsewhere may not, and
-  `Renderer::truncated` reports it while `doc` does not print it.
+  repository is 1841 bytes <!--count:longest-markdown-line-->, so the corpus fits; a document from
+  elsewhere may not, and `Renderer::truncated` reports it while `doc` does not print it. The number
+  carries a marker because it drifted: these three places said 1835 for as long as the two gated
+  ones said 1841, which is the margin this milestone is measured against going stale in the prose
+  that explains it.
 - **Table cells are truncated to their column width**, so a wide table on an 80-column terminal
   loses text. This is a formatting choice, not a parsing failure, and the corpus test runs at 4000
   columns to keep the two apart. A table too large for the renderer's buffers spills into a second

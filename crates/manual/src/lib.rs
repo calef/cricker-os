@@ -73,7 +73,7 @@
 //! # BUGS
 //!
 //! - **A source line longer than [`LINE_MAX`] is truncated**, and the truncation is silent in the
-//!   output. The longest line in this repository is 1835 bytes (a table row in `notes/scripts.md`),
+//!   output. The longest line in this repository is 1841 bytes <!--count:longest-markdown-line-->,
 //!   which is why the limit is what it is; a document from somewhere else may lose text. The
 //!   renderer records it, so a caller that wants to know can ask [`Renderer::truncated`].
 //! - **A fence inside a block quote closes now, and did not until 2026-08-18.** The closing test

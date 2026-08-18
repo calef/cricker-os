@@ -75,7 +75,7 @@ this note asked for by name: it cited `notes/interleaving.md` as the claim a mar
 reach, and measuring it in order to mark it found it wrong in both halves.
 
 **The `longest-markdown-line` entry is the one with a consumer rather than a reader**, and it is
-worth understanding before you add another. `manual::render::LINE_MAX` is 2048 because the longest markdown line is 1835,
+worth understanding before you add another. `manual::render::LINE_MAX` is 2048 because the longest markdown line is 1841 <!--count:longest-markdown-line-->,
 and a document over `LINE_MAX` is truncated. So that number is a **margin**, and a lane that spends
 it silently makes the renderer wrong about a file nobody has written yet. Every other entry here
 describes the tree; this one guards it. If you can find another number in that class, it is worth
