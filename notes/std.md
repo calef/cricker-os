@@ -66,7 +66,8 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
 | `std::env::consts::OS` | `"nife"` (patched into `env_consts.rs`) |
 | `std::env::var` / `vars` / `set_var` | a **process-local table, empty at start** (`sys/env/nife.rs`); nothing endows a nife process with variables |
-| `std::env::temp_dir` / `split_paths` / `join_paths` | `TMPDIR` or `.`, and a `:`-separated list (`sys/paths/nife.rs`); `current_dir`, `current_exe`, `chdir` refuse and `home_dir` is `None` |
+| `std::env::temp_dir` / `split_paths` / `join_paths` | `TMPDIR` or `/`, and a `:`-separated list (`sys/paths/nife.rs`) |
+| `std::env::current_dir` | `/`, the root of this process's own namespace (milestone 47); `Unsupported` when it holds no directory. `current_exe` and `chdir` refuse, `home_dir` is `None` |
 | `std::process::id` | `0`, because this system issues no process identifier (`sys/process/nife.rs`); everything else in `std::process` refuses |
 
 The syscall glue (`sys/pal/nife/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
@@ -212,10 +213,15 @@ server enforces the same rule again (it resolves one component in its bound dire
 else); doing it here as well is not redundant, it is what turns a would-be escape into a legible
 `io::Error` instead of an `ENOENT` that reads like a missing file.
 
-- **An absolute path is refused.** `/etc/passwd` names nothing: this process holds a directory
-  capability, not a filesystem root.
-- **Any `..` is refused.** It would leave the granted directory, and no capability designates what is
-  out there.
+- **A leading `/` names this process's own root** (milestone 47's namespace half, 2026-08-18), which
+  is the directory it was granted, so `/motd` and `motd` are one file. It was refused until then, and
+  the refusal was the honest state of a system with no namespace to root a path in rather than a
+  position. It grants nothing: the slash selects nothing, because a nife process holds exactly one
+  directory capability and there is nothing else to select. A **Windows-shaped prefix** (`C:`) is
+  still refused, because unlike a slash there is no root it could name.
+- **Any `..` is refused**, at every position and including `/..`. It would leave the granted
+  directory, and no capability designates what is out there. This is what makes the slash safe: an
+  absolute path can reach the root and never above it.
 - **A nested path is a chain of descents** (milestone 122). `File::open("a/b/c")` is `OPENDIR a`,
   `OPENDIR b`, then `OPEN c` against `b`'s handle. It used to be refused outright. The grant is
   exactly as tight as it was: every hop resolves under the capability this process holds, rights only
@@ -223,6 +229,13 @@ else); doing it here as well is not redundant, it is what turns a would-be escap
   has to spell the descent itself.
 - **A name that IS expressible but absent is an ordinary `NotFound`**, which is what makes the three
   refusals above meaningfully different from "no such file".
+
+**A `Dir` handle is its own root**, and that is a deliberate divergence from `openat`. POSIX makes an
+absolute path ignore the `dirfd`, because `/` names one global thing and a `dirfd` is a shortcut into
+it; neither half holds here. A handle is a namespace, `/` is the root of whichever one the name is
+being resolved in, and a rule that let a name climb out of the handle it was asked of would make
+`std::fs::Dir` useless for the one thing programs reach for it for. It cannot widen anything either
+way, since a process holding a `Dir` holds the root it descended from.
 
 **The refusal is `ErrorKind::InvalidFilename`, deliberately not `PermissionDenied`.** Nothing
 consulted a permission; there is no name here for what was asked, because no capability designates
@@ -522,15 +535,31 @@ completes, not why the poll path did not.
   not the one that says `Unsupported`, it is the one that answers.
 - **The path half of `std::env` answers where it must and refuses where it can** (milestone 64,
   `sys/paths/nife.rs`), and the split between those two is the whole design. `temp_dir` returns
-  `TMPDIR` if the program set one and `.` otherwise, because `PathBuf` carries no error and
-  something has to be named; `.` is `sys/fs/nife.rs`'s own answer restated (*"./motd is motd: the
+  `TMPDIR` if the program set one and `/` otherwise, because `PathBuf` carries no error and
+  something has to be named; `/` is `sys/fs/nife.rs`'s own answer restated (*"./motd is motd: the
   current directory IS the granted one"*), so a temporary file goes where every other file goes,
   which is the only directory the process has authority over. `split_paths` and `join_paths` are
-  ordinary string work over `:`. Meanwhile `current_dir`, `current_exe` and `chdir` return
-  `Unsupported` and `home_dir` is `None`: each of them **can** say no, and each needs a namespace to
-  resolve against, which is milestone 47's unbuilt half.
+  ordinary string work over `:`. `current_exe` returns `Unsupported` and `home_dir` is `None`:
+  nothing tells a nife process the path it was loaded from, and nobody gave it a home.
 
-  **Two of these used to abort the process**, which is why the file exists at all. nife had no
+  **`current_dir` and the leading slash changed on 2026-08-18** (milestone 47's namespace half).
+  `/` is now the root of *this process's* namespace, which is the directory it was granted, so
+  `/motd` and `motd` are one file and `current_dir()` answers `/` rather than `Unsupported`. That
+  is Plan 9's answer and it is less than Plan 9's: a nife process holds exactly one directory
+  capability, so there is nothing for the slash to select between and no bind table to select it
+  with. **It grants nothing**, which is the point and is asserted rather than argued: the
+  `std_exerciser` transcript reads `/motd` and `motd` and compares the bytes, then asks for
+  `/../motd` and gets `InvalidFilename`, because there is no level above the only root there is.
+  The offline run of the same binary is the negative control: holding no directory capability, its
+  `current_dir()` still refuses, since there is a difference between "you are at your root" and
+  "you have no root" that a `PathBuf` cannot carry.
+
+  `chdir` stays `Unsupported`, and now for a narrower reason than "there is no namespace": a
+  process's directory capability is fixed at spawn, so `/` is the only place it can be. Moving
+  would mean the PAL holding a descent handle as mutable process state and resolving every relative
+  name against it, which is the shell's stack one level down and is not built.
+
+  **Two of the path functions used to abort the process**, which is why the file exists at all. nife had no
   `paths` backend, and the shared fallback's `temp_dir()` is `panic!("no filesystem on this
   platform")` while its `split_paths()` is `panic!("unsupported")`. So `tempfile::NamedTempFile::new()`
   died inside `std::env::temp_dir` before it ever reached `tempfile`'s own "not supported" arm, and

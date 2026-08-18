@@ -192,7 +192,7 @@ fn offline_demo() {
     // milestone 47's namespace arrives through: nothing seeds it today, so the fallback answers.
     assert_eq!(
         std::env::temp_dir(),
-        PathBuf::from("."),
+        PathBuf::from("/"),
         "temp_dir is not the granted directory",
     );
     unsafe { std::env::set_var("TMPDIR", "scratch") };
@@ -217,11 +217,16 @@ fn offline_demo() {
         "a segment containing the separator was joined into a list that reads back as two",
     );
     // And the refusals that stay refusals, asserted so that a later lane cannot quietly turn one
-    // into a fabricated answer. Each of these can say no in its own signature, and each needs a
-    // namespace to resolve against, which is milestone 47's half of the `File::open` fork.
+    // into a fabricated answer.
+    //
+    // **`current_dir` is the interesting one, and this run is its negative control.** Milestone
+    // 47's namespace half made it answer `/`, the root of this process's own namespace, which is
+    // the directory it was granted. This process was granted none, so there is no root to name and
+    // the refusal stands. The same call answers in `fs_demo`, and the pair is the whole claim: a
+    // path is a name in what you hold, so a process holding nothing can name nothing.
     assert!(
         std::env::current_dir().is_err(),
-        "current_dir answered, so something is fabricating an ambient namespace",
+        "current_dir answered for a process that holds no directory capability",
     );
     assert!(
         std::env::current_exe().is_err(),
@@ -281,7 +286,31 @@ fn fs_demo(mut motd: File) {
     assert!(meta.is_file(), "the motd is a regular file");
     println!("metadata len {}", meta.len());
 
-    refused("/etc/passwd", "absolute");
+    // **`/` is the root of this process's namespace** (milestone 47's namespace half), so an
+    // absolute path names the directory this process was granted and nothing above it. Proven by
+    // opening the same file twice, once each way, and comparing the bytes: `/motd` and `motd` are
+    // one file. It was `InvalidFilename` until 2026-08-18, which was the honest answer for a
+    // system with no namespace to root a path in rather than a position.
+    let by_name = std::fs::read(fs_proto::fixture::MOTD_NAME).expect("reading motd by name failed");
+    let rooted = format!("/{}", fs_proto::fixture::MOTD_NAME);
+    let by_root = std::fs::read(&rooted).expect("reading motd by absolute path failed");
+    assert_eq!(by_name, by_root, "`/motd` and `motd` named different files");
+    // And `current_dir` says where that root is, in a spelling this process can type back.
+    assert_eq!(
+        std::env::current_dir().expect("current_dir refused for a process holding a directory"),
+        PathBuf::from("/"),
+        "current_dir is not this process's own root",
+    );
+    println!("absolute is my root");
+
+    // **The negative control, and it is the one that matters**: rooting a path in your own
+    // namespace grants nothing, because there is no level above that root to name. `/..` is
+    // refused exactly as `..` is, and for the same reason: a handle names a directory and nothing
+    // on the wire names its parent.
+    refused(
+        &format!("/../{}", fs_proto::fixture::MOTD_NAME),
+        "absolute dotdot",
+    );
     refused("../motd", "dotdot");
     // **`..` is refused at every position, not only the first** (milestone 122, where nested paths
     // stopped being refused as a class). This one names a file that really exists and that this
@@ -338,7 +367,10 @@ fn fs_demo(mut motd: File) {
 
     // And a created name is still bound by the directory capability: creating outside it is refused
     // the same way opening outside it is, so CREATE did not widen what a client can reach.
-    for (path, what) in [("/tmp/escape", "absolute"), ("../escape", "dotdot")] {
+    // The absolute case is `/../escape` rather than `/tmp/escape`: since the namespace half, a
+    // leading slash names this process's own root, so `/tmp/escape` is an ordinary relative name
+    // that fails with `NotFound` and would prove nothing about reach. `/..` is the escape.
+    for (path, what) in [("/../escape", "absolute"), ("../escape", "dotdot")] {
         match std::fs::write(path, b"x") {
             Err(e) if e.kind() != ErrorKind::PermissionDenied => {
                 println!("create refused {what}")

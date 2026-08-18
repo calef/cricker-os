@@ -688,9 +688,12 @@ fn std_patch_dispatch() -> bool {
         // fs: File open/read/metadata over the FS-service contract (milestone 27 phase two). The
         // arm precedes the `_ =>` unsupported fallback phase one used, and mirrors the shape of
         // the other single-backend arms (`use nife as imp`).
+        // `pub(crate) mod` rather than `mod`: `sys/paths/nife.rs` asks `fs::nife::reachable()`
+        // whether this process holds a directory capability, because `current_dir` must refuse for
+        // a process that holds none rather than name a place it cannot reach (milestone 47).
         &sys.join("fs/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
+        "    target_os = \"nife\" => {\n        pub(crate) mod nife;\n        use nife as imp;\n    }",
     ) && patch_after(
         // env: a process-local variable table (milestone 64, rank 4). The arm precedes the `_ =>`
         // unsupported fallback, whose `env()` is `panic!("not supported on this platform")`: without
