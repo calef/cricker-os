@@ -796,6 +796,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "timetable"
+version = "0.1.0"
+dependencies = [
+ "grant_plan",
+]
+
+[[package]]
 name = "tock-registers"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,6 +906,7 @@ dependencies = [
  "swap_proto",
  "swish",
  "system_initializer",
+ "timetable",
  "user_rt",
  "video_terminal",
  "virtio",

@@ -403,6 +403,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   was wider than looking needs and what `Rights::ENUMERATE` fixed, and **why there is no `pkill`**:
   a tid is a name, `Tcb` has no `DESTROY`, so the demonstration is asymmetric on purpose and the
   write-up says so rather than dropping a promised comparison.
+- [Scheduled execution](scheduled-execution.md): milestone 129: a cron whose every entry is a grant.
+  An entry is a schedule plus a grant expression checked at registration by the same
+  `grant_plan::plan` the prompt uses, so what a scheduled child will hold is printable before the
+  first tick, which is a sentence Unix cron has no vocabulary for. Why the interesting half is what a
+  schedule is **refused** (`every 1s date` is legal, runs in any crontab, and is turned away here for
+  want of a clock capability), why "the line is wrong" and "this scheduler holds nothing to back it"
+  are two answers and not one, why the fire arithmetic skips a stall instead of catching up, and the
+  one missing kernel primitive that shapes the whole program: there is no timed wait, so a scheduler
+  yield-polls and reaps its children lazily. This is milestone 106's fifth consumer and the first
+  whose whole purpose is a deadline.
 - [The program manifest](program-manifest.md): milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.

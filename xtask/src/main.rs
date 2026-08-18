@@ -3580,6 +3580,8 @@ fn initrd_riscv() -> bool {
             // there is no `pkill` to build alongside them.
             "--bin",
             "pgrep",
+            "--bin",
+            "timetable",
             // The credential pair (milestone 56). These were listed in the riscv initrd tables below
             // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
             // file the build was never asked to produce. The lane's own riscv leg went green on a
@@ -3729,6 +3731,10 @@ fn initrd_riscv() -> bool {
         // The filter over that listing (milestone 126). Same reason, and one more: "naming a member
         // confers nothing over it" is a property of the rights model and holds on both.
         ("pgrep", "pgrep"),
+        // The scheduler (milestone 129). Both archives: "a scheduled entry can do exactly what it
+        // was granted" is a claim about the capability model, and one that held on one instruction
+        // set would not be one.
+        ("timetable", "timetable"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -3906,6 +3912,8 @@ fn mkinitrd() -> bool {
         // `pgrep` (milestone 126): that listing, filtered to the members a selector names.
         // It must ship with `ps` because the two together are the claim.
         ("pgrep", "pgrep"),
+        // `timetable` (milestone 129): scheduled execution whose every entry is a grant.
+        ("timetable", "timetable"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {

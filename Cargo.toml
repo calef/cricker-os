@@ -60,6 +60,7 @@ members = [
     "crates/coremark",
     "crates/video_terminal",
     "crates/swish",
+    "crates/timetable",
 ]
 
 # The vendored RedoxFS engine (vendor/redoxfs) and the host tool that wraps it (tools/redoxfs_host)
