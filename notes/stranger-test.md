@@ -123,6 +123,47 @@ answers are not. The mitigations are that the task text is run 1's and run 2's v
 predates all three runs, and the stranger's questions are recorded as it asked them rather than
 summarised into findings.
 
+### What run 4 changes, decided 2026-08-18 before the run
+
+Run 3's `BUGS` entry names one fix and prices it at one line, and that is what run 4 applies.
+Everything else about the configuration is run 3's, deliberately, because a run that changes two
+things measures neither.
+
+**The harness's own files leave the stranger's working directory.** Run 3's logs were called
+`stranger3-stream.jsonl` and `stranger3-stderr.log` and sat beside the clone, so the stranger's
+first `ls -la` told it which run it was before it had read a byte of the project. Run 4's logs go in
+a **sibling** directory: the stranger's working directory contains the clone and nothing else. The
+directory names carry no run number either, since a path in an error message is as readable as a
+directory listing.
+
+**The isolation mechanism is unchanged and is verified the same two ways**, because it is the thing
+that made run 3 scorable: a separate `claude` process rather than a subagent, `--safe-mode`, working
+directory is the clone's *parent*, since project instructions load from ancestors and never from
+descendants. A throwaway probe in the same configuration is asked what project-instructions files
+are in its context before the real run, and the stranger itself is asked afterwards.
+
+**The answer key is withheld the same way**: this note and its `notes/README.md` entry removed and
+the deletion amended into the tip, nothing else touched, working tree clean. The in-tree mentions of
+runs 1 through 3 stay, for the same reason as before.
+
+**What is actually new to measure, and it is why this run is worth taking rather than repeating.**
+`CONTRIBUTING.md` and the README's `## Start here` reading order both landed on 2026-08-18, after
+run 3's clone was cut. **No stranger has seen either.** Run 3's B1 failed because there was no
+reading order and its stranger built one by instinct, reaching `AGENTS.md` twelfth and
+`crates/abi/src/lib.rs` far too late. So B1 is the row this run exists to move, and the specific
+questions are whether a stranger finds the reading order at all, whether it follows it, and whether
+following it costs it the two things instinct cost run 3.
+
+**The task text stays verbatim from runs 1, 2 and 3.** Changing it would make the four runs
+incomparable, and the comparison is the only thing that distinguishes a milestone from an audit.
+
+**What this run still cannot give.** The machine is the architect's laptop with the pinned nightly,
+both QEMUs and a warm cargo cache, so **B2 is not measured and B4 is measured only against the
+documented sequence**, exactly as in run 3. The machine is also loaded by other lanes gating in
+other worktrees, and this time the tree can say so: `script/test` prints the host load average
+beside a failing timing leg as of 2026-08-18. Whether a stranger meeting that message needs `uptime`
+anyway is itself a measurement this run gets for free.
+
 ## The rubric, written 2026-08-14, before the first run
 
 Two halves. Only the first is mechanical.
@@ -150,34 +191,42 @@ question the tree does not answer.
 
 | # | question | pass means |
 |---|---|---|
-| M1 | What is a capability here, and what does "designation is authorization" mean? | names that holding the reference *is* the permission, with no separate check |
+| M1 | What is a capability here, and what is the relationship between holding a reference to a thing and being permitted to use it? | names that holding the reference *is* the permission, with no separate check |
 | M2 | Why is there no ambient network, and what must a program hold to reach one? | names a held capability rather than a config flag or a permission bit |
 | M3 | Where does architecture-specific code live, and what breaks if it lives elsewhere? | `kernel/src/arch/`, and that the port becomes a diff across every file |
 | M4 | What does `BUILT` mean on a roadmap row, and `PARTIAL`? | that it is a claim about the tree, and that the index and the block must agree |
 | M5 | Why is there a `crates/` and a `user/src/`, and what decides which? | shared-by-two-binaries goes in `crates/`; host-testable and Kani-reachable is the reason |
 | M6 | What is a `BUGS` section for? | a promise about known limits, not an apology, and next to the feature |
 | M7 | How would you add a program, and what must you declare about it? | the grant manifest, and that a provisional name is expected |
-| M8 | Who decides a name, and what are the three provenance states? | calef; `ratified`, `recorded`, `unrecorded` |
+| M8 | Who decides a name, and what provenance states can one be in? | calef; the states `script/names` accepts, which is four as of §89: `ratified`, `recorded`, `unrecorded`, `provisional` |
 
-### Amendments, 2026-08-18, forced by run 3
+### Amendments, 2026-08-18, forced by run 3 and applied before run 4
 
 The rubric section above says a stranger falling down somewhere it does not ask about means the
-rubric is what needs amending. Run 3 falsified two rows rather than falling outside them, so the
-table stays as written and the corrections are recorded here.
+rubric is what needs amending. Run 3 falsified two rows rather than falling outside them. Run 3's
+lane recorded the corrections here and left the table as written; **run 4's lane applied them to the
+table itself, on 2026-08-18 and before its run started**, because a rubric that says one thing in
+its table and another four paragraphs below is two rubrics, and the next run would grade against
+whichever it read. Both rows above now carry the amended wording. What changed and why:
 
 **M8's premise is stale.** It asks for "the three provenance states" and there are **four**: §89
 landed `provisional` on 2026-08-16, ten days after the rubric was written, and
 notes/adding-a-program.md states three and then corrects itself to four in the same section. The
 stranger answered four and said the question was out of date, which is the better answer and would
 have scored as "wrong" against the table as written. A rubric that predates a decision grades
-against a tree that no longer exists.
+against a tree that no longer exists. **The amended row states no count**, because the
+count is the part that went stale and a row that counts something will go stale again; it asks what
+states exist and points at the gate that enumerates them.
 
 **M1 quotes a phrase the tree does not use.** "Designation is authorization" is object-capability
 vocabulary from outside this project; the stranger looked for it, did not find it, and flagged that
 it was importing the phrase rather than reading it. What the tree says in its own words is
 `swish`'s banner, *"naming a resource in a command IS granting it"*, and `grant_plan`'s
 `Refusal::NoSuchProgram`. **A rubric row that quotes a phrase the tree never wrote tests whether the
-stranger already knew the field**, which is the opposite of what it is for.
+stranger already knew the field**, which is the opposite of what it is for. **The amended row asks the
+question without importing anyone's vocabulary**, so a stranger can answer it from `crates/abi`,
+from `notes/capabilities.md`, or from `swish`'s banner (*"naming a resource in a command IS granting
+it"*) rather than by recognising a phrase.
 
 **Scoring is per question: answered, partly answered, wrong, or absent.** "Wrong" is worse than
 "absent" and is recorded separately, because a misleading document costs more than a silent one.
