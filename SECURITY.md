@@ -2,15 +2,22 @@
 
 nife is a capability microkernel built as a **demonstrator** (DECISIONS §14): a small
 machine-checked core that confines unverified workloads. Nobody runs it in production, including us.
-It boots under QEMU and under HVF on an Apple Silicon laptop, and it has never run on physical
-hardware.
+It boots under QEMU, under HVF on an Apple Silicon laptop, and **on real silicon**: a StarFive
+VisionFive 2 has been running it since 2026-08-14 (notes/visionfive2.md carries every bench boot,
+including the ones that failed and why).
 
 That shapes what a security report means here. A bug that lets a confined process escape is
 interesting because escaping is the exact thing the project claims cannot happen. A bug that says
 "this OS is not ready to face the internet" is not a report; it is the premise.
 
-It is also a one-person research project, so the response you get is a real person reading your
-report between other things, not a triage queue. Both halves of that are honest below.
+The response you get is a real person reading your report between other things, not a triage queue.
+And one thing about how this code got written is worth knowing before you read it: **most of it was
+written by AI agents working in parallel lanes, with one human reviewing architecture and outcomes
+rather than every line.** That is the project's second claim and it is stated here rather than only
+in AGENTS.md, because it is a fact about the code you are auditing. What stands between that method
+and a pile of plausible-looking kernel is the machine-checked proofs, the gates, and the audits at
+the end of this file, so the most valuable report you can send is one that finds a place where those
+did not hold.
 
 ## Reporting
 
@@ -29,8 +36,9 @@ belongs in a public issue, and most things are everything else.
 
 - The **commit sha** you were looking at. `main` moves.
 - Which **architecture** (aarch64 or riscv64) and how it was run (`script/test`, `script/console`,
-  `--hvf`). Several boundaries differ between the two ISAs, and one working and the other not is
-  itself a finding (DECISIONS §19).
+  `--hvf`, or on a board). Several boundaries differ between the two ISAs, and one working and the
+  other not is itself a finding (DECISIONS §19). **Say if you were on hardware**, because the
+  boundaries are not the same there: see the scope note below.
 - Which **boundary** you believe is crossed, in the terms below. "A process read another process's
   memory" is a different claim from "a process panicked the kernel", and both are welcome.
 - A **reproduction**, ideally as a test in the existing harness (a `#[test_case]` under
@@ -52,6 +60,12 @@ reach past the boundaries the kernel enforces. Anything that breaks one of these
 - **DMA escape.** A device programmed by a userspace driver to read or write memory outside the
   grant it was given, through the software descriptor validator or past the IOMMU domain (DECISIONS
   §20, §23, §30; `crates/dma_validator`, notes/iommu.md).
+
+  **On the VisionFive 2 there is no IOMMU at all**, so on that board the confinement is the software
+  validator and nothing else. That is a property of the silicon rather than a defect, and it is
+  recorded in notes/dma.md and notes/framebuffer-contract.md, but it makes the validator the single
+  point of failure there rather than the first of two. A validator bypass is the highest-value
+  finding in this file.
 - **IPC.** Anything that lets a message reach an endpoint the sender cannot name, a reply
   capability be used twice or by the wrong thread, or a server be confused about which client it is
   answering (DECISIONS §12, §26; `crates/ipc`).
@@ -70,7 +84,10 @@ reach past the boundaries the kernel enforces. Anything that breaks one of these
   authority it was not given is exactly the claim under test (DECISIONS §27, §31; notes/c-seam.md,
   notes/redoxfs-audit.md).
 - **The boot trust root.** Anything that lets an unmeasured or altered init run as though it were
-  measured (`crates/measured_boot`, notes/trusted-init.md).
+  measured (`crates/measured_boot`, notes/trusted-init.md). This one has been exercised on real
+  hardware in the failing direction, which is the useful direction: bench boot 12 was **refused at
+  the trust boundary** because the image on the card vouched for the previous archive, and the
+  kernel halted rather than hand it to init. A way to get past that refusal is a report.
 - **The supply chain of this repository.** A dependency or vendored tree that is not what the
   manifest says it is. `script/supply-chain` is supposed to make that checkable; a way around it is
   a finding.
@@ -91,6 +108,11 @@ down, which makes them roadmap items rather than reports.
   kernel or escape confinement, but init's authority over the processes it builds is by design.
 - **QEMU or HVF escapes.** Report those to QEMU or to Apple. A guest breaking out of the emulator is
   not this kernel's boundary.
+- **Board bring-up that has not happened yet.** The VisionFive 2 boots and runs the tour; it does
+  not yet have a storage or network driver (design/roadmap/53-board-peripherals.md), the UART
+  interrupt number is wrong for that board and known, and the ratified-spec IOMMU has no silicon to
+  run on. Missing hardware support is a roadmap item. A *driver that is present and confines
+  nothing* is a report, and the distinction is the same one the line above draws.
 - **Denial of service by a process against itself**, or a process exhausting its own untyped budget.
   That budget is the mechanism, not a bug. A process exhausting a *kernel* resource, or another
   process's, is in scope.
@@ -127,9 +149,11 @@ took, its findings by disposition, and a link to the report. `script/audits` say
 is due, from the triggers `design/decisions/74-audit-cadence.md` decided, and a weekly workflow asks
 the same question so that auditing does not depend on anyone remembering to.
 
-Four adversarial reviews are on the record, and reading them first will save you time. Each took a
-lens the previous one did not, deliberately, because the value of an audit is the lens the last one
-lacked:
+**Five** <!--count:security-audits--> security audits are on the record, and reading them first will
+save you time. Each took a lens the previous one did not, deliberately, because the value of an audit
+is the lens the last one lacked. (Documentation audits are in the same index and are not listed here;
+they read the tree for claims that had gone false, which is worth knowing if you find prose and code
+disagreeing.)
 
 - **notes/security.md**: a four-part review after milestone 11, with the threat model, what held
   up, and four real bugs (a crafted ELF that could panic the kernel, a spawn flood that could, a
@@ -149,6 +173,12 @@ lacked:
   NVMe driver panics on two completion fields the device writes, and the rule it hands forward is
   that **an IOMMU confines placement, not values**, so a confined device's accounting is as
   untrusted as its reach.
+- **design/audit-reports/2026-08-17-newly-minted-authority.md**: the seven ABI constants and the one
+  new right that landed in a single night, read adversarially, on the reasoning that a right can be
+  correct in isolation and wrong in combination with what was already there. Nothing exploitable;
+  the finding to carry off is a **counting channel**, where a viewer holding the narrowest capability
+  this system can express learns how many threads exist outside its own domain, though it can never
+  name one.
 
 The machine-checked half is `script/verify` (Kani harnesses over the capability model, IPC, the MMU
 invariants, the DMA validator). notes/verification.md states what each proof covers and, more
