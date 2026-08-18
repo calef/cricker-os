@@ -1,0 +1,222 @@
+#!/bin/sh
+# script/fastpath-footprint: the IPC fastpath must stay small enough to live in L1i.
+#
+# **Why this exists, and it is the oldest performance argument in microkernels.** Liedtke's
+# "On micro-Kernel Construction" (SOSP 1995) argued that Mach's IPC was slow because of the CACHE
+# FOOTPRINT of its hot path rather than anything inherent to microkernels: a kernel that touches a
+# lot of memory per IPC evicts the *application's* working set, so the cost shows up as capacity
+# misses spread through the workload instead of as time in the kernel. L4 was written against that,
+# and seL4 keeps a hand-maintained fastpath for the same reason. notes/benchmarks.md has the full
+# argument, the frontier cache sizes it is measured against, and the target.
+#
+# **What this measures**: an UPPER BOUND on the instruction footprint of an IPC round trip, in two
+# parts, because they are two different quantities and averaging them would hide both.
+#
+#   ipc_fastpath   the transitive closure of non-cold calls from the IPC and switch roots. Whole
+#                  symbol sizes, so a cold tail inside a hot function counts. Upper bound.
+#   syscall_entry  the trap vector, the exception dispatcher and `syscall::dispatch`, FLAT with no
+#                  closure. A syscall traverses one path through the decoder, but the decoder's own
+#                  bytes are on every syscall, and its other arms are not on this path at all.
+#
+# **What it is not.** It is not a cache measurement. No cache is modelled by icount and the HVF host
+# has an L1i several times larger than the boards, so nothing in this tree can yet observe the
+# effect this bounds. Milestone 74's PMU counters on milestone 127's Jetson TX1 are what turn this
+# from arithmetic into measurement. Until then this is a tripwire on the quantity, not the harm.
+#
+# Usage:
+#   script/fastpath-footprint            # measure both ISAs and check against the baselines
+#   script/fastpath-footprint --save     # re-record the baselines (a statement that a change is intended)
+#   script/fastpath-footprint --arch aarch64
+#
+# Name: unrecorded, and provisional like everything a lane mints. `fastpath` is the field's own word
+# for the thing being measured: it is what seL4 calls its hand-written common-case IPC path, so a
+# reader who knows the literature meets a term they already have. `footprint` is the quantity rather
+# than the verdict, which is deliberate: `-check` is this directory's suffix for a gate that fails a
+# build (`interleaving-check`, `qemu-check`, `stack-frame-check`), and by that convention this should
+# probably be `fastpath-footprint-check`. It is not, because the name would then be nine syllables to
+# say a thing calef may want spelled differently anyway. Worth settling; nothing depends on it.
+#
+# See notes/benchmarks.md and script/stack-frame-check, whose shape this copies: derive a number
+# from the built kernel, compare it against a rule, fail the build. That gate exists because
+# `sched::reap_region_objects` grew a 6816-byte frame that compiled without a warning and was found
+# only when CI faulted one run in five. A hot-path footprint has the same shape: it grows silently.
+
+set -e
+cd "$(dirname "$0")/.."
+
+save=""
+arches="aarch64 riscv64"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --save) save=1 ;;
+        --arch) shift; arches="$1" ;;
+        *) echo "script/fastpath-footprint: unknown argument $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | cut -d' ' -f2)/bin"
+if [ ! -x "$tools/llvm-objdump" ]; then
+    echo "script/fastpath-footprint: llvm-objdump not found; run script/bootstrap (llvm-tools)." >&2
+    exit 1
+fi
+
+status=0
+# shellcheck disable=SC2086  # $arches is a deliberate space-separated list; POSIX sh has no arrays
+for arch in $arches; do
+    case "$arch" in
+        aarch64) target=aarch64-unknown-none-softfloat ;;
+        riscv64) target=riscv64imac-unknown-none-elf ;;
+        *) echo "script/fastpath-footprint: no target for arch $arch" >&2; exit 2 ;;
+    esac
+
+    # **The RELEASE binary, and that is the whole point.** A debug kernel's `.text` is about twice
+    # the size (notes/benchmarks.md measured 348 KiB against 168 KiB on aarch64), so a debug
+    # footprint would be measuring the absence of the optimizer rather than the shape of the path.
+    echo "==> $arch: building the release kernel"
+    cargo build -p kernel --release --target "$target" >/dev/null
+
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    "$tools/llvm-objdump" -d --no-show-raw-insn "target/$target/release/kernel" > "$tmp/dis.txt"
+
+    ARCH="$arch" DIS="$tmp/dis.txt" BASE="bench/fastpath-$arch.txt" SAVE="$save" python3 - <<'PYEOF' || status=1
+import os, re, sys, collections
+
+arch, dis_path, base_path, save = os.environ["ARCH"], os.environ["DIS"], os.environ["BASE"], os.environ["SAVE"]
+
+# **Local labels are not symbols.** The riscv build emits 1,994 `.Lpcrel_hi*` headers, which would
+# otherwise chop real functions into fragments and make every size wrong. Skipping them keeps the
+# enclosing function accumulating, which is what a footprint wants.
+SYMHDR = re.compile(r"^([0-9a-f]+) <(.+)>:$")
+# aarch64 calls with `bl`; riscv64 with `jalr` (and `jal`), and both tail-call with `b` / `j`.
+# Every form objdump annotates with a target symbol is followed, because a tail call is still a
+# fetch of the callee's bytes.
+CALL = re.compile(r"\b(bl|blr|jal|jalr|b|j)\s+[^<]*<([^>+]+)")
+
+start, last, calls = {}, {}, collections.defaultdict(set)
+cur = None
+for line in open(dis_path, encoding="utf8", errors="replace"):
+    line = line.rstrip("\n")
+    m = SYMHDR.match(line)
+    if m:
+        name = m.group(2)
+        if name.startswith(".L"):
+            continue          # a local label inside the current function, not a new one
+        cur = name
+        start.setdefault(cur, int(m.group(1), 16))
+        continue
+    if cur is None:
+        continue
+    a = re.match(r"^([0-9a-f]+):", line)
+    if a:
+        last[cur] = int(a.group(1), 16)
+    c = CALL.search(line)
+    if c:
+        t = c.group(2)
+        if not t.startswith(".L") and t != cur:
+            calls[cur].add(t)
+
+# The last instruction's address plus its width. 4 on aarch64; riscv64 mixes 2- and 4-byte
+# instructions, so 4 is the conservative choice, which is the right direction for an upper bound.
+size = {s: last.get(s, start[s]) - start[s] + 4 for s in start}
+
+# **The roots: what "the IPC fastpath" is.** This list is a decision, not a heuristic, and it is the
+# question notes/benchmarks.md named as the thing blocking this gate from existing. Matched by
+# regex because mangled names carry a per-target crate disambiguator that is not stable.
+ROOTS = re.compile(r"kernel5sched(8ipc_send|8ipc_recv|8schedule|13finish_switch|11current_cap)")
+
+# **Cold, so excluded from the closure.** Two families, for two different reasons.
+#
+# Panic and formatting: reached only when the kernel is already dying, so those bytes are never
+# fetched on a healthy IPC. LLVM parks them at the end of a function, on their own cache lines.
+#
+# Teardown: `finish_switch` reaps a *finished* thread, which drags in `KernelStack::drop`,
+# `untyped::destroy`, `revoke_region`, `delete_frame_caps` and the unmap path. That branch runs when
+# a thread exits and never during an IPC. Including it put 11.2 KiB on this number when the honest
+# figure is 5.6, which is exactly the over-count that would make the gate meaningless.
+COLD = re.compile(
+    r"panic|expect_failed|unwrap_failed|slice_index|9panicking|4core3fmt|assert"
+    r"|6revoke|7destroy|drop_in_place|delete_frame_caps|unmap|KernelStack|12AddressSpace"
+)
+
+ENTRY = {
+    "aarch64": [r"^exception_vectors$", r"^exception_dispatch$", r"kernel7syscall8dispatch"],
+    "riscv64": [r"^trap_entry$", r"^trap_return$", r"^riscv_trap_dispatch$", r"^riscv_trap_body$",
+                r"kernel7syscall8dispatch"],
+}[arch]
+
+roots = [s for s in size if ROOTS.search(s)]
+if not roots:
+    print(f"fastpath-footprint: {arch}: no root symbols matched; the kernel or the names moved", file=sys.stderr)
+    sys.exit(1)
+
+seen, stack = set(), list(roots)
+while stack:
+    s = stack.pop()
+    if s in seen or s not in size or COLD.search(s):
+        continue
+    seen.add(s)
+    stack.extend(calls.get(s, ()))
+closure_total = sum(size[s] for s in seen)
+
+entry_syms = [s for s in size if any(re.search(p, s) for p in ENTRY)]
+entry_total = sum(size[s] for s in entry_syms)
+total = closure_total + entry_total
+
+print(f"    ipc_fastpath  {closure_total:6d} bytes over {len(seen)} symbols")
+print(f"    syscall_entry {entry_total:6d} bytes over {len(entry_syms)} symbols (flat, no closure)")
+print(f"    total         {total:6d} bytes ({total/1024:.2f} KiB), an upper bound")
+
+if save:
+    with open(base_path, "w") as f:
+        f.write(
+            "# bench/fastpath-%s.txt: an upper bound on the IPC fastpath's instruction footprint.\n"
+            "# Written by script/fastpath-footprint --save. Updating this file is a statement that a\n"
+            "# footprint change is intended and understood; do it in the commit that causes it.\n"
+            "# See notes/benchmarks.md for what the two numbers mean and what they are measured against.\n"
+            "ipc_fastpath %d\nsyscall_entry %d\n" % (arch, closure_total, entry_total)
+        )
+    print(f"    wrote {base_path}")
+    sys.exit(0)
+
+if not os.path.exists(base_path):
+    print(f"fastpath-footprint: {arch}: no baseline at {base_path}; run --save", file=sys.stderr)
+    sys.exit(1)
+
+want = {}
+for line in open(base_path):
+    line = line.strip()
+    if line and not line.startswith("#"):
+        k, v = line.split()
+        want[k] = int(v)
+
+# **Five percent, tighter than the icount tripwire's ten**, and the reason is that these numbers are
+# static. icount drifts across builds because the compiler remakes inlining decisions for unrelated
+# reasons (notes/benchmarks.md records that measurement); a symbol size moves when the code moves.
+# A looser bound here would let real creep through.
+TOL = 0.05
+bad = False
+for key, got in (("ipc_fastpath", closure_total), ("syscall_entry", entry_total)):
+    ref = want.get(key)
+    if ref is None:
+        print(f"fastpath-footprint: {arch}: baseline has no {key}; run --save", file=sys.stderr)
+        bad = True
+        continue
+    delta = (got - ref) / ref if ref else 0.0
+    if delta > TOL:
+        print(f"fastpath-footprint: {arch}: {key} grew {delta*100:.1f}% ({ref} -> {got}), over the {TOL*100:.0f}% bound.",
+              file=sys.stderr)
+        print("  Shrink it, or re-record with --save in the commit that causes the growth and say why.",
+              file=sys.stderr)
+        bad = True
+    elif abs(delta) > 0.001:
+        print(f"    {key}: {delta*100:+.1f}% against baseline ({ref}), within bound")
+sys.exit(1 if bad else 0)
+PYEOF
+    rm -rf "$tmp"
+    trap - EXIT
+done
+
+[ "$status" = 0 ] && [ -z "$save" ] && echo "fastpath-footprint: within bound on every ISA checked"
+exit "$status"
