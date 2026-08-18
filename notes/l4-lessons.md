@@ -76,7 +76,7 @@ structured audit surfaces.
 ## What this does and does not imply
 
 **It is not a defect list.** Rows 11 and 14 are choices the paper itself presents with trade-offs:
-direct process switch "generally ignor[es] priorities", which is why seL4 made it *subject* to
+direct process switch "generally ignore[s] priorities", which is why seL4 made it *subject* to
 priorities rather than restoring it wholesale, and Fiasco.OC and NOVA made it optional. A capability
 kernel that wants predictable scheduling has a real reason to hesitate before adopting either.
 
