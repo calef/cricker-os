@@ -563,7 +563,24 @@ struct Device {
 /// name** here, the same machinery region slots and Tids already use, because a stale
 /// `Object::Virtio` capability must not resolve to a different device than the one it named. That is
 /// a change to what a capability means, not to a counter, so it is its own piece of work.
-const MAX_DEVICES: usize = 32;
+///
+/// **33 for milestone 64's `std::net::TcpListener` gate**, which spawns one more `net_stack` over
+/// the mmio NIC so that a std program with a listen grant and one without are two different
+/// programs rather than two branches of one. Ninth receipt, and it is the first one taken **after**
+/// the paragraph above, which is what makes it worth reading rather than another tally mark.
+///
+/// The eighth receipt records 33 being tried and refused an hour later, and the refusal was on
+/// **memory** grounds: a second net server cost 192 unreclaimed pages and a later test found 137
+/// free frames. That reason is recorded as fixed (2026-08-16, `Holding::release_or_fail`), and this
+/// lane is the first to actually spend the thing the fix was supposed to buy. It held: 33 devices,
+/// the new gate under five seconds, and the frame ledger untroubled. So the eighth receipt's
+/// conclusion ("the constraint was never this table") is confirmed from the other side, and what is
+/// left here really is only the counter.
+///
+/// **Which is the argument for the unregister, not against it.** Nothing above is a reason to keep
+/// bumping; it is the removal of the excuse that the other ceiling would bind first. The next lane
+/// that needs a device should read the generational-name paragraph above as its work item.
+const MAX_DEVICES: usize = 33;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {
