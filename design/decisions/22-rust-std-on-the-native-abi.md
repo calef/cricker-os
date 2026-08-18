@@ -83,8 +83,13 @@ is: **a std program holds a directory capability at slot 4, and `File::open("foo
 the directory I was granted."** Everything else follows, and is enforced client-side before a byte
 reaches the wire so a would-be escape becomes a legible error rather than an `ENOENT`:
 
-- An absolute path and any `..` are **refused as `ErrorKind::InvalidFilename`**, with a message
-  naming which case it was. A **nested path is a chain of attenuated descents** (milestone 122), one
+- **An absolute path names the root of the caller's own namespace** (milestone 47, 2026-08-18), and
+  any `..` that would climb above it is **refused as `ErrorKind::InvalidFilename`**, with a message
+  naming which case it was. This bullet refused absolute paths outright until then, and that was the
+  honest statement of what the binding did rather than a principle: `/` in a system where every
+  program holds its own directory capability is Plan 9's answer, not a global root, so two programs
+  in two subtrees resolve the same absolute token to two different files and neither can name the
+  other's. The refusal was the missing machinery, not a property worth keeping. A **nested path is a chain of attenuated descents** (milestone 122), one
   `OPENDIR` per component, each hop asking for `DESCEND` plus what the final verb needs; the grant is
   exactly as tight as it was, because a child's rights are its parent's intersected with the request.
   This bullet refused nested paths outright until 2026-08-18, which was the honest statement of what

@@ -36,6 +36,14 @@ refuses `..`, symlinks and absolute paths that would escape. Its filesystem API 
 **WASI's** sandboxing model, and under WASI it becomes a *thinner* layer than `libstd`, because there
 are no absolute paths to handle.
 
+**Milestone 47 gave this system absolute paths, and the analogy survives it** (2026-08-18). A `/`
+here names the root of the caller's *own* namespace rather than a global one, so it is a position
+inside the capability the program already holds; two shells in two subtrees resolve the same token
+to two different files. That is the case `cap-std` refuses because it cannot express it, and the
+reason it can be expressed here is that the resolver is client-side and a grant records a position.
+So the sentence above stays true of WASI and is no longer true of us, which is the better direction
+for the comparison to fail in.
+
 That is this system's model, arrived at independently and for other reasons. `Dir` is a directory
 capability. `one_name` in `patches/std-nife` is what `Dir` enforces. A program already written
 against `cap-std`, or already targeting WASI preopens, **has had the de-ambienting work done by
