@@ -7,14 +7,28 @@ false, and both are corrected there rather than here: the glob caretaker was bui
 environment and `PATH`, plus the sections further down this block that sentence never listed (`ln`,
 `touch`, absolute paths, and `bind`).
 
-**Gate: MILESTONE 64.** The navigation half is built. The namespace half (absolute paths,
-environment, `PATH`, and `bind`) has no forcing use case from the shell, and the block's own
-sequencing is to let 64 measure first, so a real crate's demands size the remaining scope. The glob
-caretaker in the same list is not gated by that. **64's measurement has since landed** (PARTIAL since
-2026-08-04, notes/crates-io-on-nife.md) and it sized exactly one item here, `env::var` at rank 4 with
-16 direct consumers and no PAL at all. Whether that satisfies this gate or moves it to `MILESTONE 122`
-(the `OPENDIR`-reaches-the-PAL blocker, still NOT-STARTED) is a sequencing call this sweep did not
-take.
+**Gate: NONE.** Discharged 2026-08-18. The navigation half is built. The namespace half (absolute paths,
+environment, `PATH`, and `bind`) had no forcing use case from the shell, and this block's own
+sequencing was to let milestone 64 measure first so a real crate's demands could size the remaining
+scope. **That measurement has landed and it did its job**, so the gate it was waiting for is
+discharged rather than merely aged.
+
+64's second pass (2026-08-18) reports that **nothing in this milestone was ever waiting on 64**, and
+hands over the sized demand this block asked for: named customers at ranks 16, 18 and 27 plus
+path-joining, and one 64 did not expect: **a *seeded* environment has to arrive from this
+milestone's endowment**, because `std::env` on nife starts empty by construction and 16 direct
+consumers want otherwise. `env::var` was rank 4 with no PAL at all, and the shape of its absence is
+the warning worth carrying here: `getenv` answered `None` harmlessly while the same fallback's
+`env()` was `panic!`, so `std::env::vars()` aborted the process and compiled perfectly. **The
+dangerous refusal is the one that answers.**
+
+**One sequencing question is open and deliberately not made a gate.** Milestone 122 (`OPENDIR`
+reaches the PAL) is `NOT-STARTED`, and some of the namespace half may want it; the 2026-08-17 status
+sweep raised that and declined to rule, and this line does not rule either. Recording it as `NONE`
+with the question named is the honest state: a lane can start, and the first thing it should
+establish is whether its piece needs 122. Turning an unestablished dependency into a gate is how a
+milestone sits blocked on nothing, which is what the twelve days behind this block's own corrected
+sentence cost.
 
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
