@@ -493,6 +493,15 @@ builtin the entry predicted. What is left, in the order it pays off:
    anything, so nothing loses its redirection. That narrowing is a proposal and not a decision:
    what a spawned program holds at this prompt is calef's, and it is the syscall-adjacent kind of
    choice the *move fast on what can be undone* tenet puts on the expensive side.
+
+   **And there is a cost that is not the one notes/pipes.md names**, which is the part worth
+   deciding rather than discovering. A child holding the terminal's sink can write to the screen
+   *after* its line has ended, so a stage that outlives its command can paint a prompt nobody
+   typed. Today that cannot happen through this path because only a declared second stream reaches
+   it and the shell drains the tail before printing again; a tail stage whose output goes straight
+   to the screen gives the shell nothing to wait on, so it would have to wait for the child to
+   exit instead. That is a second question inside the first one, and it is a security question
+   rather than a plumbing one.
 2. **The store as something a package installs**, rather than a table in `xtask`. `DOC_BUNDLES` is
    the shape milestone 40 asked for minus a package manager, and milestone 39 is where the manifest,
    the hash and the version it should hang off already live.
