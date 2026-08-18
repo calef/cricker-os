@@ -64,7 +64,7 @@ it does not use.
 The scripts do almost nothing themselves. `script/test` is `cargo xtask test`; `script/server`
 is `cargo xtask run`; `script/console` is `cargo xtask shell`. **`cargo xtask` is still the
 engine** and still the place the real build logic lives (and it exposes more than the scripts do:
-`gdb`, `objdump`, `image`). The scripts add a normalized interface on top, and nothing was
+`gdb`, `objdump`, `image`, `std-aborts`). The scripts add a normalized interface on top, and nothing was
 duplicated to get it. If you prefer typing `cargo xtask …`, it all still works.
 
 ## Two things that are deliberately the way they are

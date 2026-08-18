@@ -1,16 +1,28 @@
 # 64. Enough `std` to run somebody else's crate
 
-**Status: PARTIAL** since 2026-08-04 (PR #113), and still PARTIAL after the second pass
-(2026-08-17) and the third (2026-08-18), because what is left on the ranked list is a decision each
-rather than an effort each. The measurement's deliverable, the prioritised gap list that milestones
-99 and 66 consume, is in `notes/crates-io-on-nife.md`: **50 crates.io crates, 43 built, 7 failed**,
-where 43 is against this tree as it ships and **39 is against it without `entropy_backend`**, which
-is the number this block carried until the third pass.
+**Status: PARTIAL** since 2026-08-04 (PR #113), through four passes (2026-08-17, and three on
+2026-08-18). The measurement's deliverable, the prioritised gap list that milestones 99 and 66
+consume, is in `notes/crates-io-on-nife.md`: **50 crates.io crates, 43 built, 7 failed**, where 43 is
+against this tree as it ships and **39 is against it without `entropy_backend`**, which is the number
+this block carried until the third pass.
 
-**Gate: NONE.** The block's own sequencing is to run the measurement phase first and independently:
-pick the probe crates, build them, and let the failures name the work. The `File::open` resolution
-question is a design fork inside it, to be raised before code and answered jointly with milestone
-47's namespace half rather than twice.
+**Gate: NONE.** The fourth pass had to establish that rather than assume it, because the third
+pass's report said the opposite: *"the ranked list is now genuinely exhausted for a lane under these
+constraints: every remaining row is a decision."* **That sentence was wrong twice**, and this block
+carried a version of it too:
+
+- **`std::process::exit` was a trap instruction**, found by building the gate the third pass said
+  was missing. Not a decision, and not on the list, because the list cannot see a function that ends
+  the process. Fixed here.
+- **`TcpListener` is a binding, not a decision.** Rank 21 was a contract gap when it was written and
+  stopped being one at milestone 107; `sys/net/connection/nife.rs`'s own doc comment has said so
+  since, in the words *"small and mechanical"*. It is the largest piece of ordinary work left in
+  this milestone and nothing about it needs calef.
+
+The block's own sequencing still holds: run the measurement phase first and independently, pick the
+probe crates, build them, and let the failures name the work. The `File::open` resolution question is
+a design fork inside it, to be raised before code and answered jointly with milestone 47's namespace
+half rather than twice.
 
 **The measurement is a script now**, `script/crate-probes` (name provisional), and that is the third
 pass's first deliverable. It had been a prose recipe re-derived by hand three times, and two of those
@@ -56,12 +68,37 @@ demand was undercounted by four probes too. It also corrects this note's most-qu
 `tempfile` did not "build, link, and return an error", it **died inside `std::env::temp_dir`** before
 reaching its own refusal.
 
+**The fourth pass turned the third pass's method into a check, and the check found a fifth.**
+`cargo xtask std-aborts` (name provisional) asks cargo's dep-info which `library/std/src/sys/**`
+sources rustc compiled for the nife targets and greps exactly those for bodies that end a process,
+against a list carrying a reason per entry. It runs inside `script/test`. That is rung two of
+AGENTS.md's ladder where this block's own BUGS section had rung four, and it was worth building
+rather than reading a fourth time because **`std::process::exit()` was `crate::intrinsics::abort()`
+and no amount of reading would have found it.** `sys/exit.rs` is not a `sys/<module>/mod.rs`
+backend; its `cfg_select!` lives inside a function, so "read every module the PAL falls through"
+has nothing to read. It hid behind a second thing too: `_start` calls the PAL's `rt::exit` on
+`main`'s return directly, and `std::process::exit` is std's **only** caller of `sys::exit::exit`, so
+every std test in this tree ended by the path that worked. A clean exit was arriving at its
+supervisor as `EVENT_FAULT` with a pc and a faulting address.
+
+**What that leaves open, and it is a wire format rather than a PAL arm.** `sched::exit()` is
+`depart(EVENT_EXIT, 0, 0)`: the §26 message has no field for an exit code, so a supervisor can tell
+exit from crash and cannot tell `exit(0)` from `exit(1)`. That is the expensive category (something
+two programs agree on) and is recorded in notes/std.md rather than guessed at here.
+
 **What remains, and why each one stops here rather than being unfinished.** Rank 2, the
 `std::os::unix` fallthrough, wants a **uid** and a **file mtime set** that this system does not have
 in the form the crates ask for, and answering would be a Unix fiction over a capability refusal.
 Rank 3, `thread::spawn`, is this block's own unanswered scheduling question (see BUGS) and has **no
 build failures behind it**. Rank 19, `Metadata::modified`, is one field in `FSTAT`'s reply away and
-that makes it a wire-format change. Everything else that resolves a path waits on the `File::open`
+that makes it a wire-format change. **Rank 21, `TcpListener`, is the exception to this whole
+paragraph and is the next lane's work**: it was a contract gap when the list was written and stopped
+being one at milestone 107, so what is left is a PAL binding (`bind` -> `OP_LISTEN` on a socket id
+this PAL allocates, `accept` -> `OP_ACCEPT` into a second id with a frame attached) plus a listen
+grant on the stack the program is spawned with. `sys/net/connection/nife.rs` calls it *"small and
+mechanical"* in its own doc comment and notes/net.md's "The inbound half" says what it takes. It is
+also on the customer path: milestone 55 wants Samba-shaped code, and nothing that serves a share
+accepts no connections. Everything else that resolves a path waits on the `File::open`
 fork below, and the third pass drew the line at exactly that edge: **fix the ones that abort, leave
 the ones that refuse.** `current_dir`, `current_exe`, `chdir` and `home_dir` can each say no in their
 own signature and still do; `temp_dir` and `split_paths` could not, so they were answered from §27's
@@ -174,11 +211,13 @@ both milestones already point at.
   every `env::var` a crate reads is `None`. `chrono`'s `TZ` and `clap`'s colour detection both take
   that path, which is fine and is not the same as working.
 
-- **Nothing runs the sweep that found the three aborts.** It is a person reading every module the PAL
-  falls through and asking what its neighbours do, which is rung four of AGENTS.md's ladder. The
-  three found so far were each found by accident or by one deliberate pass, and a fourth would be
-  found the same way. A gate is conceivable (make each fallback `panic!` a distinct undefined symbol
-  and let the linker name the reachable ones) and was not built here.
+- **The sweep is a gate now** (`cargo xtask std-aborts`, fourth pass), and it is honest about its
+  boundary. It covers `library/std/src/sys/**` only, because `sys` is the platform layer and a panic
+  above it (`path.rs`, `thread/scoped.rs`) is a caller's bug that behaves identically on Linux; a
+  first version that swept all of std found about forty of those and none of the platform kind. The
+  cost of that boundary is real: **portable std code that is only reachable on a platform this thin
+  is invisible to it**, and finding those still needs somebody reading. It also proves reachability
+  of a *body*, never of a *call*. See notes/std.md, "What still ends a nife process".
 
 **Effort: not estimated**, deliberately. The measurement is the first deliverable: pick the probes,
 build them, and report what breaks.
