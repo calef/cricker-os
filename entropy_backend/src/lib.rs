@@ -1,5 +1,49 @@
 //! The `getrandom` backend for nife (milestone 64, **rank 1** of the measured gap list).
 //!
+//! # The name, and the three that lost
+//!
+//! **`entropy_backend`**, calef's, ruled 2026-08-18 after asking what the tree's other entropy
+//! crates are called. They are `entropy` (the service that holds the virtio-rng capability) and
+//! `entropy_proto` (its contract), so **entropy** is this tree's word for the domain and a third
+//! participant takes the same stem.
+//!
+//! - **`getrandom_backend`** was the lane's provisional name and the strongest rival: it is
+//!   upstream's own word for the slot, spelled exactly that way in the `--cfg` flag, so the reader
+//!   who arrives here is searching for it. It lost because it names the slot rather than the thing,
+//!   and because every other crate in this tree is named for what it is.
+//! - **`getrandom_nife`** was considered while this lived under `patches/`, where `std-nife` set an
+//!   `<upstream>-<ours>` precedent. It lost with the directory: see below.
+//! - **`entropy_shim`** is accurate about the shape and `shim` is a word this tree does not
+//!   otherwise use, so it would have been the only one.
+//!
+//! # Why this is not in `patches/`, and not in `crates/` either
+//!
+//! It sat in `patches/getrandom-nife/` until 2026-08-18, and that was the actual defect rather than
+//! the name. `patches/README.md` states what that directory is for: **patches carried against
+//! upstream projects, one file per patch, in `git format-patch` form, each existing to be
+//! upstreamed**, leaving when a pin advances past a release containing the fix. This crate changes
+//! nothing of `getrandom`'s and there is nothing to upstream, so it was never a patch. (`std-nife`
+//! is the directory's one other exception and it *is* modifying upstream source, as an overlay.)
+//!
+//! `crates/` is wrong too, for a duller reason: everything there is a workspace member, and this
+//! cannot be one. It needs `std`, so it builds only for a `*-unknown-nife` target under the linked
+//! `nife-dev` toolchain with build-std, and it needs `--cfg getrandom_backend="custom"`, which the
+//! workspace crates must never inherit.
+//!
+//! So it sits at the tree root as its own workspace, beside `std_exerciser`, which is already
+//! exactly that shape: our code, its own workspace, outside the kernel's shipping graph.
+//!
+//! # BUGS
+//!
+//! - **`script/names` cannot see this crate, and could not see it under `patches/` either.** That
+//!   tool derives its table from three locations: `crates/<name>/src/lib.rs`, `user/src/<name>.rs`
+//!   and `script/<name>`. A root-level workspace is none of them, so `script/names entropy_backend`
+//!   answers "neither a name in the tree nor a recorded refusal", and it says the same of
+//!   `std_exerciser`, which has sat there far longer. So the provenance block above is the whole
+//!   record, and the naming worklist will never list this crate as unratified. Pre-existing and
+//!   wider than this crate; recorded here because milestone 115's point was that a name's
+//!   provenance lives beside the name, and here it is the *only* place it lives.
+//!
 //! # Why a whole crate exists for eleven lines
 //!
 //! `getrandom` is the crate the Rust ecosystem gets its randomness from, and almost nothing that
@@ -34,7 +78,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! getrandom_backend = { path = "../patches/getrandom-nife" }
+//! entropy_backend = { path = "../entropy_backend" }
 //! ```
 //!
 //! select the backend in the workspace's own `.cargo/config.toml`:
@@ -47,7 +91,7 @@
 //! and **name the crate in the binary, for its side effect**:
 //!
 //! ```text
-//! use getrandom_backend as _;
+//! use entropy_backend as _;
 //! ```
 //!
 //! That last line is not tidiness, and this file said the opposite until the linker corrected it. An

@@ -62,11 +62,10 @@ cargo fmt --manifest-path fuzz/Cargo.toml "$@"
 # rustfmt parses, it does not build, so no target spec and no build-std are involved.
 cargo fmt --manifest-path std_exerciser/Cargo.toml "$@"
 
-# And the `getrandom` backend (milestone 64), a sixth. It lives under `patches/` and is the one thing
-# there that this gate SHOULD reach, which is worth saying out loud because `script/lint` excludes
-# `patches/` wholesale and a reader will notice the disagreement. The rest of that directory is
-# upstream's own source, patched (`patches/std-nife/overlay` is rustc's `std`), and reformatting
-# somebody else's code would make every future rebase a conflict. `patches/getrandom-nife` is ours,
-# written here, and the only reason it sits under `patches/` at all is that it exists to patch a hole
-# in a crates.io crate.
-cargo fmt --manifest-path patches/getrandom-nife/Cargo.toml "$@"
+# And `entropy_backend` (milestone 64), a sixth, for the same reason and with no caveat. It sat under
+# `patches/` until 2026-08-18, which needed a paragraph here explaining why this gate reached into a
+# directory `script/lint` excludes wholesale. It no longer does: `patches/` is for patches carried
+# against upstream projects (its own README says so) and this crate changes nothing of `getrandom`'s.
+# It is ours, its own workspace, beside `std_exerciser`, and the disagreement it used to require an
+# explanation for is gone.
+cargo fmt --manifest-path entropy_backend/Cargo.toml "$@"

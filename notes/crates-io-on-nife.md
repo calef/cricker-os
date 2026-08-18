@@ -200,7 +200,7 @@ decision for whoever picks this up.
 
 ##### What was decided, and where the paragraph above was wrong
 
-**`patches/getrandom-nife/` is the answer** (milestone 64, 2026-08-17), and it is the custom hook
+**`entropy_backend` is the answer** (milestone 64, 2026-08-17), and it is the custom hook
 after all. The objection above is half right: the flag is a `RUSTFLAGS` setting, and a consumer that
 forgets it gets the same `compile_error!`. But **a workspace states it once, in its own
 `.cargo/config.toml`**, and per-workspace is the correct granularity anyway, because whether an
@@ -219,10 +219,10 @@ pull request against `getrandom`, not a change to this tree.
 
 Three things about the recipe, and the third cost an hour:
 
-1. Depend on `getrandom_backend` (a **provisional** name; calef names crates).
+1. Depend on `entropy_backend`.
 2. `rustflags = ["--cfg", "getrandom_backend=\"custom\""]` in the consuming workspace's
    `.cargo/config.toml`.
-3. **`use getrandom_backend as _;` in the binary.** An rlib nothing references is not linked, so
+3. **`use entropy_backend as _;` in the binary.** An rlib nothing references is not linked, so
    without this the build reaches `rust-lld: error: undefined symbol: __getrandom_v03_custom`. Two of
    the eight probes linked without it because they happened to call `getrandom` on a path the linker
    kept; six did not. Same shape as a `no_std` panic handler: a crate that exists to define a symbol
@@ -230,7 +230,7 @@ Three things about the recipe, and the third cost an hour:
 
 Re-measured with it, on 2026-08-17:
 
-| crate | with `patches/getrandom-nife` |
+| crate | with `entropy_backend` |
 |---|---|
 | `rand` 0.9 | **PASS** |
 | `uuid` 1 | **PASS** |

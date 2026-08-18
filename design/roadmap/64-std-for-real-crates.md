@@ -21,7 +21,7 @@ which is why nothing caught it.
 48; only the client refused). The second pass added four more, working the list from the top:
 
 - **Rank 1, the `getrandom` backend**, which was 8 of the 11 build failures and is the one gap on the
-  list that is not a `std` gap at all. `patches/getrandom-nife` is the fix, on `getrandom`'s own
+  list that is not a `std` gap at all. `entropy_backend` is the fix, on `getrandom`'s own
   documented custom-backend hook over `std::random::SystemRng`. **`rand`, `uuid`, `gix-object` and
   `gix-actor` build for nife now**, and the other four no longer fail on `getrandom` at all.
 - **Rank 4, `env`**, and it is the sting in a second place: `env::var` was recorded as "no PAL at

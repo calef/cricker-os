@@ -8,11 +8,12 @@
 # `--cfg getrandom_backend="custom"` in the consumer's rustflags, which the workspace crates must
 # never inherit.
 #
-# `getrandom_backend` is a PROVISIONAL name (calef names crates; AGENTS.md). It says what the thing
-# is at the place a reader meets it, which is a `[dependencies]` list directly under `getrandom`.
+# `entropy_backend` is calef's, ruled 2026-08-18. It names the thing rather than the slot it fills:
+# `entropy` and `entropy_proto` are this tree's words for the domain, and a third participant takes
+# the same stem. The refusals are recorded in src/lib.rs.
 
 [package]
-name = "getrandom_backend"
+name = "entropy_backend"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
