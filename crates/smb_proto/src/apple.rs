@@ -57,8 +57,8 @@
 //! **Volume capabilities: [`VOLUME_FULL_SYNC`], and nothing else.** That bit **is**
 //! `fruit:time machine = yes`: it is the single flag on the SMB side that tells macOS this
 //! server's durability is good enough to hold a backup, and without it the share is a share and
-//! never a destination. See BUGS for exactly how far that claim is currently backed. The two it
-//! does not set:
+//! never a destination. **It is backed by a real device flush** (`fs_proto::fs::SYNC` under SMB2's
+//! `FLUSH`, milestone 55); see BUGS for what it still does not promise. The two it does not set:
 //!
 //! - [`VOLUME_CASE_SENSITIVE`] would be a lie in the other direction. The backing filesystem is
 //!   case-sensitive, but this server folds every name to lower case at the wire
@@ -101,15 +101,21 @@
 //!   half can be and is (the QEMU gate sends this context and checks the answer), but a conforming
 //!   client this tree wrote is not `smbfs`. The first real Time Machine attempt is where the rest
 //!   of milestone 55 gets written.
-//! - **[`VOLUME_FULL_SYNC`] is claimed further than the stack currently backs it.** What is true:
-//!   the FS server puts every `fs_proto` write through one RedoxFS transaction that commits to the
-//!   header ring before the reply, so there is no write-back cache above the block device for a
-//!   flush to push, and SMB2's FLUSH has genuinely nothing to do. What is not true: the block
-//!   server issues no `VIRTIO_BLK_T_FLUSH`, so the durability of the last acknowledged write is
-//!   the device's word rather than ours (notes/fs-server.md's crash-injection table records the
-//!   same gap from the other side). A host that loses power can therefore lose a write this server
-//!   acknowledged. Closing it is a device flush in the block server and a sync verb in `fs_proto`,
-//!   and it is the piece of milestone 55 that should land before anybody's real backup does.
+//! - **[`VOLUME_FULL_SYNC`] is backed as of 2026-08-18, and here is what it still does not
+//!   promise.** The entry that used to sit here said the claim outran the stack, and it did: every
+//!   `fs_proto` write committed to the RedoxFS header ring before the reply, so there was never a
+//!   write-back cache above the block device, but the block server issued no
+//!   `VIRTIO_BLK_T_FLUSH`, so the durability of the last acknowledged write was the device's word
+//!   rather than ours. Milestone 55's durability half added `fs_proto::blk::FLUSH` and
+//!   `fs_proto::fs::SYNC`, and SMB2's `FLUSH` now drives both; a device that offers no
+//!   `VIRTIO_BLK_F_FLUSH` produces an error at the client rather than a success.
+//!
+//!   What is left is narrower and worth naming where the claim is met. **The sync is device-wide**,
+//!   so flushing one handle makes the whole image durable; nothing below can do less. **Nothing
+//!   fences**: `fs_proto` has no ordering primitive, so this promises "everything acknowledged is
+//!   durable now" and not "these writes landed in this order". And **a device that lies about its
+//!   own flush is outside anything a protocol can check**, which is the same limit
+//!   notes/fs-server.md's crash-injection table records from the other side.
 //! - **The model string is compiled in.** [`MODEL`] is one constant, matching the reference's
 //!   `fruit:model = TimeCapsule`. `mdns_config` made the same string a document a person edits and
 //!   this has not; milestone 131 (a share is configured, not compiled) is where the two meet.
@@ -171,7 +177,8 @@ pub const VOLUME_FULL_SYNC: u64 = 1 << 2;
 pub const SERVER_CAPS: u64 = SERVER_UNIX_BASED;
 
 /// **What this server claims about the volume.** [`VOLUME_FULL_SYNC`] is what makes macOS willing
-/// to back up here at all; the BUGS section is honest about how far the stack backs it.
+/// to back up here at all, and since milestone 55's durability half it is a claim the block layer
+/// makes good on rather than one the FS layer alone did; the BUGS section carries what is left.
 pub const VOLUME_CAPS: u64 = VOLUME_FULL_SYNC;
 
 /// **The model string**, which picks the icon macOS draws and matches the reference's
