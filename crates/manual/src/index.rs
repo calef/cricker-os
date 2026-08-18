@@ -269,24 +269,66 @@ pub fn normalize(word: &[u8], out: &mut [u8; TERM_MAX]) -> usize {
 ///
 /// A one-character term is dropped because it costs a posting list per letter of the alphabet and
 /// answers no question anybody asks a manual.
+///
+/// # An underscore-joined name is also one term, and it has to be
+///
+/// `line_editor` yields `line`, `editor` **and** `lineeditor`, and the third one is not a nicety.
+/// [`normalize`] drops every non-alphanumeric byte, so a reader who types `line_editor` looks up
+/// `lineeditor`; a tokeniser that only split on the underscore would never have written that term,
+/// and the lookup could not match however many pages said it. The two halves of this module
+/// disagreed about exactly that until 2026-08-18, and `a_query_folds_the_way_the_text_did` asserted
+/// they agreed while testing only a word with no underscore in it.
+///
+/// **Only the underscore joins.** This repository writes `snake_case` identifiers in running prose
+/// constantly (`fs_proto`, `grant_plan`, `terminal_sink_caretaker`), so they are the names a reader
+/// most wants to search for, and the underscore is unambiguous here in a way the hyphen is not:
+/// joining across `-` would manufacture a term out of every hyphenated phrase in the corpus. The
+/// renderer narrowed emphasis for the same reason and records it in its own `BUGS`.
 pub fn tokens(text: &[u8], mut f: impl FnMut(&[u8])) {
     let mut buf = [0u8; TERM_MAX];
     let mut n = 0;
+    // The compound: this run and every run underscore-joined ahead of it, with the underscores
+    // taken out, which is exactly what `normalize` will do to the query.
+    let mut joined = [0u8; TERM_MAX];
+    let mut jn = 0;
+    let mut parts = 0usize;
     for &b in text {
         if b.is_ascii_alphanumeric() {
             if n < TERM_MAX {
                 buf[n] = b.to_ascii_lowercase();
                 n += 1;
             }
-        } else {
-            if n >= 2 {
-                f(&buf[..n]);
+            if jn < TERM_MAX {
+                joined[jn] = b.to_ascii_lowercase();
+                jn += 1;
             }
-            n = 0;
+            continue;
+        }
+        if n >= 2 {
+            f(&buf[..n]);
+        }
+        if n > 0 {
+            parts += 1;
+        }
+        n = 0;
+        if b != b'_' {
+            // Emitted only when there was something to join, so an ordinary word is not offered
+            // twice and the term table does not double for prose.
+            if parts > 1 && jn >= 2 {
+                f(&joined[..jn]);
+            }
+            jn = 0;
+            parts = 0;
         }
     }
     if n >= 2 {
         f(&buf[..n]);
+    }
+    if n > 0 {
+        parts += 1;
+    }
+    if parts > 1 && jn >= 2 {
+        f(&joined[..jn]);
     }
 }
 
@@ -826,6 +868,40 @@ mod tests {
         assert_eq!(i, 2);
         assert_eq!(&seen[0][..lens[0]], b"capability");
         assert_eq!(&seen[1][..lens[1]], b"frame");
+    }
+
+    #[test]
+    fn an_underscore_name_is_searchable_as_itself() {
+        // **The case the test above asserted and did not check.** `normalize` drops every
+        // non-alphanumeric byte, so a reader typing `line_editor` looks up `lineeditor`; until
+        // 2026-08-18 the tokeniser only ever wrote `line` and `editor`, so that lookup could not
+        // match however many pages said the name. In a repository whose prose is full of
+        // `snake_case` identifiers, that is most of what anybody would search for.
+        let mut key = [0u8; TERM_MAX];
+        let n = normalize(b"line_editor", &mut key);
+        assert_eq!(&key[..n], b"lineeditor");
+
+        let mut seen: [[u8; TERM_MAX]; 8] = [[0; TERM_MAX]; 8];
+        let mut lens = [0usize; 8];
+        let mut i = 0;
+        tokens(b"the line_editor crate", |t| {
+            if i < 8 {
+                seen[i][..t.len()].copy_from_slice(t);
+                lens[i] = t.len();
+                i += 1;
+            }
+        });
+        // No `alloc` here: this module compiles without it on the guest path, so the check is a
+        // closure over the fixed array rather than a `Vec`.
+        let has = |want: &[u8]| (0..i).any(|k| &seen[k][..lens[k]] == want);
+        let count = |want: &[u8]| (0..i).filter(|&k| &seen[k][..lens[k]] == want).count();
+        assert!(has(b"lineeditor"));
+        // The halves are still terms of their own, so `apropos editor` keeps working.
+        assert!(has(b"line"));
+        assert!(has(b"editor"));
+        // And an ordinary word is not offered twice, which is what keeps the term table from
+        // doubling over prose that has no underscores in it.
+        assert_eq!(count(b"crate"), 1);
     }
 
     #[test]

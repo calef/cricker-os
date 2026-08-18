@@ -135,6 +135,31 @@ can discover what it was not given. So "what pages exist" is not discoverable at
 computed on the host at image time and shipped, which is what Unix's `mandb` does for a different
 reason (scanning was slow).
 
+### The writer and the reader must agree on what a word is, and did not
+
+`manual::index::normalize` folds a query by dropping every byte that is not a letter or a digit, so
+a reader who types `line_editor` looks up `lineeditor`. `manual::index::tokens` split the *text* on
+that same byte, so the builder only ever wrote `line` and `editor`. **The term the query asks for
+was one no page could ever have.** In a repository whose prose is full of `snake_case` identifiers,
+that is most of what anybody would search for: `apropos fs_proto` and `apropos grant_plan` both
+answered "nothing says that" while dozens of pages said exactly that.
+
+The test that should have caught it asserted the property in its own first comment, *"the builder's
+tokeniser and the reader's query normaliser must agree, byte for byte, on what a term is"*, and
+then checked a word with no underscore in it. Same shape as the fence: a claim in prose, a weaker
+thing checked.
+
+The fix is in the writer rather than the reader, and that is the choice worth recording.
+`line_editor` now yields three terms, `line`, `editor` **and** `lineeditor`, so `apropos editor`
+keeps working and `apropos line_editor` starts. Narrowing `normalize` to stop at the underscore
+would have been smaller and would have made `apropos line_editor` silently search for `line`, which
+is a worse answer than no answer.
+
+**Only the underscore joins.** It is unambiguous in this tree and the hyphen is not: joining across
+`-` would manufacture a term out of every hyphenated phrase in the corpus, and `notes/glob-grant.md`
+is a filename rather than a word. The renderer narrowed emphasis on exactly this reasoning and
+records it in its own `BUGS`.
+
 ### The layout is designed for a reader that holds one page
 
 A client of the file contract shares exactly one 4 KiB frame with the FS server, and a shell that
@@ -198,7 +223,7 @@ design on one screen. None of them is hidden. Nothing a person would type led to
 
 ```text
 $ script/apropos capability
-512 pages, 5035511 bytes of documentation in this repository
+512 pages, 5049711 bytes of documentation in this repository
 
 searching for: capability
 
@@ -249,15 +274,17 @@ which is this whole milestone in one constant.
 
 | bundle | pages | terms | postings | markdown | index | probes |
 |---|---|---|---|---|---|---|
-| `manual` | 1 | 1001 | 1001 | 24620 | 45056 | 4 |
-| `swish` | 2 | 1738 | 2055 | 88772 | 77824 | 5 |
-| `kernel` | 3 | 2367 | 3271 | 101022 | 102400 | 6 |
-| `glob` | 1 | 861 | 861 | 20019 | 40960 | 4 |
+| `manual` | 1 | 1119 | 1119 | 29690 | 53248 | 5 |
+| `swish` | 2 | 1807 | 2130 | 88772 | 81920 | 5 |
+| `kernel` | 3 | 2461 | 3369 | 101022 | 106496 | 6 |
+| `glob` | 1 | 882 | 882 | 20019 | 40960 | 4 |
 
-**234,433 bytes of markdown produce 266,240 bytes of index**, which is 1.14x, and that is the number
+**239,503 bytes of markdown produce 282,624 bytes of index**, which is 1.18x, and that is the number
 worth arguing with rather than the pleasant ones. (It was 1.56x when phase 1 measured it and 1.24x
 in the middle, and the improvement is not an optimisation: the notes it indexes grew, and page
-alignment's fixed floor is a smaller share of a bigger bundle.) Two things pay for it. A term record stores its
+alignment's fixed floor is a smaller share of a bigger bundle. It went the other way on 2026-08-18,
+from 1.14x, and that one *is* a cost: underscore-joined terms are a third term for every
+`snake_case` identifier in the prose, which is what makes those identifiers findable.) Two things pay for it. A term record stores its
 term **inline** in 24 bytes so a probe is one page read rather than two, which is most of the bulk.
 And page alignment puts a four-page floor (16 KiB) under every bundle however small, so a bundle of
 one short page still costs 16 KiB to index.
@@ -277,12 +304,12 @@ $ cargo xtask manual capability
 documentation store: target/redoxfs-tree/doc
 
   bundle     pages   terms postings  markdown    index probes
-  manual         1    1001     1001     24620    45056      4
-  swish          2    1738     2055     88772    77824      5
-  kernel         3    2367     3271    101022   102400      6
-  glob           1     861      861     20019    40960      4
+  manual         1    1119     1119     29690    53248      5
+  swish          2    1807     2130     88772    81920      5
+  kernel         3    2461     3369    101022   106496      6
+  glob           1     882      882     20019    40960      4
 
-  234433 bytes of markdown, 266240 bytes of index
+  239503 bytes of markdown, 282624 bytes of index
 
 search: capability
     46  doc/kernel/capabilities.md    Capabilities, and why the kernel has no `open()`  notes/capabilities.md
@@ -397,6 +424,10 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
   read at a prompt before deciding what to open, and one of this system's two terminals is sixteen
   rows tall. A term nearly every page mentions therefore answers with the sixteen that mention it
   most, which for `capability` is a fair answer and for `the` would not be.
+- **A hyphenated name is not one term, and a path is not searchable.** Only the underscore joins,
+  so `apropos line-discipline` searches `line` and then `discipline` separately (as two queries;
+  this verb takes one word), and `apropos notes/glob.md` folds to `notesglobmd`, which no page
+  says. A search is for words, and the location a result prints is what you hand to `doc`.
 - **Ranking is occurrence count and nothing else.** A long page that mentions a word in passing can
   outrank a short page about it. Dividing by document length would be one division and needs the
   page's length, which the layout does not store.
@@ -420,7 +451,7 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 - **`apropos` searches from the root of what the shell holds, not from the cwd.** The store is
   installed at that root and a `cd` does not move the manual. A shell granted a *subtree* that does
   not contain `doc/` therefore cannot search at all, and says so with the filesystem's own errno.
-- **The index is 1.14x the markdown it indexes**, per the table above, and it was 1.56x when
+- **The index is 1.18x the markdown it indexes**, per the table above, and it was 1.56x when
   phase 1 measured it. The floor is what moves it: page alignment costs every bundle 16 KiB
   however small, so the ratio improves as the bundles grow rather than because anything got better.
 - **A source line longer than `manual::LINE_MAX` (2048) loses its tail.** The longest line in this

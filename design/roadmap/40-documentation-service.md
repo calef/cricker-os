@@ -24,7 +24,7 @@ capabilities**, which is why it may be a builtin: a searching *program* would ha
 whole store to read every shard in it, which is more authority than the answer needs. See
 notes/manual.md.
 
-**2026-08-18: the record was the defect, twice, and both are fixed.**
+**2026-08-18: the record was the defect three times over, and all three are fixed.**
 
 *In the renderer.* A fenced code block opened inside a block quote **never closed**: the closing
 test ran against the raw line, so a quoted closing fence never matched its own opener and every line
@@ -41,6 +41,16 @@ off the plan now), and `MAX_TEXT_CHUNKS = 32` was said to truncate a page to 512
 `MAX_OUTPUT_CHUNKS = 4096`). Two of the three were closed by other lanes and nobody came back. The
 correction is three lines in `script/shell-check` rather than three paragraphs, because this is the
 milestone least allowed to describe a system that is not there.
+
+*In the index.* `normalize` folds a query by dropping every non-alphanumeric byte, so a reader who
+types `line_editor` looks up `lineeditor`; `tokens` split the *text* on that byte, so the builder
+only ever wrote `line` and `editor`, and **the term the query asked for was one no page could ever
+have**. In a repository whose prose is full of `snake_case` identifiers that is most of what anyone
+would search for: `apropos fs_proto` answered "nothing says that" while dozens of pages said it. The
+test that should have caught it asserted the property in its own first comment and then checked a
+word with no underscore in it, which is the fence's shape again. Fixed in the writer, so
+`apropos editor` keeps working and `apropos line_editor` starts; narrowing the reader instead would
+have made it silently search for `line`, which is worse than no answer.
 
 **`script/apropos`, and it is milestone 117's finding rather than a nicety.** Three stranger runs
 have measured what a newcomer cannot reach by following this tree: `notes/net.md`,

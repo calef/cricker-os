@@ -29,6 +29,11 @@
 # - **Whole words only, and no stemming.** `syscall` and `syscalls` are two terms, so a search for
 #   one does not find the other. `manual::index::normalize` is what decides that and it is the
 #   guest's tokeniser, which has to run with no allocator.
+# - **Underscores join and hyphens do not.** `apropos line_editor` works, because the builder writes
+#   the joined term as well as the halves; `apropos line-discipline` does not, because joining
+#   across a hyphen would manufacture a term out of every hyphenated phrase in the corpus. A path is
+#   not searchable either: `notes/glob.md` folds to `notesglobmd`, which no page says.
+# - **One word per search.** There is no phrase query and no intersection of two terms.
 # - **Ranking is occurrence count and nothing else**, so a long page mentioning a word in passing
 #   can outrank a short page about it. See `crates/manual/src/index.rs`'s BUGS.
 # - **Sixteen results, always**, because that is the guest reader's fixed table
