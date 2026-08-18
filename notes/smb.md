@@ -415,7 +415,13 @@ wiring rather than `smb-serve`, and the account would be the published fixture i
   in `QUERY_INFO`, and
   `FILE_NAMED_STREAMS` in the volume attributes. The stream-versus-sidecar decision milestone 55's
   block frames is therefore still open, and it is now a smaller question than that block assumed:
-  the layer that was missing when it was written is not missing any more.
+  the layer that was missing when it was written is not missing any more. **The decision is §99 and
+  is waiting on calef**, with two findings a reader of this entry should have. Time Machine does not
+  use this surface at all: a backup is a sparse bundle, which is directories and band files with no
+  extended attributes and no forks. And **the sidecar half is already working**, because macOS's own
+  VFS falls back to `._name` files when a server does not claim `FILE_NAMED_STREAMS`, which this one
+  does not; the files land on the image as ordinary bytes. So "not implemented at all" is true of the
+  stream surface and false of the metadata reaching the disk.
 - **`ReplaceIfExists = 0` is ignored: a rename always replaces.** `FileRenameInformation`'s first
   byte says whether the client will accept clobbering the destination, and this server does not
   read it, because `fs_proto::fs::RENAME` replaces an existing name of the same kind and offers no
