@@ -93,7 +93,11 @@ already exists, and adds harnesses to a script that already exists.
   the model says the protocol is correct *given* mutual exclusion, and says nothing about whether
   `IrqSafeMutex` provides it or whether the rank order is right. `script/lint`'s rank check and
   notes/locking.md are the separate arguments for those.
-- **Nothing gates the crate against the kernel drifting back.** The kernel calls the lifted claim
-  today, so the thing loom searches is the thing the kernel runs; a later lane could reintroduce a
-  second decision path in `untyped.rs` and no check would notice. The mechanism that would catch it
-  is the same one milestone 113 built for the Kani harnesses, and it is not built here.
+- **Nothing gates the crate against the kernel drifting back.** *Closed by milestone 136, on the
+  same day, and the mechanism named here was the wrong one.* Milestone 113's shim shape does not
+  transfer, because this milestone already got its whole benefit for one flag: loom is an ordinary
+  `cfg(loom)` dependency where `kani` is not resolvable at all, so `script/interleaving-check`'s
+  `RUSTFLAGS="--cfg loom -D warnings"` is the shim's equivalent and needs no shim. The property
+  actually at risk was a different one that no lint over harness code could reach, and 136 found
+  that **the gap can be rebuilt in `untyped.rs` from `has_children` and `bounds` alone**, with no
+  edit to this crate. See design/roadmap/136-one-decision-path.md.

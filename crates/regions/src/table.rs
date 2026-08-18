@@ -115,6 +115,50 @@ struct Region {
 ///
 /// Not `Copy` and not `Clone`, deliberately: duplicating a claim would be duplicating the right to
 /// free a run of pages, which is the bug this whole module is a reaction to.
+///
+/// # The two doctests below are a gate (milestone 136)
+///
+/// Both properties above are enforced by the type system, and until milestone 136 **nothing
+/// watched them**. `#[derive(Clone)]` is one word, making a field `pub` is four characters, and
+/// either would hand the kernel back the ability to hold a right to free pages that the table no
+/// longer knows it gave out. `script/lint` pins the *set* of public items in this module; these
+/// pin the things a set cannot see, which is the visibility of the fields and the traits the
+/// claim does not implement.
+///
+/// They carry explicit error codes because a bare `compile_fail` passes when the snippet fails to
+/// compile for **any** reason, including a typo, which is how a compile-fail test rots into an
+/// assertion nobody has watched fail (milestone 62 deleted two of those this week).
+///
+/// **A claim cannot be forged.** The fields are private, so a caller cannot read the table, decide
+/// for itself, and then build its own right to free the run: that reassembled shape is exactly the
+/// pre-#316 `untyped::destroy`, whose gap double-freed.
+///
+/// ```compile_fail,E0451
+/// let claim = regions::DestroyClaim { base_page: 0, pages: 4, parent: u64::MAX, is_root: true };
+/// let _ = claim.pages();
+/// ```
+///
+/// **A claim cannot be duplicated.** Two claims for one region is two callers in the free loop,
+/// which is the bug in its original units.
+///
+/// ```compile_fail,E0599
+/// let mut table = regions::RegionTable::<2>::new();
+/// let name = table.insert_root(0x1000, 4).unwrap();
+/// let claim = table.claim_for_destroy(name).unwrap();
+/// let second = claim.clone();
+/// let _ = (claim.pages(), second.pages());
+/// ```
+///
+/// And the same sequence without the offending line compiles and runs, which is what keeps the two
+/// above honest: they fail on the one line that is supposed to be impossible, not on the setup.
+///
+/// ```
+/// let mut table = regions::RegionTable::<2>::new();
+/// let name = table.insert_root(0x1000, 4).unwrap();
+/// let claim = table.claim_for_destroy(name).unwrap();
+/// assert_eq!(claim.pages(), 4);
+/// assert!(claim.is_root());
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "a claim that is dropped without being spent leaks the region's pages"]
 pub struct DestroyClaim {

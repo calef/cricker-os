@@ -387,6 +387,64 @@ Add a protocol of your own. Four steps, and the third is the one that is easy to
    under the cfg and the hint otherwise; copy that shape.
 4. Add the crate to `script/interleaving-check`'s package list, write the harnesses, and **falsify
    each one** before believing it.
+5. **Gate that the caller still calls it**, which is the step this note did not have until milestone
+   136 and the one whose absence is silent. See the section directly below.
+
+## A lift is only worth what its caller does
+
+Every retrofit here has the same shape: take a protocol out of the code that runs it, put it in a
+crate a model checker can reach, and have the original call the crate. **The entire value is the
+last clause.** A model that searches code the kernel no longer runs reports success forever, on a
+question nobody is asking, and there is no symptom: the harness count holds, the executions stay
+green, and this note keeps saying the protocol is modelled.
+
+Milestone 136 gated that for `crates/regions`, and found the exposure was larger than it looked.
+
+**The gap is rebuildable from the public API alone.** Before the gate, this compiled, with no edit
+to `crates/regions` whatsoever:
+
+```rust
+pub fn destroy(region: u64) {
+    if REGIONS.lock().has_children(region) { return; }
+    let Some((base, size)) = REGIONS.lock().bounds(region) else { return };
+    crate::revoke::revoke_region(base, size);
+    for i in 0..(size / FRAME_SIZE) {
+        memory::free(Frame::from_addr(base + i * FRAME_SIZE));
+    }
+}
+```
+
+That is pull request #316's double free restored: read under one hold, release, revoke, free, never
+remove the slot, so two callers both pass the read and both reach the loop. `has_children` and
+`bounds` are public because single callers legitimately want them, and together they are enough. The
+lesson generalises past this crate: **a lifted protocol's `&self` observers are the material a second
+decision path is built from**, because each answers a question about state while leaving the state
+addressable.
+
+`script/lint`'s *"the region claim protocol has one decision path"* check is what holds it now, in
+two halves that are each insufficient alone:
+
+| Half | Asserts | Catches |
+|---|---|---|
+| the surface pin | the public items of `crates/regions/src/table.rs`, **with receivers**, are exactly a pinned set | a new observer; a method removed; `claim_for_destroy` respelled `&self`, which deletes the single-borrow argument while changing no name |
+| the warrant pin | each function in `kernel/src/untyped.rs` that reaches a free loop made its entitling call first (`create`/`insert_root`, `destroy`/`claim_for_destroy`) | the rebuilt gap above, and any third path that returns region pages |
+
+Two `compile_fail` doctests on `DestroyClaim` cover what neither half can see, since a
+`#[derive(Clone)]` and a `pub` on a field change no name and no call: the claim cannot be forged
+from outside the crate, and cannot be duplicated. They carry **explicit error codes**
+(`compile_fail,E0451`), because a bare `compile_fail` passes when the snippet fails for any reason
+at all, including a typo, which is how a compile-fail test rots into an assertion nobody has watched
+fail.
+
+**Milestone 113's Kani shim is not the mechanism here, and it is worth knowing why**, because 135's
+own `BUGS` section proposed it. 113 built `scripts/kani-lint-shim/` so clippy could compile code
+written against Kani's intrinsics; loom needs nothing of the sort, being an ordinary dependency
+behind `[target.'cfg(loom)'.dependencies]`, so the same benefit costs the one flag this script
+already passes. Making harness code visible to the linter is a real gap and it was already closed.
+It is simply a different gap from *does the caller still call this*, and no amount of linting a
+model answers the second.
+
+The four other loom crates have the same exposure and are not gated; see BUGS.
 
 ## The cost, measured
 
@@ -445,10 +503,13 @@ evaluates `cfg(loom)` as false for every real target, so:
   correct *given* mutual exclusion, and says nothing about whether `IrqSafeMutex` provides it or
   whether the rank is right. That is `script/lint`'s rank check and [locking.md](locking.md), and
   it is the same division `wake_handshake` records for `SCHED`.
-- **Nothing gates `untyped.rs` against growing a second decision path.** The kernel calls the lifted
-  claim today, so the thing loom searches is the thing the kernel runs; a later lane could
-  reintroduce a check-then-remove pair in the kernel module and no check would notice. The mechanism
-  that would catch it is milestone 113's shim shape, and it is not built.
+- **The gate on `untyped.rs` is narrower than the property it protects.** Milestone 136 closed the
+  hole this bullet used to name (see *A lift is only worth what its caller does* above), and what it
+  buys is bounded: the free-site pin covers `kernel/src/untyped.rs` only, so region pages freed from
+  another kernel module are not caught; the warrant is line order rather than dataflow; and
+  **nothing checks that a newly pinned public method is modelled at all**, so a lane can widen the
+  surface, pin it, and never write a harness. That last one is the same gap one level up, and it is
+  rung four: the failure message asks in words.
 - **`crates/user_rt`'s spin lock and the interrupt-routing lottery are unmodelled.** Both are named
   in the survey above with the reason: one does not compile for the host, and the other lives under
   `arch/` where rule 1 keeps it. Neither is a small retrofit.
