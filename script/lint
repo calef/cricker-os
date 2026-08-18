@@ -811,6 +811,23 @@ def _longest_markdown_line():
                for line in pathlib.Path(f).read_text(errors='replace').split('\n'))
 
 
+def _security_audits():
+    """Security audits on the record, counted from the index every one of them is filed in.
+
+    A row in design/audit-reports/README.md's findings table that carries a **link to a report**,
+    which is one per audit and is what distinguishes that table from the scale table below it: the
+    two carry the same (date, kind) pairs, so counting those would double, and deduplicating them
+    would silently merge two audits of one kind on one day. 2026-08-17 has two audits already.
+
+    It is here because SECURITY.md told a reporter "four adversarial reviews are on the record" and
+    pointed at four of them by name, while the index held five. That page is read by exactly the
+    person we most want to have read the fifth one first, and the stale number sent them to look
+    for a lens that had already been taken.
+    """
+    text = pathlib.Path('design/audit-reports/README.md').read_text(errors='replace')
+    return len(re.findall(r'^\| \d{4}-\d\d-\d\d \| security \|.*\]\(', text, re.M))
+
+
 REGISTRY = {
     'longest-markdown-line': (
         "how long the repository's longest markdown line is, in bytes, which is what "
@@ -845,6 +862,10 @@ REGISTRY = {
     'loom-crates': (
         'how many crates carry at least one loom harness',
         lambda: len(_loom_hits()),
+    ),
+    'security-audits': (
+        'how many security audits are on the record in design/audit-reports/README.md',
+        _security_audits,
     ),
 }
 

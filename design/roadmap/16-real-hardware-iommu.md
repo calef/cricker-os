@@ -2,7 +2,10 @@
 
 **Status: PARTIAL.**
 
-**Gate: NONE.** 16b is built, the board arrived 2026-08-14, and the bench delivered first silicon
+**Gate: HARDWARE.** Not the "no board" kind: the board is on the desk. **The remaining work needs
+somebody sitting at it** (flashing an image, watching a serial console, power-cycling a wedged
+board), which is the second sense the gate vocabulary now names, and it is why this sat on
+`--ready` for days offering work no lane could take. 16b is built, the board arrived 2026-08-14, and the bench delivered first silicon
 the same day: eleven boots across two sessions, ending with the full tour completing on three harts
 ("nife: the capability core runs on RISC-V"), the four predicted code changes landed plus the
 ones the bench actually demanded, and notes/visionfive2.md carrying the whole narrative. What
