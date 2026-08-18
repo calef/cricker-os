@@ -65,7 +65,21 @@ went red**, and the shape of those nine is the result rather than the count:
   properties of the assertions rather than of either architecture.
 - **The ninth was a real kernel bug**: a double free of a frame during `DESTROY`'s reclaim of a
   region whose resident was blocked in `recv` (riscv64, one occurrence). Recorded in the BUGS section
-  of notes/object-revocation.md. It wants its own lane.
+  of notes/object-revocation.md. ***It got its own lane, and it is fixed: PR #316*** (2026-08-18).
+  **It was not riscv64-only**, which is the correction worth carrying rather than the fix: the
+  ownership defect reproduces deterministically on aarch64, and riscv64 is merely where the timing
+  exposed it. Two ingredients were needed. `user_aspace_create` builds an address space inside a
+  region the caller already holds an `Untyped` to, where `AddressSpace::new` carves its own, and
+  both stored a bare `u64` whose `Drop` called `untyped::destroy` unconditionally: two names for one
+  run of memory, with a pin argument that holds only for a drop under `SCHED`, which
+  `sched::finish_switch` releases before dropping. And `untyped::destroy` released the `REGIONS`
+  lock between deciding and removing the slot, so two callers could both pass the refusal check.
+
+  **So this run's ninth red is gone and the eight timing reds are the whole of it**, which makes
+  this block a pure disposition question with no correctness bug behind it. That is a better
+  outcome than it looks: the run's own conclusion was that "the one red worth reading arrived
+  wearing the same colour as eight that were not", and the eight are now dispositioned and the one
+  is fixed.
 
 **Nothing was widened to make this green**, and the run is the argument for not widening: the retry
 budget's implicit second claim is already asserted properly by the sibling test, which passed in the

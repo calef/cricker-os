@@ -1064,13 +1064,30 @@ finds only the assertion itself. **One occurrence in forty-five loaded runs, and
 run that preceded the loop.** It is recorded in the BUGS section of notes/object-revocation.md,
 beside the `DESTROY` path it fired in.
 
-**Fixed 2026-08-18, and the instrument gets the credit rather than a re-run.** The cause was two
-names for one untyped region (a user-built address space freed a region it had only been lent) plus
-a `untyped::destroy` that removed the region's slot after freeing its pages instead of before, so
-two callers could both win. The write-up is now the "Two names for one region" section of
-notes/object-revocation.md. Worth keeping on this page: **the bug was found by reading, not by
-reproducing.** The lane that took it never saw the panic again, and did not need to; the
-deterministic test it landed stages the window by hand.
+***Fixed 2026-08-18 in PR #316, and the diagnosis corrects this section rather than confirming
+it.*** The paragraph below reads the sighting as a rate question ("the next lane on it should assume
+the window is narrower than that") and that framing was wrong: it is not a rare race but an
+**ownership defect that reproduces deterministically on aarch64**, and riscv64 is only where the
+timing exposed it. `user_aspace_create` builds an address space inside a region the caller already
+holds an `Untyped` to, where `AddressSpace::new` carves its own, and both stored a bare `u64` whose
+`Drop` called `untyped::destroy` unconditionally: two names for one run of memory. The pin argument
+that was meant to make that safe holds only for a drop under `SCHED`, and `sched::finish_switch`
+releases `SCHED` before dropping. Beside it, `untyped::destroy` released `REGIONS` between deciding
+and removing the slot, so two callers could both pass the refusal check.
+
+**The lesson for this page is about the instrument rather than the bug.** A loaded repeat count is
+good at *surfacing* a defect and actively misleading about *characterising* one: this run produced a
+frequency (1 in 45) for something that had no frequency, and had anyone budgeted the next lane
+against that number they would have gone looking for a narrow race instead of an ownership
+question. Treat a sighting from this instrument as "there is something here", never as "here is how
+often".
+
+**Two details from the fix worth keeping on this page.** The write-up lives in the "Two names for
+one region" section of notes/object-revocation.md. And **the bug was found by reading, not by
+reproducing**: the lane that took it never saw the panic again and did not need to, because the
+deterministic test it landed stages the window by hand rather than racing for it. That is the same
+point as the paragraph above, arrived at from the other side: the instrument said where to look and
+was no use at all for saying what was there.
 
 Worth naming because it is the whole point of the milestone: a red run that means something. Eight
 of these nine reds are noise the instrument cannot yet remove, and the ninth is a memory-safety bug
