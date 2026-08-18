@@ -219,6 +219,25 @@ impl Disk for IpcDisk {
     }
 }
 
+impl IpcDisk {
+    /// **Make the device durable** (milestone 55): one `fs_proto::blk::FLUSH`, and the block
+    /// server's answer handed back untouched.
+    ///
+    /// Not part of the `Disk` trait, because RedoxFS's `Disk` has no sync method and this tree does
+    /// not modify vendored code to give it one. Nothing below the FS server needs it either: the
+    /// engine's transactions commit before this server replies, so the flush is a fact about the
+    /// device rather than a step in a filesystem operation.
+    ///
+    /// **The error is returned as it arrived**, negative and unmapped. That is the one place a
+    /// block-protocol errno reaches a file-service client, and it is deliberate: `EOPNOTSUPP` from
+    /// a device with no flush and `EIO` from a device that refused one are different facts, and
+    /// folding either into the other would leave a caller unable to tell "this storage cannot be
+    /// made durable" from "this storage failed to". `fs_proto::fs::SYNC` documents the boundary.
+    fn sync() -> i64 {
+        Self::blk(blk::FLUSH, 0)
+    }
+}
+
 /// The file-service pages, as slices. The FS server reads a name (open) or file bytes (write) from
 /// [`FILE_PAGE`] and writes read results back into it.
 ///
@@ -408,6 +427,13 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
             // a reply word carries one i64 and this answer is three u64s. Encoding here rather than
             // in the core keeps the core free of the wire's layout, which is the same boundary the
             // errno mapping below sits on.
+            // **The durability verb** (milestone 55). Two halves in two places on purpose: the
+            // rights check is logic and lives in the host-tested crate, and the device flush is IO
+            // and lives here. The reply is the block server's own word (a count of completed device
+            // flushes), passed through rather than reduced to a 0, so a client can prove each sync
+            // was a fresh round trip; a negative is likewise passed through unmapped, which is the
+            // one exception to this loop's "map the error once" rule and is argued at both ends.
+            fs::SYNC => server.sync_permitted(handle).map(|()| IpcDisk::sync()),
             fs::STATFS => server.statfs(handle).and_then(|(block, total, free)| {
                 // SAFETY: the whole page is ours to fill; the encoder never writes past its slice.
                 let buf = unsafe { file_page(BLOCK) };

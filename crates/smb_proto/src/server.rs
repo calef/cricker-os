@@ -371,17 +371,26 @@ impl Connection {
             CMD_QUERY_DIRECTORY => self.query_directory(req, out, share, chain_fid, err),
             CMD_QUERY_INFO => self.query_info(req, out, share, chain_fid, err),
             CMD_ECHO => simple_ok(out, cmd, msg_id, sid, tid, credits),
-            // FLUSH succeeds, but it succeeds **about a file**: it resolves the handle first, so a
-            // client flushing something it already closed learns that rather than being told yes.
-            // The success itself is truthful rather than polite, and this is the one place to
-            // record why, because "the server said the data was safe" is what a backup depends on:
-            // the FS server puts every write through one RedoxFS transaction that commits before
-            // the reply, so there is no cache above the block device for a flush to push and
-            // nothing for this command to do. What is *not* covered is one layer down, where the
-            // block server issues no `VIRTIO_BLK_T_FLUSH`; see `crate::apple`'s BUGS, which is
-            // where a reader meets the Time Machine durability claim this backs.
+            // **FLUSH does work now** (milestone 55), where before it was a polite yes. It
+            // succeeds **about a file**: the handle is resolved first, so a client flushing
+            // something it already closed learns that rather than being told everything is fine.
+            //
+            // Then it asks the backing, and this is the line that makes `apple::VOLUME_FULL_SYNC`
+            // an honest claim rather than an aspiration. Two layers are involved and only one of
+            // them was ever covered: the FS server puts every write through a RedoxFS transaction
+            // that commits before it replies, so there has never been a cache *above* the block
+            // device; but the block server issued no `VIRTIO_BLK_T_FLUSH`, so the durability of the
+            // last acknowledged write was the device's word rather than ours. `Share::sync` is the
+            // second layer, and a backing that cannot do it says so instead of returning success.
+            //
+            // A failure becomes a real NT status rather than being swallowed, because a client that
+            // is told its flush worked when it did not is the only outcome here worse than an
+            // error: it is what turns a lost write into a backup that cannot be restored.
             CMD_FLUSH => match self.resolve_fid(req, 72, chain_fid) {
-                Ok(_) => simple_ok(out, cmd, msg_id, sid, tid, credits),
+                Ok(_) => match share.sync() {
+                    Ok(()) => simple_ok(out, cmd, msg_id, sid, tid, credits),
+                    Err(e) => err(out, status_for(e)),
+                },
                 Err(status) => err(out, status),
             },
             // The not-heres. DFS referrals get the status Windows uses for "no DFS here" so
@@ -2693,8 +2702,8 @@ mod tests {
     }
 
     /// FLUSH is a success **about a file**, so a handle that is not open is refused rather than
-    /// told yes. The success itself is what milestone 55's Time Machine claim rests on; see
-    /// `crate::apple`'s BUGS for how far down the stack it is currently backed.
+    /// told yes. The handle is checked before the backing is asked, which is why this still holds
+    /// now that the command does real work.
     #[test]
     fn a_flush_of_a_closed_handle_is_refused_rather_than_humoured() {
         let mut c = conn();
@@ -2705,6 +2714,102 @@ mod tests {
         assert_eq!(status(&resp), STATUS_SUCCESS);
         let resp = rt(&mut c, &client::flush(7, sid, tid, &fid));
         assert_eq!(status(&resp), STATUS_FILE_CLOSED);
+    }
+
+    /// **A backing that cannot make itself durable makes FLUSH fail** (milestone 55).
+    ///
+    /// This is the assertion that keeps `apple::VOLUME_FULL_SYNC` honest at this layer. The whole
+    /// gap the durability lane closed was a `FLUSH` that answered success while nothing underneath
+    /// it had been asked to do anything, so the property worth pinning is not that a flush
+    /// succeeds, it is that a **refusal from the storage arrives at the client**. A server that
+    /// swallowed it would tell a backup its data was safe on exactly the run where it was not.
+    ///
+    /// `STATUS_UNEXPECTED_IO_ERROR` because `Error::Io` is what a device with no
+    /// `VIRTIO_BLK_F_FLUSH` becomes on its way up (`fs_proto::blk::FLUSH` answers `EOPNOTSUPP`, and
+    /// the fs-backed share has no narrower word for it).
+    #[test]
+    fn a_backing_that_cannot_sync_makes_flush_fail_rather_than_lying() {
+        /// The fixture, with the one method that matters overridden. Everything else delegates, so
+        /// the exchange up to the FLUSH is the same one every other test in this module performs.
+        struct CannotSync;
+        impl Share for CannotSync {
+            fn writable(&self) -> bool {
+                FIXTURE.writable()
+            }
+            fn open(
+                &self,
+                path: crate::path::Path<'_>,
+            ) -> Result<crate::share::FileId, crate::share::Error> {
+                FIXTURE.open(path)
+            }
+            fn open_dir(
+                &self,
+                path: crate::path::Path<'_>,
+            ) -> Result<crate::share::DirId, crate::share::Error> {
+                FIXTURE.open_dir(path)
+            }
+            fn close_dir(&self, dir: crate::share::DirId) {
+                FIXTURE.close_dir(dir);
+            }
+            fn entry(
+                &self,
+                dir: crate::share::DirId,
+                index: usize,
+            ) -> Option<crate::share::Entry<'_>> {
+                FIXTURE.entry(dir, index)
+            }
+            fn size(&self, file: crate::share::FileId) -> u64 {
+                FIXTURE.size(file)
+            }
+            fn read(
+                &self,
+                file: crate::share::FileId,
+                offset: u64,
+                out: &mut [u8],
+            ) -> Result<usize, crate::share::Error> {
+                FIXTURE.read(file, offset, out)
+            }
+            fn close(&self, file: crate::share::FileId) {
+                FIXTURE.close(file);
+            }
+            fn sync(&self) -> Result<(), crate::share::Error> {
+                Err(crate::share::Error::Io)
+            }
+        }
+
+        let mut c = conn();
+        let (sid, tid) = establish_on(&mut c, &CannotSync);
+        let resp = rt_on(
+            &mut c,
+            &client::create(5, sid, tid, b"hello.txt"),
+            &CannotSync,
+        );
+        assert_eq!(status(&resp), STATUS_SUCCESS);
+        let fid = client::create_file_id(&resp);
+        let resp = rt_on(&mut c, &client::flush(6, sid, tid, &fid), &CannotSync);
+        assert_eq!(
+            status(&resp),
+            STATUS_UNEXPECTED_IO_ERROR,
+            "a storage that cannot flush must reach the client as an error; the server claims \
+             apple::VOLUME_FULL_SYNC and a polite success here is what makes that claim a lie"
+        );
+    }
+
+    /// **A backing that stores nothing still answers FLUSH with success**, which is the other half
+    /// of the rule above and is not a contradiction.
+    ///
+    /// `Share::sync`'s default is `Ok(())`, alone among the trait's defaults, because a tree baked
+    /// into a binary has already made everything it acknowledged as durable as it will ever be.
+    /// The line the trait draws is that a backing with real storage it cannot flush must return an
+    /// error; the fixture has no storage at all.
+    #[test]
+    fn a_share_with_nothing_to_lose_answers_flush_yes() {
+        let mut c = conn();
+        let (sid, tid) = establish(&mut c);
+        let resp = rt(&mut c, &client::create(5, sid, tid, b"hello.txt"));
+        let fid = client::create_file_id(&resp);
+        let resp = rt(&mut c, &client::flush(6, sid, tid, &fid));
+        assert_eq!(status(&resp), STATUS_SUCCESS);
     }
 
     // --------------------------------------------------------------------------------------

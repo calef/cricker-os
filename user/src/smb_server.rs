@@ -544,6 +544,30 @@ impl Share for FsShare {
         })
     }
 
+    /// **Make the image durable** (`fs_proto::fs::SYNC`, milestone 55). Asked on the bound
+    /// directory for [`FsShare::statfs`]'s reason: the answer is about the storage behind this
+    /// capability rather than about any node in it, and `fs::ROOT` is the handle every wiring of
+    /// this program holds.
+    ///
+    /// **A refusal is returned, never smoothed over.** This is the one `Share` method where a
+    /// convenient `Ok(())` would be a lie with a consequence: SMB2's `FLUSH` is what a backup
+    /// client waits on before it believes its data is safe, and this server tells macOS it honours
+    /// a full sync (`smb_proto::apple::VOLUME_FULL_SYNC`). `EOPNOTSUPP` from a device with no
+    /// `VIRTIO_BLK_F_FLUSH` arrives here as [`Error::Io`], which the protocol layer turns into
+    /// `STATUS_UNEXPECTED_IO_ERROR`, and a client that meets that knows not to trust the write.
+    ///
+    /// The count `fs::SYNC` answers with is discarded here, because SMB's FLUSH response has
+    /// nowhere to carry it and no client would read it. It is not wasted: it is what the gate's
+    /// in-guest witness reads to prove each sync was a fresh device round trip rather than a
+    /// constant (`fs_proto::fixture::durability`).
+    fn sync(&self) -> Result<(), Error> {
+        let (r0, _) = call(FS, fs::req(fs::SYNC, fs::ROOT, 0), 0);
+        if (r0 as i64) < 0 {
+            return Err(fs_error(r0));
+        }
+        Ok(())
+    }
+
     fn size(&self, file: FileId) -> u64 {
         let (s, _) = call(FS, fs::req(fs::FSTAT, file, 0), 0);
         if (s as i64) < 0 { 0 } else { s }

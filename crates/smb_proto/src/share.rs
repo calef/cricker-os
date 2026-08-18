@@ -302,6 +302,34 @@ pub trait Share {
     fn rmdir(&self, _path: Path<'_>) -> Result<(), Error> {
         Err(Error::ReadOnly)
     }
+
+    /// **Make everything this share has acknowledged durable**, and do not return until the
+    /// storage says it is. SMB2's `FLUSH`, and the operation `crate::apple::VOLUME_FULL_SYNC`
+    /// promises macOS the share honours.
+    ///
+    /// It takes no file, because nothing under this trait can honour a per-file sync: the
+    /// fs-backed share's `fs_proto::fs::SYNC` flushes the device the whole image lives on. The
+    /// protocol machine still resolves the client's file id before calling this, so a `FLUSH` of a
+    /// handle that is not open is refused rather than humoured; what the id does not do is narrow
+    /// what gets synced.
+    ///
+    /// # The default is `Ok(())`, and that is the one default here that is not a refusal
+    ///
+    /// Every mutating method above defaults to [`Error::ReadOnly`], because a backing that cannot
+    /// do the thing must say so. This one defaults to success because a backing that stores
+    /// nothing has already made everything it acknowledged as durable as it will ever be, and
+    /// [`FixtureShare`] is exactly that: a tree baked into a binary, where "flush" is a complete
+    /// no-op rather than an unsupported operation. Refusing here would have `FLUSH` fail against a
+    /// share that has nothing to lose, which tells a client something false in the other
+    /// direction.
+    ///
+    /// The line worth holding is that **a backing which has durable storage and cannot flush it
+    /// must return an error**, never take this default. That is the whole of milestone 55's
+    /// durability half: the fs-backed share overrides this, and answers with what the device
+    /// actually said.
+    fn sync(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// **A share whose tree is baked into the binary**: the fixture the tests and the QEMU demo serve.

@@ -173,6 +173,35 @@ pub mod blk {
     pub const WRITE: u64 = 2;
     /// Ask the disk's size in bytes. `w1` ignored. Reply `r0` = the size (always non-negative here).
     pub const SIZE: u64 = 3;
+    /// **Make everything the device has already acknowledged durable** (milestone 55): a
+    /// `VIRTIO_BLK_T_FLUSH` the block server does not reply to until the device completes it.
+    ///
+    /// `w1` is 0 and is ignored. Reply `r0` = how many device flushes this block server has
+    /// completed since it started, **including this one**, so a success is always `>= 1`; or
+    /// [`super::reply_err`] on failure.
+    ///
+    /// # Why a count rather than a zero
+    ///
+    /// Every other verb here answers 0 for "done", and this one does not, because "the device was
+    /// told" is a claim that a caller cannot otherwise check and that a stub would satisfy just as
+    /// well. A count that **strictly increases across each successful call** is falsifiable: two
+    /// syncs that return the same number mean the second one did not reach the device, which is
+    /// exactly the lie this verb exists to make impossible. It is what milestone 55's gate
+    /// observes, and it costs one `u64` the server was incrementing anyway.
+    ///
+    /// # Refusals, and why neither of them is a quiet success
+    ///
+    /// - **`EOPNOTSUPP` (95)** when the device did not offer `VIRTIO_BLK_F_FLUSH` (feature bit 9),
+    ///   so no flush was issued and none can be. This is the case a silent zero would ruin: a
+    ///   server that answered "done" here would be telling a backup client its data is on the
+    ///   platter when nothing asked the platter anything.
+    /// - **`EIO` (5)** when the device completed the request with a status other than
+    ///   `VIRTIO_BLK_S_OK`, including `VIRTIO_BLK_S_UNSUPP` (2) from a device that negotiated the
+    ///   feature and then refused the command anyway.
+    ///
+    /// Both travel to a file-service client unchanged through [`super::fs::SYNC`], which is the one
+    /// place a block-protocol errno is visible above the FS server. See that verb for the argument.
+    pub const FLUSH: u64 = 4;
 
     /// One filesystem block, in bytes: the transfer unit and the shared-page size. Equal to
     /// `redoxfs::BLOCK_SIZE`; asserted against it in the block server so a future RedoxFS bump that
@@ -517,6 +546,76 @@ pub mod fs {
     ///   both see a free count that was true when it was read; the store's own `ENOSPC` at write
     ///   time is the authority, and this is a forecast. That is what `statfs` is everywhere.
     pub const STATFS: u64 = 18;
+
+    /// **Make everything this server has acknowledged durable** (milestone 55). The verb behind
+    /// SMB2's `FLUSH`, and the reason macOS's `VOLUME_FULL_SYNC` bit is claimable at all.
+    ///
+    /// [`req_len`] and the second word are both 0; [`req_handle`] is **any handle this server
+    /// minted**, file or directory, [`ROOT`] included, exactly as [`STATFS`] takes one. Reply `r0`
+    /// = how many device flushes the storage behind this capability has completed since the block
+    /// server started, **including this one**, so a success is always `>= 1`; or an error. `EBADF`
+    /// for a handle the server did not mint.
+    ///
+    /// # What it actually promises, which is narrower than the name
+    ///
+    /// It promises that the **device** has been told, and that the reply waited for the device to
+    /// say it was done. It does not promise anything about the filesystem's own state, because
+    /// there is nothing to promise: the FS server puts every write through one RedoxFS transaction
+    /// that commits to the header ring before it replies, so there is no dirty state above the
+    /// block device at the moment a client could ask. This verb closes the layer below that one,
+    /// where the block server previously issued no `VIRTIO_BLK_T_FLUSH` at all and the durability
+    /// of the last acknowledged write was the device's word rather than ours.
+    ///
+    /// So the honest sentence is: **after a successful `SYNC`, every write this server has
+    /// acknowledged is on the medium the device calls durable.** What "durable" means is still the
+    /// device's definition, and a device that lies about its own flush is outside anything a
+    /// protocol can check.
+    ///
+    /// # Rights: [`super::dir::WRITE`], refused with [`super::dir::EROFS`]
+    ///
+    /// This is the one place this contract departs from [`STATFS`]'s "a handle is the whole
+    /// qualification", and the reason is that a sync is an **action on the device** rather than a
+    /// fact about it. A holder that may not write has nothing outstanding to make durable, and
+    /// letting it ask would hand a read-only capability a lever on every other client's write
+    /// latency: a device flush stalls the queue for everyone on the image. Requiring the right
+    /// costs nothing real, because anyone with something to sync wrote it first.
+    ///
+    /// `EROFS` rather than `EACCES` for the reason [`super::dir`] gives everywhere else: through
+    /// this capability the storage does not take writes, so there is no policy that could have
+    /// said yes.
+    ///
+    /// # The refusal that must stay loud
+    ///
+    /// When the device cannot flush, the block server's `EOPNOTSUPP` (95) is passed **through**
+    /// this verb unchanged rather than mapped or swallowed. That is deliberate and it is the whole
+    /// point of the verb existing: a `SYNC` that answered 0 on a device with no flush would be the
+    /// silent degradation DECISIONS §42 forbids, and it would be that in the one place where the
+    /// consequence is somebody's backup. A client that meets `EOPNOTSUPP` here knows the truth,
+    /// which is that this storage cannot be made durable on demand.
+    ///
+    /// It is also the only errno on this contract that does not originate in the FS server or in
+    /// RedoxFS. The FS server maps RedoxFS's error type once, at its serve loop; a blk errno is
+    /// already a wire value when it arrives, and re-mapping it to `EIO` would throw away the one
+    /// distinction the caller needs (cannot, versus tried and failed).
+    ///
+    /// # BUGS
+    ///
+    /// - **The count is a fact about the device, not about the caller**, so two clients of one
+    ///   image see one number and each can watch the other sync. That is [`STATFS`]'s free-count
+    ///   channel again, with the same answer: there is no smaller number that would be true, and
+    ///   two subtrees on one image are not isolated from each other's IO. The bandwidth is lower
+    ///   here than `STATFS`'s, because a sync costs a device round trip and a truncate does not.
+    /// - **It syncs the whole device, never a subtree or a file.** A holder of one file makes the
+    ///   entire image durable, including writes it cannot see and did not make. POSIX's `fsync` on
+    ///   a descriptor suggests otherwise; nothing below here can honour that, because RedoxFS
+    ///   commits a transaction across the image and the block layer moves blocks rather than
+    ///   files. Naming it `SYNC` rather than `FSYNC` is the whole of what this note buys, and it
+    ///   is on purpose.
+    /// - **It does not fence.** A client that issues a write and a sync concurrently on two
+    ///   handles gets no ordering guarantee between them; the sync covers what the server had
+    ///   already acknowledged when it ran. There is no ordering primitive on this contract, and a
+    ///   backup client's own write-then-flush is sequential, which is why this has not needed one.
+    pub const SYNC: u64 = 19;
 
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
@@ -2125,6 +2224,47 @@ pub mod fixture {
         pub const NESTED_ABSENT: u64 = 7;
         /// The nested file is there and holds the wrong bytes.
         pub const NESTED_WRONG: u64 = 8;
+    }
+
+    /// **What the durability witness found** (milestone 55), sent as the report's third word by the
+    /// same in-guest role that reports [`smb_wrote`] in the second.
+    ///
+    /// It is a classification for [`smb_wrote`]'s reason, and the classes here are further apart
+    /// than that module's: "this machine's device cannot flush" and "the flush never left the SMB
+    /// server" are a hardware fact and a wiring bug, and a run that confused them would send
+    /// somebody chasing the wrong half of the stack.
+    ///
+    /// The witness asks [`crate::fs::SYNC`] twice and reads the count each answer carries.
+    /// **Two independent things are being checked**, which is why one verdict is not enough:
+    ///
+    /// 1. The count was **already non-zero** when the witness first asked. Nothing in this process
+    ///    had synced yet, so the only thing that can have moved it is the SMB server answering the
+    ///    host prober's `FLUSH` over TCP. That is the end-to-end leg, and it is the one that cannot
+    ///    be faked from inside the guest.
+    /// 2. The count **strictly increased** between the two calls. That is what separates a real
+    ///    device round trip from a server that answers a constant, and it is the check that would
+    ///    have caught the gap this milestone exists to close.
+    pub mod durability {
+        /// Both checks passed: something above this process had already flushed the device, and
+        /// this process's own sync moved the count again. The only passing verdict.
+        pub const DURABLE: u64 = 1;
+        /// The count was zero when the witness first asked, so **no flush ever reached the
+        /// device** before it ran. The SMB `FLUSH` command is not reaching `fs_proto::fs::SYNC`,
+        /// which is precisely the state milestone 55 shipped `VOLUME_FULL_SYNC` in.
+        pub const NEVER_FLUSHED: u64 = 2;
+        /// [`crate::fs::SYNC`] answered `EOPNOTSUPP`: this device offers no
+        /// `VIRTIO_BLK_F_FLUSH`, so the claim cannot be backed here at all. **Not a bug in this
+        /// tree**, and it must not be reported as one; it is the honest answer for a device that
+        /// does not do the thing, and a run that met it should say so and stop rather than pass.
+        pub const NO_DEVICE_FLUSH: u64 = 3;
+        /// The first sync was refused for some other reason; the errno rides in the report's
+        /// remaining room where a caller has one, and a bare occurrence of this verdict means the
+        /// verb is wired wrong rather than unsupported.
+        pub const REFUSED: u64 = 4;
+        /// Two syncs, the same count: the second one did not reach the device. A server answering
+        /// a cached or constant yes lands exactly here, which is the failure this witness is
+        /// shaped around.
+        pub const NOT_ADVANCING: u64 = 5;
     }
 
     /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk

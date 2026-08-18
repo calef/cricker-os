@@ -47,17 +47,29 @@ the code was:
   stream-versus-sidecar choice is still open and still a decision about what lands on disk; it is
   just no longer a stack-deep one.
 
-What remains of this milestone: Apple metadata (the choice above, then the SMB stream surface), the
-durability macOS trusts (below), and the first contact with a real Mac.
+What remains of this milestone: Apple metadata (the choice above, then the SMB stream surface) and
+the first contact with a real Mac. The durability macOS trusts landed 2026-08-18; see below.
 
-**The durability gap is named where a reader meets the claim, and it is the piece that should land
-before anybody's real backup does.** `FULL_SYNC` is claimed further than the stack currently backs
-it. True: the FS server puts every `fs_proto` write through one RedoxFS transaction that commits to
-the header ring before the reply, so there is no write-back cache above the block device and SMB2's
-`FLUSH` genuinely has nothing to do. Not true: the block server issues no `VIRTIO_BLK_T_FLUSH`, so
-the durability of the last acknowledged write is the device's word rather than ours
-(notes/fs-server.md's crash-injection table records the same gap from the other side). Closing it is
-a device flush in the block server and a sync verb in `fs_proto`.
+**The durability gap closed 2026-08-18** (pull request #311), and the way it closed is worth more
+than the code: the open question was whether to keep claiming `FULL_SYNC` when the stack did not
+back it, and the answer was to make the claim true instead of answering the question. Two opcodes on
+two contracts. `fs_proto::blk::FLUSH` (op 4) is a real `VIRTIO_BLK_T_FLUSH` the block server waits
+for the device to complete, gated on `VIRTIO_BLK_F_FLUSH` being offered so a device that cannot
+flush produces `EOPNOTSUPP` rather than a quiet success. `fs_proto::fs::SYNC` (op 19) is the
+file-service verb behind SMB2's `FLUSH`: any handle the server minted, `dir::WRITE` required,
+refused with `EROFS`.
+
+**What makes it a gate rather than a code path** is where the witness stands. Both verbs answer with
+a **count of completed device flushes** instead of a zero, so the QEMU suite's in-guest verifier,
+which has synced nothing itself, can find the count already advanced when it first asks. Nothing but
+the SMB server answering the host prober's `FLUSH` over TCP can have moved it. Then it syncs twice
+and requires the count to move again, which is what separates a device round trip from a server
+answering a constant. Both ISAs.
+
+What is left is narrower and is recorded where a reader meets the claim: the sync is **device-wide**
+rather than per file, and **nothing fences**, because `fs_proto` has no ordering primitive. A device
+that lies about its own flush is outside anything a protocol can check, which is the same limit
+notes/fs-server.md's crash-injection table records from the other side.
 
 **The identity substrate arrived 2026-08-17** (milestone 54, pull request #274), which was this
 block's other SMB-side prerequisite and the reason a Time Machine target could not have been serious
@@ -221,6 +233,7 @@ capture above* the moment it exists):
 - **Durability semantics macOS trusts.** Time Machine writes a sparse bundle and depends on the server
   honouring flushes. This is the same clause §42 makes central, arriving as a compatibility
   requirement: a server that lies about durability produces backups that cannot be restored.
+  **Built 2026-08-18**, above.
 
 **Considered and rejected: porting Samba over the §31 C seam.** It is superficially the right move,
 since we already confine a component we did not write (RedoxFS) and the seam exists for exactly this.

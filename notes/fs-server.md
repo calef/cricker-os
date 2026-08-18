@@ -210,9 +210,23 @@ above spends 60 lines on.
 The third row is the honest limit. RedoxFS's `Disk` trait has no flush and no barrier, so ordering is
 the device's job, and a device that acknowledges a write it never persists can leave a valid commit
 pointing at a block that never landed. What is guaranteed is that this is never *silent*: every
-`BlockPtr` carries a seahash of the block it names, checked on every read. Note our block server
-issues no `VIRTIO_BLK_T_FLUSH`, so on real hardware the durability of the last acknowledged write is
-the device's word rather than ours. That is our gap, not the engine's.
+`BlockPtr` carries a seahash of the block it names, checked on every read.
+
+**Half of that gap was ours and is closed** (milestone 55's durability half, 2026-08-18). The
+sentence that used to sit here said our block server issued no `VIRTIO_BLK_T_FLUSH`, so on real
+hardware the durability of the last acknowledged write was the device's word rather than ours. It
+now issues one: `fs_proto::blk::FLUSH` (op 4) is a real device flush the block server waits on, and
+`fs_proto::fs::SYNC` (op 19) is the file-service verb that asks for it. A device that never offered
+`VIRTIO_BLK_F_FLUSH` gets `EOPNOTSUPP` all the way up rather than a quiet success, which is the part
+that matters: the old behaviour's problem was not the missing flush so much as that nothing above it
+could tell.
+
+**The half that is still the device's is still the device's**, and it is what the third row
+measures: ordering *between* writes, which nothing on this contract expresses. A `SYNC` says
+"everything acknowledged so far is durable now"; it does not say "these two writes landed in this
+order", and RedoxFS's `Disk` still has no barrier to say it with. A device that lies about its own
+flush is likewise outside anything we can check. That is the engine's and the hardware's territory,
+not the driver's.
 
 **The controls.** Three, and the strongest needs no tampering at all: the lying-device sweep produces
 74 images the filesystem refuses, so the injector is demonstrably destroying things. Then

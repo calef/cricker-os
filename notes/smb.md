@@ -189,9 +189,12 @@ so review can happen where the cost is:
   is walked past in silence, never refused**, because an unanswered context is how this mechanism
   says "not implemented" and refusing would trade a working mount for a diagnosis nobody reads. A
   malformed chain is the same: the open still succeeds with no context back.
-- **`FLUSH` resolves its file id** before answering. The success is truthful (see the Apple section
-  on where the durability actually stops), but it is a success about a file rather than a blanket
-  yes, so a stale handle is `STATUS_FILE_CLOSED`.
+- **`FLUSH` resolves its file id and then does real work** (milestone 55). The file id is checked
+  first, so a stale handle is `STATUS_FILE_CLOSED` rather than a blanket yes; then `Share::sync`
+  is called, which on the fs-backed share is `fs_proto::fs::SYNC` and, under that, a
+  `VIRTIO_BLK_T_FLUSH` the device completes before the reply. A backing that cannot flush its
+  storage returns an error and the client sees it. See the Apple section for why that mattered
+  enough to be worth a milestone of its own.
 - **The SMB1 probe.** The machine overruled the assumption that a modern client opens with SMB2:
   macOS's `mount_smbfs` still opens with an **SMB1** multi-protocol NEGOTIATE (`\xFFSMB`,
   command `0x72`, dialect strings `NT LM 0.12`, `SMB 2.002`, `SMB 2.???`), and the first cut of
@@ -231,23 +234,36 @@ acts on:
 | model | `TimeCapsule` | matching `fruit:model = TimeCapsule`. **Not** the `_device-info` mDNS model, which the reference sets to `MacSamba`; notes/mdns.md's capture found the working reference running with the two disagreeing, so they are two knobs and not one |
 
 **`FULL_SYNC` is `fruit:time machine = yes`**, and it is the single bit on the SMB side that makes
-macOS willing to hold a backup here. It is also the one claim in the table that reaches past what
-the stack backs, so it is stated plainly rather than buried:
+macOS willing to hold a backup here.
 
-- **True**: the FS server puts every `fs_proto` write through one RedoxFS transaction that commits
-  to the header ring *before* the reply. There is no write-back cache above the block device for a
-  flush to push, so SMB2's `FLUSH` genuinely has nothing to do and answering it with success is not
-  a courtesy.
-- **Not true**: the block server issues no `VIRTIO_BLK_T_FLUSH`, so the durability of the last
-  acknowledged write is the device's word rather than ours. notes/fs-server.md's crash-injection
-  table records the same gap from the other side ("a lying device"). A host that loses power can
-  lose a write this server acknowledged.
+**It was claimed further than the stack backed it, and as of 2026-08-18 it is not.** The gap is
+worth keeping on the record rather than quietly deleting, because it is the shape of mistake this
+project is most exposed to: two layers, one of them genuinely covered, and a claim written against
+the covered one.
 
-Closing that is a device flush in the block server and a sync verb in `fs_proto`, and it is the
-piece of milestone 55 that should land before anybody's real backup does.
+- **Always true**: the FS server puts every `fs_proto` write through one RedoxFS transaction that
+  commits to the header ring *before* the reply. There is no write-back cache above the block
+  device for a flush to push, so SMB2's `FLUSH` has nothing to do at that layer.
+- **Was not true until milestone 55's durability half**: the block server issued no
+  `VIRTIO_BLK_T_FLUSH`, so the durability of the last acknowledged write was the device's word
+  rather than ours. A host that lost power could lose a write this server had acknowledged, and
+  nothing in the stack was even asking the device about it.
 
-`FLUSH` also stopped being a blanket yes: it resolves the file id first, so a client flushing a
-handle it already closed gets `STATUS_FILE_CLOSED` rather than a success about nothing.
+**What closed it**, and it is two new opcodes on two contracts:
+
+| contract | opcode | what it does |
+|---|---|---|
+| `fs_proto::blk` | `FLUSH` (4) | the block server issues `VIRTIO_BLK_T_FLUSH` and waits for the device's completion. `EOPNOTSUPP` if the device never offered `VIRTIO_BLK_F_FLUSH`, so a device with no flush is a loud refusal rather than a quiet success |
+| `fs_proto::fs` | `SYNC` (19) | the file-service verb behind SMB2's `FLUSH`. Any handle the server minted, `dir::WRITE` required, refused with `EROFS` |
+
+Both answer with a **count of completed device flushes** rather than a zero, which is what makes
+the gate falsifiable: two syncs that return the same number mean the second never reached the
+device. See `fs_proto::fs::SYNC` for the full argument, including why the rights are write-side and
+why the `EOPNOTSUPP` travels to the client unmapped.
+
+The honest sentence now: **after a successful `FLUSH`, every write this server acknowledged is on
+the medium the device calls durable.** What "durable" means is still the device's definition, and a
+device that lies about its own flush is outside anything a protocol can check.
 
 ## How it is tested
 
@@ -384,9 +400,13 @@ wiring rather than `smb-serve`, and the account would be the published fixture i
   it agrees by construction. Whether macOS's `smbfs` accepts these bytes, and whether the Time
   Machine UI then offers the share, is unproven and needs the kernel on hardware on the family
   network (the discovery half needs that too; slirp carries no multicast).
-- **`FULL_SYNC` is claimed further than the block layer backs it.** See the Apple section above:
-  every write commits to the RedoxFS header ring before the reply, and the block server issues no
-  `VIRTIO_BLK_T_FLUSH` underneath that. A host that loses power can lose an acknowledged write.
+- **`FULL_SYNC`'s durability is now backed, and here is what it still is not.** The device is
+  flushed (see the Apple section), so the entry that used to sit here is closed. What remains:
+  **the sync is device-wide, never per file.** A client that flushes one handle makes the whole
+  image durable, which is more work than it asked for and is the only thing anything below here
+  can do. And **nothing fences**: there is no ordering primitive on `fs_proto`, so a client issuing
+  a write and a flush concurrently gets no guarantee between them. A backup client's own sequence
+  is write-then-flush, which is why this has not needed one.
 - **Apple metadata is not implemented at all.** No alternate data streams, so no `AFP_AfpInfo` and
   no `AFP_Resource`: Finder labels, resource forks and the extended-listing capability
   (`READ_DIR_ATTR`, deliberately not claimed) all rest on that surface. The layer under them is not

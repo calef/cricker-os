@@ -247,6 +247,59 @@ pub(super) fn assert_smb_write_landed(had_fs: bool) {
         smb_wrote::NESTED_ABSENT,
         smb_wrote::NESTED_WRONG,
     );
+    assert_smb_flush_reached_the_device(words[2]);
+}
+
+/// **The `VOLUME_FULL_SYNC` claim, checked rather than asserted** (milestone 55).
+///
+/// The SMB server tells macOS the share honours a full sync, which is the single bit that makes it
+/// willing to hold a backup. Until this milestone that claim outran the stack: every `fs_proto`
+/// write committed to the RedoxFS header ring before the reply, so SMB2's `FLUSH` had nothing left
+/// to do *above* the block device, and below it the block server issued no `VIRTIO_BLK_T_FLUSH` at
+/// all. The last acknowledged write was durable on the device's word rather than on ours.
+///
+/// What the third report word carries is a witness's verdict, and what makes it a witness is the
+/// arrangement rather than the check. The host prober sent `FLUSH` over TCP and was told yes; a yes
+/// is what the old server said too. The in-guest process reading this has synced nothing itself, so
+/// the block server's flush count being **already past one** when it first asks is a fact only the
+/// SMB server can have caused. Then it syncs twice and requires the count to move, which is what
+/// separates a device round trip from a remembered number.
+///
+/// **The control was run, which is what makes the rest of this count.** With `FsShare::sync`
+/// reverted to the old behaviour (a bare `Ok(())` that asks the FS server nothing), and everything else
+/// unchanged including the host prober's `FLUSH` and its success, this test fails with
+/// [`fs_proto::fixture::durability::NEVER_FLUSHED`]. So the witness is watching the flush rather
+/// than the mount, and a regression to a polite success cannot pass it.
+///
+/// [`fs_proto::fixture::durability::NO_DEVICE_FLUSH`] is not a failure of this tree and does not
+/// pretend to be: it means the device offers no `VIRTIO_BLK_F_FLUSH`, so nothing here could back
+/// the claim on this machine. It still fails the suite, because a boot that cannot demonstrate
+/// durability must not pass a test named for it; what it must not do is send the reader looking for
+/// a bug in the flush path.
+fn assert_smb_flush_reached_the_device(verdict: u64) {
+    use fs_proto::fixture::durability;
+    if verdict == durability::DURABLE {
+        return;
+    }
+    match verdict {
+        durability::NEVER_FLUSHED => crate::println!(
+            "    nothing had flushed the device before the witness ran, so the host's SMB2 FLUSH              did not reach fs_proto::fs::SYNC"
+        ),
+        durability::NO_DEVICE_FLUSH => crate::println!(
+            "    the device offers no VIRTIO_BLK_F_FLUSH, so this machine cannot back              VOLUME_FULL_SYNC at all. Not a bug in the flush path"
+        ),
+        durability::REFUSED => crate::println!(
+            "    fs_proto::fs::SYNC was refused for a reason other than an unsupported device;              the verb is wired wrong"
+        ),
+        durability::NOT_ADVANCING => crate::println!(
+            "    two syncs returned the same flush count, so the second one never reached the              device: the server is answering a constant"
+        ),
+        _ => crate::println!("    the witness reported a verdict this test does not know"),
+    }
+    panic!(
+        "the durability witness reported {verdict}, expected {} (DURABLE). The SMB server claims          apple::VOLUME_FULL_SYNC to macOS, and this is the check that the claim is backed by a          real VIRTIO_BLK_T_FLUSH rather than by a polite success",
+        durability::DURABLE,
+    );
 }
 
 /// **The kernel looks at the frame the SMB adapter and the credential service share**, after two

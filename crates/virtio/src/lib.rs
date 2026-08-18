@@ -112,6 +112,21 @@ const F_INDIRECT_DESC_LO: u32 = 1 << 28;
 // blk request types.
 const VIRTIO_BLK_T_IN: u32 = 0; // read: the device WRITES the data buffer
 const VIRTIO_BLK_T_OUT: u32 = 1; // write: the device READS the data buffer
+// Flush: no data buffer at all, just the header and the status byte. Legal only once
+// `VIRTIO_BLK_F_FLUSH` is negotiated, which is why the block server probes for it rather than
+// assuming it (virtio 1.2 §5.2.6; see `init_with_features` and `blk_flush`).
+const VIRTIO_BLK_T_FLUSH: u32 = 4;
+
+// Feature bit 9 (low word): VIRTIO_BLK_F_FLUSH, "the device supports a cache flush command".
+//
+// **The whole durability claim rests on this bit being offered**, so it is read from the device
+// rather than assumed. A driver that sent `VIRTIO_BLK_T_FLUSH` without negotiating it would get
+// `VIRTIO_BLK_S_UNSUPP` from a well-behaved device and undefined behaviour from a careless one,
+// and either way a server that took the resulting silence for success would be telling a backup
+// client its data was safe. The kernel's `sanitize_driver_features` strips only bits 28 and 34, so
+// this bit reaches the device unchanged; `feature_negotiation_leaves_the_blk_flush_bit_alone` in
+// `kernel/src/virtio.rs` is the gate that keeps that true.
+const F_FLUSH_LO: u32 = 1 << 9;
 
 // --- our DMA layout, offsets within the one DMA page ---
 const OFF_DESC: u64 = 0x000; // 16 * QSIZE = 128 bytes
@@ -166,13 +181,24 @@ fn dma_read<T: Copy>(off: u64) -> T {
 /// is set up THROUGH THE KERNEL, which places the rings at fixed offsets in our DMA region and
 /// programs the device with those addresses: we never choose them.
 fn init() {
-    init_with_features(0);
+    init_with_features(0, false);
 }
 
 /// The handshake, with `driver_features_lo` OR'd into the low feature word. The honest driver
 /// passes 0; the indirect attacker passes `F_INDIRECT_DESC_LO` to try to negotiate indirect
 /// descriptors (the kernel strips it, proving negotiation is filtered).
-fn init_with_features(driver_features_lo: u32) {
+///
+/// `want_flush` additionally asks for `VIRTIO_BLK_F_FLUSH`, **but only if the device offered it**,
+/// which is `F_ACCESS_PLATFORM_HI`'s discipline applied to the low word: the ack stays a subset of
+/// the offer, so the same code negotiates correctly against a device that does caching and one that
+/// does not. Returns whether that bit ended up negotiated, which the block server needs as a fact
+/// rather than a hope: it is the difference between answering a sync and refusing one out loud.
+///
+/// The two words are asked for differently on purpose. `driver_features_lo` is passed **unmasked**,
+/// because the indirect attacker's whole point is to ask for a bit the device really does offer and
+/// be stripped by the *kernel*; masking it against the offer would quietly change what that test
+/// proves.
+fn init_with_features(driver_features_lo: u32, want_flush: bool) -> bool {
     assert!(mr(MAGIC) == 0x7472_6976); // "virt": we really are talking to a virtio device
 
     mw(STATUS, 0);
@@ -182,8 +208,14 @@ fn init_with_features(driver_features_lo: u32) {
     // Accept VIRTIO_F_VERSION_1 (high word bit 32), plus whatever the caller asked for in the low
     // word. The kernel filters the low word, so a request for a ring-layout feature it cannot
     // validate does not survive.
+    mw(DEVICE_FEATURES_SEL, 0);
+    let dev_lo = mr(DEVICE_FEATURES);
+    let flush = want_flush && (dev_lo & F_FLUSH_LO) != 0;
     mw(DRIVER_FEATURES_SEL, 0);
-    mw(DRIVER_FEATURES, driver_features_lo);
+    mw(
+        DRIVER_FEATURES,
+        driver_features_lo | if flush { F_FLUSH_LO } else { 0 },
+    );
 
     // The high word: VERSION_1 always, and ACCESS_PLATFORM only if the device offered it (i.e. it
     // is behind an IOMMU). Reading the device's high feature word first is what keeps the ack a
@@ -208,6 +240,11 @@ fn init_with_features(driver_features_lo: u32) {
         STATUS,
         S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK,
     );
+    // FEATURES_OK stuck above, so the device accepted the set we wrote, and the only way this bit
+    // is in that set is that the device offered it and we asked for it. virtio-mmio's
+    // `DriverFeatures` is write-only, so there is nothing to read back; this is the negotiated
+    // truth, not an assumption about it.
+    flush
 }
 
 pub fn run(dma_phys: u64) -> ! {
@@ -380,7 +417,7 @@ pub fn run_attack(dma_phys: u64) -> ! {
 pub fn run_attack_indirect(dma_phys: u64) -> ! {
     // Ask for indirect descriptors. The kernel strips the bit, but we build the attack anyway to
     // prove the validator refuses the flag even if the feature ever slipped through.
-    init_with_features(F_INDIRECT_DESC_LO);
+    init_with_features(F_INDIRECT_DESC_LO, false);
 
     const KERNEL_ADDR: u64 = 0xffff_0000_4008_0000;
 
@@ -962,10 +999,17 @@ const CONFIG: u64 = 0x100;
 /// to, exactly once each. The transfer unit is one filesystem block; the bulk rides in the shared
 /// page, the control (opcode, block index, result) rides in the message, the §10 split.
 pub fn run_blk_server(dma_phys: u64) -> ! {
-    init();
+    // Ask for VIRTIO_BLK_F_FLUSH, and remember whether we got it. Everything about
+    // `fs_proto::blk::FLUSH` hangs off this one bool: with it, a sync is a device round trip; without
+    // it, a sync is a loud refusal. There is no third behaviour, and in particular there is no
+    // "answer yes and do nothing", which is the state this server was in before milestone 55.
+    let can_flush = init_with_features(0, true);
     // The device is up: signal readiness, so a hang here (bring-up) is distinct from a hang in the
     // first read completion. SEND rendezvous, so this also paces the test past bring-up.
     send(BLK_READY, fs_proto::fixture::READY, 0, 0);
+    // How many device flushes have completed. Answered back on every successful `blk::FLUSH`, so a
+    // client can tell a real round trip from a constant yes: see `fs_proto::blk::FLUSH`.
+    let mut flushes: i64 = 0;
     loop {
         // RECV_CAP: (first word, the Reply cap's slot, second word = the block index).
         let (w0, reply, block) = user_rt::recv_cap(BLK_REQ);
@@ -979,6 +1023,19 @@ pub fn run_blk_server(dma_phys: u64) -> ! {
                 0
             }
             blk::SIZE => disk_size_bytes(),
+            // The one verb that can refuse for a reason outside this program. A device that never
+            // offered the feature gets EOPNOTSUPP rather than a zero, because a zero here is a lie
+            // about somebody's data; see `fs_proto::blk::FLUSH`.
+            blk::FLUSH => {
+                if !can_flush {
+                    -95 // EOPNOTSUPP: this device has no flush, and pretending otherwise is the bug
+                } else if blk_flush(dma_phys) {
+                    flushes += 1;
+                    flushes
+                } else {
+                    -5 // EIO: the device took the request and completed it with a non-OK status
+                }
+            }
             _ => -22, // EINVAL: an opcode this server does not implement
         };
         // Answer through the one-shot Reply. SAFETY: `svc`; the kernel validated and consumes it.
@@ -1042,6 +1099,75 @@ fn blk_read(dma_phys: u64, block: u64) {
 fn blk_write(dma_phys: u64, block: u64) {
     let used_before = submit_blk(dma_phys, block * blk::SECTORS_PER_BLOCK, VIRTIO_BLK_T_OUT);
     complete_blk(used_before);
+}
+
+/// **Ask the device to make everything it has acknowledged durable**, and wait for it to say it
+/// did. `true` if the device completed with `VIRTIO_BLK_S_OK`.
+///
+/// This is the operation the whole `VOLUME_FULL_SYNC` claim rests on, so it is worth being exact
+/// about what it proves. The device dequeues the request, performs whatever its backing calls a
+/// flush, and posts a completion on the used ring with a status byte. When that byte is 0 the
+/// device has told us the flush is done. It cannot prove the *hardware* underneath the device is
+/// honest, and nothing at this layer could; what it removes is the layer that was previously
+/// missing entirely, where nobody asked at all.
+///
+/// Unlike [`complete_blk`] this does **not** panic on a bad status. The block server is long-lived
+/// and its death blocks every client of the filesystem forever, so a device refusing a flush has to
+/// come back as an error a caller can read rather than as a corpse. `VIRTIO_BLK_S_UNSUPP` (2) is
+/// the status a device returns for a command it will not do, and a device that offered
+/// `VIRTIO_BLK_F_FLUSH` and then answers that way is exactly the case worth reporting rather than
+/// crashing on.
+fn blk_flush(dma_phys: u64) -> bool {
+    let used_before = submit_flush(dma_phys);
+    complete_flush(used_before)
+}
+
+/// A flush's **two**-descriptor chain: the 16-byte request header the device reads, and the status
+/// byte it writes. No data descriptor, because a flush moves no data (virtio 1.2 §5.2.6.1); a chain
+/// with one would be describing a transfer the device was never asked to make.
+fn submit_flush(dma_phys: u64) -> u16 {
+    dma_write::<u32>(OFF_HEADER, VIRTIO_BLK_T_FLUSH);
+    dma_write::<u32>(OFF_HEADER + 4, 0);
+    // The sector field is unused for a flush and the spec says to set it to 0. Writing it anyway
+    // rather than leaving the previous request's value there, because a stale sector in a header
+    // the device is entitled to ignore is the kind of thing that reads as deliberate to whoever
+    // debugs the next device.
+    dma_write::<u64>(OFF_HEADER + 8, 0);
+    dma_write::<u8>(OFF_STATUS, 0xff);
+
+    write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_NEXT, 1);
+    write_desc(1, dma_phys + OFF_STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+
+    let used_before: u16 = dma_read::<u16>(OFF_USED + 2);
+    let idx: u16 = dma_read::<u16>(OFF_AVAIL + 2);
+    dma_write::<u16>(OFF_AVAIL + 4 + (idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(OFF_AVAIL + 2, idx.wrapping_add(1));
+    barrier();
+
+    // SAFETY: `svc`. As `submit_blk`: the kernel validates every descriptor against the region.
+    if unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) } < 0 {
+        panic!();
+    }
+    used_before
+}
+
+/// [`complete_blk`]'s wait, returning the device's verdict instead of panicking on it. See
+/// [`blk_flush`] for why the difference is deliberate.
+fn complete_flush(used_before: u16) -> bool {
+    loop {
+        // SAFETY: `svc`; the kernel validates the capability and the method.
+        unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
+        let istatus = mr(INTERRUPT_STATUS);
+        mw(INTERRUPT_ACK, istatus);
+        // SAFETY: as above.
+        unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
+        barrier();
+        if dma_read::<u16>(OFF_USED + 2) != used_before {
+            break; // our request is on the used ring; this wakeup was really ours
+        }
+    }
+    dma_read::<u8>(OFF_STATUS) == 0
 }
 
 /// Build and publish the three-descriptor chain for a whole-block (4096-byte) transfer and ring the
