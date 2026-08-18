@@ -9,7 +9,7 @@
 use crate::Sink;
 
 /// The longest source line the renderer holds. The longest line in this repository's markdown is
-/// 1841 bytes <!--count:longest-markdown-line-->; this is the next power of two above it, so the
+/// 1896 bytes <!--count:longest-markdown-line-->; this is the next power of two above it, so the
 /// corpus fits with room and a document from elsewhere fails loudly through
 /// [`Renderer::truncated`] rather than quietly.
 ///

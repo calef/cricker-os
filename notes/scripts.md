@@ -94,7 +94,7 @@ how to add one, and for the honest limits.
 
 **This section is prose and not a row in that table on purpose**, and the reason is worth knowing
 before you edit either. `script/lint`'s row is the longest line in the repository's markdown at
-1841 bytes <!--count:longest-markdown-line-->, and `manual`'s renderer sizes `LINE_MAX` at 2048
+1896 bytes <!--count:longest-markdown-line-->, and `manual`'s renderer sizes `LINE_MAX` at 2048
 against exactly that measurement. Extending
 that row by a sentence overflows the buffer, and the way you find out is a `manual` render test
 failing while pointing at text three hundred lines further down the file.
