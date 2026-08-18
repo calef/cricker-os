@@ -168,6 +168,24 @@ $ doubler 21
   the six `grant_plan` edits, and the `provisional` spelling the gate rejects. Those are fixed above.
   **One walk-through is not a guarantee**, and the next person to add a program should treat a
   surprise here as this page's bug rather than their own.
+- **Step 4's aarch64 half is stale as of 2026-08-18, and this entry is the record rather than the
+  fix.** Milestone 117's third stranger run walked this page, added a program called `triangle`, got
+  it answering at the prompt on both ISAs, and found a fifth wrong place: milestone 130 replaced
+  `mkinitrd()`'s `for name in [ ... ]` list and the older `let name = match read_stripped(...)`
+  blocks with a single `entries: &[(&str, &str)]` table and one loop, so **neither shape step 4
+  describes still exists**. The true instruction today is one `("name", "name")` row in that table,
+  which is byte-identical to the riscv64 edit; the only remaining asymmetry is the `--bin` list,
+  because `initrd_riscv()` invokes `cargo build` with explicit `--bin` flags while the aarch64 side
+  builds the whole package. The same run found `manifest()` to be a **seventh** `grant_plan` edit
+  that the list of six omits, compiler-forced like the `swish` arm and carrying all of the actual
+  meaning. The correction is left for whoever lands the next program, per the rule that a run which
+  stops to fix things stops measuring: see notes/stranger-test.md.
+- **This page went stale again inside two days, which is the finding rather than the accident.** It
+  was corrected on 2026-08-16 by run 2 and was wrong again by 2026-08-18, because the fact it
+  describes lives in five hand-maintained places and this page is a sixth. Two of the seven edits
+  are compiler-forced and five are not; the two that fail *silently* (a missing `initrd_riscv()` row,
+  a missing `from_name()` arm) are both in the unenforced group. By the ladder in AGENTS.md this is
+  a rung-four answer to a rung-one problem, and rewriting the prose a third time will not change it.
 - **One fact is written in five places** and nothing joins them: two initrd lists in different
   shapes, a `--bin` list, a six-part `Prog` table, and an exhaustive match in the shell. Steps 4 and
   6 are long because the tree is, not because adding a program is hard.
