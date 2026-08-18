@@ -37,7 +37,7 @@ have no atomic protocol at all**, and finding that out is most of what the surve
 |---|---|---|
 | The IPC sender queue (`crates/ipc`) | zero atomics. `Endpoint` is plain data under the `SCHED` `IrqSafeMutex` | nothing to explore |
 | `crates/intrusive` (the run queues) | zero atomics. Single-owner with interrupts masked, plus an `UnsafeCell` | nothing to explore |
-| `crates/slots` (the thread table) | zero atomics. Under `SCHED` | nothing to explore |
+| `crates/slots` (the thread table) | zero atomics. Under `SCHED` | nothing to explore **as atomics**, and that reading was too narrow: `crates/regions` is a `slots` table under a lock, and its protocol had a real double free in it. See the note under `wake_handshake` below, and the `regions` section |
 | The reaper handoff (`PerCpu::switched_from`) | one `AtomicU64`, both accesses `Relaxed`, written and read **by the same core** with interrupts masked. The atomic is interior mutability, not synchronisation | nothing to explore |
 | The run-queue handoff | the migration inbox is an `IrqSafeMutex`; the *steal request slot* is the lock-free part | **yes**, and it is the pilot |
 
@@ -61,8 +61,12 @@ and fetch-op outside test code:
 
 ## What was modelled
 
-Nineteen harnesses <!--count:loom-harnesses--> across four crates <!--count:loom-crates-->, run by
+24 harnesses <!--count:loom-harnesses--> across five crates <!--count:loom-crates-->, run by
 `script/interleaving-check`.
+
+The harness number is written in digits because `script/lint`'s marker reads small cardinals and no
+compositions, so "twenty-four" would be read as four; the crate number stays a word because five is
+in range. That asymmetry is the gate's, not the prose's.
 
 Both numbers said sixteen and three until the 2026-08-17 documentation sweep, and this line is the
 reason the sweep's gate work happened: `notes/counted-claims.md` cited it as the case a
@@ -181,6 +185,62 @@ against the exclusion model and loom falsified it on the first run, which is the
 discipline the wake_handshake section above describes, applied to a protocol that was actually
 broken.
 
+### `crates/regions`, the untyped region claim (2026-08-18)
+
+The fifth extraction, milestone 135, and the first on the **memory-reclamation path**. It exists
+because a real double free landed there and its fix could not be gated: `untyped::destroy` checked
+the region under the `REGIONS` lock, released it, revoked, freed every page, and removed the table
+slot last, so two callers holding a name for one region could each pass the refusal check inside
+that gap and each run the free loop over the same pages. Once in 45 loaded runs on riscv64, and it
+needed two cores. Pull request #316 fixed it by removing the slot under the same hold that decided
+to destroy it, and said plainly in [object-revocation.md](object-revocation.md)'s BUGS that the
+single-winner claim was argued from lock discipline and gated by nothing.
+
+**What moved.** The region table and every decision taken over it left `kernel/src/untyped.rs` for
+`crates/regions`, where the arithmetic it calls (`split_new_watermark`, `destroy_outcome`) was
+already Kani-proved. `RegionTable::claim_for_destroy` takes `&mut self` and does both halves, which
+is rung one of CLAUDE.md's ladder rather than a tidier spelling: **the pre-fix shape is not
+expressible against that signature**, because there is no intermediate state in which a caller holds
+a decision about a table it no longer holds. The kernel keeps what a crate a model checker can run
+must not have, which is the I/O: the frame allocator, the direct map, the revoke, and the lock.
+
+**This is the second lock-based protocol here**, after `wake_handshake`, and the same caveat
+applies with the same force: what loom searches is the interleaving of *critical sections*, not
+memory orderings, because there are no hand-rolled orderings to search. The survey table above
+counts atomic protocols and by that count this had nothing in it. Two of the five protocols now
+modelled are in the population that survey called empty, which is the standing correction to it: a
+protocol is a candidate when its steps span more than one critical section, whatever its fields are.
+
+| Harness | Property |
+|---|---|
+| `two_destroyers_race_and_exactly_one_reclaims` | the property the whole reclamation path rests on. Two threads claim the same region and the winner runs the free loop; loom fails any execution where the loop runs twice. Both `Reached` flags fire, so both winners were really explored rather than one order run twice |
+| `the_pre_fix_protocol_double_frees_and_this_model_finds_it` | **the falsification witness**, and it is the one harness in this script that asserts a protocol is BROKEN. It reconstructs `untyped::destroy` as it stood before #316, against this module's private internals, and passes only when loom **finds** an execution in which both callers free the same run |
+| `a_retype_never_hands_out_a_page_the_reclaim_is_about_to_free` | the other half of why the slot comes out first: before the fix, a `retype_page` landing in the gap resolved the name and returned a page already on its way back to the allocator. Exactly one of the two succeeds, and loom explores both winners |
+| `a_split_and_a_claim_on_one_parent_cannot_both_succeed` | the same exclusion one level along, and it matters more: a child carved from a parent that was concurrently reclaimed would hold a name for pages already back in the allocator |
+| `a_parent_is_never_reclaimed_while_its_child_is_returning` | the child's slot comes out at its claim but the parent's child count drops only in `return_to_parent`, after the caller has revoked the run. That ordering is what keeps the parent refusing across the window in which the pages are neither the child's nor yet the parent's |
+
+**The witness is worth copying, and it is not the same mechanism as the `#[should_panic]`
+reconstructions above.** A should-panic harness records that *something* failed; this one records
+*which* execution failed, by counting the double-free outcome in a real atomic outside the model and
+asserting on the count after `loom::model` returns. That is the `Reached` non-vacuity shape pointed
+at a negative property instead of a positive one, and it converts "we broke it by hand once and
+watched it fail" into a standing gate that no one has to remember.
+
+**What it found: nothing in the current protocol, and the negative result has the same reading as
+the pilot's.** The bug was found by a flake and fixed before this model existed; the model holds the
+fix in place where the next edit to `untyped.rs` cannot silently undo it. What it did produce came
+from breaking it on purpose, twice:
+
+| Break | Result |
+|---|---|
+| `claim_for_destroy` stops removing the slot (the single-winner property deleted) | three of the five fail. `two_destroyers` reports "exactly one caller may free a region's pages, and this execution had 2", which is the original bug's shape in the original bug's units |
+| the parent's child count decremented at claim time rather than in `return_to_parent` | `a_parent_is_never_reclaimed_while_its_child_is_returning` fails, and **only** that one, which is what a targeted harness earning its place looks like |
+
+**Bounds:** 1,364 executions across the five harnesses, ~50 ms, no `LOOM_MAX_PREEMPTIONS` and no
+branch bound. The harnesses use `RegionTable<2>` or `<4>` rather than the kernel's 256 because the
+search is exponential and nothing in the protocol depends on capacity; two threads is the entire
+cast of the recorded bug.
+
 ## What loom found
 
 **A real weak-memory bug in the clock page's seqlock, on the first run.**
@@ -276,6 +336,22 @@ running 6 tests
 test interleavings::a_wake_racing_a_switch_out_resumes_on_a_saved_context ... ok
 ...
 test result: ok. 6 passed; 0 failed
+running 7 tests
+test table::interleavings::two_destroyers_race_and_exactly_one_reclaims ... ok
+test table::interleavings::the_pre_fix_protocol_double_frees_and_this_model_finds_it ... ok
+...
+test result: ok. 7 passed; 0 failed
+```
+
+Watch the region claim fail, which is cheaper than trusting a green run. Delete the
+`self.table.remove(name)` from `RegionTable::claim_for_destroy` and:
+
+```
+$ script/interleaving-check -p regions two_destroyers
+thread '...two_destroyers_race_and_exactly_one_reclaims' panicked at crates/regions/src/table.rs:
+assertion `left == right` failed: exactly one caller may free a region's pages, and this execution had 2
+  left: 2
+ right: 1
 ```
 
 Run one harness, which is what you do while iterating on a counterexample:
@@ -316,7 +392,7 @@ Add a protocol of your own. Four steps, and the third is the one that is easy to
 
 | | |
 |---|---|
-| Runtime, all four crates, warm | **under a second** wall on an M-series laptop (0.2 s measured 2026-08-14, with `wake_handshake`'s six harnesses adding ~10 ms of search; `canary_gate`'s three, measured 2026-08-15, add under 10 ms) |
+| Runtime, all five crates, warm | **under a second** wall on an M-series laptop (0.2 s measured 2026-08-14, with `wake_handshake`'s six harnesses adding ~10 ms of search; `canary_gate`'s three, measured 2026-08-15, add under 10 ms; `regions`' five, measured 2026-08-18, add ~50 ms over 1,364 executions) |
 | Runtime, cold (compiling loom and its 28 transitive crates) | ~6.5 s |
 | Crates added to `Cargo.lock` | **28** (loom plus `generator`, `scoped-tls`, `tracing`, `tracing-subscriber` and their trees) |
 | Crates compiled by an ordinary `cargo build`, `cargo test`, `cargo clippy` or `script/test` | **zero** |
@@ -355,10 +431,24 @@ evaluates `cfg(loom)` as false for every real target, so:
   about the SGI, and it does not know about the timer tick that makes the thief retry.
 - **The harnesses are small on purpose, and small is a bound.** Two thieves, one victim, two polls;
   two writers, one reader, one publish each; one waker, one victim core, one thief in the
-  block/wake models. The protocols are symmetric enough that a third
+  block/wake models; two destroyers, or one destroyer against one retype, split or parent, in the
+  region models. The protocols are symmetric enough that a third
   participant explores no new state *in these cases*, and that is an argument, not a proof. Every
   harness carries reachability flags (the `Reached` type) so a bound that quietly empties the
   interesting branch fails loudly, which is `kani::cover!`'s job done by hand.
+- **The region model checks the claim, not the free loop.** What loom searches in `crates/regions`
+  is who wins the right to reclaim a region. That the winner then frees the *right* pages, exactly
+  once, is `destroy_outcome`'s Kani proof plus the kernel's own tests, and the two arguments meet
+  only in the reader's head. Covering both would need the frame allocator lifted too.
+- **The region model's lock is not the kernel's lock.** `IrqSafeMutex` masks interrupts and carries
+  a rank for the deadlock order; `loom::sync::Mutex` has neither. So the model says the protocol is
+  correct *given* mutual exclusion, and says nothing about whether `IrqSafeMutex` provides it or
+  whether the rank is right. That is `script/lint`'s rank check and [locking.md](locking.md), and
+  it is the same division `wake_handshake` records for `SCHED`.
+- **Nothing gates `untyped.rs` against growing a second decision path.** The kernel calls the lifted
+  claim today, so the thing loom searches is the thing the kernel runs; a later lane could
+  reintroduce a check-then-remove pair in the kernel module and no check would notice. The mechanism
+  that would catch it is milestone 113's shim shape, and it is not built.
 - **`crates/user_rt`'s spin lock and the interrupt-routing lottery are unmodelled.** Both are named
   in the survey above with the reason: one does not compile for the host, and the other lives under
   `arch/` where rule 1 keeps it. Neither is a small retrofit.
