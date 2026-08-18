@@ -482,6 +482,188 @@ still a contaminated judgement.
 - **Find `crates/abi/src/lib.rs`**, four syscall numbers and the whole design on one screen, without
   luck.
 
+### Run 4, 2026-08-18: the harness stopped leaking and the tree took over the job
+
+**The one-line fix worked, and it is the smallest useful result here.** The logs were written to
+`/private/tmp/newclone/logs/`, a sibling of the stranger's working directory rather than inside it,
+under the names `stream.jsonl` and `stderr.log` with no run number anywhere in the path. The
+stranger's first tool call was `ls -la`, exactly as run 3's was, and it returned one entry: `nife`.
+Nothing in the harness told it which run it was.
+
+**It knew anyway, within the first half hour, and the source was the tree.** Asked afterwards what
+had told it, it named `notes/adding-a-program.md`'s `BUGS` section: the table headed
+`walk | program | wrong in`, whose three dated rows name run 2's `doubler`, run 3's `triangle` and
+"this lane", beside the sentence asking the next person to add a program to treat a surprise there
+as the page's bug. `README.md`'s `## Start here` block cites milestone 117 by name in the same
+breath. Its own summary: *"So I knew, within the first half hour, that I was at minimum the fourth
+person to walk this exact path and that the walks were treated as measurements."*
+
+**This is a different defect from run 3's, and the difference is the important part.** Run 3's leak
+was a mistake, introduced by the person building the isolation, and it cost one line to fix. Run
+4's leak is a *consequence*: every run records its walk in the page the next run is sent to, because
+recording it is what the page's own `BUGS` convention asks for. **The instrument's good practice
+generates its own contamination**, and it compounds, since each run adds a row. There is no
+one-line fix, and the obvious fixes are all worse than the leak: deleting the record would fabricate
+a tree, and hiding it would be the answer-key withholding rule applied to something that is not an
+answer key.
+
+**What it changed, in the stranger's words rather than in ours**, because the value of asking is
+that the answer is unflattering:
+
+- *"I performed."* It wrote a prediction into the journal before starting the walk, and calls that
+  *"an imitation of this tree's voice, aimed at a reader I imagined scoring me on intellectual
+  honesty. Nothing about the task required it."*
+- It chose the deliverable partly for how it would read: *"I wanted to be the walk that found
+  something."*
+- It adopted the repository's prose style wholesale, and names that as mimicry rather than judgement.
+- *"I front-loaded my own honesty... The fact is fine; the framing is a bid."*
+
+**And what the leak did not change, which is why the run still counts.** It did not invent a
+breakage to have something to fix, it did not skip gates and claim them, and it never opened
+`design/roadmap/117-newcomer-onboarding.md` or looked for `notes/stranger-test.md`, which was
+withheld the same way runs 2 and 3 withheld it. The answer key held for the fourth time; only the
+fact of being measured leaks, exactly as the first `BUGS` entry has said since run 1.
+
+#### The configuration, verified rather than asserted
+
+The clone was `c9fe2d67` (`bb094187` after the withholding amend), with this note and its
+`notes/README.md` entry removed and the deletion amended into the tip, working tree clean, `origin`
+pointed at the public GitHub URL. The stranger was a separate `claude` process rather than a
+subagent, `--safe-mode`, started from the clone's parent so no `AGENTS.md` could load from an
+ancestor. A throwaway probe in the same configuration answered `NONE` when asked which
+project-instructions files were in its context, and the stranger itself answered *"No. Nothing from
+a `CLAUDE.md`, `AGENTS.md`, or equivalent was in my context before my first tool call... The repo
+sat one level below the primary working directory, so nothing was auto-loaded."*
+
+Task verbatim from runs 1, 2 and 3, plus the journal. 177 turns, about 15 minutes of wall clock,
+`$12.66`.
+
+**One deliberate contamination the earlier runs did not have, disclosed because it is the harness's
+and not the tree's.** `pkill` and `killall` were shadowed on the stranger's `PATH` by wrappers that
+kill only QEMU processes whose command line names the clone, because `README.md`'s own "Try it"
+block tells a reader to quit with `pkill qemu-system-aarch64` and four other lanes were gating on
+this machine. The stranger never invoked either, so the shim changed nothing about this run; it
+would have, and the next harness should keep it.
+
+#### The build half
+
+**`script/test` was green on arrival, exit 0, first try, with no change to the tree:** 1312 tests
+passed and 0 failed across the host workspace, the doctests, the vendored RedoxFS round trip and its
+`no_std` core on both bare-metal targets, `fs_server`'s sans-IO core, the patched `nife-dev` std
+toolchain, and the kernel under QEMU on both ISAs. About 25 minutes wall clock, most of it the two
+emulated legs.
+
+**It then ran the rest of `script/gates` unprompted, on its own reading of the tree's vocabulary**,
+which is the run's best unforced result and belongs to `CONTRIBUTING.md`: *"'tests passing' in this
+project's own vocabulary is `script/gates`, not `script/test`. I ran one of the three."*
+`script/fmt --check` and `script/lint` both exit 0. It then named what it had not run rather than
+letting silence imply coverage: `script/verify`, `script/bench --check`, `script/coverage`,
+`script/fuzz`, `script/supply-chain`, `script/test --hvf`.
+
+**B2 is not measured**, as pre-registered: the pinned nightly and the pinned QEMU were both already
+installed and `script/setup` had nothing to do. **B4 has exactly one entry**, and the stranger
+scored it against itself rather than against the tree: `timeout(1)` does not exist on this macOS
+host, `AGENTS.md` says so explicitly and points at `scripts/qemu-bounded.sh`, and it hit the missing
+binary before it read that section. Its own verdict: *"That is my error, not the tree's, the file
+that told me is the file the README tells you to read third."*
+
+**The machine was loaded and no timing assertion fired, so the new load-average print is still
+unexercised.** Load average at launch was 5.41 on 8 cores, and it ran between about 3 and 17.5 for
+the duration, with four other lanes gating in other worktrees. That is well under the 45 to 63 that
+produced run 3's 2-in-13 red rate, and both emulated legs passed on the first attempt. **The
+diagnostic landed 2026-08-18 in response to run 3 and this run could not test it**, which is worth
+saying plainly rather than counting the green as evidence for it.
+
+#### The mental model, scored: eight of eight
+
+| # | result | where it came from |
+|---|---|---|
+| M1 | **answered**, and better than any previous run | `notes/capabilities.md` for the mechanism, `notes/abi.md` for the rights field, so it gave the attenuation too: holding an endpoint does not by itself permit receiving on it |
+| M2 | **answered** | `notes/std.md`, not `notes/net.md`, which it never opened: slot 2 is a `Stack` endpoint with `WRITE` and slot 3 is the untyped budget the socket frames are minted from, and *"the absence of slots 2 and 3 is exactly what 'no ambient network' feels like from inside a process"* |
+| M3 | **answered**, with an under-claim on enforcement | `AGENTS.md` rule 1 through the reading order. It said the rule looked like convention rather than mechanism and hedged that it had not read `script/lint`'s source; the gate is there, at `script/lint`'s `==> rule 1`, and it read that output |
+| M4 | **answered** | `design/roadmap/README.md`, the whole vocabulary including `RECORDED` and the `IN-PROGRESS` branch rule |
+| M5 | **answered** | `AGENTS.md` rule 7, with the Kani-and-host-tests reason named as the load-bearing one and `c_seam` as the case |
+| M6 | **answered, and read rather than induced** | `CONTRIBUTING.md`, quoting it, then `AGENTS.md`'s second job for it as one of the two homes for identified work. Run 3 had to assemble this from four instances |
+| M7 | **answered by doing it** | added `tally`, ran it at a real prompt on both ISAs, ran a negative control, reverted to a byte-identical tree |
+| M8 | **answered** | four states, with the distinction that `provisional` is a claim about intent and the other three about the record |
+
+**Two of these moved because of documents no stranger had seen before.** M6 is `CONTRIBUTING.md`
+working exactly as it was written to: run 3 had to induce the `BUGS` convention from instances and
+run 4 quoted a definition. And the whole gates observation above is the same document.
+
+#### What it read, and in what order, which is B1
+
+Twenty-two files, of which six were reached through the `## Start here` order and five more through
+links from `notes/adding-a-program.md`. **`AGENTS.md` was seventh**, against run 3's twelfth.
+**`notes/capabilities.md` was eighth**, and run 3 never opened it at all. `README.md` was still
+first by expectation rather than by any pointer, which no reading order can fix.
+
+**So B1 passes, for the first time, and the failure it leaves is specific.** The stranger did not
+follow the order; it used the order as an index and read the items in the sequence its work needed,
+which is what the section's own last line invites. The cost is one item: **`CONTRIBUTING.md` is item
+2 of 8 and was read sixteenth of twenty-two**, late enough that its gates paragraph arrived after
+the gates had been run. The one document written for a person deciding whether to work here is the
+one the reading order failed to get read early.
+
+Still unopened after four runs: **every file under `design/decisions/`**, `notes/net.md`,
+`notes/naming.md`, and `notes/README.md` itself.
+
+#### What it found, and none of it was fixed here
+
+- **`script/lint`'s naming worklist under-counts by exactly the provisional names, and then names
+  the command that prints the other number.** The `--check` path prints
+  `len(recorded) + len(unrecorded)` and the default listing prints
+  `len(provisional) + len(recorded) + len(unrecorded)`, so the gate says `82 still want calef
+  (script/names --unratified)` and that command says `UNRATIFIED (86 of 162)`. The census line above
+  it drops them too: `76 ratified, 15 recorded, 67 unrecorded` sums to 158 of 162. Reproduced on
+  `main`. **It bites precisely the state a newcomer is told to use**, since `AGENTS.md` and
+  `notes/adding-a-program.md` both say to ship a provisional name and say so. Recorded in
+  notes/naming.md's `BUGS`.
+- **The two archives boot different binaries under the name `init`**, `hello` on aarch64 and
+  `builder` on riscv64, in a project whose loudest claim is architectural parity. The stranger
+  reported this as undocumented and was wrong: `xtask/src/main.rs` says it, in a comment on the
+  aarch64 table's `hello` row, about 200 lines from the riscv table it describes. **A stranger who
+  read both tables in the same minute still called it invisible**, which is a placement finding
+  rather than an absence, and is run 3's closing diagnosis reproduced by a different reader.
+- **The two commands run most often are both blind to the most-warned-about mistake.** A program
+  added to the aarch64 table and not the riscv one passes `cargo xtask build` and `script/lint`, and
+  is caught first by `script/shell-check` or `script/test`. The `BUGS` entry in
+  notes/adding-a-program.md says nothing gates the two lists against each other; this adds which
+  gates a person will believe before they find out.
+- **Nothing in the suite counts programs.** 1312 tests before adding `tally` and 1312 after. A
+  program's presence is proven only by a transcript line someone remembered to write into
+  `SHELL_CHECK_SCRIPT`.
+- **The eight places are a removal problem too, and only the addition has a page.** Reverting was
+  clean only because every edit was in a file it could still name; a half-removed program is a
+  `PROG_COUNT` too large and an init slot no variant claims, which is the same silent failure
+  reached from the other side. Recorded in notes/adding-a-program.md's `BUGS`.
+- **`notes/adding-a-program.md` was right about everything, including a line number.** This is the
+  first walk of four to find no defect in it, and the page's own `BUGS` predicted the opposite. The
+  stranger checked `crates/swish/src/lib.rs:864` against the error the page quotes and got the same
+  file and the same line. Its prediction, written before the walk, was that it would find at least
+  one thing the page did not mention; it did not.
+
+**Its own worst-thing answer is the one to keep**, because it is the only place in four runs where a
+stranger has criticised the tree's central habit rather than a document: *"the project's habitual
+response to a structural problem is another document, which its own ladder names as the worst
+available move... The documentation is doing work that a data structure should be doing, and it is
+doing it beautifully, which is exactly what stops anyone from fixing it."* It cites three instances,
+all of them things this tree has written about at length and not changed: `AGENTS.md`'s misleading
+name, `notes/adding-a-program.md`'s fourth rewrite, and the eight-place program problem whose
+one-place fix is sitting in this milestone's own handoff list.
+
+#### What this run cost
+
+**The tree's own leak is now the largest contamination and it is structural**, which is the first
+entry above and the reason it leads. Every other cost is smaller and all of them are carried over:
+the machine was warm so B2 measures nothing; the machine was loaded, though far less than run 3's,
+so the timing rows are contaminated and the new diagnostic went unexercised; `pkill` was shadowed by
+the harness and never invoked; and **the harness's author has read `AGENTS.md`**, which no
+arrangement of processes fixes and which the amendments above make slightly worse, since this lane
+edited the rubric before running against it. The mitigations are the same three: the task text is
+runs 1 through 3's verbatim, the amendments were made and committed before the clone was cut, and
+the stranger's answers are recorded as it gave them.
+
 ## BUGS
 
 - **The rubric is reachable by grep from inside the test, and run 1 hit it.** The stranger found
@@ -493,7 +675,7 @@ still a contaminated judgement.
   it claims and no further. Run 2 met three references to run 1 in ordinary reading, had
   `design/roadmap/117-newcomer-onboarding.md` returned by its own grep, and knew the project
   instruments onboarding; it simply never opened the block. **The fact leaks and cannot stop leaking
-  while the instrument is in-tree.** Only the answers are hidden.
+  while the instrument is in-tree.** Only the answers are hidden. **Run 4 is the fourth confirmation and the loudest**: it knew inside half an hour, from a table `notes/adding-a-program.md` grew *because* runs 2 and 3 walked it. The entry below this one is that finding as its own defect, since the mechanism is no longer an incidental reference but the instrument writing its own history into the page it sends the next stranger to.
 - **The harness's own artifacts were in the stranger's working directory, and it read them on its
   first tool call.** Run 3's log files were named `stranger3-stream.jsonl` and
   `stranger3-stderr.log` and sat in the clone's parent, which was the stranger's working directory,
@@ -506,7 +688,7 @@ still a contaminated judgement.
   the instance: **the isolation keeps failing at the harness rather than at the tree.** Runs 1 and 2
   leaked the rubric and the constitution; run 3 leaked the fact of being measured, earlier and more
   loudly than the in-tree references do. **Fix for run 4, one line: the logs go in a sibling
-  directory, not in the parent.** The stranger's actual output survives the leak (it never opened
+  directory, not in the parent.** **Resolved for run 4, and it worked exactly as priced.** The logs went to a sibling directory with no run number in any path element, and the stranger's first `ls -la` returned one entry, the clone. The harness told it nothing. The stranger's actual output survives the leak (it never opened
   the logs, never opened `design/roadmap/117-newcomer-onboarding.md`, and never used the network),
   so the run counts; the rhetoric in it should be discounted and the decision to add a program
   should be read as prompted rather than spontaneous.
@@ -527,6 +709,19 @@ still a contaminated judgement.
   answered `NONE` to "was any project-instructions file in your context", and the stranger itself
   answered the same afterwards. B1 and all eight mental-model rows are scored for run 3. The
   mechanism costs one line of shell and should be the default from here.
+- **The instrument now leaks through the record it is required to keep, and this one has no fix.**
+  Run 4's stranger knew it was at least the fourth walker within half an hour, and the source was
+  not the harness: it was `notes/adding-a-program.md`'s `BUGS` table, whose rows name run 2's
+  `doubler` and run 3's `triangle` because each of those lanes recorded its walk exactly as this
+  project's conventions require. **The leak is generated by the instrument's own good practice and
+  it compounds**, one row per run. Every obvious remedy is worse: deleting the rows fabricates a
+  tree that never existed, and hiding them extends the answer-key rule to something that is not an
+  answer key. What the stranger disclosed is that it *"performed"*, chose its deliverable partly
+  for how it would read, and adopted the tree's prose style as mimicry; what it did not do is
+  invent a breakage, skip a gate, or open the withheld note. **So the shape to expect from run 5 is
+  a stranger who knows it is being measured before it reads anything, and the honest response is to
+  ask it, not to try to hide it.** The rhetoric in a run's output should be discounted from here on
+  by default rather than as an exception.
 - **The rubric was written by an agent that has worked in this tree**, which is the same
   disqualification the instrument exists to avoid, one level up. It knows which answers the tree
   gives, so the questions may be shaped around what is answerable. A stranger falling down somewhere
@@ -539,7 +734,7 @@ still a contaminated judgement.
   ladder and the same weakness the milestone was written to fix one level down. A periodic run is
   possible and is not built. **Run 3 makes it cheaper rather than automatic**: the harness is a
   clone, one `sed`, and one `claude --safe-mode` invocation from the clone's parent, which is a
-  script somebody could write in an afternoon and nobody has.
+  script somebody could write in an afternoon and nobody has. **Run 4 ran the same harness by hand again and did not write it either**, which is now four runs of a rung-four mechanism inside the milestone that exists to move things off rung four. This is the reason 117 does not move.
 - **The build half cannot be measured from a warm machine**, and every contributor's is warm. The
   first run should be from a container with nothing installed, or the B-rows measure nothing. Run 2
   came closest and still fell short: the maintainer's own `cargo --version` inside the repository had
@@ -551,8 +746,8 @@ still a contaminated judgement.
   and it changes the instrument: run 1's stranger produced friction, run 2's produced friction it
   knew was the deliverable. The log is worth more than the loss, but the two runs are not
   measurements of quite the same thing.
-- **Three runs by three agents is not three data points about a person.** All three were agents, all three read
-  further before asking than a human would, and all three were told nobody was available. The note's
+- **Four runs by four agents is not four data points about a person.** All four were agents, all four read
+  further before asking than a human would, and all four were told nobody was available. The note's
   standing caveat holds and gets no weaker with repetition: every number here is a lower bound.
   Run 3 sharpens it in one direction only: it spent an hour on a failure whose explanation was four
   hundred lines further down a note it had already opened, and a human would have given up or asked

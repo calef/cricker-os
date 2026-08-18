@@ -204,6 +204,24 @@ $ triple 21
 - **Nothing gates the two initrd lists against each other.** A program in `mkinitrd()` and not in
   `initrd_riscv()` builds, boots on aarch64, and is simply absent on riscv64. The parity gate catches
   it only if a test names the program.
+  **The two commands you will run first are both blind to it**, which run 4 measured: such a program
+  passes `cargo xtask build` *and* `script/lint`, and is caught first by `script/shell-check` or
+  `script/test`, both of which cost an emulated boot. **And nothing counts programs**, so the
+  suite total is identical with and without one: 1312 tests before `tally` and 1312 after. A
+  program's presence is proven only by a transcript line somebody remembered to write into
+  `SHELL_CHECK_SCRIPT`.
+- **The archives do not boot the same binary, and the sentence saying so is 200 lines from where
+  you need it.** `mkinitrd()` packs `hello` under the archive name `init`; `initrd_riscv()` packs
+  `builder`. `xtask/src/main.rs` does state this, in a comment on the aarch64 table's `hello`
+  row rather than on either `("init", ...)` row, and run 4's stranger read both tables in the
+  same minute and still reported the asymmetry as undocumented. For a project whose loudest
+  claim is architectural parity that is worth meeting at the table you are editing.
+- **Removal is the same eight places and has no page.** Taking a program out is clean only while
+  you can still name every file you touched; a half-removed program is a `PROG_COUNT` too large
+  and an init table slot no variant claims, which is the same silent failure as a forgotten
+  `PROG_COUNT`, reached from the other side. There is no `removing-a-program.md` and this page is
+  about adding. Run 4 reverted `tally` to a byte-identical tree and noted that it worked first
+  time only because the eight edits were still in its head.
 - **This page is prose and the code can move without it.** The step that rots first is the manifest
   field list, which is why it is not repeated here: [program-manifest.md](program-manifest.md) has it,
   and the struct in `crates/grant_plan/src/lib.rs` is the authority over both.
@@ -217,13 +235,20 @@ $ triple 21
   | 2026-08-16 (run 2) | `doubler` | the aarch64 tier, the riscv `--bin` list, two of the six `grant_plan` edits, the `provisional` spelling the gate rejects |
   | 2026-08-18 (run 3) | `triangle` | the aarch64 tier again (milestone 130 had deleted both shapes it described), and `manifest()` missing from the `grant_plan` list |
   | 2026-08-18 (this lane) | a scratch binary, added and removed | `cargo xtask build` claimed to pack both archives and packs one, the `SHELL_CHECK_SCRIPT` example did not compile, and nothing said which of the seven `grant_plan` edits the machine catches |
+  | 2026-08-18 (run 4) | `tally`, added and removed | **nothing.** The first walk of four to find no defect, including `crates/swish/src/lib.rs:864`, which the page quotes by line number and which still is that line |
 
   Run 3 recorded its two rather than fixing them, deliberately and per its own convention: a run
   that stops to fix things stops measuring, and its findings stop being traceable to it (see
   notes/stranger-test.md). The lane below it did the fixing.
 
-  **One walk-through is not a guarantee and three are not either**, and the next person to add a
+  **One walk-through is not a guarantee and four are not either**, and the next person to add a
   program should treat a surprise here as this page's bug rather than their own.
+
+  **This table is also a leak, and it is worth knowing about before adding to it.** Milestone
+  117's fourth stranger read these rows within half an hour and knew from them that it was at
+  least the fourth person walking this page under measurement, which changed how it wrote. The
+  rows stay, because deleting them would fabricate a tree and because the page's value is that
+  it says how often it has been wrong. See notes/stranger-test.md's `BUGS`.
 - **This page went stale inside two days, twice, which is the finding rather than the accident.** Run
   2 corrected it on 2026-08-16; milestone 130 falsified step 4 on 2026-08-17; run 3 found it wrong on
   2026-08-18. The fact it describes lives in seven hand-maintained places and this page is an eighth.
