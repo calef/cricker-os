@@ -226,6 +226,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   ownership plus generational staleness instead of a capability derivation tree, why destroy is
   the owner's explicit act and must stay off the scheduler lock, `Untyped::SPLIT`/`DESTROY`, and
   the generational region slots that make a repeatable spawn loop finally possible.
+- [Ending a permanently blocked thread](blocked-thread-teardown.md): research and four proposals,
+  no decision. `Untyped::DESTROY` arms a kill that `schedule()` spends only for a `Running` thread,
+  so a permanently `Blocked` one is refused forever and its region never comes back. The finding that
+  reframes it: **the mechanism is about thirty lines and the authority is the whole problem**, because
+  `WaitRole` already enumerates the three places a blocked thread can be and the abort-and-wake pair
+  already exists. A live hazard any proposal must solve (a `Reply` capability names a thread, not a
+  call, so waking a caller lets a stale reply forge an answer to a later one), corroborated verbatim
+  by L4Re's own timeout warning. Prior art read from primary sources: seL4's `suspend` = `cancelIPC`
+  + `Inactive`, Mach's abort-versus-abort-safely split, L4's `ex_regs` cancel flag, Zircon deleting
+  thread killing outright in RFC-0007, QNX unblocking a REPLY-blocked client on server death, and why
+  Linux had to invent `TASK_KILLABLE`. Starts where notes/hung-component.md's case (c) stopped.
 - [Supervision: a thread's death becomes a message](supervision.md): milestone 22's fault endpoint; §32's `Endpoint::REAP` lets a supervisor collect a corpse without being able to build one
   (DECISIONS §26). The kernel is the only witness to a fault, so it delivers a five-word message
   (event, tid, pc, addr, reserved) to the supervision endpoint a thread was spawned holding; the
