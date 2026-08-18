@@ -1,0 +1,15 @@
+[package]
+name = "timetable"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The whole point of the crate. An entry's command is checked by **the same function the shell
+# checks a prompt line with**, so "a scheduled entry is a grant" is one call rather than a second
+# implementation that could drift. `version` is required beside `path`: cargo-deny reads a
+# path-only dependency as a wildcard, and `user` depends on this crate.
+grant_plan = { version = "0.1.0", path = "../grant_plan" }

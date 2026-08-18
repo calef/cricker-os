@@ -246,6 +246,7 @@ fs_proto	1	a directory capability's child never exceeds its parent, at any depth
 cred_proto	4	no request word reads outside the page; nothing but MATCH authenticates
 mdns_proto	21	the name decoder terminates and stays in bounds on every byte string
 component_plan	10	no wiring grants a right its declaration did not ask for
+timetable	5	the scheduler's fire arithmetic: strictly forward, minimal, and a stall costs one fire
 TABLE
 )"
 

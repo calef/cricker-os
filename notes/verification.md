@@ -638,7 +638,7 @@ script/verify
 
 Self-installs Kani on first run (its own nightly toolchain and a CBMC backend, a minute of
 download), then runs `cargo kani` over every crate carrying harnesses:
-**124 harnesses** <!--count:kani-harnesses--> **across 22 crates** <!--count:harness-crates-->. (This line said 67 for
+**129 harnesses** <!--count:kani-harnesses--> **across 23 crates** <!--count:harness-crates-->. (This line said 67 for
 a while after it was 69, then "a few minutes" for a month after that stopped being true, then 107
 after it was 119. Both counts now carry a `<!--count:-->` marker and `script/lint` re-derives them
 from the tree on every build, so they cannot drift again; the timing below is still a dated
