@@ -7,7 +7,8 @@
 # lot of memory per IPC evicts the *application's* working set, so the cost shows up as capacity
 # misses spread through the workload instead of as time in the kernel. L4 was written against that,
 # and seL4 keeps a hand-maintained fastpath for the same reason. notes/benchmarks.md has the full
-# argument, the frontier cache sizes it is measured against, and the target.
+# argument, the frontier cache sizes it is measured against, and the target;
+# design/roadmap/132-the-fastpath-footprint.md is the milestone that owns this gate.
 #
 # **What this measures**: an UPPER BOUND on the instruction footprint of an IPC round trip, in two
 # parts, because they are two different quantities and averaging them would hide both.

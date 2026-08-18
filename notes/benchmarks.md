@@ -1132,6 +1132,9 @@ cache pollution is what Mach actually charged its users.
 
 ### Tracking it: `script/fastpath-footprint`, built 2026-08-18
 
+*Milestone 132 owns this gate; design/roadmap/132-the-fastpath-footprint.md carries the reasoning,
+the BUGS and the trigger that would turn the gap below into scheduled work.*
+
 The paragraph this replaces proposed a gate and named the thing blocking it: **which symbols the hot
 path is**, given assembly with no symbol sizes and inlined callees with no symbols at all. That
 question is answered below and the gate exists.
