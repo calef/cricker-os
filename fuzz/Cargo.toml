@@ -19,7 +19,24 @@
 # graph nothing ships. None of them enter the kernel, `user`, or any binary that boots.
 
 [package]
-name = "nife_fuzz"
+# `fuzz`, matching the directory, because AGENTS.md's table says a directory holding a Rust package is
+# named exactly as the package, and **the directory is the fixed half here**: `cargo-fuzz` finds it by
+# convention (its own help calls it "the fuzz directory", `--fuzz-dir` defaults to `fuzz`, and
+# `cargo fuzz init` creates it), and `script/fuzz` invokes the tool with no `--fuzz-dir`. So the name
+# follows the directory rather than the other way round.
+#
+# It was `nife_fuzz` until 2026-08-18, minted by milestone 120's `cricker` sweep rather than chosen.
+# calef retired the prefix on the evidence: of fifty-odd package names in this tree exactly three
+# carry `nife`, and two of those are `nifefs` and `nifefs_roundtrip`, where `nifefs` is a proper noun
+# (a filesystem format, like `redoxfs`) rather than a prefix. The root-level packages are `kernel`,
+# `user`, `xtask` and `fs_server`: inside a repository called nife, prefixing a package with `nife`
+# is what the context already supplies.
+#
+# **Do not "improve" this to something more distinctive.** A generic word is right here for the reason
+# `kernel` and `user` are right: this name appears in one file, and position supplies the meaning.
+# The crates in `crates/` are the opposite case, which is why `compose`, `measure` and `dma_validate`
+# were renamed away from generic words and this one is not.
+name = "fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
