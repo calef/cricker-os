@@ -214,6 +214,22 @@ impl Renderer {
         self.over
     }
 
+    /// **Is the renderer still inside a fenced code block?**
+    ///
+    /// True at the end of a document means the document opened a fence and never closed it, which
+    /// is either a defect in the document or a defect in this renderer, and for three weeks it was
+    /// the second: a fence opened inside a block quote could not be closed at all. Every page in
+    /// this repository closes its fences, so the corpus test asserts this is false for all of them,
+    /// which is the guard a subsequence check cannot be. See this crate's `BUGS`.
+    ///
+    /// Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-18 and not put to
+    /// calef. It is a question about the renderer's state and reads as one at the call site;
+    /// `in_code` was the alternative and loses the word "unclosed", which is the whole reason a
+    /// caller asks.
+    pub fn unclosed_fence(&self) -> bool {
+        self.fence.is_some()
+    }
+
     /// Take input bytes and write whatever output they completed.
     ///
     /// Any framing is fine: one byte at a time and the whole document at once produce identical

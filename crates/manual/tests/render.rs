@@ -315,7 +315,33 @@ fn every_character_survives() {
                 .filter(char::is_ascii_alphanumeric)
                 .map(|c| c.to_ascii_lowercase())
                 .collect();
-            let have: Vec<char> = plain(&src, 4000)
+            // **No page ends inside a fence.** Every page in this repository closes the fences it
+            // opens, so a renderer that thinks otherwise at the end of one is wrong about the
+            // renderer rather than about the page.
+            //
+            // It is a **partial** guard and the limit is worth knowing, because it was measured
+            // rather than assumed. A renderer stuck in code mode still emits every character
+            // verbatim, so the subsequence check below cannot see it at all; this one sees it only
+            // if nothing later in the page happens to close the stuck fence. Reverting the
+            // quoted-fence fix leaves notes/manual.md ruined from its own worked example onward and
+            // **this assertion still passes**, because a bare closing fence three sections later
+            // matches. `a_fence_inside_a_block_quote_closes` is the guard; this is a cheap
+            // invariant that catches the case where the stuck fence is the last one.
+            let mut out = Buf(Vec::new());
+            let mut r = Renderer::new(Style {
+                width: 4000,
+                color: false,
+            });
+            r.feed(src.as_bytes(), &mut out);
+            r.finish(&mut out);
+            assert!(
+                !r.unclosed_fence(),
+                "{}: the renderer ended inside a code fence",
+                path.display()
+            );
+
+            let have: Vec<char> = String::from_utf8(out.0)
+                .unwrap()
                 .chars()
                 .filter(char::is_ascii_alphanumeric)
                 .map(|c| c.to_ascii_lowercase())

@@ -5777,7 +5777,7 @@ fn shell_check() -> bool {
 /// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
 /// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
 /// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
-const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
+const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 55] = [
     ("echo hello world | wc", &["1 2 12"]),
     ("echo hello world > gate.txt", &[]),
     ("wc < gate.txt", &["1 2 12"]),
@@ -5808,20 +5808,35 @@ const SHELL_CHECK_SCRIPT: [(&str, &[&str]); 52] = [
     // And `caps` says which file and how, which is the honest half: the shell reads it and streams
     // it in, so what the child holds is an endpoint and not a capability naming the disk.
     ("caps wc gate.txt", &["input    gate.txt"]),
-    // **Milestone 40 at the same interface, and only this much of it.** `doc` is in the image, is
-    // spawnable, and declares that it reads a stream, so bare `doc` is refused at the prompt before
-    // anything is spawned, exactly as `wc` is and for the same reason: a viewer that could open the
-    // page it renders could open any page.
-    //
-    // What is deliberately NOT here is `doc gate.txt`, and the reason is a shell limitation this
-    // lane found by typing it rather than by reading. `swish` sends a spawned stage its **whole**
-    // input and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a
-    // program that writes while it is still reading blocks against a shell that is still writing.
-    // `wc` never meets it because it produces nothing until end of stream. Both workarounds fail
-    // for a second reason: neither `doc gate.txt | wc` nor `doc gate.txt > page.txt` delivers the
-    // named file to the stage, and each answers `0 0 0`, which is the viewer rendering an empty
-    // input. See notes/manual.md; showing a document at this prompt is a lane of its own.
+    // **Milestone 40 at the same interface.** `doc` is in the image, is spawnable, and declares that
+    // it reads a stream, so bare `doc` is refused at the prompt before anything is spawned, exactly
+    // as `wc` is and for the same reason: a viewer that could open the page it renders could open
+    // any page.
     ("doc", &["name a file"]),
+    // **The named file reaches the viewer and comes back rendered**, which two of this gate's own
+    // comments said it did not until 2026-08-18. Both halves of that were fixed elsewhere and the
+    // record was never corrected: the input operand now comes off the plan rather than off the
+    // `Line` (`user/src/swish.rs`, the same fix `wc gate.txt | wc` above pins), and
+    // `MAX_OUTPUT_CHUNKS` is 4096 rather than the 32 that would have truncated a page to 512 bytes.
+    //
+    // The numbers are the assertion and not decoration. `gate.txt` is 2 lines, 4 words, 24 bytes
+    // (`wc gate.txt`, above). What comes back is **1 line, 4 words, 26 bytes**: the two source
+    // lines are one paragraph re-flowed to one output line, and the two bytes are the body indent.
+    // A viewer handed an empty stream would answer `0 0 0`, which is what this line answered when
+    // the operand was being dropped, so the count is what separates rendering from silence.
+    ("doc gate.txt | wc", &["1 4 26"]),
+    // **And the line a person actually wants is still refused, honestly.** `doc gate.txt` on its
+    // own would make this shell both the writer and the reader of one line, and it has one wait
+    // point; the refusal names the fix rather than hanging, which is the refusal Unix cannot
+    // produce. See `grant_plan::check_chain` and notes/manual.md: closing this needs a place for
+    // the viewer's output to go that is not the shell, and that is a spawn-protocol decision.
+    ("doc gate.txt", &["writes while it reads"]),
+    // **The negative control on the viewer itself**, and it is the whole milestone in one screen: a
+    // documentation viewer is exactly the program a reader expects to go and fetch things, and this
+    // one is handed a stream. `caps` prints what would be granted before anything is spawned, and
+    // there is no file capability, no directory and no filesystem endpoint in it. The manifest is
+    // byte-identical to `wc`'s, which is why the assertion is the same string.
+    ("caps doc gate.txt", &["input    gate.txt"]),
     // **Milestone 40 phase 2, at the same interface**: the documentation store is installed, and a
     // search of it answers with pages a person can then open.
     //

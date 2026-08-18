@@ -61,6 +61,42 @@ emphasis, and a closer must not be preceded by a space.
 corpus, many full of the exact characters the other rules hunt for. If that ordering were wrong,
 `*ptr` inside backticks would open emphasis and eat the rest of the paragraph.
 
+### The bug the corpus test could not see, and the honest filter that kept it findable
+
+**A fenced code block opened inside a block quote never closed**, from phase 1 until 2026-08-18. The
+closing test ran against the raw line, so this:
+
+> A transcript quoted from somewhere else, with its own fence inside the quote:
+>
+> ```text
+> $ doc glob.md | wc
+>   1 4 26
+> ```
+>
+> and prose after it, which used to render as code.
+
+left the renderer in code mode to the end of the document. One quoted transcript misrendered every
+line after it.
+
+**`every_character_survives` could not find it**, and the reason is worth keeping: verbatim output
+loses no characters, so a page rendered entirely as code still passes a subsequence check. What the
+test *did* see was the opening fence's info string going missing, because its filter excluded a
+fence by looking for backticks after `trim_start` and a quoted fence does not start with one. That
+is the renderer being **right** about one line inside a page it was then ruining.
+
+The filter was left wrong on purpose, with a `BUGS` comment saying why: widening it would have
+silenced one false failure by hiding three hundred misrendered lines, and nobody had answered
+whether the renderer kept its quote state across a nested fence. It did not. So the answer came
+first and the filter second, which is the order that entry existed to enforce.
+
+**And the corpus test still cannot guard it**, which was measured rather than assumed. Reverting the
+fix leaves this very page ruined from the block above onward, and `every_character_survives` passes:
+verbatim output loses no characters, and `Renderer::unclosed_fence` (added here, and the strongest
+thing the corpus check can assert) misses it too, because a bare closing fence three sections later
+matches the stuck one and lets the renderer out. A unit test is the guard. The lesson generalises
+past this bug: **a subsequence check proves nothing was dropped and nothing about what was ruined**,
+so a renderer wants both kinds of test and this one had only the first.
+
 ## Installed
 
 **A doc bundle is a package's pages plus its index shard, installed as a unit.** `doc/<bundle>/` in
@@ -249,29 +285,53 @@ doc: reads an input stream: name a file, redirect with '<', or pipe into it
 
 ## BUGS
 
-- **`doc <page>` on its own deadlocks at the interactive prompt.** Found by running it, and it is a
-  property of the shell rather than of the viewer. `swish` sends a spawned stage its **whole** input
-  and only then drains that stage's output, and `sink_proto` is a rendezvous `SEND`, so a program
-  that writes while it is still reading blocks against a shell that is still writing. `wc` never
-  meets this because it produces nothing until end of stream; a renderer cannot do that without
-  holding the whole document, which is exactly the memory grant this design exists without. So `doc
-  page.md | wc` and `doc page.md > out.txt` work and `doc page.md` hangs.
+- **`doc <page>` on its own is refused, and the refusal names the fix.** It used to deadlock; that
+  was true when phase 1 shipped and stopped being true when milestone 50's chain check landed, and
+  this entry said it anyway until 2026-08-18. What happens now is
+  `grant_plan::check_chain` answering before anything is spawned:
 
-  `MAX_TEXT_CHUNKS = 32` in `user/src/swish.rs` is the second half of it: even with no deadlock the
-  prompt would print only the first 512 bytes of a rendered page. **A shell that can show a document
-  is a lane of its own**, and it is a scheduling change (drain while writing) rather than a
-  capability one.
-- **Neither workaround for that deadlock delivers the file.** `doc gate.txt | wc` and
-  `doc gate.txt > page.txt` both run and both answer `0 0 0`, which is the viewer rendering an
-  *empty* input: the named file reaches a stage only on the plain `doc gate.txt` path, the one that
-  deadlocks. So there is currently **no line a person can type that shows a rendered page**, and the
-  boot gate asserts only what is true: `doc` is in the image, is spawnable, and is refused at the
-  prompt when given no stream.
+  ```text
+  $ doc glob.md
+  refused
+    doc: writes while it reads, and this shell can only wait on one thing at a time: give it a
+    reader that is not this shell, as in '| wc'
+  ```
 
-  All three of these are the shell, not the viewer, and they are one lane: teach `swish` to drain a
-  stage while it is still writing to it, raise `MAX_TEXT_CHUNKS`, and carry the file source into a
-  pipeline and a redirection. The renderer underneath is proven on 100+ real pages by
-  `every_character_survives` and does not change.
+  The constraint underneath is the kernel's rather than the shell's, and it is worth reading
+  before reaching for a scheduling fix. A process has **one wait point**: `SEND` blocks until a
+  receiver takes the message, `RECV` blocks until one arrives, and there is no select and no timed
+  wait. So a shell feeding a chain cannot also be receiving from it, and **no interleaving schedule
+  fixes it**: alternating one send with one receive deadlocks whenever the stage reads twice before
+  it writes, and the other way round deadlocks whenever it writes twice before it reads. The shell
+  cannot know which, because the whole point of the sink contract is that neither end knows anything
+  about the other.
+
+  So the fix is not "drain while writing", which this note used to prescribe. It is **somewhere for
+  the viewer's output to go that is not this shell**, and the tree already has that thing:
+  `terminal_sink_caretaker`, the terminal's own sink adapter, which is where a declared second
+  stream goes by default with no `2>` on the line. Handing it a tail stage's *output* slot is a
+  spawn-protocol decision rather than a shell change, and notes/pipes.md has been carrying it as an
+  open question since milestone 50: *"a shell that wanted a program to print straight to the screen
+  rather than through its own result endpoint could hand it over, and would lose the ability to
+  redirect that program at all."* That trade is the milestone's remaining fork. See
+  **Where this goes next**.
+- **`doc <page> | wc` and `doc <page> > out.txt` deliver the file now.** Both
+  answered `0 0 0` when phase 1 measured them, because a pipeline's head was wired off the `Line`,
+  which carries no `<`, so the planned input operand was dropped and the stage counted an empty
+  stream. That was fixed in `user/src/swish.rs` (the head's input comes off the plan now) and the
+  fix is pinned at the real prompt on both architectures:
+
+  ```text
+  $ wc gate.txt
+    2 4 24
+  $ doc gate.txt | wc
+    1 4 26
+  ```
+
+  Two source lines are one paragraph re-flowed to one output line, and the two extra bytes are the
+  body indent, so the counts are what separate a rendered page from silence. `MAX_TEXT_CHUNKS = 32`
+  was the other half of this entry and is also gone: the shell drains `MAX_OUTPUT_CHUNKS = 4096`
+  messages, which is 64 KiB rather than 512 bytes.
 - **No pager, and the reason is authority rather than effort.** Paging needs a keypress; a keypress
   needs `line_editor::proto::OP_READLINE`; and that opcode rides on the terminal endpoint whose read
   side *is* the keyboard. The spawn protocol has no way to hand a child the right to read one line

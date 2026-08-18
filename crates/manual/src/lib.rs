@@ -83,8 +83,10 @@
 //!   characters; what it found was the *opening* fence's info string missing from a page that then
 //!   rendered wrong for three hundred lines, and the filter that hid the symptom was left in place
 //!   on purpose until somebody answered whether the renderer kept quote state across a nested
-//!   fence. It did not. `a_fence_inside_a_block_quote_closes` and the worked example in
-//!   notes/manual.md hold it now.
+//!   fence. It did not. `a_fence_inside_a_block_quote_closes` is what holds it now, and it has to
+//!   be a unit test: the corpus check cannot see this class of failure at all, because verbatim
+//!   output loses no characters. [`Renderer::unclosed_fence`] catches the case where the stuck
+//!   fence is the last one in the page, which is a cheap invariant rather than the guard.
 //! - **A lazy continuation inside a quoted fence keeps its quote markers.** A line inside
 //!   a quoted fence that drops its own marker is taken verbatim, marker and all, because the
 //!   alternative is guessing which of the two readings the author meant. CommonMark says the fence ends; this
