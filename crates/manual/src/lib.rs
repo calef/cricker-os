@@ -89,7 +89,7 @@
 //!   fence is the last one in the page, which is a cheap invariant rather than the guard.
 //! - **A lazy continuation inside a quoted fence keeps its quote markers.** A line inside
 //!   a quoted fence that drops its own marker is taken verbatim, marker and all, because the
-//!   alternative is guessing which of the two readings the author meant. CommonMark says the fence ends; this
+//!   alternative is guessing which of the two readings the author meant. `CommonMark` says the fence ends; this
 //!   renderer says the line is code. Nothing in this repository writes one.
 //! - **Setext headings (`Title` over `=====`) are not recognised.** Nothing in this repository uses
 //!   one, and `---` on its own line is far more often a thematic break here, so treating it as a

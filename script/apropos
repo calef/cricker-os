@@ -1,0 +1,48 @@
+#!/bin/sh
+# script/apropos: search every document in this repository and say where each one lives.
+#
+#   script/apropos capability          what this tree says about capabilities, strongest first
+#   script/apropos syscall             ... and where the syscall numbers actually are
+#
+# Milestone 40 built a documentation service for the *guest*: an inverted index over markdown, a
+# reader that merges shards, and an `apropos` builtin at the nife prompt. That index was pointed at
+# the six pages the filesystem image installs, because a guest can only search what it holds. A
+# person with a checkout has no such limit, so this points the same code at all of it: 512 pages,
+# five megabytes, every note, decision, roadmap block and repository-root document, plus every
+# crate's and program's own module header.
+#
+# **Why it exists**, and it is a finding rather than a nicety. Milestone 117 has run three strangers
+# at this tree with no help. What none of them could do is on the record in notes/stranger-test.md:
+# reach notes/net.md, notes/capabilities.md or ANY design/decisions/ file by following the tree
+# while doing ordinary work, or find crates/abi/src/lib.rs, which is four syscall numbers and the
+# whole design on one screen. None of those is hidden; nothing a person would type led to them.
+# This is the thing to type. It is also why the crate and program headers are indexed: the document
+# a reader wants about `abi` *is* that file's header, and no markdown page was ever going to fix it.
+#
+# It is the same index and the same reader as the guest's, on purpose (`manual::index::build` and
+# `manual::index::search`), so a defect in the layout shows up in both places and a fix lands in
+# both. What differs is what a result names: at the nife prompt a result names a page in the store
+# you can open there, and here it names a path in this repository.
+#
+# BUGS
+#
+# - **Whole words only, and no stemming.** `syscall` and `syscalls` are two terms, so a search for
+#   one does not find the other. `manual::index::normalize` is what decides that and it is the
+#   guest's tokeniser, which has to run with no allocator.
+# - **Ranking is occurrence count and nothing else**, so a long page mentioning a word in passing
+#   can outrank a short page about it. See `crates/manual/src/index.rs`'s BUGS.
+# - **Sixteen results, always**, because that is the guest reader's fixed table
+#   (`manual::index::RESULTS_MAX`) and this uses the guest reader. The line under the results says
+#   how many pages matched in total.
+# - **It rebuilds the whole index on every run** (about a second). There is no cache, because a
+#   cache that can be stale is worse here than a second of work.
+#
+# Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-18 and not put to calef.
+# It is deliberately the same word as the builtin at the nife prompt, which is the claim: one verb,
+# one index, two places you can be standing. `script/search` and `script/docs` were the
+# alternatives and both lose that; `apropos` also carries the Unix meaning a reader already has,
+# which AGENTS.md's naming rule says is the best name available.
+
+set -e
+cd "$(dirname "$0")/.."
+exec cargo xtask apropos "$@"

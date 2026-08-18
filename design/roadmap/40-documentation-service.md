@@ -1,14 +1,19 @@
 # 40. Documentation as a system service: searchable, rendered, and installed by packages
 
-**Status: PARTIAL.** Phases 1 and 2 are built and the status said NOT-STARTED until calef noticed
-the tree had moved past it (2026-08-16, the week's fifth §76-shaped misrecording). What exists:
-`crates/manual` (a streaming markdown renderer, the byte layout of a search index, and the query
-that reads one, all pure and host-tested in `tests/render.rs`), and `user/src/doc.rs`, the viewer
-program, which the shell can spawn as `Prog::Doc`. The renderer was written against
-`line_editor`'s contract rather than `pulldown-cmark`, which the block's own text anticipated as
-the alternative and which the crate's header records.
+**Status: PARTIAL.** Phases 1 and 2 are built; phase 3 is not started and is the only thing left
+that this block calls a phase. The status said NOT-STARTED until calef noticed the tree had moved
+past it (2026-08-16, the week's fifth §76-shaped misrecording), and **it did not move on 2026-08-18
+either**, which is the honest answer for a lane that fixed a renderer, corrected a record and built
+a front door without starting the phase that is missing.
 
 **Gate: NONE.** Its one stated prerequisite, milestone 31's phase 2 per-file grants, is built.
+
+What exists: `crates/manual` (a streaming markdown renderer, the byte layout of a search index, and
+the query that reads one, all pure and host-tested in `tests/render.rs`), `user/src/doc.rs`, the
+viewer program, which the shell can spawn as `Prog::Doc`, the store the image installs, `apropos` at
+the nife prompt, and `script/apropos` over the whole repository. The renderer was written against
+`line_editor`'s contract rather than `pulldown-cmark`, which the block's own text anticipated as the
+alternative and which the crate's header records.
 
 **Phase 2 landed 2026-08-16.** The store is built on the host from the `DOC_BUNDLES` table
 (`cargo xtask manual`), installed into the filesystem image as `doc/<bundle>/` with `doc/bundles`
@@ -19,13 +24,46 @@ capabilities**, which is why it may be a builtin: a searching *program* would ha
 whole store to read every shard in it, which is more authority than the answer needs. See
 notes/manual.md.
 
-**What remains, and phase 1 is not wholly done either.** There is **no pager**, and `doc.rs`'s
-header records why in terms this project cares about: paging needs a keypress, so it needs input
-authority the viewer deliberately does not hold. That is a design point rather than a gap to
-close carelessly. **Nor is there yet a line a person can type that renders a page**, which is now
-the biggest gap and is three shell limitations rather than a viewer one (notes/manual.md's `BUGS`).
-It matters more since phase 2: `apropos` hands a reader a page name and the next thing they type
-does not work. Phase 3, the graphical viewer, waits on the display ladder as the block says below.
+**2026-08-18: the record was the defect, twice, and both are fixed.**
+
+*In the renderer.* A fenced code block opened inside a block quote **never closed**: the closing
+test ran against the raw line, so a quoted closing fence never matched its own opener and every line
+to the end of the document rendered as quoted code. It survived because the corpus test cannot see
+this class of failure at all (verbatim output loses no characters, and the check is a subsequence),
+and because the one symptom it *could* see had been quarantined behind an honest `BUGS` comment
+that refused to widen the filter until somebody answered the question. Answering it found the bug.
+That refusal is the mechanism working, and it is worth reading before the next one is waved through.
+
+*In the prose.* Three of notes/manual.md's `BUGS` entries described a system that no longer existed:
+`doc <page>` was said to deadlock (it is refused, by `grant_plan::check_chain`, with a sentence that
+names the fix), `doc <page> | wc` was said to render an empty stream (the head stage's input comes
+off the plan now), and `MAX_TEXT_CHUNKS = 32` was said to truncate a page to 512 bytes (it is
+`MAX_OUTPUT_CHUNKS = 4096`). Two of the three were closed by other lanes and nobody came back. The
+correction is three lines in `script/shell-check` rather than three paragraphs, because this is the
+milestone least allowed to describe a system that is not there.
+
+**`script/apropos`, and it is milestone 117's finding rather than a nicety.** Three stranger runs
+have measured what a newcomer cannot reach by following this tree: `notes/net.md`,
+`notes/capabilities.md`, **any** `design/decisions/` file, and `crates/abi/src/lib.rs`, which is
+four syscall numbers and the whole design on one screen. None of them is hidden; nothing a person
+would type led to them. This milestone already owned the machinery, pointed at the six pages a guest
+can hold, so it is now also pointed at the 512 pages a checkout holds: the same
+`manual::index::build` and `manual::index::search`, one shard per part of the tree, and a result
+that names a repository path rather than a store location. Crate and program **module headers** are
+indexed as pages, which is what makes `crates/abi/src/lib.rs` findable at all: the document a reader
+wants about the ABI *is* that file's header, and no markdown page was ever going to fix it.
+
+**What remains, and it is now one fork rather than a list.** There is still **no line a person can
+type that renders a page at the prompt**, and the reason is not the shell's scheduling. A process
+has one wait point, so a shell that feeds a chain cannot also read from it, and no interleaving
+fixes that. What would fix it is somewhere for the viewer's output to go that is **not the shell**,
+and the tree already has that thing: `terminal_sink_caretaker`, the terminal's own sink adapter,
+where a declared second stream goes by default. Putting it in a tail stage's *output* slot is a
+spawn-protocol decision, it is the same decision the pager and the colour bit need, and
+notes/pipes.md has been holding it open since milestone 50: *"a shell that wanted a program to print
+straight to the screen rather than through its own result endpoint could hand it over, and would
+lose the ability to redirect that program at all."* Phase 3, the graphical viewer, waits on the
+display ladder as the block says below.
 
 **In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
