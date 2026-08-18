@@ -21,8 +21,17 @@
 # extracted after the VisionFive 2's fourth bench stop; lock-based, so what loom searches there is
 # the interleaving of critical sections rather than memory orderings), and `crates/canary_gate`
 # (the corruption canary's arm/check/disarm serialization, extracted after its two-flag spelling
-# raced; the only retrofit so far whose bug was in the protocol itself). The note carries the
-# survey and each model's honest limits.
+# raced; the only retrofit so far whose bug was in the protocol itself), and `crates/regions` (the
+# untyped region claim, the fourth retrofit and the first on the memory-reclamation path, added by
+# milestone 135 after a real double free). The note carries the survey and each model's honest
+# limits.
+#
+# **`crates/regions` carries the falsification witness**, which is the one harness in this script
+# that asserts a protocol is BROKEN: `the_pre_fix_protocol_double_frees_and_this_model_finds_it`
+# reconstructs `untyped::destroy` as it stood before pull request #316 and passes only when loom
+# finds the double free in it. A model that cannot fail proves nothing, and this tree's standard is
+# that an assertion nobody has watched fail is not a gate (milestone 62); that harness is what keeps
+# the standard met without anyone having to remember to break the code by hand.
 #
 # **Loom models C11, not ARM and not RISC-V.** It narrows the gap rather than closing it: a bug it
 # finds is real, and a clean run is not a proof about the silicon. Milestone 81's HVF leg is the
@@ -48,4 +57,4 @@ cd "$(dirname "$0")/.."
 # optimised one is seconds. Nothing here depends on debug assertions.
 echo "==> loom: the hand-rolled atomic protocols, every interleaving"
 RUSTFLAGS="--cfg loom -D warnings" cargo test --release \
-    -p steal_request -p clock_proto -p wake_handshake -p canary_gate --lib "$@"
+    -p steal_request -p clock_proto -p wake_handshake -p canary_gate -p regions --lib "$@"

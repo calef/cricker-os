@@ -3,7 +3,9 @@
 **Status: IN-PROGRESS** on `milestone/135-loom-region-claim`. Raised 2026-08-18 out of the double-free
 fix (pull request #316), which closed the bug and said plainly which half of it was not gated.
 
-**Gate: NONE.**
+**Gate: NONE.** Every ingredient exists: loom is already a `cfg(loom)` dependency of four crates,
+`script/interleaving-check` is the runner, and `crates/regions` is already the host-testable home for
+this subsystem's logic. The protocol to model is the one pull request #316 merged.
 
 ## In brief
 

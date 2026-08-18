@@ -54,7 +54,14 @@
 //! `slots`, `caps`, `frames`); three of those six were settled on 2026-08-01 and this one was not.
 //! Nothing records who chose it.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and `script/lint`'s
+// -D warnings keeps it that way. See notes/doc-coverage.md for the crates that are not there yet.
+#![warn(missing_docs)]
+
+mod table;
+
+pub use table::{DestroyClaim, NO_PARENT, RegionTable};
 
 /// The result of carving `want` pages off a parent whose budget is `parent_pages` and whose spent
 /// watermark is `parent_watermark`. `Some(new_watermark)` on success (the caller carves the run
@@ -81,7 +88,10 @@ pub enum DestroyOutcome {
     /// A **child** region: return its pages to the parent, never to the allocator. `unbump` is how
     /// many pages to give back to the parent's watermark: the child's page count when it sits at the
     /// top (LIFO, the run is re-splittable), or `0` when it does not (a hole until the parent dies).
-    ReturnToParent { unbump: u64 },
+    ReturnToParent {
+        /// How many pages to give back to the parent's watermark.
+        unbump: u64,
+    },
 }
 
 /// Decide what destroying a region does. `pinned` and `children` gate it; `is_root` distinguishes a
