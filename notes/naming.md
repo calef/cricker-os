@@ -680,6 +680,21 @@ by mistake.
   first and the vendored file not at all, and the gate caught it. Edit both, in the same commit.
 - **The measured-boot manifest is still `target/init-measure-<arch>.txt`.** It is a build artifact
   name, not a crate reference; `kernel/build.rs` reads it and turns it into `TRUST_ROOT`.
+- **`script/lint`'s naming worklist under-counts by exactly the `provisional` names, and then names
+  the command that prints the other number.** Found 2026-08-18 by milestone 117's fourth stranger,
+  while walking `notes/adding-a-program.md` with a program whose name it had marked provisional
+  because both `AGENTS.md` and that page tell a newcomer to. Two summary lines compute the same
+  quantity differently: the `--check` path prints `len(recorded) + len(unrecorded)` and the default
+  listing prints `len(provisional) + len(recorded) + len(unrecorded)`. So the gate says
+  `names: 82 still want calef (script/names --unratified)` and `script/names --unratified` answers
+  `UNRATIFIED (86 of 162)`. The census line above it drops them too: `76 ratified, 15 recorded, 67
+  unrecorded` sums to 158 of 162, and a reader who adds the three numbers up is told four names do
+  not exist. **`provisional` is the state whose author has already said the name is wrong**, which
+  §89 calls the shortest conversation available, so under-reporting it hides the part of the
+  worklist worth reading first. Recorded rather than fixed because the run that found it was
+  measuring, not repairing, and because which number the gate should print is a decision about what
+  the worklist is for.
+
 - **Note filenames did not move**, and that is the rule rather than an oversight:
   [fs-server.md](fs-server.md), [shell.md](shell.md), [shell-navigation.md](shell-navigation.md) and
   [line-discipline.md](line-discipline.md) are markdown, so they stay lowercase-hyphenated even
