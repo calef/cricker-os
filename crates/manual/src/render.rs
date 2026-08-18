@@ -259,12 +259,20 @@ impl Renderer {
         }
 
         if let Some((ch, len)) = self.fence {
-            let (i, _) = indent_of(&self.line[..end]);
-            if is_closing(&self.line[i..end], ch, len) {
+            // **The quote markers come off before anything looks at the line**, and forgetting that
+            // was a live defect until 2026-08-18: a fence opened inside a block quote was closed by
+            // matching [`is_closing`] against the raw line, so a quoted closing fence never matched
+            // its own opener and every line to the end of the document rendered as quoted code. The
+            // corpus test could not see it, because verbatim output loses no characters; what it
+            // saw was the *opening* fence's info string going missing from a page that then
+            // rendered wrong for three hundred lines. See this crate's `BUGS`.
+            let start = past_quote(&self.line[..end], self.quote);
+            let (i, _) = indent_of(&self.line[start..end]);
+            if is_closing(&self.line[start + i..end], ch, len) {
                 self.fence = None;
                 self.gap = true;
             } else {
-                self.code_line(end, out);
+                self.code_line(start, end, out);
             }
             return;
         }
@@ -383,7 +391,8 @@ impl Renderer {
         self.gap = true;
     }
 
-    fn code_line(&mut self, end: usize, out: &mut impl Sink) {
+    /// One line inside a fence, from `start` (past any block-quote markers) to `end`.
+    fn code_line(&mut self, start: usize, end: usize, out: &mut impl Sink) {
         self.open_block(out);
         self.margin = CODE;
         self.line_start(out);
@@ -391,8 +400,8 @@ impl Renderer {
         // Verbatim: a code block is the one thing in a document whose line breaks are its meaning,
         // so it is never wrapped and never re-spaced. A line wider than the terminal runs over,
         // which is what every pager does with code too.
-        let vis = visible(&self.line[..end]);
-        out.put(&self.line[..end]);
+        let vis = visible(&self.line[start..end]);
+        out.put(&self.line[start..end]);
         self.col += vis;
         self.close_line(out);
     }
@@ -943,6 +952,36 @@ fn heading_at(s: &[u8]) -> Option<u8> {
     } else {
         None
     }
+}
+
+/// Step past up to `depth` block-quote markers, leaving whatever indentation follows the last one.
+///
+/// The classifier's own stripping loop eats that trailing indentation as well, because a quoted
+/// paragraph's indent means nothing. **Inside a fence it means everything**, so this stops at the
+/// marker and hands the code line back with its own leading spaces intact.
+///
+/// `depth` is the quote level the fence opened at, so an unquoted fence (`depth == 0`) is untouched
+/// and a code line that genuinely begins with a quote character (a diff, a mail quote, a shell
+/// transcript) keeps it.
+fn past_quote(s: &[u8], depth: usize) -> usize {
+    if depth == 0 {
+        return 0;
+    }
+    let (mut i, _) = indent_of(s);
+    let mut taken = 0;
+    while taken < depth && i < s.len() && s[i] == b'>' {
+        i += 1;
+        taken += 1;
+        // One space, the marker's own separator. A second space is the code's indentation.
+        if i < s.len() && s[i] == b' ' {
+            i += 1;
+        }
+    }
+    // **Nothing consumed means nothing to strip**, and returning the indentation would be wrong
+    // rather than merely different: `code_blocks_are_verbatim` pins that a fenced line keeps its
+    // own leading spaces, which is the whole of what verbatim means. A lazy continuation inside a
+    // quoted fence lands here and is taken as it stands.
+    if taken == 0 { 0 } else { i }
 }
 
 /// An opening fence: three or more backticks or tildes.

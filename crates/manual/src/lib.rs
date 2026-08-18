@@ -76,6 +76,19 @@
 //!   output. The longest line in this repository is 1835 bytes (a table row in `notes/scripts.md`),
 //!   which is why the limit is what it is; a document from somewhere else may lose text. The
 //!   renderer records it, so a caller that wants to know can ask [`Renderer::truncated`].
+//! - **A fence inside a block quote closes now, and did not until 2026-08-18.** The closing test
+//!   was matched against the raw line, so a quoted closing fence never matched its own opener and the
+//!   renderer stayed in code mode to the end of the document: one quoted transcript misrendered
+//!   every line after it. The corpus test could not find it, because verbatim output loses no
+//!   characters; what it found was the *opening* fence's info string missing from a page that then
+//!   rendered wrong for three hundred lines, and the filter that hid the symptom was left in place
+//!   on purpose until somebody answered whether the renderer kept quote state across a nested
+//!   fence. It did not. `a_fence_inside_a_block_quote_closes` and the worked example in
+//!   notes/manual.md hold it now.
+//! - **A lazy continuation inside a quoted fence keeps its quote markers.** A line inside
+//!   a quoted fence that drops its own marker is taken verbatim, marker and all, because the
+//!   alternative is guessing which of the two readings the author meant. CommonMark says the fence ends; this
+//!   renderer says the line is code. Nothing in this repository writes one.
 //! - **Setext headings (`Title` over `=====`) are not recognised.** Nothing in this repository uses
 //!   one, and `---` on its own line is far more often a thematic break here, so treating it as a
 //!   heading would misrender 64 real lines to catch zero.
