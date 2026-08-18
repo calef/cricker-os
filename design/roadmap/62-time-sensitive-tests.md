@@ -134,12 +134,31 @@ the instrument that does catch it is run, so **`script/gates` now runs `script/i
 seven seconds for both ISAs, above `script/test` on that script's own cheapest-first rule); CI
 already ran it on every non-documentation change.
 
-**What is now needed to move this block off PARTIAL**, and it is the block's own standard applied to
-itself: a repeat count under load of the tree as it stands, of the same order as the 45 that
-produced the finding. The two assertions cannot fail any more by construction, so what such a run
-would measure is the new quantity this change introduces, the **rate at which the re-arm law goes
-unmeasured**, which nobody has a number for. A first count is recorded in
-notes/load-sensitive-assertions.md; it is smaller than 45 and says so.
+**The first instalment of the evidence, taken the same day** (`script/repeat-under-load -n 18 -s 8`,
+tree `01474c8e`, full table in notes/load-sensitive-assertions.md):
+
+| | 2026-08-17, before | 2026-08-18, after |
+|---|---|---|
+| runs / ISA legs | 45 / 90 | 18 / 36 |
+| 1-min load average, min to peak | 26.1 to 63.0 | **16.2 to 116.6** |
+| red at either dispositioned assertion | 8 legs | **0** |
+| green runs | 36 of 45 | 16 of 18 |
+| re-arm law reported `UNMEASURED` | n/a | **9 of 36 legs, 25%** |
+
+The load was harsher than the run that produced the finding, which is the direction that makes a
+green result mean something. Both reds are a **different** assertion, `smp.rs:1010`'s
+`a_migrated_kernel_thread_keeps_its_hart_pointer`, a new member of the family this block is about:
+it gives 60 migration workers two seconds of counter time to drain and 59 arrived. Its fix is this
+block's own prescription, a budget in delivered guest ticks rather than in counter time
+(`sched::within_ticks` exists), and it wants a lane.
+
+**What is still needed to move this block off PARTIAL.** Eighteen runs is not forty-five, and the
+25% figure is the one that wants the bigger count: it is the cost this disposition introduced, it is
+higher than a reader would assume, and it comes from one host. The candidate fix is identified and
+deliberately not taken here (the quarter-second measurement window is far longer than the law needs,
+and shortening it is not a wider bound because the `assert_eq!` is untouched and the defect fails on
+the first tick), because it is a change justified entirely by a rate and this lane's rate rests on
+18 runs. That is the remaining work, and it is a measurement rather than a build.
 
 ## The migration drain, 2026-08-18: the family's newest member, fixed in the prescribed unit
 

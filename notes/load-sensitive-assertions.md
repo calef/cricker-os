@@ -1299,6 +1299,72 @@ try-lock canary), so there is nothing there for another core to contend on, and 
 the deletion is safe rather than an oversight. **If the tick path ever takes a contended lock, this
 paragraph stops being true**, and neither instrument would notice.
 
+### The disposition's own acceptance run, 2026-08-18: 18 runs, and a new site
+
+The same instrument, on the tree with the disposition applied, because this milestone's rule is that
+a flake is not shown fixed by a green run. `script/repeat-under-load -n 18 -s 8`, tree `01474c8e`,
+2026-08-18 18:56Z to 20:01Z, same eight-core Mac.
+
+**Eighteen is not forty-five and this is a first instalment, not the acceptance evidence.** It is
+recorded because the numbers in it are already decisive about the two assertions and already
+surprising about a third.
+
+| | 2026-08-17, before | 2026-08-18, after |
+|---|---|---|
+| runs / ISA legs | 45 / 90 | 18 / 36 |
+| 1-min load average, min to peak | 26.1 to 63.0 | **16.2 to 116.6** |
+| red at `ticks_arrive_at_the_configured_rate` | 4 legs | **0** |
+| red at `the_handler_keeps_up_when_no_lock_is_held` | 4 legs | **0** (deleted) |
+| green runs | 36 of 45 | 16 of 18 |
+
+**The load was substantially harsher than the run that produced the finding**, which matters
+because it is the direction that makes a green result mean something: the peak was 116.6 against
+63.0, and three of the runs took 311, 333 and 586 seconds against a median of 165. Neither
+dispositioned assertion failed once. That is what was expected, since neither can any more, and it
+is worth stating as a measurement rather than as a deduction because the previous run's expectations
+were wrong twice.
+
+**The number that is new, and it is higher than anyone should assume.** The re-arm law went
+`UNMEASURED` on **9 of 36 ISA legs, 25%**, concentrated entirely in the five slowest runs (4, 5, 8,
+9, 10) and absent from the other thirteen. Both legs reported it together in four of those five,
+which is the ISA symmetry this page keeps finding and the same evidence it always is: a property of
+the host, not of either architecture.
+
+**Twenty-five percent is a real cost and it should not be filed as a success.** At these loads the
+law is checked on three legs in four rather than on four in four, where before it was checked on
+roughly nineteen in twenty and turned the other one red. The obvious candidate fix is available and
+was **deliberately not taken here**: the measurement window is a quarter second, or about 25 tick
+periods, and the law is exact rather than statistical, so it is falsified by the *first* drifting
+tick and a window of three periods would do. A shorter window is not a wider bound (the `assert_eq!`
+is untouched, and the defect fails it on tick one), so §61 does not forbid it. It is refused in this
+lane for a different reason: it is a change whose whole justification is a rate, and this lane's
+rate comes from 18 runs on one host. **It wants its own measurement, and this table is the baseline
+it would be measured against.**
+
+**A new member of the family, found by this run.** Both reds are the same assertion, and it is
+neither of this milestone's two:
+
+```
+[PANIC] panicked at kernel/src/smp.rs:1010:17:
+migration workers never drained (59/60 done)
+```
+
+`a_migrated_kernel_thread_keeps_its_hart_pointer` (riscv64, runs 8 and 9). It spawns 60 migration
+workers and gives them a deadline of **two seconds of counter time** to drain, and 59 of 60 arrived.
+That is this family's shape exactly, and its own comment shows the author walking up to the problem
+and stopping one step short: *"Time-based: an idle hart's yields return at once under §28, so a
+fixed spin count would elapse in no time."* Both halves are right. A yield count is not a duration,
+and a **wall-clock** duration is not one either when the host owns the clock.
+
+The failure direction is positive ("not yet"), so by this page's first diagnostic it is honest load
+sensitivity rather than a wait written against something wider than the property, and the fix is the
+one milestone 62 prescribes by name: a budget in **delivered guest ticks** rather than in counter
+time. `sched::within_ticks` already exists for this. The direction is what makes it correct rather
+than merely different: a descheduled emulator delivers *fewer* ticks per second of wall clock, so a
+tick budget automatically stretches under exactly the conditions that need it, where two seconds of
+counter time does not. **Not fixed here; it wants a lane**, and it is one file this lane did not
+touch.
+
 ## The migration drain, 2026-08-18: a budget denominated in what the guest actually got
 
 The section above found a new member of the family, said what the fix was, and did not take it:
