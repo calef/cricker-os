@@ -225,7 +225,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-nife", "riscv64-unknown-nife"];
 const NIFE_TOOLCHAIN: &str = "nife-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 6;
+const STD_SRC_PATCH_VERSION: u32 = 7;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/nife-farm")
@@ -701,6 +701,26 @@ fn std_patch_dispatch() -> bool {
         &sys.join("env/mod.rs"),
         "cfg_select! {",
         "    target_os = \"nife\" => {\n        mod nife;\n        pub use nife::*;\n    }",
+    ) && patch_after(
+        // paths: `temp_dir`, `split_paths` and `join_paths` (milestone 64). The arm precedes the
+        // `_ =>` unsupported fallback, whose `temp_dir()` is `panic!("no filesystem on this
+        // platform")` and whose `split_paths()` is `panic!("unsupported")`: without this,
+        // `std::env::temp_dir()` aborted the process, which is what `tempfile` reached before it
+        // ever got to its own "not supported" arm. `getcwd`, `chdir`, `current_exe` and `home_dir`
+        // keep refusing, in `sys/paths/nife.rs` rather than by falling through, so one file holds
+        // both halves and a reader meets the reasons together.
+        &sys.join("paths/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"nife\" => {\n        mod nife;\n        use nife as imp;\n    }",
+    ) && patch_after(
+        // process: `getpid` only (milestone 64). Everything else stays the shared `unsupported`
+        // backend, which refuses honestly; `getpid` alone was `panic!("no pids on this platform")`,
+        // so `std::process::id()` killed the program. The arm is spelled as a split `imp` rather
+        // than a whole nife backend because `unsupported.rs` opens with `use super::env::...`, so
+        // it cannot be pulled in through a `#[path]` module the way `sys/fs/nife.rs` does.
+        &sys.join("process/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"nife\" => {\n        #[allow(dead_code)]\n        mod unsupported;\n        mod nife;\n        mod imp {\n            pub use super::nife::getpid;\n            pub use super::unsupported::{\n                ChildPipe, Command, CommandArgs, EnvKey, ExitCode, ExitStatus, ExitStatusError,\n                Process, Stdio, output, read_output,\n            };\n        }\n    }",
     ) && patch_after(
         // io/error has no fallback arm; route nife to the generic backend.
         &sys.join("io/error/mod.rs"),

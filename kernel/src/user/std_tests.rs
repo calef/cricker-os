@@ -430,7 +430,8 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
     instant monotonic ok\n\
     wall clock ok\n\
     entropy ok\n\
-    env ok\n";
+    env ok\n\
+    paths ok\n";
 
 /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
 ///
@@ -449,6 +450,16 @@ pub(super) const EXPECTED: &[u8] = b"hello from std on nife\n\
 /// build failure list showed it, because it compiled. The line asserts three things at once: that
 /// the call returns, that the listing is empty (nothing endows a nife process with variables), and
 /// that `set_var` takes, since that is what `set_var` means on every other platform.
+///
+/// The `paths ok` line is the same finding a third time, and it is why this test grew rather than
+/// a new one appearing. `std::env::temp_dir()`, `std::env::split_paths()` and `std::process::id()`
+/// were all `panic!` in the fallbacks nife had no arm in, so each of them **killed the program**
+/// while compiling perfectly; `tempfile::NamedTempFile::new()` reached the first of them before it
+/// ever got to its own "operation not supported" arm, which is not what the measurement note said
+/// it did. The line asserts the two that now answer (`temp_dir` is the granted directory and
+/// `TMPDIR` steers it; a path list survives a join and a split) and, just as deliberately, the
+/// three that still refuse (`current_dir`, `current_exe`, `home_dir`), so that a later lane cannot
+/// quietly turn a refusal into a fabricated answer.
 ///
 /// The `entropy ok` line is milestone 56's half, and it is the same shape of correction:
 /// `std::random` reached a virtio-rng device, through one endpoint that names no device, and

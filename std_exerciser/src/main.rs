@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, UdpSocket};
+use std::path::PathBuf;
 use std::random::{Rng, SystemRng};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -171,6 +172,65 @@ fn offline_demo() {
         "a removed variable still resolves",
     );
     println!("env ok");
+
+    // **The path half of `std::env`, and `process::id`** (milestone 64, third pass). Every
+    // assertion below used to be unreachable, because three of these calls did not refuse: they
+    // were `panic!` in the shared fallbacks nife fell through to, so a program that asked was
+    // killed. `std::env::temp_dir()`, `std::env::split_paths()` and `std::process::id()` all
+    // compiled perfectly and aborted, which is `env::vars()`'s finding a third time.
+    //
+    // `process::id` is 0 because this system issues no process identifier at all, and 0 is the one
+    // number no Unix assigns to a user process, so it cannot be mistaken for a real one.
+    assert_eq!(
+        std::process::id(),
+        0,
+        "a nife process reported a pid it was never issued",
+    );
+    // `temp_dir` is the directory this process holds, which is the only place a temporary file
+    // could go, and `TMPDIR` steers it exactly as it does on Unix. That variable is the seam
+    // milestone 47's namespace arrives through: nothing seeds it today, so the fallback answers.
+    assert_eq!(
+        std::env::temp_dir(),
+        PathBuf::from("."),
+        "temp_dir is not the granted directory",
+    );
+    unsafe { std::env::set_var("TMPDIR", "scratch") };
+    assert_eq!(
+        std::env::temp_dir(),
+        PathBuf::from("scratch"),
+        "TMPDIR did not steer temp_dir",
+    );
+    unsafe { std::env::remove_var("TMPDIR") };
+    // `join_paths`/`split_paths` are pure string work with no platform in them, which is why the
+    // old `panic!` was indefensible rather than merely unimplemented. Round-tripped, because a
+    // splitter that agrees with nothing is worth less than no splitter.
+    let joined = std::env::join_paths(["a", "b", "c"]).expect("joining three plain names failed");
+    let split: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+    assert_eq!(
+        split,
+        [PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")],
+        "a path list did not survive a join and a split",
+    );
+    assert!(
+        std::env::join_paths(["a:b"]).is_err(),
+        "a segment containing the separator was joined into a list that reads back as two",
+    );
+    // And the refusals that stay refusals, asserted so that a later lane cannot quietly turn one
+    // into a fabricated answer. Each of these can say no in its own signature, and each needs a
+    // namespace to resolve against, which is milestone 47's half of the `File::open` fork.
+    assert!(
+        std::env::current_dir().is_err(),
+        "current_dir answered, so something is fabricating an ambient namespace",
+    );
+    assert!(
+        std::env::current_exe().is_err(),
+        "current_exe answered, but nothing tells a nife process the path it was loaded from",
+    );
+    assert!(
+        std::env::home_dir().is_none(),
+        "home_dir answered, but nobody gave this program a home",
+    );
+    println!("paths ok");
 }
 
 /// The same sanity window `clock_proto::policy` applies, restated here because a std program links

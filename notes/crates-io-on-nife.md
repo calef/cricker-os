@@ -12,15 +12,27 @@ what happened and why.)*
 current-thread runtime, `rayon`, `clap`, `chrono` and `walkdir`. Of the 11 that failed, **eight
 failed on one crate**, and it is not part of `std`.
 
-> **The split was recorded as 35/15 and it is 39/11** (re-derived 2026-08-17, milestone 64's second
-> pass, against the same fifty crates and the tree of that day). Nothing about the tree changed to
-> make it so and no probe changed its answer: the original headline **double-counted the four crates
-> that appear in two failure classes at once**. `zip` and `ring` are in class A *and* class C;
-> `gix-config` and `gix` are in class A *and* class B. Summing the class headings gives
-> 8 + 3 + 3 + 1 = 15, and the distinct crates behind them are eleven. The tables below were right all
-> along and always listed 39 passes; only the sentence over them was wrong, which is why nothing
-> caught it. Take a count from the merged tree, with a pattern you have checked against the real
-> shapes: this note's own BUGS said that about the census and the headline did it anyway.
+> **The split is 43/7 today, and it was 39/11 before `entropy_backend` landed** (re-derived
+> 2026-08-18, milestone 64's third pass, by `script/crate-probes`, which is now the measurement
+> rather than the recipe below). Both numbers are one command apart and both are real: bare
+> `script/crate-probes` gives 43 built and 7 failed, and `script/crate-probes --no-backend` runs
+> the same fifty without this tree's `getrandom` answer.
+>
+> The four crates between them are `rand`, `uuid`, `gix-object` and `gix-actor`, which is exactly
+> class A's remainder, and the second run was checked against those four rather than assumed: all
+> four still stop at `getrandom`'s `compile_error!` without the backend. **So 39 "built with no
+> change at all" and 43 "built against this tree as it ships"**, and the old headline is the first
+> of those, still true and no longer the interesting one. `entropy_backend` is eleven lines and two
+> lines of consuming config; calling that "a change" and 43 crates "not building" was the reading
+> that kept the number down.
+>
+> **The number before that was 35/15, and it was wrong for thirteen days** (corrected 2026-08-17).
+> The headline **double-counted the four crates that appear in two failure classes at once**:
+> `zip` and `ring` are in class A *and* class C; `gix-config` and `gix` are in class A *and* class
+> B. Summing the class headings gives 8 + 3 + 3 + 1 = 15, and the distinct crates behind them are
+> eleven. The tables below were right all along; only the sentence over them was wrong, which is why
+> nothing caught it. Three hand re-derivations of one measurement produced two wrong headlines,
+> which is why `script/crate-probes` exists: a measurement a reader cannot re-run is a claim.
 
 **The long answer has a sting in it, and it is the block's own BUGS entry made concrete:** a crate
 that compiles is not a crate that works. `tempfile` builds and links, and every one of its
@@ -30,8 +42,29 @@ fallback arm for platforms it does not know. Nothing in a green build says so. S
 
 ## How to reproduce this
 
-The whole measurement is `cargo build` against the linked `nife-dev` toolchain, one throwaway
-crate per probe:
+```sh
+script/crate-probes                  # all fifty: the table and the split
+script/crate-probes regex tokio      # two of them
+script/crate-probes --no-backend     # the same fifty without entropy_backend
+script/crate-probes --keep           # leave the generated probe crates and their build logs
+```
+
+**PROVISIONAL NAME** (milestone 64, 2026-08-18): script names are calef's and this one is not
+ratified.
+
+It takes the account-wide `nife-dev` link (it calls `cargo xtask std-src`) and it needs the network,
+so it is not a CI gate and `script/test` does not run it. It builds for aarch64 only, deliberately:
+the PAL speaks the capability ABI rather than an ISA, so a second target would re-measure the same
+thing at twice the cost, and the parity that matters is `std_exerciser`'s, which `script/test` runs
+on both.
+
+**A failing probe is rebuilt for the host**, and reports `BODY` rather than `FAIL` if the host build
+fails too. That is the harness saying "my own call site is wrong, ignore this row", which is the
+check fifty hand-written `main`s could not give anyone.
+
+### What the harness is doing, which was this recipe
+
+One throwaway crate per probe, built against the linked `nife-dev` toolchain:
 
 ```sh
 cargo xtask std-src                      # build/refresh the patched-std farm, link nife-dev
@@ -313,6 +346,19 @@ beyond `tempfile`, because **gitoxide's atomicity story runs through it**: `gix-
 `self.inner.persist(&resource_path)`, which is `gix-tempfile`, which is `tempfile::persist`, which
 on nife is `not_supported()`. A `gix` that built cleanly would fail to write a single ref.
 
+> **That paragraph was wrong about which failure came first, and the correction is worse than the
+> claim** (2026-08-18, milestone 64's third pass). Until that day `NamedTempFile::new()` did not
+> return an error: it **aborted the process**. `tempfile::env::temp_dir()` delegates straight to
+> `std::env::temp_dir`, nife had no `sys/paths` backend, and the shared fallback's `temp_dir()` is
+> `panic!("no filesystem on this platform")`. The program died there, before `other.rs` was ever
+> reached. Reading a crate's fallback arm and stopping is how that was missed: the analysis was
+> right about `tempfile` and never asked what `std` did on the way in.
+>
+> It is fixed as of that date (`sys/paths/nife.rs`), and fixing it changed nothing about the
+> conclusion above, which is the point worth keeping. `temp_dir` now answers, `other.rs` now gets
+> reached, and `other.rs` still refuses everything. **The abort became the error this section
+> always described.**
+
 The lesson for milestone 99 and 66 is a sequencing one. **Do not read a passing build as a working
 crate**, and do not order the work by what fails to compile: `tempfile` never appears on a build
 failure list and is on the critical path for git.
@@ -345,9 +391,11 @@ least one call site.
 | 13 | `fs::remove_dir(_all)` | `Unsupported` | 7 | 8 | **verb exists** (`RMDIR`) |
 | 14 | `fs::hard_link` | `Unsupported` | 7 | 4 | no verb |
 | 15 | `Permissions` | `readonly` is `false` | 7 | 8 | authority is a capability, not a mode bit |
-| 16 | `env::temp_dir` | no PAL at all | 7 | 8 | needs a namespace answer, not a PAL one |
+| 16 | `env::temp_dir` | **CLOSED** 2026-08-18 | 11 | 9 | it was a `panic!`, not a refusal; re-counted from 7 |
+| 16a | `env::split_paths` | **CLOSED** 2026-08-18 | 8 | 4 | also a `panic!`; no row existed, and no namespace in it |
+| 16b | `process::id` | **CLOSED** 2026-08-18 | 5 | 5 | also a `panic!`; `gix-tempfile`'s fork check |
 | 17 | `process::Command` | no PAL at all | 6 | 10 | `gix-command`, `gix-credentials` |
-| 18 | `env::current_dir` | no PAL at all | 6 | 5 | same namespace question |
+| 18 | `env::current_dir` | `Unsupported`, **declined** | 6 | 5 | refuses honestly; it is the namespace question |
 | 19 | `Metadata::modified` | `Unsupported` | 5 | 7 | no verb reports mtime, but §51 gave us a clock |
 | 19a | `Path::is_dir` on a directory | was always `false` | (not counted) | | closed with the five above; `create_dir_all` needed it |
 | 20 | `fs::set_permissions` | `Unsupported` | 4 | 3 | |
@@ -420,6 +468,61 @@ not change when it arrives.
   (the loop belongs where each step can be checked against that level's capability, in `user/src/rm.rs`)
   is a decision this lane had no evidence to overturn.
 
+### The third pass, 2026-08-18: the gap list cannot see a `panic!`
+
+The second pass worked the ranked list from the top. The third asked a different question, because
+the second pass's own best finding had come from asking it by accident: **what do the neighbouring
+functions do?** `env::var` answered `None` honestly while `env::vars()` in the same fallback was a
+`panic!`, and only one of the two was on this list.
+
+Run against every module nife falls through rather than binds, that question found three more, and
+every one of them **kills the program**:
+
+| call | what it actually was | probes | packages |
+|---|---|---|---|
+| `std::env::temp_dir()` | `panic!("no filesystem on this platform")` | 11 | 9 |
+| `std::env::split_paths()` | `panic!("unsupported")` | 8 | 4 |
+| `std::process::id()` | `panic!("no pids on this platform")` | 5 | 5 |
+
+**None of them could ever have appeared on the ranked list**, and that is the finding rather than
+the three functions. This list is built from PAL functions that answer `Unsupported`; a function
+that aborts never answers anything, so it is invisible to the method that produced every other row
+here. `env::temp_dir` did have a row, at rank 16, and it read *"no PAL at all ... needs a namespace
+answer, not a PAL one"*, which is how a fatal defect got filed as a design question. Its demand was
+also undercounted by four probes.
+
+**What closed, and each stops where the signature stops.** The rule the third pass followed, stated
+so the next lane can apply it rather than re-derive it: **fix the ones that abort, leave the ones
+that refuse.**
+
+- **`env::temp_dir`** (`patches/std-nife/overlay/std/src/sys/paths/nife.rs`) answers `TMPDIR` if the
+  program set one, otherwise `.`. `PathBuf` has no error channel, so *something* had to be named,
+  and `.` is not a new decision: `sys/fs/nife.rs`'s `one_name` already says *"./motd is motd: the
+  current directory IS the granted one."* A process holds one directory and that is the only place a
+  temporary file can go. `/tmp` lost because it names a filesystem root this system does not have,
+  so every path built on it would be refused with `InvalidFilename`, turning an abort into a
+  guaranteed failure rather than into working code. `TMPDIR` is first for parity and because it is
+  the seam milestone 47's namespace arrives through, with no change to the file.
+- **`env::split_paths` and `env::join_paths`** are pure string work over a separator with no
+  platform in them at all, which is what makes the old `panic!` indefensible rather than merely
+  unimplemented. Round-tripped in `std_exerciser`, because a splitter that agrees with nothing is
+  worth less than no splitter.
+- **`process::id`** (`sys/process/nife.rs`) answers `0`. There is no process identifier on this
+  system to report, the four-call syscall surface issues none, and `u32` cannot say so; `0` is the
+  one number no Unix assigns to a user process. **The call sites make that the right answer rather
+  than the least wrong one:** every reachable use in these fifty closures is a *fork* check
+  (`gix-tempfile`'s `forksafe.rs` and its registry compare an owning pid so cleanup runs only in the
+  creating process), nife has no `fork`, and a constant is what makes the comparison match.
+
+**Declined, and the line is the same one:** `current_dir`, `current_exe`, `chdir` and `home_dir` all
+*can* refuse in their own signatures and do. Each needs a namespace to resolve against, which is
+milestone 47's unbuilt half and the `File::open` fork this milestone reserves. `std_exerciser` now
+asserts those refusals as well as the two answers, so a later lane cannot quietly turn one into a
+fabrication.
+
+Nothing about the fifty-crate split moved: all three were runtime behaviour, and every probe that
+built before builds now.
+
 ### Five of these were bindings, not verbs, and milestone 64 bound them
 
 Ranks 5, 11, 12, 13 and 25 (`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename`) were
@@ -471,6 +574,13 @@ with a narrowed directory capability does not exist yet; that wants a lane).
   which is a different claim. Booting a crates.io crate under a stated endowment remains the missing
   half and the milestone's own acceptance criterion. It needs a crates.io dependency in a program
   this tree builds, which is a §46 decision rather than a lane's.
+- **A gap list built from `Unsupported` counts cannot see a `panic!`**, and this note went two
+  passes without noticing. Three std calls aborted a nife process while compiling perfectly
+  (`env::vars`, then `env::temp_dir`, `env::split_paths` and `process::id`), and the ranked list
+  below could not have contained any of them, because a function that aborts never returns the
+  refusal the census greps for. The method that found them is not a list at all: read every module
+  the PAL falls through instead of binding, and read what its *neighbours* do. That is a sweep
+  somebody has to run rather than a gate, and nothing in the tree runs it.
 - **The census counts call sites, not reachable calls.** A `fs::read_dir` inside a `#[cfg(windows)]`
   block counts. The over-count is roughly uniform across rows, so the *ordering* is trustworthy and
   the absolute numbers are not. The precise version (make each `unsupported()` a distinct undefined

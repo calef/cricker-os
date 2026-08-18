@@ -1,20 +1,30 @@
 # 64. Enough `std` to run somebody else's crate
 
 **Status: PARTIAL** since 2026-08-04 (PR #113), and still PARTIAL after the second pass
-(2026-08-17), because what is left on the ranked list is a decision each rather than an effort each.
-The measurement's deliverable, the prioritised gap list that milestones 99 and 66 consume, is in
-`notes/crates-io-on-nife.md`: **50 crates.io crates, 39 built with no change, 11 failed.**
+(2026-08-17) and the third (2026-08-18), because what is left on the ranked list is a decision each
+rather than an effort each. The measurement's deliverable, the prioritised gap list that milestones
+99 and 66 consume, is in `notes/crates-io-on-nife.md`: **50 crates.io crates, 43 built, 7 failed**,
+where 43 is against this tree as it ships and **39 is against it without `entropy_backend`**, which
+is the number this block carried until the third pass.
 
 **Gate: NONE.** The block's own sequencing is to run the measurement phase first and independently:
 pick the probe crates, build them, and let the failures name the work. The `File::open` resolution
 question is a design fork inside it, to be raised before code and answered jointly with milestone
 47's namespace half rather than twice.
 
-**That split was recorded as 35/15 and is 39/11.** Re-derived against this tree on 2026-08-17, same
-fifty crates, and no probe changed its answer: the old headline summed the four failure-class
-headings, and four crates are in two classes at once (`zip` and `ring` in A and C, `gix-config` and
-`gix` in A and B). The note's tables always listed 39 passes; only the sentence over them was wrong,
-which is why nothing caught it.
+**The measurement is a script now**, `script/crate-probes` (name provisional), and that is the third
+pass's first deliverable. It had been a prose recipe re-derived by hand three times, and two of those
+three produced a wrong headline. A probe is a `[[bin]]` whose `main` calls the crate, both halves
+learned by recording `diesel` as a pass twice; a probe that fails is rebuilt for the **host** and
+reports `BODY` rather than `FAIL` if the host fails too, which is the check fifty hand-written call
+sites could not give anyone.
+
+**That split was recorded as 35/15, then 39/11, and is 43/7.** The first correction (2026-08-17) was
+arithmetic: the headline summed the four failure-class headings, and four crates are in two classes
+at once (`zip` and `ring` in A and C, `gix-config` and `gix` in A and B). The second (2026-08-18) is
+that 39/11 describes the tree *before* `entropy_backend`, which had landed the same day the number
+was re-derived; `rand`, `uuid`, `gix-object` and `gix-actor` build now, and the second run confirming
+they still fail without it is one flag rather than an argument (`script/crate-probes --no-backend`).
 
 **What is closed.** Five ranks turned out to be bindings rather than verbs (`create_dir`, `read_dir`,
 `remove_file`, `remove_dir`, `rename` were all dispatched by the FS server since milestones 47 and
@@ -30,13 +40,32 @@ which is why nothing caught it.
 - **Rank 8, `File::set_len`** and **rank 26, `fs::copy`**. Rank 9 (`symlink_metadata`) needed nothing:
   the row was stale, std routes it to `lstat`, which this PAL binds.
 
+**The third pass asked a different question, and it is the one worth carrying.** Not "what is next on
+the ranked list" but **"what do the neighbouring functions in that module do"**, which is where the
+second pass's best finding had come from by accident. Run across every module the PAL falls through
+rather than binds, it found three more std calls that **abort a nife process**, all of which compiled
+perfectly: `std::env::temp_dir()`, `std::env::split_paths()` and `std::process::id()`. Two are now
+answered and one is a constant with its reasoning recorded (`sys/paths/nife.rs`, `sys/process/nife.rs`);
+`std_exerciser` asserts both the answers and the four neighbouring refusals on both ISAs.
+
+**None of the three could have appeared on the ranked list**, and that is the finding rather than the
+functions. The list is built from PAL functions that answer `Unsupported`, and a function that aborts
+never answers. `env::temp_dir` did have a row, at rank 16, reading "no PAL at all ... needs a
+namespace answer, not a PAL one", which is how a fatal defect got filed as a design question; its
+demand was undercounted by four probes too. It also corrects this note's most-quoted sentence:
+`tempfile` did not "build, link, and return an error", it **died inside `std::env::temp_dir`** before
+reaching its own refusal.
+
 **What remains, and why each one stops here rather than being unfinished.** Rank 2, the
 `std::os::unix` fallthrough, wants a **uid** and a **file mtime set** that this system does not have
 in the form the crates ask for, and answering would be a Unix fiction over a capability refusal.
 Rank 3, `thread::spawn`, is this block's own unanswered scheduling question (see BUGS) and has **no
 build failures behind it**. Rank 19, `Metadata::modified`, is one field in `FSTAT`'s reply away and
 that makes it a wire-format change. Everything else that resolves a path waits on the `File::open`
-fork below.
+fork below, and the third pass drew the line at exactly that edge: **fix the ones that abort, leave
+the ones that refuse.** `current_dir`, `current_exe`, `chdir` and `home_dir` can each say no in their
+own signature and still do; `temp_dir` and `split_paths` could not, so they were answered from §27's
+existing decision (`.` is the granted directory, `one_name`'s own words) rather than from a new one.
 
 The sting the measurement found is the one worth carrying forward: **a green build is not evidence.**
 `tempfile` compiles, links, and returns "operation not supported" at run time. Raised 2026-08-01,
@@ -144,6 +173,12 @@ both milestones already point at.
   because there is no endowment to carry it. That is milestone 47's namespace, and until it lands
   every `env::var` a crate reads is `None`. `chrono`'s `TZ` and `clap`'s colour detection both take
   that path, which is fine and is not the same as working.
+
+- **Nothing runs the sweep that found the three aborts.** It is a person reading every module the PAL
+  falls through and asking what its neighbours do, which is rung four of AGENTS.md's ladder. The
+  three found so far were each found by accident or by one deliberate pass, and a fourth would be
+  found the same way. A gate is conceivable (make each fallback `panic!` a distinct undefined symbol
+  and let the linker name the reachable ones) and was not built here.
 
 **Effort: not estimated**, deliberately. The measurement is the first deliverable: pick the probes,
 build them, and report what breaks.
