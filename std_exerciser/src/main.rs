@@ -828,13 +828,15 @@ fn inbound_demo(listener: &TcpListener) {
     match TcpListener::bind(("0.0.0.0", fixture::DENIED_PORT)) {
         Err(e) if e.kind() == ErrorKind::PermissionDenied => println!("denied refused"),
         Ok(_) => panic!("bound a port this program was never granted"),
-        Err(e) => panic!("a port outside the grant was refused, but not as a refusal: {e:?}"),
+        Err(e) => {
+            panic!("a port outside the grant failed, but not as a refusal of authority: {e:?}")
+        }
     }
 
     match TcpListener::bind(("0.0.0.0", fixture::LISTEN_PORT)) {
         Err(e) if e.kind() == ErrorKind::AddrInUse => println!("in use refused"),
         Ok(_) => panic!("two listeners bound one port"),
-        Err(e) => panic!("a second bind of a held port failed, but not as a collision: {e:?}"),
+        Err(e) => panic!("a second bind of a held port failed, but not as a port collision: {e:?}"),
     }
 
     for round in 0..fixture::ROUNDS {
