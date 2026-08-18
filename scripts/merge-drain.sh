@@ -89,12 +89,46 @@ fi
 # The unheld queue, lowest number first. Drafts are excluded: a draft is not asking to be merged.
 queue() {
 	gh pr list --repo "$REPO" --state open \
-		--json number,mergeStateStatus,labels,isDraft,title 2>/dev/null |
+		--json number,mergeStateStatus,labels,isDraft,title,body 2>/dev/null |
 		jq -r --arg L "$HELD_LABEL" '
 			[ .[]
 			  | select(.isDraft == false)
 			  | select((.labels | map(.name) | index($L)) | not) ]
 			| sort_by(.number)' 2>/dev/null || echo '[]'
+}
+
+# `Blocked-by: #N` in a pull request body: a SELF-RELEASING hold for a mechanical ordering
+# constraint, as opposed to `needs-architect`, which means a person must decide something.
+#
+# # Why this exists, and why a plain "held" label was refused
+#
+# On 2026-08-18 #329 and #324 each carried a file named `97-*.md` in `design/decisions/`. Both were
+# green alone; a merge-queue group containing both fails the decisions gate, because two sections
+# cannot share a number. #329 was evicted as UNMERGEABLE while reporting CLEAN on its own page, and
+# the only lever available to keep the drain from re-arming it was `needs-architect`, which says a
+# person must rule on something. Using it here would have put a false entry on calef's queue, which
+# is the one queue in this project that must not accumulate noise.
+#
+# That is the same shape as #274, which was enqueued and evicted **29 times, 26 of them in a
+# 3.5-hour loop**: #271 landed a doctest calling a method whose arity #274 was changing, git merged
+# both without a conflict marker, and the pair was red only together. Green alone, green alone, red
+# together is not a state any per-branch check can see.
+#
+# **A generic hold label was considered and refused**, and the reason is the failure mode rather
+# than tidiness: a manual label has to be REMOVED by whoever remembers, and this project has a
+# recorded history of exactly that going wrong. `needs-architect` was left on #320 and on #329 after
+# both had been answered, on the same day, and calef found both. A hold that outlives its reason is
+# a false blocker, and a false blocker is worse than none because it is believed.
+#
+# So the hold names its own release condition and evaporates without anybody acting: when #N merges,
+# the next pass arms this pull request. Nothing to remember, and `gh pr list` shows the reason.
+#
+# The blocker being CLOSED rather than merged is reported loudly instead of silently released,
+# because that is an anomaly: it means the thing this was sequenced behind is not coming.
+blocked_by() {
+	# The first `Blocked-by: #N` in the body. Case-insensitive on the key, because a person typing
+	# it in a pull request body will not match a regex's idea of capitalisation.
+	printf '%s' "$1" | sed -n 's/.*[Bb]locked-by:[[:space:]]*#\([0-9][0-9]*\).*/\1/p' | head -1
 }
 
 # Arming is one API call and changes nothing until the checks pass, so every eligible pull request
@@ -114,6 +148,26 @@ pass() {
 	for num in $(printf '%s' "$q" | jq -r '.[].number'); do
 		state=$(printf '%s' "$q" | jq -r --arg n "$num" '.[] | select(.number == ($n | tonumber)) | .mergeStateStatus')
 		title=$(printf '%s' "$q" | jq -r --arg n "$num" '.[] | select(.number == ($n | tonumber)) | .title')
+
+		# A declared ordering constraint, checked before anything else, because arming a pull
+		# request that is sequenced behind another wastes a group build and can evict it.
+		body=$(printf '%s' "$q" | jq -r --arg n "$num" '.[] | select(.number == ($n | tonumber)) | .body')
+		blocker=$(blocked_by "$body")
+		if [ -n "$blocker" ]; then
+			bstate=$(gh pr view "$blocker" --repo "$REPO" --json state -q .state 2>/dev/null)
+			case "$bstate" in
+			MERGED) ;;  # released, and nobody had to do anything
+			CLOSED)
+				echo "merge-drain: STALLED. #$num is blocked by #$blocker, which was CLOSED without merging ($title)"
+				stalled=$((stalled + 1))
+				continue
+				;;
+			*)
+				echo "merge-drain: holding #$num until #$blocker merges ($title)"
+				continue
+				;;
+			esac
+		fi
 
 		# A conflict is the one state that cannot be waited out: the queue will not resolve it and
 		# neither will another pass. Say which pull request it is and move on to the rest, because
