@@ -75,6 +75,27 @@ Tree-wide the shape matches 19 sites, but 9 are not test code at all, and none o
 the flake-prone shape. They are all "let it settle, then prove nothing more happened", which is a
 negative assertion a loaded host cannot fail in the failing direction.
 
+## The migration drain, 2026-08-18: the family's newest member, fixed in the prescribed unit
+
+The disposition's own acceptance run found `smp.rs`,
+`a_migrated_kernel_thread_keeps_its_hart_pointer`, red twice in eighteen loaded runs with
+`migration workers never drained (59/60 done)`, and handed it on. It is fixed, in this block's own
+words rather than by a wider bound: the per-wave drain is budgeted in **delivered guest ticks**
+(`2 * TICK_HZ`) instead of two seconds of `timer::now()`, so a descheduled emulator stretches the
+budget instead of spending it. The arithmetic was already written once for `sched::within_ticks` and
+is now `testing::TickBudget`, which both waits share.
+
+**Both halves of the assertion were watched failing**, which is what this block asks of a bound that
+moves: the stale-`tp` defect injected inside the test's own window is red at the drain loop's line
+with the message naming a stale `tp` across a hart migration, and a wave rigged never to finish is
+red with `migration workers never drained (5/12 done) within 200 delivered ticks`. The unscoped
+version of the first injection never reached the target test at all, which is its own finding and is
+recorded in notes/load-sensitive-assertions.md.
+
+**This does not make the block BUILT.** It closes one site the acceptance run found; the scope note's
+backlog of unaudited sites is untouched, and the acceptance question ("does the suite survive
+repeated loaded runs") still belongs to whoever runs the instrument next.
+
 ## The problem
 
 A population of tests assert on **elapsed time or on a fixed number of yields**. `sched.rs` alone
