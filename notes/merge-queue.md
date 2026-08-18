@@ -275,6 +275,16 @@ Keep it; expect it to speak rarely.
 
 ## BUGS
 
+- **A watcher started from a lane worktree dies when that worktree is pruned, and now refuses to
+  start there** (2026-08-18). `/bin/sh` reads a script lazily, so deleting the file under a running
+  shell can kill it mid-loop. It happened twice in one day: the merge drain died when the worktree
+  it was launched from was pruned, and `trunk-health.sh` died the same way during a 24-worktree
+  cleanup, **silently, while `main` was red for hours on a gate nobody was watching**. The drain
+  survived the second sweep only because it had been relaunched with an absolute path into the main
+  checkout. Both scripts now refuse the watching form outside the main checkout and say why;
+  `--once` is still allowed anywhere, because it exits long before a prune could reach it.
+
+
 - **Neither script survives the session that starts it.** They are ordinary loops, not services.
   CLAUDE.md's session-start list is what makes them run; nothing enforces it, and a session that
   forgets has exactly the gap they were written to close. A launchd job or a scheduled workflow would
@@ -310,8 +320,10 @@ Keep it; expect it to speak rarely.
   pass simply arms it again.
 - **`trunk-health.sh` polls at 90 seconds and reads only `main`.** A release branch, if this tree ever
   grows one, is invisible to it.
-- **Neither reports its own death.** If the process is killed, both simply stop saying anything, and
-  the failure mode is indistinguishable from a healthy quiet queue. This is the same defect the
+- **Neither reports its own death, and on 2026-08-18 that cost hours of red trunk.** If the process
+  is killed, both simply stop saying anything, and the failure mode is indistinguishable from a
+  healthy quiet queue. The entry above removes the commonest *cause* of the death; it does nothing
+  about the silence, which is still unfixed. This is the same defect the
   scripts exist to fix, one level up, and it is not fixed. The queue has taken over most of what
   `merge-drain.sh` did and the whole class of failure `trunk-health.sh` watched for, so this defect
   now costs less than it did; it costs more than nothing, because the arming call is still what puts

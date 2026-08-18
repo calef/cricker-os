@@ -51,6 +51,30 @@ REPO="crickertech/nife"
 once=""
 [ "$1" = "--once" ] && once=1
 
+# A watcher must run from the MAIN checkout, never from a lane worktree, and this refuses rather
+# than trusting anyone to remember. Measured cause, twice: `/bin/sh` reads a script LAZILY, so
+# deleting the file under a running shell can kill it mid-loop. The merge drain died that way on
+# 2026-08-18 when the worktree it was launched from was pruned, and `trunk-health.sh` died the same
+# way later the same day during a 24-worktree cleanup, silently, while `main` was red on the
+# fastpath gate for hours. The drain survived that second sweep only because it happened to have
+# been relaunched with an absolute path into the main checkout.
+#
+# Only the watching form is refused. `--once` is a check anybody may run anywhere, including a lane
+# gating its own work, and it exits long before a prune could reach it.
+#
+# `--git-dir` resolves to `.git/worktrees/<name>` in a linked worktree and to `.git` in the main
+# checkout, which is the cheapest true test available; `--git-common-dir` points at the shared
+# `.git` from both and cannot tell them apart.
+if [ -z "$once" ] && [ "$(git rev-parse --git-dir 2>/dev/null)" != ".git" ]; then
+	echo "$(basename "$0"): refusing to watch from a lane worktree." >&2
+	echo "  A watcher outlives the lane that started it, and pruning that lane's worktree kills" >&2
+	echo "  it silently, because /bin/sh reads a script lazily. Run it from the main checkout:" >&2
+	echo "    cd <main checkout> && scripts/$(basename "$0") &" >&2
+	echo "  ('--once' is fine from anywhere; only the watching form is refused.)" >&2
+	exit 2
+fi
+
+
 state() {
 	sha=$(git ls-remote "$(git remote get-url origin 2>/dev/null || echo origin)" refs/heads/main 2>/dev/null | cut -c1-8)
 	[ -z "$sha" ] && { echo "unknown"; return; }
