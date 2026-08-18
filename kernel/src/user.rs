@@ -2270,6 +2270,23 @@ mod reap_tests;
 #[cfg(test)]
 mod survey_tests;
 
+/// **Scheduled execution, where every entry is a grant** (milestone 129, notes/scheduled-execution.md).
+///
+/// One module for both ISAs, like `dir_capability_tests`: nothing in it is architecture-specific, so
+/// the parity gate (DECISIONS §19) is met by literally the same test running twice.
+///
+/// The claim is Unix cron's inversion. A crontab line runs as a user and can do whatever that user
+/// can do, and there is nothing to print and nothing to check; here an entry is a grant expression
+/// checked at registration by the same `grant_plan::plan` the prompt uses, so what a scheduled child
+/// will hold is printable before the first tick. The test reads that plan off the real program
+/// running the real `user/timetable.conf`, then watches what fires.
+///
+/// The negative control is what makes it worth having: the shipped document contains entries a Unix
+/// cron would simply have run (`date` wants a clock, `ps` wants a process view), and the timetable
+/// holds neither, so both are refused **in writing, before anything fires** and neither ever runs.
+#[cfg(test)]
+mod timetable_tests;
+
 /// **The directory capability, attacked** (milestone 47, notes/dir-capability.md).
 ///
 /// One module for both ISAs rather than an aarch64 test with a riscv twin, which the FS tests above
