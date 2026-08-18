@@ -351,6 +351,29 @@ empty, say so as its own finding rather than letting the silence stand for "noth
 wants a lane of its own. That is the same discipline as milestone 94's, applied to scheduling rather
 than to findings.
 
+**Identified work leaves the lane in a tracked form, or the merge waits.** A lane that finds work it
+is not doing may report it in exactly two shapes, and "worth doing someday" is neither. Either a
+**proposed milestone** (provisional, the integrator mints the number at merge like every other global
+name), or a **recorded limitation written where a reader meets the feature**, in the `BUGS` section
+beside it, which is what §71's promotion triggers are then measured against. A finding with no home is
+the integrator's cue to hold the merge until it has one.
+
+This is rung three of the ladder, and it is worth naming why the lower rungs fail here specifically.
+A lane report is read once, by one person, on the day it is written. A pull request body is read while
+the diff is open and never again. Both feel like records while you are writing them, which is what
+makes this the failure that recurs: milestone 90 exists only because calef happened to be at his desk
+the day a report named it, and milestone 94 swept the tree for exactly this category and then left its
+own inventory in a pull request body for twelve days, by which point the item-level list was gone and
+had to be re-derived. See notes/untracked-work-sweep.md.
+
+**The merge checklist grows one line**, in the same breath as pruning the worktree, deleting the
+branch and relinking `nife-dev`: every piece of identified work in the lane's report has a home.
+
+Two things this deliberately does not do. **It does not gate**: no check can tell an intention from an
+observation in prose, and a lint that tried would be `git grep -w TODO`'s 82% false-positive rate
+wearing a different hat. And **it does not touch the `BUGS` convention**, which is the FreeBSD posture
+working as designed; the whole point is to route intentions *into* it rather than out of it.
+
 **Open decisions live in a file, not in a conversation.** A decision waiting on calef that exists
 only in chat scrollback is in exactly the medium milestone 94 was written to abolish, and on
 2026-08-04 five of them accumulated there in one day while that milestone was being built. They go
@@ -548,6 +571,70 @@ purpose.
 **Explain on request, however basic.** Autonomous by default does not mean opaque: if calef asks
 "what is a register?" or "why does `destroy` avoid `SCHED`?", answer properly, from the ground up,
 and write it down.
+
+## A fork reaches calef with its questions already answered
+
+calef, 2026-08-18, sharpening his own rule from the day before. The first version said to bring
+**options and costs**. That is not enough, and the correction is his: *"my intent is not just to have
+a lane surface a problem, but to investigate and propose solutions so that the questions I usually
+ask to help decide I don't need to ask."*
+
+**The scarcest thing in this project is his attention**, not lane capacity: on 2026-08-17 fifteen
+milestones were gated on `DECISION` behind a nineteen-deep ready queue. So a fork that reaches him
+having spent his attention on lookups anyone could have run has been mishandled, even if it arrived
+with a tidy list of options.
+
+**This binds whoever presents the fork, which is usually the maintainer rather than a lane.** Every
+question below was one calef had to ask a maintainer on 2026-08-18, about a crate name, and every one
+of them changed the answer. Writing it as a rule for lanes would let the same failure straight
+through.
+
+### The six questions, because they are stable
+
+They are not a template to fill in. They are the questions that actually got asked, and a proposal
+that cannot answer one should say so rather than leave it implied.
+
+1. **What else was considered, and why did each lose?** A list of alternatives is not an answer; a
+   refusal with a reason for each is. §75 already asks for this at the thing itself, and "the
+   refusals are the valuable half" is `script/names`' own line.
+2. **What does this tree already do in the analogous case?** Almost always one grep, and it usually
+   decides. Asked as *"what are our other entropy crates called?"*, answered by `entropy` and
+   `entropy_proto`, which settled a naming argument that had run for three exchanges.
+3. **What is the prior art outside the tree?** Read, not recalled. This tree carried a fabricated
+   block quote for twelve days through every gate, so a claim from memory is a claim to mark as such.
+4. **Is the premise true?** Verify the framing before defending a position inside it. A crate was
+   argued about for four exchanges as though its directory were settled; `patches/README.md` states
+   that directory is for patches carried against upstream projects, which disqualified the siting and
+   dissolved the argument.
+5. **What does each option cost, measured rather than asserted?** A flag either exists or it does
+   not. Milestone 106's block priced a timed wait as "a timer wheel or an ordered deadline list" and
+   measurement found every candidate structure costs one comparison per tick, with the ordered list
+   the *worst* of the three. §32 said a hung child needs the stronger right; measurement found the
+   mechanism is about thirty lines and the authority is the whole problem.
+6. **How reversible is it, and who has already acted on it?** The *move fast on what can be undone*
+   tenet's test, verbatim, because it decides how much of the above is worth buying.
+
+**The tell that a proposal is not ready is that it argues rather than shows.** Questions 2 through 5
+are all lookups. If the presenter is reaching for an adjective where a command would do, the work is
+not finished.
+
+### Two limits, so this does not become a tax
+
+**Recommend on reversible forks; give options only on irreversible ones.** Milestone 54's lane
+recommended keeping the demo share guest-writable, usefully, because it can be undone. The
+blocked-thread lane named no winner, correctly, because a syscall-surface decision arriving with a
+recommendation is already most of the way made. The line is the one the *move fast* tenet draws:
+anything two programs agree on, a name, a dependency, the syscall surface, a fact that leaves the
+machine.
+
+**A fork only earns a lane when nobody can say what the options cost.** A lane costs a few hundred
+thousand tokens and up to an hour. If calef can answer in a sentence, researching first spends more
+than a wrong answer would. Most of the six questions are minutes of grepping by whoever is holding
+the problem, and that is the common case rather than a lane.
+
+**And the failure mode to guard is proposal-shaped procrastination.** Some forks want a decision now
+and evidence later. "Let me research that" is an available way to not decide, and a lane is not a
+place to put a question you are avoiding.
 
 ## The rules that hold the codebase together
 
