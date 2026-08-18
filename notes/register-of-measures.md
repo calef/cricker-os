@@ -56,9 +56,11 @@ on every push. The defect is a `dated` row with no date, or with no command.
 
 ## Gated
 
-Nine instruments, and it is worth seeing them in one table because four of them are the same shape:
-a **ceiling** that fires when a number grows. That shape was in this tree four times before anything
-named it, which is why milestone 134 added `count-at-most` rather than inventing a mechanism.
+Nine instruments, and it is worth seeing them in one table because **six of them are the same
+shape**: a ceiling that fires when a number grows and stays silent when it falls. Four of those six
+were here before milestone 134, unnamed and unconnected, which is why `count-at-most` is a name for
+a pattern rather than a new idea. Row 1 is the odd one out, a two-sided drift band, and row 9 is a
+floor.
 
 | measure | instrument | what fails |
 |---|---|---|
@@ -72,11 +74,13 @@ named it, which is why milestone 134 added `count-at-most` rather than inventing
 | `unsafe impl Send`/`Sync` claims | `script/lint` | over 17, which is today's tree exactly |
 | per-file line coverage | `script/coverage` | any file under the 80% floor |
 
-The four ceilings are rows 2, 3, 4 and 7, and each one's threshold is a different kind of thing:
-5% is a tolerance, 4,096 is a hardware fact, 24,576 is a configuration constant, and 100 per 10,000
-is a **claim about the tree that was false until the day before it was written**. Only the last is
-a direction rather than a limit, which is what the `count-at-most` relation exists to express. See
-notes/unsafe-obligations.md for the measurement behind it.
+The ceilings are rows 2 through 5 and 7 and 8, and reading their thresholds together is the
+useful part, because they are six different kinds of number. 5% is a tolerance. 4,096 is a hardware
+fact. 24,576 is a configuration constant. The high-water limits are margins over an observed
+maximum. 17 is today's tree exactly. And 100 per 10,000 is a **claim about the tree that was false
+until the day before it was written**, which makes it the only one that expresses a direction rather
+than a limit. That distinction is what `count-at-most` exists for; see notes/unsafe-obligations.md
+for the measurement behind it.
 
 Two of these are the register doing its job on itself: the unsafe rows did not exist when milestone
 134 opened, and the `unsafe fn` count that would have been a third turned out to be **already

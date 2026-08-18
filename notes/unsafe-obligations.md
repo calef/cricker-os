@@ -475,9 +475,13 @@ belongs there, so a ceiling would be a gate pushing against the architecture. An
 no direction is the right answer. It is not left as prose, though, because prose is where numbers go
 stale: `script/lint` prints it on every run, asserted never.
 
-**No second `unsafe fn` count.** The `==> unsafe fn contracts` check above already derives and
-prints one, and this section's own earlier "33" has since drifted to 39 in `kernel/` and `crates/`
-without anything noticing, which is the argument for citing the derivation rather than restating it.
+**No second `unsafe fn` count.** The `==> unsafe fn contracts` check above already derives one and
+prints it, at **53 declarations** on 2026-08-18, and this file's own "the shape of the 33" heading
+has been wrong for days with nothing to say so. Adding a second count on a slightly different scope
+would be the exact drift this milestone exists to stop, so the register cites that line instead. The
+33 heading is left standing: its table of eleven `unsafe fn`s with no unsafe operation is still the
+finding, and renumbering a heading to chase a moving count is the maintenance tax the whole
+convention refuses.
 
 ### `// SAFETY:` parity is deliberately not a gate
 
