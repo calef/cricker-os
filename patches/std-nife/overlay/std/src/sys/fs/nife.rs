@@ -133,12 +133,26 @@ fn reachable() -> bool {
 /// Whether a reply word is the *kernel* refusing the invoke rather than the server answering.
 ///
 /// The kernel's own errors are -1..-8 (`abi::Error`); the server's are negated errnos. The two
-/// spaces overlap, which is a wart of the contract recorded in notes/std.md. Only the two that
-/// mean "you hold no such capability" are read that way, and neither is an errno the FS server
-/// speaks: `EPERM` (1) and `ESRCH` (3) are not in its vocabulary, while `ENOENT` (2), which does
-/// collide, is deliberately left to the errno mapping so a missing file reads as `NotFound`.
+/// spaces overlap, which is a wart of the contract recorded in notes/std.md.
+///
+/// **This used to read -1 as "you hold no such capability" too, and that was wrong** (milestone
+/// 122). The comment justifying it said `EPERM` (1) is not in the FS server's vocabulary; it has
+/// been since milestone 47, where `dir::EPERM` is what a directory capability answers when the
+/// right a verb needs is withheld and when a descent asks for more than the parent holds. So the
+/// one reply that says "this capability does not carry that right" was being reported to a std
+/// program as "this platform cannot do that", which is the silent-degradation shape DECISIONS §42
+/// forbids and which would have made a narrowed grant indistinguishable from no grant at all.
+///
+/// What makes -1 unambiguous here is [`reachable`]: every entry point in this module checks it
+/// first and returns `Unsupported` when the slot is empty, so by the time a `request` is issued a
+/// server has already answered one message. A kernel `NoSuchSlot` cannot follow that. -3 stays,
+/// because `ESRCH` really is not in the FS server's vocabulary and `NotPermitted` from the kernel
+/// is what a WRITE-less endpoint answers.
+///
+/// The clean fix is the contract's, not this function's: a tag or an offset in the reply word so
+/// the two error spaces stop overlapping. See the BUGS section of notes/std.md.
 fn no_capability(r0: u64) -> bool {
-    matches!(r0 as i64, -1 | -3)
+    matches!(r0 as i64, -3)
 }
 
 // --- The shared page -------------------------------------------------------------------------
@@ -220,6 +234,22 @@ fn request(w0: u64, w1: u64) -> io::Result<u64> {
 /// (RedoxFS) does, and §27 maps it at the server boundary and nowhere deeper.
 fn from_errno(errno: i32) -> io::Error {
     match errno {
+        // `EPERM` is milestone 47's, and milestone 122 is what made it reachable from here: a
+        // directory capability that does not carry `ENUMERATE`, and a descent that asked for more
+        // than the parent holds, both answer it. It is the second errno in this map that is about
+        // *you* rather than about the name, so it gets the kind that says so.
+        //
+        // **`PermissionDenied` here is not the EPERM fiction the path refusals avoid**, and the
+        // difference is which side of the wire decided. Those refusals are this client saying "no
+        // capability designates that name", where no permission was ever consulted. This is the
+        // server saying "the capability you hold lacks the right that verb needs", which is a fact
+        // about authority and is exactly what `dir::EPERM` was specified to mean loudly rather than
+        // conceal. `ReadOnlyFilesystem` is its sibling for the mutating rights; std has no third
+        // kind that would fit better.
+        1 => io::const_error!(
+            io::ErrorKind::PermissionDenied,
+            "this directory capability does not carry the right that verb needs"
+        ),
         2 => io::const_error!(io::ErrorKind::NotFound, "no such name in the granted directory"),
         9 => io::const_error!(
             io::ErrorKind::InvalidInput,
