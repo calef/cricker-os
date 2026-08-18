@@ -180,12 +180,20 @@ same on both ISAs.
 | `the_satp_carries_the_address_spaces_asid` | `ttbr0_value` drops the ASID term | `two live spaces share an ASID` (both 0) |
 | `the_timer_is_ticking` | `tick` does not count | `no timer interrupt in three tick periods` |
 | `ticks_arrive_at_the_configured_rate` | the original relative re-arm restored | `20 ticks in 25 periods` |
-| `the_handler_keeps_up_when_no_lock_is_held` | the handler spins for two intervals | missed 20 |
+| ~~`the_handler_keeps_up_when_no_lock_is_held`~~ | the handler spins for two intervals | missed 20 (**the test was deleted 2026-08-18**, see below) |
 | `a_long_critical_section_costs_a_tick` | the original relative re-arm restored (no missed accounting) | `did NOT lose a tick` |
 | `uptime_advances_monotonically` | `uptime_ms` divides by `TIMEBASE_HZ` instead of `TIMEBASE_HZ / 1000` | `uptime went backwards or stalled: 0 -> 0` |
 | `holding_a_lock_masks_the_timer` | `TICKS` back to one global counter | 61 ticks landed inside the critical section |
 | `breakpoint_is_caught_and_execution_resumes` | the dispatcher handles the breakpoint but does not record it | `the handler didn't run, but we resumed anyway?` |
 | `registers_survive_a_trap` | the dispatcher zeroes `frame.x[18]`, as a wrong trap.s offset would | `the trap frame scrambled a register` |
+
+***One row is struck through: `the_handler_keeps_up_when_no_lock_is_held` was deleted on both ISAs
+by milestone 62 on 2026-08-18.*** The mutation in that row is worth reading against the reason. Two
+intervals of handler spin is almost exactly the boundary the assertion's taxonomy got wrong: under
+one interval of resulting lateness it blamed this kernel, at one interval or more it blamed the
+emulator and passed, and a handler slow by 2.5 periods was therefore exonerated in as many words.
+The mutation still dies, on `script/icount`, where the handler is bounded in instructions the host
+cannot move. See notes/load-sensitive-assertions.md.
 
 **The three that are true by construction on a machine that booted**, and are marked as such:
 

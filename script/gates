@@ -7,7 +7,7 @@
 # cycle and a human deciding whether the failure is real. Three commands is two too many to remember
 # at the moment you are about to push.
 #
-# What it runs, and why only these three. These are the checks a developer can run locally in
+# What it runs, and why only these. These are the checks a developer can run locally in
 # minutes and that gate every pull request. Deliberately NOT the whole CI surface: `script/verify`
 # (Kani, ~47 minutes), `script/cpu-matrix` (five QEMU CPU models), `script/fuzz`, `script/coverage`,
 # `script/bench` and `script/supply-chain` all belong in CI, and a wrapper that ran them is a wrapper
@@ -39,6 +39,23 @@ script/fmt --check
 echo
 echo "==> script/lint"
 script/lint
+
+# The instruction-count instrument (milestone 78), here since milestone 62 gave it a claim the
+# suite no longer makes (2026-08-18). `script/test` used to carry two wall-clock timer assertions
+# that were the last things in this tree trying to say "the handler keeps up" from inside a guest
+# that cannot see the host; both were dispositioned, and the claim now lives only here. A gate that
+# does not run the instrument owning a claim is a gate that has quietly dropped it.
+#
+# It belongs in this list rather than in `script/test` for the reason notes/instruction-clock.md
+# gives at length: `-icount` gives every vCPU one shared virtual clock, so a suite run under it
+# would silently stop proving every cross-core property it exists for. That argument is about a
+# boot mode, not about a command, and this script is a list of commands.
+#
+# About seven seconds for both ISAs against this script's several minutes, so it goes above
+# `script/test` on the cheapest-first rule the header states.
+echo
+echo "==> script/icount"
+script/icount
 
 echo
 echo "==> script/test"
@@ -80,7 +97,7 @@ fi
 
 echo
 if [ -n "$hvf_missing" ]; then
-    echo "gates: fmt, lint and test all pass (TCG only; the HVF leg was skipped)"
+    echo "gates: fmt, lint, icount and test all pass (TCG only; the HVF leg was skipped)"
 else
-    echo "gates: fmt, lint and test all pass, the aarch64 suite twice (TCG and the physical core)"
+    echo "gates: fmt, lint, icount and test all pass, the aarch64 suite twice (TCG and the physical core)"
 fi

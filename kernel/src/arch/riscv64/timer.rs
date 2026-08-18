@@ -349,7 +349,13 @@ pub fn missed_ticks_on(hart: usize) -> u64 {
 /// interval per delivered tick) instead of inferring it from a wall-clock tick rate, which a
 /// descheduled emulator falsifies. aarch64 reads its deadline back out of `CNTV_CVAL_EL0`; this is
 /// the software copy that SBI's write-only `set_timer` forces us to keep anyway (module header).
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// **Two callers now**, which is milestone 62's shape: the suite's test, which measures the law on
+/// a wall clock and may report `UNMEASURED` when a loaded host denies it a miss-free window, and
+/// `icount::run`'s claim 4, which measures the same law in instructions and always answers. On this
+/// ISA claim 4 is the stronger of the two in a second way: `DEADLINE` is bookkeeping, and claim 1
+/// beside it is what proves SBI was armed with this word rather than another.
+#[cfg_attr(all(not(test), not(feature = "icount")), allow(dead_code))]
 pub fn deadline() -> u64 {
     DEADLINE[cpu::id()].load(Ordering::Relaxed)
 }
@@ -505,25 +511,61 @@ mod tests {
         };
 
         // A miss re-anchors the grid, which is correct behaviour (`rearm`'s safety valve), so a
-        // window containing one proves nothing about the law either way: retry it. Eight
-        // quarter-second windows all containing a miss is not load, it is either a pathological
-        // host or a handler genuinely slower than a tick period, and both deserve a red run.
+        // window containing one proves nothing about the law either way: retry it.
+        //
+        // **Exhausting the budget is not a failure, and milestone 62 settled that on 2026-08-18.**
+        // It used to be. The assertion that stood here read "either the host is too contended to
+        // observe the grid, or the handler is slower than a whole tick period", and the word
+        // deciding between those two is `or`: this is the family's signature confound, a claim
+        // whose truth depends on the host, written from inside a guest that cannot see the host.
+        // The acceptance run fired it four times in forty-five loaded runs, twice per ISA, and
+        // widening the budget is the one fix DECISIONS §61 and this milestone both forbid by name,
+        // because it changes how often you notice rather than what is measured.
+        //
+        // What is kept is everything below, and it is the whole reason this test exists: the
+        // re-arm law is exact, and a host can only cost us the chance to measure it, never the
+        // answer. What is given up is the second, implicit claim, which `script/icount` now
+        // asserts with no host term in it (claim 2, the handler bounded at 2,500 instructions
+        // against a measured 1,056/900, and claim 3, zero missed ticks) and with the law itself
+        // beside them (claim 4, added by this milestone after an injection showed the instrument
+        // was blind to the very defect this test catches). CI runs `script/icount` on every change
+        // that is not documentation only. See notes/load-sensitive-assertions.md.
+        const ATTEMPTS: u32 = 8;
         let mut attempts = 0;
-        let (elapsed_ticks, deadline_delta, expected) = loop {
+        let measured = loop {
             let (h0, t0, m0, d0, c0) = snapshot();
             timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
             let (h1, t1, m1, d1, c1) = snapshot();
 
             if h0 == h1 && m0 == m1 && t1 - t0 >= 2 {
-                break (t1 - t0, d1 - d0, (c1 - c0) / timer::interval());
+                break Some((t1 - t0, d1 - d0, (c1 - c0) / timer::interval()));
             }
             attempts += 1;
-            assert!(
-                attempts < 8,
-                "no miss-free measurement window in eight tries: either the host is too \
-                 contended to observe the grid, or the handler is slower than a whole tick \
-                 period (see the_handler_keeps_up_when_no_lock_is_held)"
+            if attempts == ATTEMPTS {
+                break None;
+            }
+        };
+
+        // Loud rather than silent, because a test that quietly measures nothing is worse than one
+        // that flakes: the reader has to be able to tell "the law held" from "the law was not
+        // looked at". The numbers come with it so a human can triage without re-running, which is
+        // what `miss_detail` was added for in the first place.
+        let Some((elapsed_ticks, deadline_delta, expected)) = measured else {
+            let (now, next, misses) = super::miss_detail::last();
+            crate::println!(
+                "    (UNMEASURED: no miss-free window in {} tries, so the re-arm law was not \
+                 tested this run. {} misses recorded on this hart, the last re-armed {} counter \
+                 ticks late against an interval of {}. A miss re-anchors the grid, so a window \
+                 containing one proves nothing either way, and whether these misses are a \
+                 contended host or a slow handler is the one question a wall clock cannot answer \
+                 from inside the guest. `script/icount` answers it and asserts this same law with \
+                 no host term in it. Milestone 62; notes/load-sensitive-assertions.md.)",
+                ATTEMPTS,
+                misses,
+                now.saturating_sub(next),
+                timer::interval(),
             );
+            return;
         };
 
         assert_eq!(
@@ -542,57 +584,26 @@ mod tests {
         );
     }
 
-    /// The handler keeps up, **when nothing is holding a lock**.
-    ///
-    /// A missed deadline means a whole tick period elapsed before we re-armed. With interrupts live
-    /// and no critical section in the way, that would mean the handler itself is too slow, and a
-    /// thread would lose a time slice it was owed.
-    ///
-    /// Measured as a *delta*, not an absolute: the count is deliberately nonzero by now, because the
-    /// test below causes misses on purpose.
-    #[test_case]
-    fn the_handler_keeps_up_when_no_lock_is_held() {
-        use crate::arch::timer;
-
-        // Hart-scoped, for `ticks_on`'s reason: a migration between the two reads compares two
-        // harts' miss counts. That removes one of this test's two confounds; the numbers below
-        // remove the other. See notes/load-sensitive-assertions.md.
-        let hart = crate::cpu::id();
-        let before = timer::missed_ticks_on(hart);
-        timer::spin_for(timer::interval() * 5);
-        let after = timer::missed_ticks_on(hart);
-
-        // The numbers decide, not just the fact. `now - next` is how late the re-arm was: less
-        // than an interval is a slow handler and is our bug; a whole `interval` or more is the
-        // emulator having been descheduled, which says nothing about this kernel. The test runner
-        // passes no `-icount`, so guest time follows host time and both are possible. This is
-        // milestone 78's taxonomy, which the aarch64 twin has applied since 2026-08-15 and this
-        // one did not: a rule-5 parity gap that left the same flake live on one ISA. A slow
-        // handler still fails.
-        let (now, next, misses) = super::miss_detail::last();
-        if after != before {
-            let late_by = now.saturating_sub(next);
-            assert!(
-                late_by >= timer::interval(),
-                "the timer handler is taking longer than a whole tick period, with no lock held. \
-                 missed {} -> {}; last miss re-armed {} counter ticks late against an interval of \
-                 {} ({} misses recorded on this hart). Late by less than one interval means the \
-                 handler itself is slow, which is this kernel's bug.",
-                before,
-                after,
-                late_by,
-                timer::interval(),
-                misses,
-            );
-            crate::println!(
-                "    (missed {} tick(s), re-armed {} ticks late, >= interval {}: the emulator \
-                 was descheduled; not this kernel's bug, not failed)",
-                after - before,
-                late_by,
-                timer::interval(),
-            );
-        }
-    }
+    // **`the_handler_keeps_up_when_no_lock_is_held` was deleted here** (milestone 62, 2026-08-18),
+    // in lockstep with the aarch64 twin, whose comment at the same place in
+    // `kernel/src/arch/aarch64/timer.rs` carries the injection table and the full argument. Rule 5:
+    // an assertion this tree stops trusting on one ISA is not one it keeps on the other, and the
+    // one-day gap in 2026-08-16's round is the record of what the alternative costs.
+    //
+    // In short. What it meant to prove: with interrupts live and no lock held, a missed deadline
+    // would mean the handler itself is too slow. What it measured: the missed-tick delta over five
+    // tick periods, classified by how late the re-arm was, failing under one interval and passing
+    // at one or more. **Its true-positive band and its false-positive band are the same band**: a
+    // handler slow by 1.5 periods failed correctly, a handler slow by 2.5 periods passed while
+    // printing "the emulator was descheduled; not this kernel's bug, not failed", and a real host
+    // deschedule inside that same band failed twice per ISA in milestone 62's acceptance run. From
+    // inside the guest the two causes are one observation and no cut separates them.
+    //
+    // The claim is on `script/icount`, in instructions the host cannot move: the handler bounded
+    // deadline-to-re-armed at `HANDLER_BOUND` against a measured 900 here, `missed_ticks == 0` with
+    // no taxonomy, and since this milestone the re-arm law beside them. `miss_detail` survives,
+    // consumed now by the drift test's unmeasured-window report. See
+    // notes/load-sensitive-assertions.md and notes/instruction-clock.md.
 
     /// **The cost of masking, made visible.**
     ///

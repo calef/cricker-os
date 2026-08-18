@@ -74,6 +74,9 @@ quantization showing (see "Resolution" below), not jitter in the machine.
 
 ## What is asserted, and what each claim rules out
 
+*(There are four. Claim 4 was added on 2026-08-18 by milestone 62, after an injection showed that
+claims 1 to 3 could not see the timer drift bug at all; the section below it is the evidence.)*
+
 ### 1. The timer fired at the deadline the kernel armed
 
 `arrival_instructions` is the distance from the deadline that fired to the handler observing it:
@@ -105,11 +108,19 @@ aarch64 does not pay, so a measurement that stopped short of it would be compari
 spans across the two ISAs.
 
 **This is the quantity `MISSED_TICKS` has always been a coarse proxy for.** A miss is this number
-exceeding one whole tick period, which is 625,000 instructions of virtual time on aarch64 and
-10,000,000 on riscv64. The missed-tick assertions could therefore only ever say "the handler did not
-take ten milliseconds", and could not tell a handler that took ten milliseconds from an emulator
-that was not running for ten milliseconds. The bounds here are two to three orders of magnitude
-tighter and have no second explanation.
+exceeding one whole tick period, which is **10,000,000 instructions of virtual time on both ISAs**:
+ten milliseconds at 100 Hz, and one instruction is one nanosecond. The missed-tick assertions could
+therefore only ever say "the handler did not take ten milliseconds", and could not tell a handler
+that took ten milliseconds from an emulator that was not running for ten milliseconds. The bounds
+here are **about 4,000 times tighter** and have no second explanation.
+
+*(Corrected 2026-08-18. This paragraph said "625,000 instructions of virtual time on aarch64",
+which is the tick interval in **counter ticks** wearing instructions' units: 625,000 counter ticks
+at 16 instructions each is the 10,000,000 above, and the run's own `tick_interval 625000 10000000`
+line prints both numbers side by side. The same slip is in the doc comment on `HANDLER_BOUND` in
+`kernel/src/arch/aarch64/timer.rs`, fixed in the same change, and it carried the understated "more
+than two orders of magnitude" with it. It is the mistake this whole note exists to make hard, made
+in the note: a number in the wrong unit, next to the right one.)*
 
 The bounds live in the arch layer (`ARRIVAL_BOUND`, `HANDLER_BOUND`) because the trap path is the
 arch's own. They are **ceilings with room for ordinary codegen movement, not baselines**: a change
@@ -230,6 +241,35 @@ inside one run**, not two binaries' totals, and it has no variance at all:
 
 The caveat both legs share: the measured span is the **timer handler**, so it answers "what does a
 deadline check cost the tick" and not "what does it cost anything else".
+
+### 4. The armed deadline advanced by exactly one interval per delivered tick
+
+The re-arm law, and it is here because **claims 1 to 3 are blind to a violation of it.** Milestone
+62 injected the defect the aarch64 timer's module header has warned about since milestone 6,
+re-anchoring the grid from `now` inside `rearm` rather than advancing it from the deadline that
+fired: the bug that made 100 Hz configured into about 70 Hz delivered. `script/test` went red.
+**This instrument went green with every number byte-identical to a clean run** (arrival min/mean/max
+1008, handler 1056, `missed_ticks 0`).
+
+The reason is claim 1's own subject. It compares each arrival against *the deadline that fired*, so
+a kernel that re-anchors the whole grid arms the timer with the very word it records and satisfies
+the comparison on every tick forever. Claim 2's span starts at the same place, and claim 3 counts
+misses, of which re-anchoring produces none. Nothing moves.
+
+Here the law needs **no retry loop at all**, which is claim 3 paying for itself. The suite's twin
+must find a window in which `MISSED_TICKS` did not move, because a miss re-anchors the grid on
+purpose, and on a loaded host it sometimes cannot find one in eight tries; that is the whole of
+milestone 62's disposition of it. Virtual time has no deschedules, `missed == 0` is asserted a few
+lines above, and the window is therefore miss-free by assertion.
+
+| | clean | drift injected |
+|---|---|---|
+| aarch64, `deadline_delta` over 64 ticks | 40,000,000 of 40,000,000 | **40,004,032**, red |
+| riscv64, `deadline_delta` over 64 ticks | 6,400,000 of 6,400,000 | **6,400,231**, red |
+
+The excess prices the defect rather than merely detecting it: 4,032 counter ticks over 64 is 63 per
+tick, or 1,008 instructions, which is exactly the arrival latency the same run printed. On riscv64,
+231 over 64 is 3.6 counter ticks, or ~360 instructions, against a printed arrival of 300 to 400.
 
 ## The injections, and what each one settled
 

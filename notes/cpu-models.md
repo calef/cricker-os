@@ -225,6 +225,14 @@ through SBI, so it works on both.
   delivered ticks. `the_handler_keeps_up_when_no_lock_is_held` is the one that stays, because it
   cannot be re-aimed on this instrument; see notes/load-sensitive-assertions.md.)*
 
+  ***And on 2026-08-18 it stopped staying: milestone 62 deleted it on both ISAs.*** "Cannot be
+  re-aimed on this instrument" was the right diagnosis and the wrong conclusion, because the option
+  it did not consider is that an assertion which cannot be aimed at anything the host does not touch
+  has no business on the wall-clock path at all. The claim is `script/icount`'s now, in instructions.
+  So the matrix's exposure here is one assertion smaller than this paragraph says, and the surviving
+  wall-clock timer claim (`ticks_arrive_at_the_configured_rate`'s re-arm law) reports `UNMEASURED`
+  rather than failing when a loaded model denies it a clean window.
+
   Two runs in this milestone did exactly that, and both were worth chasing rather than shrugging at,
   because the whole point of the matrix is that a model-specific failure is real news. **Neither was
   model-specific**, and the evidence is worth keeping:

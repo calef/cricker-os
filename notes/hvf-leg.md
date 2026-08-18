@@ -182,6 +182,12 @@ The assertions that *do* keep wall-clock exposure passed here as well: the handl
 `ticks_arrive_at_the_configured_rate`'s surviving bound. HVF makes them no worse in principle: a
 deschedule of a host thread running a vCPU produces the same missed tick either way.
 
+***Half of that is history as of 2026-08-18.*** Milestone 62 deleted the handler-latency pair on
+both ISAs rather than fixing the taxonomy, and made `ticks_arrive_at_the_configured_rate`'s retry
+budget report `UNMEASURED` instead of failing, so the only wall-clock timer exposure this leg still
+inherits is that report. `script/gates` runs `script/icount` before `script/test`, which means this
+leg is now preceded by an instrument the accelerator cannot influence at all.
+
 ### The settle windows the leg makes weaker, not flakier
 
 Three sites spend 400 yields to "let it settle" and then assert that **nothing more** happened
