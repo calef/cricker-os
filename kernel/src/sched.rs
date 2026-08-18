@@ -3253,36 +3253,21 @@ mod tests {
     ///
     /// For `a_thread_that_never_yields_is_preempted_anyway`, which must not yield (that is the
     /// whole point of it) and is waiting for a *preemption*. A tick is when a preemption can
-    /// happen, so the number of preemption opportunities that went by is what the claim is about,
-    /// and it is the one budget a contended host cannot inflate: descheduling the emulator delivers
-    /// **fewer** ticks over a stretch of wall clock, where a `timer::now()` deadline keeps running
-    /// whether the guest executes an instruction or not. That difference is why the old one-second
-    /// deadline failed on loaded CI runners (notes/load-sensitive-assertions.md).
+    /// happen, so the number of preemption opportunities that went by is what the claim is about.
+    /// Why that unit survives a contended host where a `timer::now()` deadline does not is
+    /// [`crate::testing::TickBudget`]'s argument, and the re-anchoring on migration is its
+    /// mechanism; here the migration is additionally the news this test is waiting for.
     ///
-    /// The tick counter is per core and this thread can be migrated by a steal (§28.3), so a change
-    /// of core re-anchors the budget rather than comparing two counters. A migration means we were
-    /// preempted, which is the news this test is waiting for anyway. If ticks stop arriving
-    /// altogether this does not return, and the harness's 90 s per-test ceiling is the backstop: a
-    /// timer that is not delivering is the arch timer tests' failure to report, not this one's.
+    /// If ticks stop arriving altogether this does not return, and the harness's 90 s per-test
+    /// ceiling is the backstop: a timer that is not delivering is the arch timer tests' failure to
+    /// report, not this one's.
     fn within_ticks(budget: u64, mut cond: impl FnMut() -> bool) -> bool {
-        // Read the core id and its tick count as a pair, re-reading if we moved between them.
-        let sample = || loop {
-            let core = crate::cpu::id();
-            let ticks = crate::arch::timer::ticks();
-            if crate::cpu::id() == core {
-                break (core, ticks);
-            }
-        };
-        let (mut core, mut start) = sample();
+        let mut budget = crate::testing::TickBudget::new(budget);
         loop {
             if cond() {
                 return true;
             }
-            let (now_core, now_ticks) = sample();
-            if now_core != core {
-                core = now_core;
-                start = now_ticks;
-            } else if now_ticks - start >= budget {
+            if budget.expired() {
                 return cond();
             }
             core::hint::spin_loop();

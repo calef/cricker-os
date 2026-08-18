@@ -384,6 +384,82 @@ fn current_test_name() -> Option<&'static str> {
     }
 }
 
+/// **A budget denominated in timer ticks delivered to this core, for a test that has to wait.**
+///
+/// The unit is the whole point (milestone 62). A `timer::now()` deadline keeps running whether the
+/// guest executes an instruction or not, so on a contended host a wall-clock budget shrinks in the
+/// only currency a test cares about, which is guest work. Delivered ticks move the other way: a
+/// descheduled emulator misses deadlines, so **fewer** ticks arrive over the same stretch of wall
+/// clock and the budget stretches under exactly the conditions that made the wall-clock one wrong.
+/// This is the same move the drift twins made in `arch/*/timer.rs` (assert the law, not the rate),
+/// spent on a wait instead of on a clock.
+///
+/// It is a budget rather than a wait loop because the two callers poll differently and both are
+/// right to. `sched::tests::within_ticks` must not yield, since the thing it waits for is a
+/// preemption. `smp::tests::a_migrated_kernel_thread_keeps_its_hart_pointer` must yield, because it
+/// is draining workers that share its core, and it checks a *second* assertion on every turn, so it
+/// cannot be written as a condition handed to somebody else's loop. What the two share is the
+/// budget's arithmetic, and that is all this holds.
+///
+/// **A change of core re-anchors instead of subtracting.** `timer::ticks()` is per core (§11) and a
+/// steal can move this thread between two reads (§28.3), so comparing the counters either side of a
+/// migration compares two unrelated numbers. Re-anchoring is also the honest reading: the budget is
+/// "how many preemption opportunities this core gave me", and after a migration the answer starts
+/// again. The cost is that a thread migrating repeatedly could stretch the budget without bound,
+/// which is why nothing here is the last line of defence: the harness's per-test wall-clock ceiling
+/// is (see the module note, mechanism 2), and it fails the run whatever the ticks say.
+///
+/// # EXAMPLES
+///
+/// ```ignore
+/// // Two seconds' worth of preemption opportunities on a quiet host, and more wall clock than that
+/// // on a busy one.
+/// let mut budget = TickBudget::new(2 * crate::arch::timer::TICK_HZ);
+/// while !done() {
+///     assert!(!budget.expired(), "the workers never drained");
+///     crate::sched::yield_now();
+/// }
+/// ```
+#[cfg(test)]
+pub struct TickBudget {
+    core: usize,
+    start: u64,
+    ticks: u64,
+}
+
+#[cfg(test)]
+impl TickBudget {
+    /// Start a budget of `ticks` timer ticks on whatever core is running now.
+    pub fn new(ticks: u64) -> Self {
+        let (core, start) = Self::sample();
+        Self { core, start, ticks }
+    }
+
+    /// Has the budget run out? Re-anchors and returns `false` if this thread changed core.
+    pub fn expired(&mut self) -> bool {
+        let (core, now) = Self::sample();
+        if core != self.core {
+            self.core = core;
+            self.start = now;
+            return false;
+        }
+        now - self.start >= self.ticks
+    }
+
+    /// Read the core id and that core's tick count as a pair, re-reading if we moved between the two
+    /// reads. Without this the pair can name one core's id and another's counter, which is the
+    /// migration hazard this type exists to handle arriving inside the handler for it.
+    fn sample() -> (usize, u64) {
+        loop {
+            let core = crate::cpu::id();
+            let ticks = crate::arch::timer::ticks();
+            if crate::cpu::id() == core {
+                return (core, ticks);
+            }
+        }
+    }
+}
+
 /// Lets us print a test's name before running it. `core::any::type_name` gives us
 /// the full path of the function, which is close enough to a test name.
 pub trait Testable {

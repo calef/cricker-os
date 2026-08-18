@@ -998,9 +998,26 @@ mod tests {
                 }
             }
 
-            // Drain this wave, checking the invariant throughout. Time-based: an idle hart's yields
-            // return at once under §28, so a fixed spin count would elapse in no time.
-            let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+            // Drain this wave, checking the invariant throughout, and yielding so the workers
+            // sharing this core get their turns promptly rather than only when a tick preempts us.
+            //
+            // **The budget is delivered ticks, not counter time** (milestone 62). A fixed spin count
+            // is out for the reason this module fixed everywhere in 2026-07-30: an idle hart's
+            // yields return at once under §28, so a count elapses in no time. Counter time is out
+            // for the reason milestone 62 exists: `timer::now()` advances while the emulator is
+            // descheduled, so the two seconds this used to allow are two seconds of *host* clock,
+            // of which a loaded host hands the guest a fraction. That is not hypothetical here.
+            // Under `script/repeat-under-load` this assertion failed twice with 59 of 60 workers
+            // arrived, which is a deficit of one worker's ~40 ms against a budget the host had
+            // already spent. Ticks stretch the other way: a descheduled emulator misses deadlines,
+            // so 200 ticks is two seconds when the machine is quiet and longer when it is not. See
+            // `testing::TickBudget` and notes/load-sensitive-assertions.md.
+            //
+            // The workers' own `life` is still counter time, deliberately: it bounds how long a
+            // worker *holds* a hart, and a worker cut short by a descheduled emulator has simply
+            // done less spinning, which costs coverage rather than correctness. This budget is the
+            // one that decides pass or fail.
+            let mut budget = crate::testing::TickBudget::new(2 * crate::arch::timer::TICK_HZ);
             while DONE.load(Ordering::Relaxed) < total {
                 assert!(
                     !BAD.load(Ordering::Relaxed),
@@ -1008,10 +1025,11 @@ mod tests {
                      rode a hart migration (DECISIONS §28; trap.s S-mode tp handling)",
                 );
                 assert!(
-                    crate::arch::timer::now() < deadline,
-                    "migration workers never drained ({}/{} done)",
+                    !budget.expired(),
+                    "migration workers never drained ({}/{} done) within {} delivered ticks",
                     DONE.load(Ordering::Relaxed),
                     total,
+                    2 * crate::arch::timer::TICK_HZ,
                 );
                 crate::sched::yield_now();
             }
