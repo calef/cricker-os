@@ -163,11 +163,18 @@ over `kernel/src/arch`):
 |---|---|
 | Liedtke's original L4 (1993, i486) | ~0 percent, assembly per processor |
 | Pistachio | 80 to 90 percent |
-| **nife `kernel/src`** | **82 percent** (8,489 of 47,525 lines under `arch/`; 79 percent excluding the test and bench wiring) |
+| **nife `kernel/src`** | **82 percent** (8,489 of 47,525 lines under `arch/`; **75 percent** excluding `cfg(test)` code and the bench harness) |
 | seL4, x86 against ARM | ~50 percent |
 
 Hand-written assembly is 1,152 lines, 2.4 percent of the kernel. Rule 1 holds: the only two `asm!`
 hits outside `arch/` are comments describing assembly that was removed.
+
+**The second figure was corrected on the same day it was written.** It first read 79 percent, from an
+exclusion of `user.rs`, `tests.rs` and `bench.rs` only, which is not what "the test wiring" means
+here: `kernel/src/user/` holds 12,561 further lines of `#[cfg(test)]` modules. Excluding all of it
+gives 74.6 percent. That is the number to compare against seL4 and Pistachio, whose figures are for
+shipping kernels, and it moves us from inside Pistachio's band to just below it. The 82 percent
+headline is unaffected, because it counts the whole tree the way a naive count of any kernel would.
 
 **We are at Pistachio's number and are less specialised than seL4.** The retrospective explains its
 own lower figure, and the explanation is not that seL4 is more Liedtke-true by intent: about half of

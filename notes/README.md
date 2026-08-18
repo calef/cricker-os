@@ -893,6 +893,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   the tree's best pair while missing its one genuine finding. The narrow check that ships instead,
   with the limitation named at the same volume as the feature. Also a corrected comment that claimed
   plain `write_volatile` store order was doing work it cannot do.
+- [The L4 lessons, audited against this kernel](l4-lessons.md): Elphinstone and Heiser's 20-year
+  retrospective renders a verdict on each original L4 decision, which makes it auditable rather than
+  inspirational. 15 of 17 applied, one partial, two not, checked file by file. The misses are one
+  cluster wearing three hats: no direct process switch, which forces a rendezvous to queue the
+  receiver rather than switch to it, which is why every thread needs its own 28 KiB kernel stack.
+  Also why milestone 132's 11.2 KiB measurement artifact was a fingerprint of that choice, and the
+  finding that neither miss was ever decided anywhere in the tree.
 - [How portable kernels are written](portability.md): what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.
