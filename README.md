@@ -48,6 +48,43 @@ Status section above made twice.
 At the `$` prompt: `help`, `echo hello`, `worker 7` (spawns a process that returns 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
+## Start here
+
+**A reading order, which is what this page used to leave you to guess at.** There are 403 markdown
+files here and 143 of them are notes; the problem a newcomer has is not missing documents, it is
+that nothing says which one is first. Read these in this order and stop when you have what you came
+for.
+
+1. **Run it.** The block above, in about the time it takes to read the next item. A system you have
+   watched boot is a different thing to read about than one you have not.
+2. **[`CONTRIBUTING.md`](CONTRIBUTING.md)** if you might change something. What this project wants, what
+   it will cost you, what is yours to decide, and what to bring up instead of building.
+3. **[`AGENTS.md`](AGENTS.md)**, which is the project's constitution and is the file most of the
+   rules live in and nowhere else. It addresses whoever is doing the work, human or agent.
+   `CLAUDE.md` at the root is a symlink to it; the two are one file, and the section below says why
+   the name misleads.
+4. **[`notes/capabilities.md`](notes/capabilities.md)**, the one idea everything else is downstream
+   of. If a design choice here looks strange, this is usually the reason.
+5. **[`design/roadmap/`](design/roadmap/README.md)**, the only status in the tree, with a fixed
+   vocabulary and a checker. Anywhere else that claims status is stale by construction.
+6. **[`DECISIONS.md`](DECISIONS.md)**, which is two pages and teaches you to resolve the `§N`
+   citations the rest of the tree is full of. Then
+   [`design/decisions/`](design/decisions/README.md) when you want the argument behind a specific
+   choice, including the ones that were refused.
+7. **[`notes/adding-a-program.md`](notes/adding-a-program.md)**, which is the first thing to do with
+   your hands rather than your eyes. Doing it is how you find out whether you understood 4.
+8. **[`notes/`](notes/README.md)** from here on **by question, not in order**. It is a glossary
+   written while building, one file per question that turned out to be load-bearing, and reading it
+   front to back is a mistake it will happily let you make.
+
+**If you read only two**, make them 3 and 4: the rules, and the idea. Everything else you can look up
+when it bites.
+
+**Provisional, and this list is a claim about what matters**, so expect it to be reordered by
+someone with the standing to make that claim. It came out of milestone 117 (the stranger test),
+whose first two runs both established that the entry point was missing without either one being
+able to say what it should be.
+
 ## What the badge means
 
 The CI badge above is green only when **every** gate passes, and the gates are the argument rather
@@ -187,6 +224,9 @@ script is for](notes/linker-scripts.md), [what QEMU is](notes/qemu.md), and [how
 kernels are structured](notes/portability.md).
 
 ## The rules a contributor is held to
+
+**How to propose a change is [`CONTRIBUTING.md`](CONTRIBUTING.md)**, which is short and links to the
+rules rather than repeating them. The rules themselves are below.
 
 **They are in [`CLAUDE.md`](CLAUDE.md), and its name is misleading**, which milestone 117's first
 stranger run established by skipping it: a 50 KB file called `CLAUDE.md` at the root reads as tooling

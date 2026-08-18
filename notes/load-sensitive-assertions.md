@@ -406,6 +406,22 @@ is not an obstacle. Recommended here, not built here.
   asserts `missed_ticks == 0` with no taxonomy at all. The window survives on the test path, where
   the taxonomy still lives, and that is now the only place it survives. See
   notes/instruction-clock.md.
+- **The panic message contradicts this note, and the message is what a newcomer reads.** Milestone
+  117's third stranger run (2026-08-18) reproduced both assertions independently, on an eight-core
+  laptop at a one-minute load average of 45 to 63 caused by other lanes gating in other worktrees,
+  and spent about an hour reaching a conclusion this file already held. Two things it found are
+  additions rather than repetitions. First, **`timer.rs`'s panic text tells the reader that a
+  re-arm late by less than one interval "is this kernel's bug"**, which is the claim this note's
+  entry above corrects; a developer meeting the failure meets the sentence, not the note, and is
+  sent into a correct handler looking for slowness that is not there. Second, **the sibling test's
+  eight-retry loop also exhausts under sustained contention** (`ticks_arrive_at_the_configured_rate`
+  went red twice at load 60), so retrying the window is not on its own the fix the taxonomy entry
+  above leaves open. Its measured tally was 2 red in 13 aarch64 legs plus 2 sibling reds, against
+  `script/icount` passing on both ISAs at load 46.77 with 1,056 and 800 instructions against the
+  2,500 bound. **The cheapest thing nobody has built**, and it is that run's own recommendation:
+  the harness is in a position to sample `uptime` and print the load average beside a timing
+  assertion's failure, which would make the failure diagnose itself in one line. Recorded rather
+  than fixed, per notes/stranger-test.md.
 - **Scope was five sites, not 39.** The roadmap's scope note counts 39 sites in 7 files matching
   the shape (`wait_for`, or assertions against `free_frames`, `thread_count`, `used()`). The
   other 34 were not audited here; the diagnostic above is the checklist for reading any of them.

@@ -106,7 +106,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   run so the result cannot be graded generously afterwards. The protocol (a fresh context, no
   brief, no help mid-run, every question a defect), the eight-question rubric for the mental
   model, and the honest limit that an agent is not a person, so every number it produces is a
-  lower bound on the friction a human would meet.
+  lower bound on the friction a human would meet. Three runs are recorded. Run 3 is the one whose
+  isolation held (a separate process that could not load the tree's own instructions, verified
+  twice), and the one that found the harness leaking harder than the tree does.
 - [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
   after the suite, report the deepest byte. The inventory (boot, secondary, thread and, since
   milestone 124, per-CPU interrupt stacks), the measured numbers, and the honest limits of a

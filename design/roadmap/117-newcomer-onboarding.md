@@ -1,32 +1,67 @@
 # 117. The stranger test: could someone build this and understand it without asking
 
 **Status: PARTIAL.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
-leave it as an aspiration. The rubric was written 2026-08-14 (notes/stranger-test.md) and run 1 went
-the same day, finding four defects that are fixed and landed. **Run 2 went 2026-08-16** (pull request
-#219) and found four more, also fixed: a Linux setup blocker in `script/bootstrap` and
-`script/ci-qemu`, four corrections to notes/adding-a-program.md, a real `swish` bug in `caps arg`, and
-`design/decisions/89`. What remains is **run 3, and the two predicted defects nobody has fixed**;
-the next paragraph but one says why run 3 is not a formality.
+leave it as an aspiration. The rubric was written 2026-08-14 (notes/stranger-test.md), run 1 went the
+same day, **run 2 went 2026-08-16** (pull request #219), and **run 3 went 2026-08-18**. Three runs,
+eleven defects fixed between the first two, and the two documents the block predicted now exist:
+`CONTRIBUTING.md` at the repository root, and a reading order at the top of `README.md`, both landed
+by run 3's lane and both **provisional**, because a reading order is a claim about what matters and
+those are calef's.
 
-**Gate: NONE.** The instrument exists, and run 3 needs an isolated harness rather than a decision or a
-lane's worth of design.
+**Gate: NONE.** The instrument exists and has now been run three times. What is missing is a
+mechanism that runs it without being remembered, which is rung four holding up the milestone that
+exists to fix rung-four problems.
+
+**Run 3 closed the isolation question, which was the only thing making run 2 unscorable.** Run 2's
+strangers were subagents of a maintainer session whose working directory was the repository, so
+`AGENTS.md` arrived in their context at turn zero and five of the eight rubric rows went unscored.
+Run 3's stranger was a separate process, started with `--safe-mode` from a directory whose *child*
+was the clone, since project instructions load from ancestors and never from descendants. It was
+verified twice rather than assumed, and **all eight rows plus B1 are scored**: five answered, one
+partly, one absent, one induced from instances rather than read.
+
+**It also found the harness leaking harder than the tree does**, which is the finding this block
+should carry forward rather than bury. The run's log files sat in the stranger's own working
+directory under the names `stranger3-stream.jsonl` and `stranger3-stderr.log`, so its first `ls -la`
+told it that it was stranger 3. It disclosed that first when asked, and said the knowledge is why it
+added a program rather than only describing one. **Three runs, three different isolation failures,
+every one of them in the harness rather than in the repository.** Run 4's fix is one line: the logs
+go in a sibling directory.
+
+**What run 3 found, and none of it was fixed in its own lane**, because a run that stops to fix
+things stops measuring and its findings stop being traceable:
+
+- **`notes/adding-a-program.md` is stale again**, two days after run 2 corrected it. Milestone 130
+  deleted the `mkinitrd()` shape its step 4 describes, and `manifest()` is a seventh `grant_plan`
+  edit the list of six omits. Recorded in that page's own `BUGS`. **The page has now been rewritten
+  by two successive strangers and gone stale between them**, which is the argument that this is not
+  a documentation problem: one fact lives in five hand-maintained places, two of the seven edits are
+  compiler-forced, and the two that fail *silently* are both in the unenforced five.
+- **`script/test` is intermittently red on a contended host**, at a measured 2 in 13 aarch64 legs
+  plus two reds of the sibling assertion, at a load average of 45 to 63 caused by other lanes gating
+  on the same machine. The tree already knows this; what run 3 adds is an independent reproduction,
+  the observation that the sibling's eight-retry loop also exhausts, and that **the panic message
+  contradicts the note that explains it** so a developer meeting the failure is told it is the
+  kernel's bug. Recorded in notes/load-sensitive-assertions.md's `BUGS`.
+- **Nothing tells anyone the machine is shared with other lanes**, which is the single most
+  load-bearing fact about any timing result and cost the stranger an hour.
+- **A stranger doing ordinary work reaches no file under `design/decisions/`**, and reaches neither
+  `notes/net.md` nor `notes/capabilities.md`. Two of those carry rubric answers, which is why M2 is
+  absent and M1 only partial.
+- **The rubric itself has aged.** M8 asks for three provenance states and §89 made it four; M1
+  quotes a phrase this tree has never written. Amended in the note rather than defended.
+
+**Why this stays PARTIAL.** The instrument is proven and the two predicted documents exist, but the
+milestone's own sentence is *"fix what the run finds, then run it again"*, and run 3's findings are
+recorded rather than fixed. What is left is small, specific, and listed above.
 
 **This block said "Run 2 is the remaining half" and was falsified thirty-nine minutes later**, when
-pull request #219 merged without touching this file, and it stayed wrong for a day. That is the second
-time this one milestone's status has gone stale in exactly the same way, which is the strongest single
-argument in the tree for §76's defect class being structural rather than careless. Found 2026-08-17 by
-the status-accuracy sweep; the `IN-PROGRESS` token was additionally false because no branch existed,
-the three lanes having been `milestone/117-stranger-test`, `fix/stranger-run-findings` and
-`claude/milestone-117-7ik9e6`, all merged and all deleted.
-
-**Run 3 is owed, and it is the run that would actually measure the mental-model half.** Neither run so
-far did: run 1's rubric was greppable by its own subject, and run 2's stranger was handed `AGENTS.md`
-at turn zero from the maintainer's checkout, which discounts five of the eight rubric rows
-(notes/stranger-test.md:215). Run 3 must be a process that cannot see this repository except through
-the tree it is handed, which is a container or a session whose working directory is the clone
-(notes/stranger-test.md:260). Two of the four defect shapes this block predicted are also still open:
-there is **no `CONTRIBUTING.md`** at the repository root, and `README.md` still states no reading
-order.
+pull request #219 merged without touching this file, and it stayed wrong for a day. That is the
+second time this one milestone's status has gone stale in exactly the same way, which is the
+strongest single argument in the tree for §76's defect class being structural rather than careless.
+Found 2026-08-17 by the status-accuracy sweep; the `IN-PROGRESS` token was additionally false
+because no branch existed, the three lanes having been `milestone/117-stranger-test`,
+`fix/stranger-run-findings` and `claude/milestone-117-7ik9e6`, all merged and all deleted.
 
 **The column said `NOT-STARTED` until 2026-08-16, with run 1 already recorded in three other files.**
 That is §76's failure again and it is worth naming here rather than quietly correcting: the gate
@@ -93,10 +128,17 @@ answers only in a commit message is a question the tree does not answer.
 The output is a **worklist of defects**, and the shapes are predictable enough to name now:
 
 - **Entry point.** `README.md` has eleven sections and no stated reading order. A stranger does not
-  know whether to start at "Try it", "Quick start", or "The notes are the point".
+  know whether to start at "Try it", "Quick start", or "The notes are the point". *(Landed
+  2026-08-18 as a `## Start here` section, provisional. Run 3 is the evidence it was needed and the
+  evidence it is not enough: its stranger built a good order by instinct, reached `AGENTS.md`
+  twelfth from a pointer at line 226, and reached `crates/abi/src/lib.rs`, four syscall numbers and
+  the whole design on one screen, far too late to help it.)*
 - **No `CONTRIBUTING.md`.** GitHub links it from the pull request UI and it does not exist, so the
   answer to "how do I propose a change here" is nowhere. `CLAUDE.md` is the closest thing and it is
-  addressed to an agent, not to a person.
+  addressed to an agent, not to a person. *(Landed 2026-08-18. It links to `AGENTS.md` rather than
+  restating it, because the two have different readers and milestone 118 is shrinking `AGENTS.md`;
+  a second copy would be work in the other direction. Untested: no stranger has seen it, since run
+  3's clone predates it.)*
 - **119 notes with no path through them.** `notes/README.md` is an index, which answers "what exists"
   and not "what do I read first".
 - **The conventions that are load-bearing and unstated for a human**: that a lane is a worktree plus a
@@ -105,6 +147,34 @@ The output is a **worklist of defects**, and the shapes are predictable enough t
 
 **Fix what the run finds, then run it again with a second stranger.** One pass measures; two passes
 show whether the fixes worked, which is the difference between an audit and a milestone.
+
+## What run 3 hands off, 2026-08-18
+
+None of this was done in run 3's lane, on purpose. Each is specified precisely enough to act on, and
+each is recorded next to the feature as well as here, so a reader who never opens this block still
+meets it.
+
+1. **Print the host load average beside a timing-assertion failure.** An afternoon, and it is the
+   cheapest item here by a wide margin. notes/load-sensitive-assertions.md has already established
+   that host load is the discriminator for this whole family and has already measured the rate
+   against a load average; the harness is in a position to sample `uptime` and does not. Today a
+   contended host produces a message that blames the kernel and the reader has to think of `uptime`
+   unprompted, which cost run 3 an hour.
+2. **Correct `notes/adding-a-program.md` step 4**, and count `manifest()` as the seventh
+   `grant_plan` edit. Five minutes, and it belongs to whoever lands the next program, per that
+   page's own convention.
+3. **Stop `timer.rs`'s panic message asserting a false dichotomy.** Fifteen minutes, both ISAs. Do
+   not widen the bound; the tree has rejected that twice and is right. The sentence just should not
+   claim something the code cannot support.
+4. **Adding a program should not need five hand-maintained lists.** A milestone, and it is the one
+   run 3's stranger nominated as the highest-value thing a newcomer could offer. A `Prog` variant
+   could carry its archive name and its manifest as data and both initrd tables could be generated
+   from it. This is a design fork rather than a lane: it is why a page two strangers have now
+   rewritten went stale between them, and by the ladder's own reading it is a rung-one answer to a
+   problem currently answered at rung four.
+5. **Run 4, with the harness's logs in a sibling directory**, and with `CONTRIBUTING.md` and the
+   reading order in the tree it is handed. Neither has been seen by a stranger: run 3's clone
+   predates both.
 
 ## Scope note
 
