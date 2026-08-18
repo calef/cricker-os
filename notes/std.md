@@ -103,6 +103,33 @@ and silently build std from the *unpatched* sysroot.
 target specs, every overlay file, and a patch-logic version) guards the rebuild, so a warm farm and
 its build-std cache survive across runs and only a PAL change forces std to recompile.
 
+### `nife-dev` is global to the machine, and the stamp does not guard it
+
+**The farm is per-worktree; the name is not.** `rustup toolchain link` writes one symlink under
+`$RUSTUP_HOME/toolchains` for the whole user account, so `nife-dev` means whichever worktree ran
+`std-src` last, while every build downstream resolves std through that name rather than through a
+path. Two agent lanes gating at once therefore contend for it, and the loser does not fail: it
+compiles against a farm inside somebody else's worktree.
+
+**A warm stamp used to be enough to skip the link entirely**, which is what made the failure silent.
+The stamp answers *is this worktree's farm built*, and nothing was asking *does `nife-dev` still
+mean it*. On 2026-08-18 lane `55-durability` relinked mid-run and lane `64-more`'s `std_exerciser`
+built against 55's farm; it was caught by a person reading the `Compiling std` path out of the build
+output, and nothing else would have caught it. AGENTS.md had warned about this shape in prose since
+2026-08-01 and the warning is rung four, which is exactly as much as it turned out to be worth.
+
+`std_src` now verifies the link on the warm path and **relinks, loudly, when it points elsewhere**.
+Relink rather than refuse, because the lane calling it is about to build and needs the name to mean
+its own farm; taking the link is what every lane already does by design. What changed is that the
+theft is deliberate and printed, so a foreign `Compiling std` path cannot happen without a line
+above it naming who took what. It also fixes the dangling case AGENTS.md describes, where a pruned
+worktree left `nife-dev` pointing at nothing and unrelated builds failed far from the cause with
+`override toolchain 'nife-dev' is not installed`.
+
+**This does not make concurrent lanes safe, and must not be read that way.** It makes the loss
+visible and self-healing at the next call. A lane whose build is already in flight when another
+relinks still loses; the honest fix is a per-worktree toolchain name, which nobody has priced.
+
 ### The target specs
 
 `targets/{aarch64,riscv64}-unknown-nife.json`, built with `-Zbuild-std` and `-Zjson-target-spec`.
