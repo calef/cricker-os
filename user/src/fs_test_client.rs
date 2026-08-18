@@ -231,8 +231,51 @@ fn smb_verify() -> ! {
     };
     let (c, _) = call(FILE, fs::req(fs::CLOSE, h, 0), 0);
     check((c as i64) >= 0);
-    send(REPORT, fixture::SUCCESS, verdict, 0);
+    send(REPORT, fixture::SUCCESS, verdict, durability_witness());
     exit();
+}
+
+/// **Did the flush the host asked for actually reach the device?** (milestone 55). The third word
+/// of the verify role's report, classified by [`fixture::durability`].
+///
+/// This is the one check in the tree that can tell an honest `VOLUME_FULL_SYNC` from a claimed one,
+/// and the reason it can is *where it runs*. The host prober sent SMB2 `FLUSH` and got a success,
+/// but a success is exactly what the server used to return while doing nothing at all, so that
+/// answer proves nothing about durability. What proves it is the block server's count of completed
+/// device flushes, which [`fs::SYNC`] hands back: nothing in **this** process has synced yet, so a
+/// count that is already past its own first call can only have been moved by the SMB server
+/// answering the host.
+///
+/// Then a second sync, which is a different claim: that each call is a fresh round trip to the
+/// device rather than a number the server remembers. A server that answered a constant passes the
+/// first check on a lucky boot and fails this one always.
+///
+/// It runs on the bound directory (handle 0), because the verb takes any handle the FS server
+/// minted and asks about the storage rather than the node, and this role holds the root.
+fn durability_witness() -> u64 {
+    use fixture::durability;
+
+    let (first, _) = call(FILE, fs::req(fs::SYNC, 0, 0), 0);
+    if (first as i64) < 0 {
+        return match fs_proto::reply_errno(first as i64) {
+            // The device offers no VIRTIO_BLK_F_FLUSH. An honest answer about the machine rather
+            // than a bug here, and it must be reported as its own thing.
+            Some(95) => durability::NO_DEVICE_FLUSH,
+            _ => durability::REFUSED,
+        };
+    }
+    // The count includes this call, so "one" means this process performed the first flush of the
+    // boot and nothing above it ever did. Two or more means somebody flushed before us, and the
+    // only somebody in this boot is the SMB server answering the host prober's FLUSH.
+    if first < 2 {
+        return durability::NEVER_FLUSHED;
+    }
+
+    let (second, _) = call(FILE, fs::req(fs::SYNC, 0, 0), 0);
+    if (second as i64) < 0 || second <= first {
+        return durability::NOT_ADVANCING;
+    }
+    durability::DURABLE
 }
 
 /// **Did the SMB client's `mkdir` make a directory, and is the file inside it?**

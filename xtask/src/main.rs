@@ -2974,6 +2974,27 @@ fn smb_write_leg(
         msg_id += 1;
     }
 
+    // **FLUSH** (milestone 55's durability half), where a backup client puts it: after the write
+    // and before it believes the write. Until this milestone the guest answered it with a polite
+    // yes; now it is a `fs_proto::fs::SYNC` and a `VIRTIO_BLK_T_FLUSH` the device completes, and
+    // this is the only leg that drives that chain from outside the guest.
+    //
+    // **A success here is necessary and nowhere near sufficient**, which is why the real assertion
+    // is somewhere else. This side cannot see whether anything reached the device; all it can say
+    // is that the server did not refuse. The in-guest witness
+    // (`fs_proto::fixture::durability`, read by the kernel's `assert_smb_write_landed`) is what
+    // says the flush actually happened, and it says so by finding the block server's flush count
+    // already advanced before it ran. That count can only have been moved by this command.
+    smb_send(s, &client::flush(msg_id, sid, tid, &fid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "FLUSH after writing: status {:#x}. UNEXPECTED_IO_ERROR here is the durability chain              refusing rather than lying, which is the correct failure: it means either the device              offers no VIRTIO_BLK_F_FLUSH or it rejected the flush. See fs_proto::fs::SYNC",
+            status(&resp)
+        ));
+    }
+    msg_id += 1;
+
     // SET_INFO / FileEndOfFileInformation: cut the tail off.
     smb_send(
         s,
