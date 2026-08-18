@@ -66,7 +66,7 @@ doing, and it is doing it beautifully, which is exactly what stops anyone from f
 three instances are all things this tree has written about at length and not changed: `AGENTS.md`'s
 misleading name, this page's fourth rewrite, and the eight-place program problem whose one-place fix
 is handoff 4 below.
-**Gate: NONE.** For the first time that claim costs one command rather than an afternoon.
+**The harness.** For the first time that claim costs one command rather than an afternoon.
 `script/stranger-test` landed 2026-08-18: a lane that wants to run the test cuts nothing by hand, so
 "a lane could start today" is now true in the sense the token means. What the milestone still owes is
 a run conducted **through** the harness and recorded in notes/stranger-test.md, plus whatever that run
