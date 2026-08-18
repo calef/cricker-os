@@ -129,6 +129,23 @@ measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 [features]
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.
 bench = []
+# The instruction-count instrument (milestone 78): boot under `-icount shift=0,sleep=off`, where
+# virtual time is a deterministic function of instructions retired, and assert the two timing claims
+# no wall-clock test can make. See script/icount and kernel/src/icount.rs. Name provisional.
+#
+# **It implies `bench`, and does not extend it.** The two boots park at the same point, before the
+# tour and before userspace, so they make exactly the same set of functions unreferenced. `bench`
+# already carries that set, spelled out one `cfg` at a time across `main.rs`, `sched.rs`, `user.rs`,
+# `memory.rs` and `trust.rs`. Declaring this feature independent means duplicating every one of those
+# conditions in files every lane touches, to describe a fact that is already described; a crate-level
+# `allow(dead_code)` is the other way to avoid that and DECISIONS §38 refuses it, correctly.
+#
+# What it costs: the icount kernel carries the benchmark code, compiled and never run, because
+# `icount::run` diverges first. Nothing measures this binary against a baseline, so the codegen drift
+# that makes `bench --check` a coarse tripwire is not a cost here. `script/bench`'s own binary is
+# untouched either way, which is the property that actually mattered: a baseline forced to be
+# re-saved by an unrelated instrument is a tripwire that just lost its history.
+icount = ["bench"]
 # The init boot (milestone 19d.2c): userspace init is the boot path and brings up the system's
 # console, rather than the kernel wiring services directly. See script/initboot / xtask.
 initboot = []

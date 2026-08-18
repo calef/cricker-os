@@ -31,6 +31,13 @@
 //! is refused where the bytes arrive rather than wherever a backing happens to look at it, and the
 //! [`share::Share`] seam takes a [`path::Path`] that cannot be constructed without that check.
 //!
+//! **Apple's extensions arrive through the one door SMB2 has for them** ([`create_context`], the
+//! chain a CREATE hangs its extensions off, and [`apple`], which is what the `AAPL` tag in that
+//! chain means). That is milestone 55's first piece: macOS mounts a plain share happily and will
+//! not offer one as a Time Machine destination without this exchange. Every claim it makes is a
+//! claim a client acts on, so [`apple`]'s header lists each bit and why it is set or left clear,
+//! and its `BUGS` is honest about the one that reaches past what the stack backs.
+//!
 //! # Examples
 //!
 //! A whole mount, on the host, in microseconds. This is what the `smb_server` role does with a
@@ -144,6 +151,14 @@
 //! - **ASCII names only.** SMB names are UTF-16LE; this crate matches names whose code units are
 //!   all ASCII and treats anything else as not found. Same shape as `ntlm`'s uppercasing bug: a
 //!   wrong answer rather than a crash, named here where the reader meets it.
+//! - **`ReplaceIfExists = 0` is ignored on a rename**, so a rename always replaces a destination of
+//!   the same kind. `fs_proto::fs::RENAME` offers no way to refuse a collision (its own doc gives
+//!   §42's reason for declining `renameat2`'s `NOREPLACE`), so a client that asked for the rename
+//!   to fail gets a silent overwrite. The wrong direction to fail in, and the fix is in the
+//!   filesystem contract rather than here.
+//! - **No share modes, no oplocks, no leases.** `ShareAccess` is parsed off the wire and never
+//!   consulted, so nothing is ever a sharing violation. That is why `fruit:posix_rename` needed no
+//!   work; it is also why two clients writing one file get whatever the filesystem gives them.
 //! - **One connection served at a time** (the `smb_server` role's shape, recorded here because the
 //!   protocol allows more): the socket contract is synchronous and `MAX_SOCKETS` is 4, so this is
 //!   a per-connection state machine, not a multiplexer. macOS opens one connection per mount.
@@ -153,7 +168,9 @@
 //! standard name plus the `_proto` suffix). `smb` is a term of art in the family the naming tenet
 //! says are already right (`elf`, `pci`, `ntlm`).
 
+pub mod apple;
 pub mod client;
+pub mod create_context;
 pub mod ntlmssp;
 pub mod path;
 pub mod server;

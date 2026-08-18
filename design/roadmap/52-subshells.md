@@ -56,6 +56,49 @@ So once 50 lands, the remaining need is **scoping**, not process duplication.
 That is the same shape as `mv` conflating rename with copy-and-unlink (§42), and `rm` conflating
 unlink with revoke (milestone 47). Separating them has been the right answer twice.
 
+## The use of `fork` that is not a subshell at all (added 2026-08-17)
+
+Everything above answers "what is `( ... )` for". There is a **third** use of `fork`, unrelated to
+shells, that the table does not reach and that this block's own heading ("why that is not a gap to
+fill") should be tested against. Recorded at calef's request after it came up asking what the system
+gives up by having no `fork`; nothing in `design/` or `notes/` had named it.
+
+Three production examples, all doing the same thing:
+
+- **Redis `BGSAVE`** forks, and the child serializes a **frozen point-in-time copy** of the heap
+  while the parent keeps serving. The snapshot is consistent for free, because copy-on-write freezes
+  it at the instant of the fork.
+- **The Android and Chrome zygotes** load a large runtime once, then fork per app or per tab, so each
+  child inherits **already-initialized warm state** at copy-on-write cost rather than paying the
+  initialization again.
+- **PostgreSQL's backend-per-connection** model, for the zygote's reason.
+
+**What these want is not a process.** Build-from-parts already makes processes, and makes them
+faster than `fork` does: `spawn_el0` is ~7.7 µs against Linux `fork`+`exit` at ~19.7 µs
+(notes/benchmarks.md). What these want is **a copy of a running address space**: frozen for the
+snapshot case, warm for the zygote case. This kernel constructs a child from an ELF image and a list
+of grants; **nothing anywhere copies a live heap.** There is no copy-on-write in the kernel at all
+(checked 2026-08-17: no CoW machinery in `kernel/src` or `crates/`, and no aspace-copy method on the
+ABI), so the mechanism is absent rather than merely unexposed.
+
+**Both claims are therefore true at once, and the pairing is the honest form**: we are faster than
+`fork` at making a process, and we cannot do the thing these three programs use `fork` for. The
+benchmark win is not evidence against this gap, because it measures a different operation.
+
+**It is a gap in the analysis, not currently a gap in the system.** Nothing on the roadmap needs it:
+the Time Machine target (55) does not, gitoxide (99) does not, and no milestone names a workload that
+snapshots or zygotes. So this is recorded as a use the design does not serve, with the trigger stated
+rather than the work scheduled: **the day a candidate workload needs a consistent snapshot of its own
+memory, or needs per-child warm start badly enough to measure, this stops being a note.** Redis is the
+obvious such candidate and is on nobody's list.
+
+**It probably wants its own milestone rather than this one.** This block is about `( ... )`, and
+address-space duplication is a kernel question that would still exist with no shell at all. It is
+recorded here because this is the only place in the tree that reasons about not having `fork`, and
+because it sharpens the section below: "copy the endowment" is hard for capabilities, and "copy the
+address space" is a second, separable hard thing. Whether they are one design or two is a question
+for the conversation this block is waiting on.
+
 ## The question with no Unix analogue: duplication is not total
 
 If a subshell is a real child granted "a copy of the parent's endowment", then **what is a copy of a
@@ -92,8 +135,11 @@ the first thing to test in the design conversation.
 
 **Open questions for the conversation**, in the order they probably matter: does derivation beat
 duplication; what happens when an endowment contains a non-duplicable capability; is the isolation
-case common enough to build for at all once 50 lands; and does `( ... )` keep its Unix spelling if it
-means something materially different.
+case common enough to build for at all once 50 lands; does `( ... )` keep its Unix spelling if it
+means something materially different; and, from the section above, **is address-space duplication
+this milestone's problem or its own**, since it is a kernel question that would exist with no shell in the
+tree, and answering it here risks designing a shell feature around a mechanism the shell does not
+need.
 
 **Sequencing.** After milestone 50 (pipes and redirection), because 50 removes most of the
 requirement and changes what is left. **Effort: not estimated**, because the design is not chosen and

@@ -190,7 +190,7 @@ jobs:
       # bare-metal clang (milestone 36, DECISIONS §30). The test job gets this from script/bootstrap;
       # this job does not run bootstrap (it would install QEMU it never uses), so install clang here.
       # Ubuntu's clang carries every LLVM backend, including RISC-V.
-      # shellcheck too: script/lint gates the 41 `#!/bin/sh` scripts <!--count:sh-scripts--> on it.
+      # shellcheck too: script/lint gates the 42 `#!/bin/sh` scripts <!--count:sh-scripts--> on it.
       # (That number is re-derived from the tree by script/lint's counted-claims check; the marker is
       # what makes it a claim a machine keeps honest. See notes/counted-claims.md.) Installed explicitly
       # rather than relying on the runner image shipping it, so the gate cannot quietly vanish when
@@ -307,6 +307,19 @@ jobs:
       - run: script/bench --check
         if: steps.scope.outputs.needed == 'true'
       - run: script/bench --riscv --check
+        if: steps.scope.outputs.needed == 'true'
+
+      # The instruction-count instrument (milestone 78), here rather than in its own job because it
+      # wants exactly what this job already has: the pinned QEMU, the same cache, and the same "a
+      # markdown change cannot move an instruction count" predicate. It costs about seven seconds
+      # for both ISAs, against this job's forty-five minute budget.
+      #
+      # It is not in script/test and it is not in script/gates, and notes/instruction-clock.md
+      # carries the reason: `-icount` gives every vCPU one shared virtual clock, so the instrument is
+      # single-hart, and a suite run there would silently stop proving every cross-core property it
+      # exists for. The honest cost of that choice is that a developer meets a violated timing claim
+      # here rather than before pushing.
+      - run: script/icount
         if: steps.scope.outputs.needed == 'true'
 
   supply-chain:

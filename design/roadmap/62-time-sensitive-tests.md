@@ -6,8 +6,10 @@ other lanes**, chiefly milestone 78's four rounds and milestone 50's shell work,
 to this file. That is why it is PARTIAL rather than NOT-STARTED and PARTIAL rather than BUILT; the
 precedent is milestone 40, whose status said `NOT-STARTED` with two phases shipped for the same reason.
 
-**Gate: NONE.** The remaining work is the acceptance run and the icount instrument, and the icount
-half is shared with milestone 78 rather than gated by it.
+**Gate: NONE.** Both of the things this line used to name are done (2026-08-17): the acceptance run
+ran, and the icount instrument landed with milestone 78, which shared this half rather than gating on
+it. What is left is what the acceptance run found, which is a disposition rather than a build. See
+"What remains" below.
 
 **What is built.** The prescribed fix exists by name: `sched::wait_for`
 (`kernel/src/sched.rs:3233`), "bounded by the CLOCK rather than by a yield count", and
@@ -20,14 +22,24 @@ than against elapsed counter time (`kernel/src/arch/aarch64/timer.rs:382`,
 `testing::note_progress` (`kernel/src/testing.rs:288`), bumped on every IPC rendezvous, wake and
 console line, beside a per-test wall-clock ceiling.
 
-**What remains, and it is why this is not BUILT.** The acceptance run happened on 2026-08-17 and
-**it did not pass**, which is the section below. The icount instrument is still recommended and still
-not built, which is the same residual milestone 78 carries and is now the only thing between this
-block and BUILT: the acceptance run's own verdict is that the two assertions still failing are the
-two that need that instrument and cannot be fixed by a margin. The heartbeat that landed credits work
-by *any* thread rather than per test, and `kernel/src/testing.rs:48` records that this blinded it
-once for real; that limitation is stated where a reader meets the feature, which is what this project
-asks of a known cost.
+**What remains, and it is why this is not BUILT.** Both items in the gate line above were answered
+on 2026-08-17 and the block still is not done, which is worth saying plainly rather than rounding up.
+The icount instrument landed with milestone 78 (the load-sensitive assertions), as `script/icount`;
+its note is notes/instruction-clock.md. The
+acceptance run happened, and **it did not pass**, which is the section below.
+
+So the residual is no longer a missing instrument; it is a **disposition**. `script/icount` asserts
+zero missed ticks on both ISAs, which a contended host cannot falsify and which is strictly stronger
+than either of the two wall-clock assertions that failed the acceptance run. Those two still sit in
+`script/test`, still fail at roughly one run in six at these loads, and no longer carry a claim the
+instrument does not make better. Deciding what they are for now is the work, and it is a per-assertion
+argument of the kind this block and milestone 78 have made five times, **not** a wider bound: the
+acceptance run is evidence against widening, since the retry budget's implicit second claim is already
+asserted properly by the sibling test that passed a line before it panicked.
+
+The heartbeat that landed credits work by *any* thread rather than per test, and
+`kernel/src/testing.rs:48` records that this blinded it once for real; that limitation is stated where
+a reader meets the feature, which is what this project asks of a known cost.
 
 ## The acceptance run, 2026-08-17: 45 runs under load, 36 green
 
@@ -41,7 +53,8 @@ went red**, and the shape of those nine is the result rather than the count:
   eight-attempt retry budget, and `the_handler_keeps_up_when_no_lock_is_held`'s taxonomy cut. Both
   were already named in that note's BUGS section as residuals that only the icount instrument can
   close, and **neither had ever been observed** before this run; one of the two entries called itself
-  "rarer by orders" and has been corrected in place. The perfect ISA symmetry is what says these are
+  "rarer by orders" and has been corrected in place. That instrument now exists, which is what turns
+  these eight reds from a wait into a decision. The perfect ISA symmetry is what says these are
   properties of the assertions rather than of either architecture.
 - **The ninth was a real kernel bug**: a double free of a frame during `DESTROY`'s reclaim of a
   region whose resident was blocked in `recv` (riscv64, one occurrence). Recorded in the BUGS section

@@ -1,13 +1,17 @@
 # 78. The load-sensitive assertions, and the three that measure the wrong thing
 
-**Status: PARTIAL.** Raised 2026-08-03 after a day in which five distinct assertions failed on
-pull requests that changed no executable code, two of them documentation only. Milestone 72 fixed the
-one that was a real bug. What is left is a family, and it is not one problem.
+**Status: BUILT** (2026-08-17). Raised 2026-08-03 after a day in which five distinct assertions
+failed on pull requests that changed no executable code, two of them documentation only. Milestone 72
+fixed the one that was a real bug. What followed was a family rather than one problem, and it took
+five rounds and an instrument.
 
-**Gate: NONE.** What is left is **the icount instrument**, for the two remaining timing claims: that
-SBI fired at the riscv64 software grid's deadlines, and that the handler takes fewer than N
-instructions. Both need `-icount shift=0,sleep=off`, which today lives only on the bench paths
-(`xtask/src/main.rs:6020` and `:6075`) and nowhere on the test path.
+**What closed it: `script/icount`**, on both ISAs. The two claims this block was last left holding
+are asserted there: that the timer fired at the deadline the kernel armed (on riscv64, that SBI was
+armed with the `DEADLINE` word rather than with something else that leaves the array looking right),
+and that the handler costs fewer than N instructions. A third came free and closed a `BUGS` entry:
+**zero missed ticks**, which is only assertable on this instrument, because the miss taxonomy on both
+ISAs exists to tell a slow handler from a descheduled emulator and virtual time has no deschedules.
+CI runs it beside the bench tripwire. See notes/instruction-clock.md.
 
 **Everything in the evidence table below is closed**, and the table is history rather than a
 worklist: the disposition column says where each verdict lives. Read it for the diagnosis it
@@ -154,7 +158,12 @@ assertions remain, and the status stays NOT-STARTED for them.
 *(That last sentence has been overtaken. The verdicts landed and are recorded per assertion in
 notes/load-sensitive-assertions.md; the status is PARTIAL, and the section below is what is left.)*
 
-## What is left: the software timer grid, on the icount instrument
+## What was left, and what closed it: the software timer grid, on the icount instrument
+
+*(Written when it was the remaining work; kept in its own tense, with the outcome at the end of the
+section. `script/icount` is the answer, notes/instruction-clock.md is its note, and the sixth round
+in notes/load-sensitive-assertions.md is the record of building it.)*
+
 
 The timer twins were rebuilt rather than widened, and the rebuild is the model this milestone asked
 for: both tests now assert the **law** directly, that over a window in which `MISSED_TICKS` did not
@@ -185,3 +194,37 @@ deliberately. Its wait is on exactly the property under test, its failure direct
 positive, and moving it to the icount instrument is not an option even in principle: the icount
 bench boots `-smp 1` *because* a shared virtual clock makes multi-hart timing fictional, and a
 cross-core delivery test cannot run on a one-core instrument.
+
+## The outcome, 2026-08-17
+
+Built, on both ISAs, as `script/icount`: a boot mode under `-icount shift=0,sleep=off` where virtual
+time advances by one nanosecond per guest instruction retired and by nothing the host does. It
+asserts the two claims above and one that came free.
+
+| claim | aarch64 | riscv64 | bound |
+|---|---|---|---|
+| deadline to the handler observing it | 1,008 instructions | 300-400 | 2,000 / 1,500 |
+| deadline to the next one armed (the whole handler) | 1,056 | 800-900 | 2,500 / 2,500 |
+| ticks missed over 64 sampled | 0 | 0 | 0 |
+
+The aarch64 numbers are the same on all 64 ticks, minimum equal to maximum, which is the instrument
+proving itself rather than being argued for.
+
+**The riscv64 claim was proved by injection**, twice, with the residual this block named built
+rather than argued about: an implementation that keeps `DEADLINE` on the grid and arms SBI from
+`now()` sends the arrival latency to 420,400 instructions against a bound of 1,500, and one that
+arms it a *fixed* quarter period off the grid (no drift, no misses, the delivered rate still exactly
+100 Hz) reads 2,500,400 on every tick.
+
+**And the prediction attached to those injections was wrong, which is the more useful finding.** The
+existing suite catches both. What it does not do is say what is wrong: the first fails as "the
+handler itself is slow, which is this kernel's bug" on the assertion that broke #204, #210 and #215,
+and the second as "either the host is too contended to observe the grid, or the handler is slower
+than a whole tick period". Both hand a reader the "known or real" judgement this block's own cost
+line is about. The instrument's value is diagnostic certainty rather than detection, and its message
+names the defect.
+
+**Three things it deliberately did not do.** It is not on the test path, and
+notes/instruction-clock.md carries the measured reason (not speed: one shared virtual clock, and
+clock-bound waits costing instructions). It instruments the timer only, since that is where both
+claims are. And the scope note's remaining sites are still unaudited, for the sixth round running.
