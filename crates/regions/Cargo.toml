@@ -6,3 +6,17 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+# The generational table the region names are (notes/generational-names.md). It is what makes the
+# destroy claim single-winner rather than merely first: removing a slot bumps its generation, so the
+# loser's name is dead by the time it looks.
+slots = { version = "0.1.0", path = "../slots" }
+
+# Loom is a dependency of this crate ONLY under `--cfg loom`, which nothing but
+# `script/interleaving-check` sets. Cargo evaluates `cfg(loom)` as false for every real target, so a
+# normal `cargo build`, `cargo test`, `cargo clippy` or `cargo tree` never resolves it and never
+# compiles a line of it. See notes/interleaving.md for what that costs in Cargo.lock, which is the
+# one place it is visible. This is tokio's own gating pattern, for the same reason.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"

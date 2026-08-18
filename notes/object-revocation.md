@@ -269,14 +269,19 @@ timing exposed it.
 
 ## BUGS
 
-- **The regression gate proves the ownership half, not the overlap half.** The literal double free
-  needs two `untyped::destroy` calls to overlap between the refusal check and the slot removal, and
-  no test in this tree can schedule that; the deterministic test asserts the property that makes the
-  overlap harmless (a lent region is never freed by its borrower) rather than the overlap itself.
-  The single-winner claim in `untyped::destroy` is argued from the lock discipline at the call site
-  and is not separately gated. `script/interleaving-check` is the instrument that could gate it, and
-  it covers four crates today (`steal_request`, `clock_proto`, `wake_handshake`, `canary_gate`), none
-  of them this one. The route is the one every previous retrofit took: lift the claim protocol out of
-  `kernel/src/untyped.rs` into `crates/regions`, which already holds `destroy_outcome` and its Kani
-  proofs, and let loom search the orderings. That is a milestone rather than a `BUGS` line, and it is
-  proposed as one.
+- **The regression gate proves the ownership half; the overlap half is loom's** (updated
+  2026-08-18, milestone 135). The literal double free needs two `untyped::destroy` calls to overlap
+  between the refusal check and the slot removal, and no test in this tree can schedule that: the
+  deterministic test asserts the property that makes the overlap harmless (a lent region is never
+  freed by its borrower) rather than the overlap itself. The single-winner claim used to be argued
+  from the lock discipline at the call site and gated by nothing. It is now the whole of
+  `RegionTable::claim_for_destroy` in `crates/regions`, which decides and removes the name in one
+  `&mut self` borrow, and `script/interleaving-check` searches every interleaving of it. The
+  falsification is standing rather than remembered: one harness reconstructs the pre-fix protocol
+  and passes only when loom finds its double free. See [interleaving.md](interleaving.md).
+
+  **What is still argued rather than checked**, because a caveat replaced is not a caveat removed.
+  Loom models C11 rather than aarch64 or riscv64. The model assumes mutual exclusion and says
+  nothing about `IrqSafeMutex` delivering it or about the rank order being right. And it searches
+  who wins the claim, not whether the winner then frees the right pages, which is `destroy_outcome`'s
+  Kani proof and a separate argument.

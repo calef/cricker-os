@@ -403,6 +403,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   was wider than looking needs and what `Rights::ENUMERATE` fixed, and **why there is no `pkill`**:
   a tid is a name, `Tcb` has no `DESTROY`, so the demonstration is asymmetric on purpose and the
   write-up says so rather than dropping a promised comparison.
+- [Scheduled execution](scheduled-execution.md): milestone 129: a cron whose every entry is a grant.
+  An entry is a schedule plus a grant expression checked at registration by the same
+  `grant_plan::plan` the prompt uses, so what a scheduled child will hold is printable before the
+  first tick, which is a sentence Unix cron has no vocabulary for. Why the interesting half is what a
+  schedule is **refused** (`every 1s date` is legal, runs in any crontab, and is turned away here for
+  want of a clock capability), why "the line is wrong" and "this scheduler holds nothing to back it"
+  are two answers and not one, why the fire arithmetic skips a stall instead of catching up, and the
+  one missing kernel primitive that shapes the whole program: there is no timed wait, so a scheduler
+  yield-polls and reaps its children lazily. This is milestone 106's fifth consumer and the first
+  whose whole purpose is a deadline.
 - [The program manifest](program-manifest.md): milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.
@@ -725,6 +735,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   magnitudes. The first real numbers (debug): IPC round trip ~705 ns, call/reply ~886 ns. The L4
   calibration built on them was corrected on 2026-08-04: it compared the kernel-side, debug,
   round-trip number against seL4's EL0, release, one-way number, three errors that partly cancelled.
+  Milestone 38 added filesystem throughput against ext4 at a matched tier and APFS natively: the
+  confined-server tax is 0.07% of a file request, our userspace block server is at parity with
+  Linux's block layer, and every 4 KiB request moves a 128 KiB RedoxFS record.
 - [The PMU, and the two clocks in a core](pmu.md): the cycle counter (`PMCCNTR`) versus the
   generic timer (`CNTVCT`), and why the coarse, boring timer is the one that survives
   virtualization. The reason our bench runs on a laptop and `sel4bench` does not.

@@ -18,7 +18,7 @@
 //! falsifiable by load, which is a different thing from a claim with a generous bound: it changes
 //! what is measured rather than how loosely.
 //!
-//! # The two claims
+//! # The claims
 //!
 //! 1. **The timer fired at the deadline the kernel armed.** On riscv64 this is the one this
 //!    milestone could not previously make: SBI's `set_timer` is write-only, so `DEADLINE` is our own
@@ -30,12 +30,35 @@
 //!    next one is armed. That span is exactly the quantity `MISSED_TICKS` is a coarse proxy for: a
 //!    miss is that span exceeding a whole tick period. Bounding it directly is the assertion the
 //!    missed-tick tests could not make.
+//! 3. **Zero missed ticks**, which falls out for free and closes a recorded BUGS entry rather than
+//!    adding a feature: **under this instrument a missed tick cannot be the emulator.** The taxonomy
+//!    on both ISAs classified a miss by how late it was, and its cut left a window one tick period
+//!    wide where a host deschedule was still called a slow handler. There are no deschedules in
+//!    virtual time, so `missed_ticks() == 0` is assertable here with no taxonomy at all.
+//! 4. **The re-arm law: the deadline advanced by exactly one interval per delivered tick.**
 //!
-//! A third falls out for free and is worth naming, because it closes a recorded BUGS entry rather
-//! than adding a feature: **under this instrument a missed tick cannot be the emulator.** The
-//! taxonomy on both ISAs classifies a miss by how late it was, and its cut leaves a window one tick
-//! period wide where a host deschedule is still called a slow handler. There are no deschedules in
-//! virtual time, so `missed_ticks() == 0` is assertable here with no taxonomy at all.
+//! # Claim 4 was added because this instrument could not see the drift bug (milestone 62)
+//!
+//! Claim 4 is the newest and it is here because **the first three do not subsume the suite's
+//! `ticks_arrive_at_the_configured_rate`, and the record said they did.** Milestone 62's lane
+//! injected the exact defect that test was written for on 2026-08-18, re-anchoring the grid from
+//! `now` inside `rearm` (aarch64), and ran both instruments against it:
+//!
+//! | | verdict |
+//! |---|---|
+//! | `script/test --arch aarch64` | **red**, `timer drift: 20 ticks moved CNTV_CVAL_EL0 off the grid` |
+//! | `script/icount --arch aarch64`, claims 1-3 | **green**, and every number byte-identical to a clean run: arrival min/mean/max 1008, handler 1056, `missed_ticks 0` |
+//!
+//! Byte-identical is the finding rather than merely green. Claim 1 compares the arrival against
+//! **the deadline that fired**, so a kernel that re-anchors the whole grid arms the timer with the
+//! same word it records and the comparison is satisfied on every tick, forever, while the delivered
+//! rate falls to about 70 Hz. Nothing in claims 1-3 has a term that moves.
+//!
+//! So the law is asserted here too, and here it needs no retry loop: claim 3 has already established
+//! that the window contains no miss, and a miss is the only thing that legitimately re-anchors the
+//! grid. The suite's twin needs eight attempts to find such a window and on a loaded host sometimes
+//! never does, which is the whole of milestone 62's disposition; on this instrument the window is
+//! miss-free by assertion.
 //!
 //! # Why it is opt-in, and what that costs
 //!
@@ -250,10 +273,28 @@ pub fn run() -> ! {
     // and the ticks that landed during it are not the ticks under test.
     tick_trace::reset();
     let missed_before = crate::arch::timer::missed_ticks();
-    while tick_trace::count() < SAMPLE_TICKS {
+
+    // A consistent (ticks, deadline) pair, for claim 4. The timer handler runs to completion
+    // between two of this thread's instructions (`-smp 1`, and nothing else is running), so the
+    // two values it maintains are never observed half-updated; what a naive pair of reads CAN
+    // straddle is a whole tick landing in between. Re-read the count until it brackets the
+    // deadline unchanged, which is the same guard the suite's twin uses.
+    let snapshot = || loop {
+        let t = tick_trace::count();
+        let d = crate::arch::timer::deadline();
+        if tick_trace::count() == t {
+            break (t, d);
+        }
+    };
+
+    let (ticks_before, deadline_before) = snapshot();
+    while tick_trace::count() < ticks_before + SAMPLE_TICKS {
         core::hint::spin_loop();
     }
+    let (ticks_after, deadline_after) = snapshot();
     let missed = crate::arch::timer::missed_ticks() - missed_before;
+    let ticks_measured = ticks_after - ticks_before;
+    let deadline_delta = deadline_after - deadline_before;
 
     let (count, arrival_min, arrival_mean, arrival_max, handler_mean, handler_max) =
         tick_trace::snapshot();
@@ -274,6 +315,11 @@ pub fn run() -> ! {
     );
     println!("icount: missed_ticks {missed}");
     println!("icount: early_arrivals {early}");
+    println!(
+        "icount: deadline_delta {} expected {}",
+        deadline_delta,
+        ticks_measured * crate::arch::timer::interval()
+    );
 
     // **Claim 1: the timer fired at the deadline the kernel armed.**
     //
@@ -328,6 +374,28 @@ pub fn run() -> ! {
         missed, 0,
         "icount: {missed} deadlines had already passed when the handler re-armed. Under -icount \
          the host cannot cause that, so it is the handler taking longer than a whole tick period."
+    );
+
+    // **Claim 4: the deadline advanced by exactly one interval per delivered tick.**
+    //
+    // The re-arm law, and the reason it is asserted here rather than left to the suite is that
+    // claims 1-3 cannot see a violation of it at all: a kernel that re-anchors the grid from `now`
+    // arms the timer with the very word it records, so the arrival latency stays at its clean-run
+    // value on every tick while the delivered rate collapses. Milestone 62 measured exactly that
+    // (the table in this module's header), and until 2026-08-18 the roadmap and both notes said
+    // this instrument was strictly stronger than the suite's drift test. It was not.
+    //
+    // No retry loop, and that is claim 3 paying for itself: a miss re-anchors the grid on purpose
+    // (`rearm`'s safety valve), so the law only holds over a miss-free window, and `missed == 0` was
+    // asserted a few lines above. The suite's twin has to hunt for such a window because a loaded
+    // host manufactures misses; virtual time cannot.
+    assert_eq!(
+        deadline_delta,
+        ticks_measured * crate::arch::timer::interval(),
+        "icount: {ticks_measured} ticks moved the armed deadline off the grid. Over a window with \
+         no missed tick the deadline advances by exactly one interval per tick; re-arming relative \
+         to `now` inside the handler instead of from the deadline that fired does exactly this, and \
+         nothing else in this boot can see it."
     );
 
     println!("icount: done");

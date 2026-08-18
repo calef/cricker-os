@@ -6,10 +6,21 @@ other lanes**, chiefly milestone 78's four rounds and milestone 50's shell work,
 to this file. That is why it is PARTIAL rather than NOT-STARTED and PARTIAL rather than BUILT; the
 precedent is milestone 40, whose status said `NOT-STARTED` with two phases shipped for the same reason.
 
-**Gate: NONE.** Both of the things this line used to name are done (2026-08-17): the acceptance run
-ran, and the icount instrument landed with milestone 78, which shared this half rather than gating on
-it. What is left is what the acceptance run found, which is a disposition rather than a build. See
-"What remains" below.
+**Gate: NONE.** The acceptance run ran (2026-08-17), the icount instrument landed with milestone 78,
+and the disposition the run asked for was made (2026-08-18, the section "The disposition" below).
+What keeps this PARTIAL is stated there and is one thing: a repeat count of the tree as it now
+stands, because this block's own BUGS section says a flake cannot be shown fixed by a green run and
+the same standard applies to the change that removed it.
+
+**The premise this block stated was wrong, and the correction matters more than the disposition.**
+The paragraph below used to say that `script/icount` "asserts zero missed ticks on both ISAs, which
+a contended host cannot falsify and which is strictly stronger than either of the two wall-clock
+assertions". Milestone 62's lane checked that by injecting the drift defect rather than by reading
+the code, and **the instrument was blind to it**: `script/test` went red and `script/icount` went
+green with every number byte-identical to a clean run. It was strictly stronger than the
+handler-latency assertion and weaker than the drift one. The instrument now carries the re-arm law
+as its fourth claim, and only then was the disposition made. notes/instruction-clock.md has the
+numbers.
 
 **What is built.** The prescribed fix exists by name: `sched::wait_for`
 (`kernel/src/sched.rs:3233`), "bounded by the CLOCK rather than by a yield count", and
@@ -28,14 +39,10 @@ The icount instrument landed with milestone 78 (the load-sensitive assertions), 
 its note is notes/instruction-clock.md. The
 acceptance run happened, and **it did not pass**, which is the section below.
 
-So the residual is no longer a missing instrument; it is a **disposition**. `script/icount` asserts
-zero missed ticks on both ISAs, which a contended host cannot falsify and which is strictly stronger
-than either of the two wall-clock assertions that failed the acceptance run. Those two still sit in
-`script/test`, still fail at roughly one run in six at these loads, and no longer carry a claim the
-instrument does not make better. Deciding what they are for now is the work, and it is a per-assertion
-argument of the kind this block and milestone 78 have made five times, **not** a wider bound: the
-acceptance run is evidence against widening, since the retry budget's implicit second claim is already
-asserted properly by the sibling test that passed a line before it panicked.
+So the residual was no longer a missing instrument; it was a **disposition**, and it was made on
+2026-08-18. Both assertions are gone from the failing path, neither by a wider bound: one deleted,
+one converted to a reported non-measurement, with the arguments per assertion in
+notes/load-sensitive-assertions.md and summarised in "The disposition" below.
 
 The heartbeat that landed credits work by *any* thread rather than per test, and
 `kernel/src/testing.rs:48` records that this blinded it once for real; that limitation is stated where
@@ -58,7 +65,21 @@ went red**, and the shape of those nine is the result rather than the count:
   properties of the assertions rather than of either architecture.
 - **The ninth was a real kernel bug**: a double free of a frame during `DESTROY`'s reclaim of a
   region whose resident was blocked in `recv` (riscv64, one occurrence). Recorded in the BUGS section
-  of notes/object-revocation.md. It wants its own lane.
+  of notes/object-revocation.md. ***It got its own lane, and it is fixed: PR #316*** (2026-08-18).
+  **It was not riscv64-only**, which is the correction worth carrying rather than the fix: the
+  ownership defect reproduces deterministically on aarch64, and riscv64 is merely where the timing
+  exposed it. Two ingredients were needed. `user_aspace_create` builds an address space inside a
+  region the caller already holds an `Untyped` to, where `AddressSpace::new` carves its own, and
+  both stored a bare `u64` whose `Drop` called `untyped::destroy` unconditionally: two names for one
+  run of memory, with a pin argument that holds only for a drop under `SCHED`, which
+  `sched::finish_switch` releases before dropping. And `untyped::destroy` released the `REGIONS`
+  lock between deciding and removing the slot, so two callers could both pass the refusal check.
+
+  **So this run's ninth red is gone and the eight timing reds are the whole of it**, which makes
+  this block a pure disposition question with no correctness bug behind it. That is a better
+  outcome than it looks: the run's own conclusion was that "the one red worth reading arrived
+  wearing the same colour as eight that were not", and the eight are now dispositioned and the one
+  is fixed.
 
 **Nothing was widened to make this green**, and the run is the argument for not widening: the retry
 budget's implicit second claim is already asserted properly by the sibling test, which passed in the
@@ -74,6 +95,70 @@ because the argument it supports is history: `sched.rs` holds **6** of these spi
 Tree-wide the shape matches 19 sites, but 9 are not test code at all, and none of the 10 in tests has
 the flake-prone shape. They are all "let it settle, then prove nothing more happened", which is a
 negative assertion a loaded host cannot fail in the failing direction.
+
+## The disposition, 2026-08-18: one deleted, one told to say when it measured nothing
+
+The acceptance run ends by naming the question rather than answering it. This is the answer, and it
+is two answers, because the two assertions are not the same kind of thing. The full arguments, the
+injections and the transcripts are in notes/load-sensitive-assertions.md; this is what the block is
+owed.
+
+**The diagnostic this round adds, and it generalises past these two.** The first round sorted this
+family by the **direction** of a failure. That is still the first question to ask. The second is
+**what band of the measured quantity makes the assertion fire, and what else lands in that band.**
+Where the defect and the host produce the same band, no threshold inside it separates them, and the
+only choices are a flake or a false pass. That is not a bound to tune; it is an assertion measuring
+a quantity it cannot attribute.
+
+**`ticks_arrive_at_the_configured_rate`: the law is untouched, the retry budget stops failing.** The
+re-arm law is exact and a contended host cannot falsify it, because a deschedule long enough to slip
+the grid increments the miss count and the window is thrown away and retried. Only the budget's
+exhaustion was load-sensitive, and the assertion said so in its own words ("either the host is too
+contended to observe the grid, or the handler is slower than a whole tick period"): the deciding
+word is that "or", and the guest is the one party that cannot read it. Exhaustion now prints an
+`UNMEASURED` line carrying the miss count and the last miss's lateness, and returns without a
+verdict rather than inventing one.
+
+**`the_handler_keeps_up_when_no_lock_is_held`: deleted, both ISAs.** Its true-positive band and its
+false-positive band are the same band, measured rather than argued. A handler slow by 1.5 tick
+periods failed it correctly. A handler slow by **2.5** periods **passed** it, printing "the emulator
+was descheduled; not this kernel's bug, not failed": a false exoneration, on the worst timer defect
+this kernel could have. A real host deschedule inside that same band failed it twice per ISA in the
+acceptance run above, at 0.56 and 0.83 of an interval. `script/icount` bounds the same handler at
+2,500 instructions against a measured 1,056 and 900 with zero variance across 64 ticks.
+
+**The honest cost, run rather than estimated.** With both applied, the full aarch64 suite exits 0
+under a handler slow by 2.5 periods on every other tick, printing `UNMEASURED` where it used to go
+red. The suite has stopped claiming anything about handler latency. That trade is only defensible if
+the instrument that does catch it is run, so **`script/gates` now runs `script/icount`** (about
+seven seconds for both ISAs, above `script/test` on that script's own cheapest-first rule); CI
+already ran it on every non-documentation change.
+
+**The first instalment of the evidence, taken the same day** (`script/repeat-under-load -n 18 -s 8`,
+tree `01474c8e`, full table in notes/load-sensitive-assertions.md):
+
+| | 2026-08-17, before | 2026-08-18, after |
+|---|---|---|
+| runs / ISA legs | 45 / 90 | 18 / 36 |
+| 1-min load average, min to peak | 26.1 to 63.0 | **16.2 to 116.6** |
+| red at either dispositioned assertion | 8 legs | **0** |
+| green runs | 36 of 45 | 16 of 18 |
+| re-arm law reported `UNMEASURED` | n/a | **9 of 36 legs, 25%** |
+
+The load was harsher than the run that produced the finding, which is the direction that makes a
+green result mean something. Both reds are a **different** assertion, `smp.rs:1010`'s
+`a_migrated_kernel_thread_keeps_its_hart_pointer`, a new member of the family this block is about:
+it gives 60 migration workers two seconds of counter time to drain and 59 arrived. Its fix is this
+block's own prescription, a budget in delivered guest ticks rather than in counter time
+(`sched::within_ticks` exists), and it wants a lane.
+
+**What is still needed to move this block off PARTIAL.** Eighteen runs is not forty-five, and the
+25% figure is the one that wants the bigger count: it is the cost this disposition introduced, it is
+higher than a reader would assume, and it comes from one host. The candidate fix is identified and
+deliberately not taken here (the quarter-second measurement window is far longer than the law needs,
+and shortening it is not a wider bound because the `assert_eq!` is untouched and the defect fails on
+the first tick), because it is a change justified entirely by a rate and this lane's rate rests on
+18 runs. That is the remaining work, and it is a measurement rather than a build.
 
 ## The migration drain, 2026-08-18: the family's newest member, fixed in the prescribed unit
 
@@ -184,7 +269,22 @@ the second.
 - **Deleting the timing assertions would be worse than the flakes.** `ticks_arrive_at_the_configured
   rate` is the test that catches re-arming the timer from `now()` inside the handler, which is a real
   bug this project has a comment about. The goal is tests that fail only when something is wrong, not
-  fewer tests.
+  fewer tests. *(Held, and it decided the 2026-08-18 disposition. That test was kept, in full, and
+  the injection above proves it still catches exactly that bug where the instrument did not. The
+  assertion that WAS deleted is the other one, and the argument for deleting it is that it did not
+  fail only when something was wrong: it failed on a busy host and passed on a handler slow by 2.5
+  tick periods.)*
+- **The re-arm law now has two graders and they disagree about which is authoritative.**
+  `script/test` measures it on a wall clock and may report `UNMEASURED`; `script/icount` measures it
+  in instructions and always answers. A reader who sees the suite's `UNMEASURED` line has to know
+  that the second one exists, which is why the line names it. Nothing checks that the two bounds
+  stay in step, and if the tick interval or the counter frequency ever changed on one path only,
+  they would drift apart silently.
+- **The `UNMEASURED` rate is a new unknown, deliberately taken.** Nothing was tuned to reduce how
+  often the suite fails to find a miss-free window; the quarter-second window and the eight attempts
+  are exactly what they were, so the population of runs that used to go red now goes unmeasured
+  instead. That is the right first move (it changes what is claimed rather than how loosely), but it
+  means the number to watch has changed and the old measurement does not predict it.
 
 **Effort: not estimated**, and deliberately: the count is known (~19 spins plus a handful of clock
 assertions) but how many are mechanical and how many need a rethink is not.

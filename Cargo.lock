@@ -605,6 +605,10 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "regions"
 version = "0.1.0"
+dependencies = [
+ "loom",
+ "slots",
+]
 
 [[package]]
 name = "rustversion"
@@ -796,6 +800,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "timetable"
+version = "0.1.0"
+dependencies = [
+ "grant_plan",
+]
+
+[[package]]
 name = "tock-registers"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,6 +910,7 @@ dependencies = [
  "swap_proto",
  "swish",
  "system_initializer",
+ "timetable",
  "user_rt",
  "video_terminal",
  "virtio",

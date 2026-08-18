@@ -273,6 +273,35 @@ class of failure that remains is one the queue never sees: a flake, and the sche
 (toolchain bump, drift, mutation) which run against `main` on a timer and are not part of any merge.
 Keep it; expect it to speak rarely.
 
+## Squash and rebase merging are disabled at the repository, not only in the queue
+
+**Decided by calef 2026-08-18**, closing a gap between a rule and its enforcement. `AGENTS.md` has
+said *never squash-merge a branch* since the convention was written, and the reason is `git blame`:
+milestone 96's lane put the loader unification in its own commit **ahead of** the migration so that a
+boot failure could not be ambiguous between two changes, and a squash-merge would have destroyed
+exactly that. The merge commit already carries the pull request's title, so `git log --first-parent`
+reads as one entry per piece of work while the detail stays reachable underneath. The clean log costs
+nothing.
+
+**What was actually enforcing it until now was the merge queue's `merge_method: MERGE`**, plus people
+having read `AGENTS.md`. The repository still had `allow_squash_merge` and `allow_rebase_merge` set,
+so the buttons were there and the rule held by configuration coincidence and memory. That is rung two
+propped on rung four, and the same day measured what unenforced policy is worth here: a CI gate that
+could not block a merge let `main` go red for hours, which is the advisory-checks decision waiting
+on its own branch as this is written.
+
+Now `allow_squash_merge=false`, `allow_rebase_merge=false`, `allow_merge_commit=true`. Reversible in
+one API call; the previous settings are recoverable from any repository snapshot.
+
+**This does not change how a lane works, and the distinction is the one worth keeping straight.**
+Squashing *within* a branch is still the rule: commit early and push often, because a pushed branch
+survives a dead session and nothing else does, then squash the checkpoints into the **purposes**
+before reporting. A checkpoint has no reader; a purpose commit has one. What is now impossible is
+collapsing those purposes into one at merge, which is a different act on a different object.
+
+Two exceptions stay unsquashed inside a branch, and they are why this matters: a commit that records
+a correction or a surprise, and a commit whose separateness is itself the argument.
+
 ## BUGS
 
 - **A watcher started from a lane worktree dies when that worktree is pruned, and now refuses to

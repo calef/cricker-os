@@ -83,6 +83,9 @@ ratatui = "ratatui"
 # A crates.io package name (the DEFLATE bindings), cited throughout milestone 64's probe results.
 # The checker splits the trailing digit off and reports `flate` as a misspelling of `flat`.
 flate2 = "flate2"
+# The e2fsprogs command that writes an ext4 filesystem, named in milestone 38's Linux comparison.
+# Same split as `flate2`, one character earlier: the checker takes `mke` and offers `make`.
+mke2fs = "mke2fs"
 # A misspelling ON PURPOSE, and the one entry here that would be a bug to "fix": grant_plan's parser
 # test feeds `parse(b"hlep")` to prove an unknown word becomes a Run command rather than a builtin.
 # Correcting it would delete the test's subject.

@@ -2267,6 +2267,106 @@ pub mod fixture {
         pub const NOT_ADVANCING: u64 = 5;
     }
 
+    /// **The file milestone 38's throughput benchmark writes and reads back.** Not shipped in the
+    /// image: the throughput role creates it (or truncates it, if a previous run left it there),
+    /// which is deliberate rather than incidental, because the sequential-write phase *is* the
+    /// creation and a file the image already carried would have been laid out by the host tool
+    /// rather than by the server under test.
+    ///
+    /// **Provisional name** (2026-08-18, milestone 38): calef names files a reader meets, and this
+    /// one is met by anyone who lists the bench image after a run.
+    pub const THROUGHPUT_NAME: &str = "throughput";
+
+    /// **The shape of milestone 38's throughput measurement**, shared by the client that performs
+    /// it (`user/src/fs_test_client.rs`, the throughput role) and the bench boot that names its
+    /// results (`kernel/src/bench.rs`). Two programs agree on these, so they are a crate and not a
+    /// constant written twice (CLAUDE.md rule 7).
+    pub mod throughput {
+        /// **The transfer unit: one page, which is the most a single `fs_proto` request can
+        /// carry.** Not a tuning choice. A `READ` or `WRITE` moves bytes through the one page the
+        /// client shares with the server, so 4096 is the protocol's ceiling per request, and a
+        /// throughput figure here is therefore "how fast can this architecture move 4 KiB at a
+        /// time", not "how fast can it move a file". Any comparison that lets the other system use
+        /// a larger buffer is measuring a different thing; see notes/benchmarks.md.
+        pub const UNIT: usize = super::super::PAGE;
+
+        /// Transfers per phase. 256 x 4 KiB = 1 MiB, which is small for a throughput benchmark and
+        /// is bounded by the fixture image (16 MiB) rather than chosen for statistics: the write
+        /// phases have to fit beside everything else the image carries, and RedoxFS is
+        /// copy-on-write, so a rewritten block consumes fresh space until the old one is freed.
+        pub const BLOCKS: u64 = 256;
+
+        /// Untimed transfers before each phase: the `OPEN`, the first cold block, and whatever the
+        /// engine touches on its first walk of the file.
+        pub const WARMUP: u64 = 8;
+
+        /// Phase tags, sent as the report's third word so the bench boot names a result rather than
+        /// counting messages. The order they are performed in is the order they are listed, and it
+        /// is forced: the write phase is what creates the file the read phases read.
+        pub const SEQ_WRITE: u64 = 1;
+        /// Sequential read of the file the write phase left behind.
+        pub const SEQ_READ: u64 = 2;
+        /// Read at page-aligned offsets drawn from a fixed-seed PRNG, so a run is reproducible.
+        pub const RAND_READ: u64 = 3;
+        /// Write at those same pseudo-random offsets, in place, over a file that already exists.
+        pub const RAND_WRITE: u64 = 4;
+        /// **A read of the first page of a record.** It was added to confirm a model of where the
+        /// milliseconds go, and it refuted it, which is why it is still here.
+        ///
+        /// The prediction was that a read at the *start* of a record would be much cheaper than one
+        /// in the middle: `read_node_inner` asks for the record at
+        /// `BlockLevel::for_bytes(offset_within_record + len)`, which is level 0 at the start and
+        /// level 5 at the end. **It measures the same as the other two read phases, to within 3%.**
+        /// The reason is one level down: `read_record` reads the block the pointer *stores*, and
+        /// only then checks whether that is as large as the level asked for. A fully written record
+        /// is stored at level 5, so **every read of an ordinary file fetches all 128 KiB**, whatever
+        /// offset it asked for.
+        ///
+        /// That is a stronger result than the one it replaced, and it is what makes the arithmetic
+        /// in notes/benchmarks.md close: a 4 KiB read is 32 block reads, flat.
+        pub const RECORD_READ: u64 = 6;
+
+        /// RedoxFS's record size: `RECORD_LEVEL` 5, so 32 blocks of 4096. **This is the store's
+        /// number, not the protocol's**, and it is here only because [`RECORD_READ`] has to align
+        /// to it. If the vendored engine's `RECORD_LEVEL` ever changes, this phase silently stops
+        /// measuring what it claims to; nothing checks that, and it is the one soft spot in this
+        /// module.
+        pub const RECORD: u64 = 128 * 1024;
+
+        /// **The cost of producing one page of payload**, with no filesystem in it at all.
+        ///
+        /// It is measured and reported because the two write phases pay it inside their timed
+        /// window and cannot avoid it. RedoxFS compresses a record with lz4 and skips a write whose
+        /// record is byte-identical to what is already there, so a benchmark that sends the same
+        /// page twice measures the short circuit and one that sends 32 identical pages into one
+        /// 128 KiB record measures lz4. The payload therefore has to be fresh and incompressible
+        /// per write, which costs 512 stores, and this row is how much. Subtract it to get the
+        /// filesystem's own share.
+        pub const PAYLOAD_FILL: u64 = 5;
+        /// How many phase reports the bench boot waits for.
+        pub const PHASES: usize = 6;
+
+        /// **The client role the bench boot spawns**, which is the one thing here that two
+        /// *binaries* have to agree on rather than two modules: the kernel passes it to
+        /// `fs_service::start` and `fs_test_client` matches on it. The other eight roles are
+        /// literals with comments on both sides, which is what this one would have been.
+        pub const ROLE: u64 = 9;
+
+        /// The name of a phase tag, for the line the bench boot prints. `None` for anything else,
+        /// which is a client that reported a tag this table does not know.
+        pub const fn name(tag: u64) -> Option<&'static str> {
+            match tag {
+                SEQ_WRITE => Some("fs_seq_write"),
+                SEQ_READ => Some("fs_seq_read"),
+                RAND_READ => Some("fs_rand_read"),
+                RAND_WRITE => Some("fs_rand_write"),
+                RECORD_READ => Some("fs_record_read"),
+                PAYLOAD_FILL => Some("fs_payload_fill"),
+                _ => None,
+            }
+        }
+    }
+
     /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk
     /// IPC and before it serves clients. The test waits for it, so a hang in `open` (the blk path)
     /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.

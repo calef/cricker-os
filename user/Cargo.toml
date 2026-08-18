@@ -497,6 +497,16 @@ path = "src/wc.rs"
 test = false
 bench = false
 
+# `timetable` (milestone 129): scheduled execution whose every entry is a grant. A service, not a
+# prompt command: it holds a construction budget and builds supervised children, which is authority
+# no shell should be able to hand out, so it has no `grant_plan::Prog` variant and is spawned at a
+# wiring site instead. Portable, so both ISAs' archives carry it.
+[[bin]]
+name = "timetable"
+path = "src/timetable.rs"
+test = false
+bench = false
+
 # `ps` (milestone 126): the process listing, over a supervision domain rather than over /proc. Its
 # whole authority is one endpoint init endows and the command line cannot name; the listing itself
 # is crates/ps, host-tested. Portable, so both ISAs' archives carry it: the confinement claim is
@@ -572,6 +582,10 @@ sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
 # keeps all the IO; what moved is what a host test can reach. `glob` left this manifest in the same
 # change, because `has_magic` was reached only from the function that moved.
 swish = { version = "0.1.0", path = "../crates/swish" }
+# The scheduler's decision half (milestone 129): the document, the four answers registration can
+# give, and the fire arithmetic. `user/src/timetable.rs` keeps the budget, the counter and the
+# loader; everything a host test or Kani can reach is in the crate.
+timetable = { version = "0.1.0", path = "../crates/timetable" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 
