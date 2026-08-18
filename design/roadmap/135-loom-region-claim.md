@@ -1,11 +1,13 @@
 # 135. The region claim, under loom
 
-**Status: IN-PROGRESS** on `milestone/135-loom-region-claim`. Raised 2026-08-18 out of the double-free
-fix (pull request #316), which closed the bug and said plainly which half of it was not gated.
-
-**Gate: NONE.** Every ingredient exists: loom is already a `cfg(loom)` dependency of four crates,
-`script/interleaving-check` is the runner, and `crates/regions` is already the host-testable home for
-this subsystem's logic. The protocol to model is the one pull request #316 merged.
+**Status: BUILT.** Raised and closed 2026-08-18, out of the double-free fix (pull request #316),
+which closed the bug and said plainly which half of it was not gated. The gate is
+`script/interleaving-check`, which now covers `crates/regions` and searches 1,364 executions of the
+claim across five harnesses. **Verified it can fail**, twice and in two different places: deleting
+the slot removal from `claim_for_destroy` fails three of the five, and moving the parent's child
+count decrement to claim time fails exactly the one harness written for it. A third piece of
+evidence is permanent rather than a demonstration, and is the part worth carrying forward: one
+harness reconstructs the pre-fix protocol and **passes only when loom finds its double free**.
 
 ## In brief
 
@@ -21,7 +23,7 @@ schedule that; #316 said so in the new `BUGS` section of notes/object-revocation
 closes it the way milestone 80 closed the same class three times before: lift the protocol into a
 host-testable crate and let loom search every interleaving.
 
-The work, in three pieces:
+The work, in three pieces, all of them built:
 
 - **Lift the region table out of `kernel/src/untyped.rs` into `crates/regions`**, beside the
   `destroy_outcome` arithmetic Kani already proves. The kernel keeps the I/O (the frame allocator,
