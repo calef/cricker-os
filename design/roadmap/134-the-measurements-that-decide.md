@@ -1,7 +1,11 @@
 # 134. The register of measures: every number this kernel owes itself
 
-**Status: NOT-STARTED.** Raised 2026-08-18 by calef, in one question: *"So what data would enable us
-to make these decisions?"* Both open kernel decisions ended in the same place, that the deciding
+**Status: PARTIAL.** The register exists and holds the tier A and tier B measures below; **none of
+E1 through E4 has been run.** What landed 2026-08-18 is the register itself
+(notes/register-of-measures.md), with the test for what belongs in it and the three states a measure
+can be in, plus the unsafe census calef folded into this block the same day and the `count-at-most`
+ceiling relation that census needed. See "What is built, and what is not" below. Raised 2026-08-18
+by calef, in one question: *"So what data would enable us to make these decisions?"* Both open kernel decisions ended in the same place, that the deciding
 number does not exist, and §96 said the instrument "wants a roadmap block of its own". This is it.
 
 **Gate: NONE.** Tier A is startable today. That is also a correction to the two decisions that raised
@@ -181,6 +185,31 @@ the hardware improves the answer rather than enabling it.
 
 Recorded here rather than by editing those sections, because a recommendation that was wrong is worth
 more standing next to its correction than quietly fixed.
+
+## What is built, and what is not (2026-08-18)
+
+**Built.** notes/register-of-measures.md, which is the block's own subject: the numbers this kernel
+holds itself to (nine gated), the numbers it merely knows (four dated, each with the command that
+re-takes it), and a deliberate-exclusions table where every rejected number names the half of the
+test it failed. The test it settled on is sharper than this block's first draft: **a number belongs
+if something depends on its value and it can move without anybody editing it.** The second half is
+what cuts, because it separates a measure from a decision.
+
+**Also built, folded in at calef's direction the same day**, from a separate question about unsafe:
+the unsafe census, in notes/unsafe-obligations.md, and the `count-at-most` relation in `script/lint`
+that it needed. The census's own result is the argument for having taken it: outside
+`kernel/src/arch/` the raw count went 171 to 747 since 2026-07-15 while the **density fell from 22.8
+to 9.3 per 10,000 lines, at every sample**, so the tree has been getting proportionally safer and
+nothing was measuring it. A single commit two days earlier, `d5a969a2`, moved that count by 94 in
+one change and nothing recorded it.
+
+**Not built: E1, E2, E3 and E4.** Every one of them is still startable today, which is why the gate
+stays `NONE`. The sequencing in this block is unchanged, and E2 remains the cheapest thing here.
+
+**One correction this lane makes to the block above.** The block treats "register" and "experiments"
+as one deliverable. They are not the same size, and separating them is what let the register land in
+a day: the register is a document plus a gate, and E1 through E4 are four benchmark harnesses. A
+future lane should take E2 alone, then E1, rather than reading this block as one piece of work.
 
 ## Scope note
 
