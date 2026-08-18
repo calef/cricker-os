@@ -74,6 +74,55 @@ stranger is asked afterwards what it read and in what order, and what was in fro
 chose. A run whose answer is "the constitution was already there" reports no B1 and no M3, M5, M6 or
 M8, rather than reporting them generously.
 
+### What run 3 changes, decided 2026-08-18 before the run
+
+Run 2's second `BUGS` entry names the one thing run 3 must fix, and it is not the rubric leak:
+**the stranger must be a process that cannot see this repository except through the tree it is
+handed.** Run 2's strangers were subagents of a maintainer session whose working directory was the
+repository, so `AGENTS.md` arrived in their context before they chose to read anything, and five of
+the eight rubric rows went unscored as a result. Everything below is the design that closes that
+hole, written down before the run so it cannot be graded generously afterwards.
+
+**The stranger is a separate process, not a subagent.** A fresh `claude` CLI process, started from
+a shell, with no conversation history and no brief beyond the task. A subagent inherits its parent
+session's project instructions; a separate process does not have a parent.
+
+**Its working directory is the clone's parent, not the clone.** This is the whole mechanism and it
+is one line of shell. Project instructions are loaded from the working directory and its
+*ancestors*, never its descendants, so a process started in `.../run3/` with the repository at
+`.../run3/nife/` is handed no `AGENTS.md` at turn zero. The file is still in its tree, exactly as a
+stranger who cloned from GitHub would find it, and the stranger can open it the moment it decides
+to. **That is the difference the milestone is about**: whether the tree tells a newcomer to read
+the constitution, rather than whether the constitution is good once read. Run 2 could not ask that
+question because the answer was already in front of its stranger.
+
+**The answer key is withheld the same way run 2 withheld it**, because that rule worked as far as
+it claimed: the clone has `notes/stranger-test.md` and its `notes/README.md` entry removed, amended
+into the tip so the working tree is clean and no `git status` line advertises the deletion. Nothing
+else is touched, and the in-tree mentions of runs 1 and 2 stay, because a tree with those cut is not
+the tree under test.
+
+**The journal stays**, with its cost restated rather than rediscovered: a stranger told its
+confusion is the deliverable is watching itself. It writes an append-only log outside the clone,
+before and after each step, because run 2's first attempt died and took its findings with it.
+
+**What this design still cannot give, stated now rather than after the result.** The machine is
+warm, and warmer than run 2's: this is the architect's own laptop, with the pinned nightly, both
+QEMUs, and a populated cargo registry cache already present. **B2 and B4 are therefore not
+measured on the install path at all**, only on whether the documented sequence runs and says true
+things. A cold build half wants a container and is a separate run; claiming this one is it would be
+the generous grading the rubric exists to prevent. The stranger also inherits the operator's
+*global* user preferences file, which mentions no operating system and no project in this tree, and
+the per-project memory directory is keyed to the repository's own path so a clone under `/tmp` does
+not load it.
+
+**And the harness's author is not a stranger, which is the residual and it is not small.** This
+lane's developer has read `AGENTS.md` in full. It wrote the task, chose the isolation, and reads the
+result, so its judgement about what counts as a defect is contaminated even though the stranger's
+answers are not. The mitigations are that the task text is run 1's and run 2's verbatim, the rubric
+predates all three runs, and the stranger's questions are recorded as it asked them rather than
+summarised into findings.
+
 ## The rubric, written 2026-08-14, before the first run
 
 Two halves. Only the first is mechanical.
