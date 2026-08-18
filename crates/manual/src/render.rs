@@ -217,10 +217,16 @@ impl Renderer {
     /// **Is the renderer still inside a fenced code block?**
     ///
     /// True at the end of a document means the document opened a fence and never closed it, which
-    /// is either a defect in the document or a defect in this renderer, and for three weeks it was
-    /// the second: a fence opened inside a block quote could not be closed at all. Every page in
-    /// this repository closes its fences, so the corpus test asserts this is false for all of them,
-    /// which is the guard a subsequence check cannot be. See this crate's `BUGS`.
+    /// is either a defect in the document or a defect in this renderer, and from phase 1 until
+    /// 2026-08-18 it was the second: a fence opened inside a block quote could not be closed at
+    /// all. Every page in this repository closes its fences, so the corpus test asserts this is
+    /// false for all of them.
+    ///
+    /// **It is a partial guard and not the one that holds the bug it was written for**, which was
+    /// measured rather than assumed: reverting that fix ruins notes/manual.md from its own worked
+    /// example onward and this still answers false, because a bare closing fence three sections
+    /// later matches the stuck one. What it does catch is the case where the stuck fence is the
+    /// last one in the page. See this crate's `BUGS`.
     ///
     /// Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-18 and not put to
     /// calef. It is a question about the renderer's state and reads as one at the call site;
