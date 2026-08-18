@@ -410,6 +410,118 @@ one shared page-slice type rather than nine conversions. That is a design questi
 lane. `crates/user_heap`'s is a different flavour and should be judged separately. The `patches/`
 one is in the vendored std overlay, which most gates exclude on purpose.
 
+## The census, and which numbers have a direction (milestone 134)
+
+Everything above is about whether an obligation is *written*. This section is about **how much
+unsafe there is and which way it should go**, which calef raised on 2026-08-18 in one question:
+*"How much unsafe code is there in a code base? Is that something we should be monitoring and
+driving in a particular direction over time?"*
+
+He approved folding it into milestone 134 rather than building it standalone, on the reasoning that
+a standalone census produces another one-time number nobody re-takes. So every number here is
+derived by `script/lint` on every build; none of them is typed. The register that holds them all,
+with the test for what belongs in it, is notes/register-of-measures.md.
+
+### The measurement, and the thing it found
+
+Measured over the Rust that runs on nife, which is every tracked `.rs` file except `vendor/`,
+`patches/`, and the host-side tooling in `bench/host/`, `xtask/`, `tools/`, `fuzz/` and `scripts/`.
+Each exclusion's reason is in `script/lint` beside the derivation; `patches/` is a real hole rather
+than a boundary and the register's BUGS says so.
+
+| | 2026-07-15 | 2026-07-28 | 2026-08-04 | 2026-08-14 | 2026-08-18 |
+|---|---|---|---|---|---|
+| `unsafe {}` outside `kernel/src/arch/` | 171 | 426 | 723 | 763 | 747 |
+| code lines outside it | 7,508 | 19,223 | 58,805 | 64,452 | 80,359 |
+| **blocks per 10,000 lines** | 22.8 | 22.2 | 12.3 | 11.8 | **9.3** |
+| `unsafe {}` inside `kernel/src/arch/` | 34 | 102 | 125 | 134 | 139 |
+| `unsafe impl Send`/`Sync` | 7 | 13 | 17 | 17 | 17 |
+
+**The absolute count more than quadrupled and the density more than halved, falling at every
+sample.** Both facts are true and only the second one is about this kernel's soundness: the first is
+a system being built. That is the whole reason the gate below holds a ratio rather than a count.
+
+Nothing was measuring either. The clearest evidence is a single commit two days before this was
+written: `d5a969a2`, "user_rt: one trap instruction, not forty-eight", took the count from **863 to
+769 in one change**, 10.9% of all non-arch unsafe, by lifting a panic handler that 48 binaries had
+each inlined with two `unsafe` blocks and two SAFETY comments. Its commit message argues from §61
+that a SAFETY comment is an assertion and not a formality, and it is exactly right; what it could
+not say, because no instrument existed, is that the tree had been asserting that particular
+invariant **96 times** and now asserts it once.
+
+### What each number is held to, and why the answers differ
+
+**At most 100** <!--count-at-most:unsafe-density-outside-arch--> unsafe blocks per 10,000 lines
+outside `kernel/src/arch/`, which is one per hundred lines of code. The direction is down, because
+unsafe outside `arch/` is not paying for hardware access: it is a raw syscall, a shared page, or a
+hand-rolled data structure, and each of those has a safe wrapper somebody could write. The ceiling
+is written at a threshold the tree crossed **two days ago** rather than at slack: every sample
+before 2026-08-16 would have failed it. That is what makes it a ratchet instead of decoration.
+
+**At most 17 `unsafe impl Send`/`Sync` claims** <!--count-at-most:unsafe-thread-safety-claims-->,
+and this one has no headroom at all. Each is a hand-written assertion that the compiler is wrong
+about a type, which is the most consequential unsafe in the tree: a wrong one is a data race that
+no test reliably reproduces. The population moved twice in three weeks, so a zero-slack ceiling
+costs a lane one line and buys a written reason for every addition. That is the same trade
+`bench/baseline-aarch64.txt` makes and this tree already respects.
+
+**No target for `kernel/src/arch/`**, which is 139 blocks and rising. Driving that number down means
+either writing assembly wrong or moving it out of `arch/`, and DECISIONS rule 1 says arch code
+belongs there, so a ceiling would be a gate pushing against the architecture. An honest census with
+no direction is the right answer. It is not left as prose, though, because prose is where numbers go
+stale: `script/lint` prints it on every run, asserted never.
+
+**No second `unsafe fn` count.** The `==> unsafe fn contracts` check above already derives and
+prints one, and this section's own earlier "33" has since drifted to 39 in `kernel/` and `crates/`
+without anything noticing, which is the argument for citing the derivation rather than restating it.
+
+### `// SAFETY:` parity is deliberately not a gate
+
+The obvious next check is that every `unsafe {}` block has a `// SAFETY:` comment, compared by
+count. **It should not be built, and measuring it is what settles that**, in two ways that both
+point the same direction.
+
+`clippy::undocumented_unsafe_blocks` already enforces exactly this, per block rather than in
+aggregate, as a hard error through `-D warnings` across all fourteen configurations this script
+builds. A count check cannot be stronger than that; it can only disagree with it.
+
+And it disagrees badly. A regex that looks for `SAFETY:` at the head of the comment block above
+each `unsafe {}` reports 65 undocumented blocks in code the gate compiles clean. Every one read is
+a false positive: the comment is mid-line (`// ... the frame was retyped with GRANT. SAFETY:
+svc.`), or it is above a `#[cfg]` attribute that sits between it and the block, or the block is the
+second on a line the comment already covers. A gate whose failures are all documents that are right
+is the gate somebody deletes, which notes/counted-claims.md names as the way this convention dies.
+
+The residue after those is worth knowing rather than gating: the 15 blocks in
+`patches/std-nife/overlay/` are linted by nothing at all, because that code is compiled into `std`
+by the farm and never by a clippy configuration here. That is a coverage hole, not a comment
+shortage, and it is recorded in the register's BUGS.
+
+### What `user/`'s share is actually made of
+
+`user/` holds 287 of the tree's unsafe blocks, the largest share of any directory, which looks wrong
+for userspace in a capability system. Reading the first token inside each block says what it is:
+
+| shape | blocks | what it is |
+|---|---|---|
+| `invoke(...)` | 114 | one raw capability invocation, the userspace syscall |
+| `read_volatile` / `write_volatile` | 102 | a byte or word through a granted shared page |
+| `from_raw_parts` / `from_raw_parts_mut` | 25 | the same page as a slice |
+| `core::arch::asm!` | 12 | entry stubs and the trap |
+| everything else | ~34 | mixed |
+
+So it is neither raw pointer arithmetic nor a missing abstraction in the usual sense. **Two
+populations, and both are one wrapper away.** The 114 `invoke` sites all call one `unsafe fn` whose
+own `# Safety` section says *"the kernel validates the capability and the method before acting; that
+is its whole job. The caller is trusting the kernel, not the other way around"*, which describes an
+obligation on nobody. It is not simply mismarked: a few methods (`aspace::MAP_INTO` among them) can
+perturb the caller's own address space, so *some* obligation is real. But it is a per-method
+obligation carried by a single all-methods signature, and 114 blocks assert it identically. The 127
+volatile and slice accesses are the same story about granted pages.
+
+Both are the shape `d5a969a2` already fixed once, in one commit, for the panic handler. Neither is
+this milestone's work; the handoff in its lane report proposes it.
+
 ## Re-running the survey
 
 ```sh
