@@ -3,7 +3,18 @@
 **Status: NOT-STARTED.** Raised 2026-08-03. The selection is made and recorded here; the milestone
 completes when the machine is on the desk and has printed a byte over serial.
 
-**Gate: HARDWARE.** **Purchased 2026-08-15 (calef), in transit**: the OptiPlex 7050 Micro
+**Gate: HARDWARE.** As of 2026-08-18 it is the *second* kind the vocabulary now names: **the
+machine is here and the serial module is not** (calef). The OptiPlex arrived; the Dell C4PDJ and the RS-232 chain have not.
+That matters more than a partial delivery usually would, because this milestone's completion
+condition is *"has printed a byte over serial"* and the box has no other way to say anything during
+early bring-up. There is no console before the UART works, so nothing here can start.
+
+**What a lane could do meanwhile: nothing on this block, and something adjacent.** The x86_64 port
+is milestone 19's scope and is explicitly not gated on the purchase, because it starts under QEMU
+TCG the way riscv64 did. So the useful move while the post is in transit is 19 under emulation, not
+19 on this desk.
+
+**Purchased 2026-08-15 (calef), the rest in transit**: the OptiPlex 7050 Micro
 (i5-7500T, 16GB, 256GB NVMe, with its AC adapter, $139), the Dell C4PDJ serial module with its
 cable ($18.88, the with-cable check the earlier draft flagged, answered by the listing's own
 title), and the dev-side RS-232 chain (FTDI USB adapter at 1.5 ft, $15.96, plus a StarTech NM9FF
