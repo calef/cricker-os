@@ -462,25 +462,61 @@ mod tests {
         };
 
         // A miss re-anchors the grid, which is correct behaviour (`rearm`'s safety valve), so a
-        // window containing one proves nothing about the law either way: retry it. Eight
-        // quarter-second windows all containing a miss is not load, it is either a pathological
-        // host or a handler genuinely slower than a tick period, and both deserve a red run.
+        // window containing one proves nothing about the law either way: retry it.
+        //
+        // **Exhausting the budget is not a failure, and milestone 62 settled that on 2026-08-18.**
+        // It used to be. The assertion that stood here read "either the host is too contended to
+        // observe the grid, or the handler is slower than a whole tick period", and the word
+        // deciding between those two is `or`: this is the family's signature confound, a claim
+        // whose truth depends on the host, written from inside a guest that cannot see the host.
+        // The acceptance run fired it four times in forty-five loaded runs, twice per ISA, and
+        // widening the budget is the one fix DECISIONS §61 and this milestone both forbid by name,
+        // because it changes how often you notice rather than what is measured.
+        //
+        // What is kept is everything below, and it is the whole reason this test exists: the
+        // re-arm law is exact, and a host can only cost us the chance to measure it, never the
+        // answer. What is given up is the second, implicit claim, which `script/icount` now
+        // asserts with no host term in it (claim 2, the handler bounded at 2,500 instructions
+        // against a measured 1,056, and claim 3, zero missed ticks) and with the law itself
+        // beside them (claim 4, added by this milestone after an injection showed the instrument
+        // was blind to the very defect this test catches). `script/gates` and CI both run it. See
+        // notes/load-sensitive-assertions.md.
+        const ATTEMPTS: u32 = 8;
         let mut attempts = 0;
-        let (elapsed_ticks, deadline_delta, expected) = loop {
+        let measured = loop {
             let (k0, t0, m0, d0, c0) = snapshot();
             timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
             let (k1, t1, m1, d1, c1) = snapshot();
 
             if k0 == k1 && m0 == m1 && t1 - t0 >= 2 {
-                break (t1 - t0, d1 - d0, (c1 - c0) / timer::interval());
+                break Some((t1 - t0, d1 - d0, (c1 - c0) / timer::interval()));
             }
             attempts += 1;
-            assert!(
-                attempts < 8,
-                "no miss-free measurement window in eight tries: either the host is too \
-                 contended to observe the grid, or the handler is slower than a whole tick \
-                 period (see the_handler_keeps_up_when_no_lock_is_held)"
+            if attempts == ATTEMPTS {
+                break None;
+            }
+        };
+
+        // Loud rather than silent, because a test that quietly measures nothing is worse than one
+        // that flakes: the reader has to be able to tell "the law held" from "the law was not
+        // looked at". The numbers come with it so a human can triage without re-running, which is
+        // what `miss_detail` was added for in the first place.
+        let Some((elapsed_ticks, deadline_delta, expected)) = measured else {
+            let (now, next, misses) = super::miss_detail::last();
+            crate::println!(
+                "    (UNMEASURED: no miss-free window in {} tries, so the re-arm law was not \
+                 tested this run. {} misses recorded on this core, the last re-armed {} counter \
+                 ticks late against an interval of {}. A miss re-anchors the grid, so a window \
+                 containing one proves nothing either way, and whether these misses are a \
+                 contended host or a slow handler is the one question a wall clock cannot answer \
+                 from inside the guest. `script/icount` answers it and asserts this same law with \
+                 no host term in it. Milestone 62; notes/load-sensitive-assertions.md.)",
+                ATTEMPTS,
+                misses,
+                now.saturating_sub(next),
+                timer::interval(),
             );
+            return;
         };
 
         assert_eq!(
@@ -499,59 +535,41 @@ mod tests {
         );
     }
 
-    /// The handler keeps up, **when nothing is holding a lock**.
-    ///
-    /// A missed deadline means a whole tick period elapsed before we re-armed. With interrupts
-    /// live and no critical section in the way, that would mean the handler itself is too slow,
-    /// which at milestone 6 would mean threads losing their time slices.
-    ///
-    /// Measured as a *delta*, not an absolute. The count is deliberately nonzero by now: the
-    /// test below causes misses on purpose.
-    #[test_case]
-    fn the_handler_keeps_up_when_no_lock_is_held() {
-        use crate::arch::timer;
-
-        // Core-scoped, for `ticks_on`'s reason: a migration between the two reads compares two
-        // cores' miss counts. That removes one of this test's two confounds. **The other is not
-        // fixed here and cannot be**: with no `-icount`, a deschedule long enough to pass a
-        // deadline is counted as a miss and the guest cannot tell it from a slow handler, which is
-        // what the numbers below are for. See notes/load-sensitive-assertions.md.
-        let core = crate::cpu::id();
-        let before = timer::missed_ticks_on(core);
-        timer::spin_for(timer::interval() * 5);
-        let after = timer::missed_ticks_on(core);
-
-        // The numbers decide, not just the fact. `now - next` is how late the re-arm was: less
-        // than an interval is a slow handler and is our bug; a whole `interval` or more is the
-        // emulator having been descheduled, which says nothing about this kernel. The test runner
-        // passes no `-icount`, so guest time follows host time and both are possible. This is
-        // milestone 78's taxonomy applied: the deschedule shape stopped failing on 2026-08-15,
-        // after it broke three unrelated pull requests in one day under merge-queue runner load
-        // (notes/load-sensitive-assertions.md carries the story). A slow handler still fails.
-        let (now, next, misses) = super::miss_detail::last();
-        if after != before {
-            let late_by = now.saturating_sub(next);
-            assert!(
-                late_by >= timer::interval(),
-                "the timer handler is taking longer than a whole tick period, with no lock held. \
-                 missed {} -> {}; last miss re-armed {} counter ticks late against an interval of \
-                 {} ({} misses recorded on this core). Late by less than one interval means the \
-                 handler itself is slow, which is this kernel's bug.",
-                before,
-                after,
-                late_by,
-                timer::interval(),
-                misses,
-            );
-            crate::println!(
-                "    (missed {} tick(s), re-armed {} ticks late, >= interval {}: the emulator \
-                 was descheduled; not this kernel's bug, not failed)",
-                after - before,
-                late_by,
-                timer::interval(),
-            );
-        }
-    }
+    // **`the_handler_keeps_up_when_no_lock_is_held` was deleted here** (milestone 62, 2026-08-18),
+    // and this comment is the argument, because a deleted test leaves no trace and the next person
+    // to notice that the timer has no handler-latency test deserves to find out why rather than to
+    // rebuild it.
+    //
+    // What it meant to prove: with interrupts live and no critical section in the way, a missed
+    // deadline would mean the handler itself is too slow, which at milestone 6 means threads losing
+    // time slices. What it actually measured: the missed-tick delta over five tick periods, with a
+    // taxonomy deciding by how late the re-arm was. Less than one interval late was called a slow
+    // handler and failed; a whole interval or more was called the emulator descheduled and passed.
+    //
+    // **Its true-positive band and its false-positive band are the same band**, which is what
+    // makes this a deletion rather than a fix. Both were measured by injection on 2026-08-18, on
+    // this ISA, against `script/icount` run on the same tree:
+    //
+    // | handler slow by | this assertion | `script/icount` |
+    // |---|---|---|
+    // | under 1 period | silent: no miss to classify | fails on the bound, 2,500 instructions |
+    // | 1.5 periods | **fails**, correctly, "late by less than one interval" | fails |
+    // | 2.5 periods | **passes**, printing "the emulator was descheduled; not this kernel's bug, not failed" | fails: handler 25,001,200 instructions, missed_ticks 32 |
+    //
+    // The third row is not a false negative so much as a false exoneration, printed, on the worst
+    // timer defect this kernel could have. And the middle row is the same band in which milestone
+    // 62's acceptance run caught a real host deschedule wearing the slow-handler message twice per
+    // ISA (measured at 0.56 and 0.83 of an interval). Inside the band the assertion cannot tell the
+    // two apart; outside it, it says nothing or says the wrong thing. No cut fixes that, because
+    // from inside the guest a 30 ms handler and a 30 ms deschedule are the same observation.
+    //
+    // The claim now lives on `script/icount`, denominated in instructions, which the host cannot
+    // move: the handler is bounded deadline-to-re-armed at `HANDLER_BOUND` against a measured 1,056
+    // with zero variance across 64 consecutive ticks, and `missed_ticks == 0` is asserted with no
+    // taxonomy at all. That is roughly 4,000x tighter than "did not exceed one tick period" and it
+    // has no second explanation. `miss_detail` survives, now consumed by the drift test's
+    // unmeasured-window report. See notes/load-sensitive-assertions.md and
+    // notes/instruction-clock.md.
 
     /// **The cost of masking, made visible.**
     ///
