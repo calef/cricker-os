@@ -301,8 +301,54 @@ collapsing those purposes into one at merge, which is a different act on a diffe
 
 Two exceptions stay unsquashed inside a branch, and they are why this matters: a commit that records
 a correction or a surprise, and a commit whose separateness is itself the argument.
+## `Blocked-by: #N`: a hold that releases itself
+
+**The problem it solves is ordering, not attention.** `needs-architect` means a person must decide
+something, and it is the only lever the drain had. On 2026-08-18 that lever was reached for twice
+where no decision was owed, and both times it put a false entry on the one queue in this project that
+must not accumulate noise.
+
+The live case: #329 and #324 each carried a file named `97-*.md` under `design/decisions/`. Both were
+green alone. A merge-queue group containing both fails the decisions gate, because two sections
+cannot share a number, so #329 was evicted as `UNMERGEABLE` while its own page reported `CLEAN`.
+
+**Green alone, green alone, red together is not a state any per-branch check can see.** #274 is the
+expensive version of the same shape: it was enqueued and evicted **29 times, 26 of them inside a
+3.5-hour loop**, because #271 landed a doctest calling a method whose arity #274 was changing, and
+git merged both with no conflict marker.
+
+**A generic hold label was considered and refused**, on the failure mode rather than on tidiness. A
+manual label must be removed by whoever remembers, and this tree has the receipts: `needs-architect`
+was left on both #320 and #329 after each had been answered, on one day, and calef found both. **A
+hold that outlives its reason is a false blocker, and a false blocker is worse than none, because it
+is believed.**
+
+So the hold names its own release condition:
+
+```
+Blocked-by: #324
+```
+
+in the pull request body. The drain skips that pull request while #324 is open, and arms it on the
+first pass after #324 merges, **with nobody acting**. If #324 is *closed* without merging, that is
+reported loudly rather than silently released, because it means the thing this was sequenced behind
+is not coming.
+
+**Use it for a mechanical constraint and nothing else.** If a person must decide, the label is still
+the right answer, and the two must not be conflated: one is a queue for calef's attention, the other
+is a fact about two branches.
 
 ## BUGS
+
+- **`Blocked-by:` is matched anywhere in the body, including inside a code span or a quotation.** A
+  pull request that *discusses* the convention, as opposed to using it, will be held. The
+  counted-claims check in `script/lint` solved the same problem by blanking code spans first; this
+  does not, and the cheap fix is available if it ever bites.
+- **It holds the drain, not the queue.** Anyone who enqueues by hand, or arms with `gh pr merge
+  --auto` directly, bypasses it entirely. The drain is the normal path and this covers the normal
+  path; it is not an interlock.
+- **Only the first `Blocked-by:` is read.** A pull request sequenced behind two others can only say
+  so once, and the honest workaround is to name the later one.
 
 - **A watcher started from a lane worktree dies when that worktree is pruned, and now refuses to
   start there** (2026-08-18). `/bin/sh` reads a script lazily, so deleting the file under a running
