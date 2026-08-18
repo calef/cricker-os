@@ -207,3 +207,34 @@ to hit that preemption, so it is the cooperative tier's job (it is listening on 
 endpoint by definition), not the forcible tier's. Proven on both ISAs by
 `destroy_force_kills_a_runaway_and_reclaims_its_region` (`kernel/src/user.rs`): a one-instruction EL0
 runaway, reclaimed out from under itself.
+
+## BUGS
+
+- **`destroy_reclaims_a_region_whose_resident_is_blocked_in_recv` double-freed a frame once, on
+  riscv64, under load, and nothing explains it yet.** Seen 2026-08-17 in milestone 62's acceptance
+  run (notes/load-sensitive-assertions.md), one occurrence in 45 full-suite runs at a one-minute
+  load average between 26 and 63 on an eight-core host, and zero in the quiet run before the loop:
+
+  ```
+  [PANIC] panicked at crates/frames/src/lib.rs:315:9:
+  double free of frame 0x82a3e000
+  ```
+
+  That is `Frames::free`'s deliberate assertion, and its doc comment is right about the stakes: a
+  kernel that keeps running past a double free corrupts memory somewhere else and blames innocent
+  code. So this is a memory-safety bug in the reclaim path, not a flaky test, and **load is the
+  reproducer rather than the cause**. The whole reason the rest of that acceptance run matters is
+  that this red arrived wearing the same colour as eight timing flakes.
+
+  What is known: the test builds a region, blocks its resident in `recv`, and reclaims the region
+  out from under it, so the suspects are the two paths this note describes meeting each other. A
+  blocked waiter is woken with an error (see above), and `DESTROY` reclaims the region's objects;
+  a frame freed by the wake path and again by the region teardown would produce exactly this.
+  **That is a hypothesis and nothing in the log confirms it.**
+
+  What is not known, and what a lane on this should establish first: whether it reproduces at all,
+  whether it is riscv64-only or merely first seen there (§19 says assume not), and whether the
+  frame is a page-table frame or the thread's. One in forty-five is a sighting, not a frequency;
+  assume the window is narrower and reach for `script/repeat-under-load` rather than for a single
+  re-run. `script/interleaving-check` is the other instrument worth pointing at it, since the shape
+  is a race between two teardown paths and loom searches orderings TCG never will.
