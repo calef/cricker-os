@@ -30,7 +30,7 @@ per 4 KiB against 39 to 53 us for Linux's own raw virtio reads on the same devic
 is 46.2 us times a small integer, and nothing was fitted. **The 32x is the entire remaining gap** and
 it belongs to the vendored store's record size, not to the microkernel.
 
-## The two candidate fixes, both irreversible, neither priced against the other
+## The candidate fixes, none priced against the others
 
 1. **A multi-page transfer on the file contract.** `fs_proto`'s transfer unit is one page because
    that is what a request can carry. Milestone 38 measured the neighbouring case: ext4 moves 64 KiB
@@ -40,8 +40,45 @@ it belongs to the vendored store's record size, not to the microkernel.
    store does. Cheaper to reach and it gives up compression's current terms: RedoxFS compresses a
    record with lz4 only when the record exceeds one block, which is always true today.
 
-**Both must arrive priced together**, per `AGENTS.md`'s rule that an irreversible fork gets options
-and their costs rather than a recommendation.
+**All three must arrive priced together**, per `AGENTS.md`'s rule that an irreversible fork gets
+options and their costs rather than a recommendation.
+
+3. **Replace the store** (calef, 2026-08-18, raising it on the pull request that minted this block:
+   *"we should consider if redoxfs is the problem and we should move to a different
+   implementation"*). It belongs in the list, and the first draft of this block was wrong to name two
+   options that both keep RedoxFS without saying that a third existed.
+
+   **What the code says, read rather than assumed.** `RECORD_LEVEL` is 5 and `BLOCK_SIZE` is 4096, so
+   `RECORD_SIZE` is 128 KiB. But **the record level is a per-node field in the on-disk format**
+   (`node.rs`: `pub record_level: Le<u32>`), it is set once at file creation from that constant, and
+   every read and write path honours the **node's** value rather than the constant
+   (`transaction.rs`: `let record_level = node.data().record_level();`). Directories already get 0.
+
+   So a smaller record for a file is **a creation-time choice the format already supports**, not a
+   format change and not a fork of the vendored crate. That does not make it free, and the costs are
+   named in option 2, but it means the 32x is a **parameter this store exposes** rather than a
+   property it imposes. On the evidence available today, RedoxFS is not structurally the cause.
+
+   **What would actually justify replacing it** is therefore something this milestone has not
+   measured: a cost that survives after the record level is tuned. §46 puts a dependency of this size
+   in the expensive column (*"adding one is a morning; removing one after a subsystem is built on it
+   is a project"*), and RedoxFS is the case §46 itself cites for vendoring, where correctness is won
+   by exposure rather than by reading a spec.
+
+## The measurement that should come before any of the three
+
+**Nobody has measured throughput against record level, and it is the cheap experiment that decides
+between all three options.** Sweep the per-file record level against the transfer size and the access
+pattern, on the harness milestone 38 already built. If a lower level closes most of the 32x, option 2
+is a small change to a constant at creation and options 1 and 3 are unnecessary. If it does not, the
+number that survives is the argument for one of the others, and it is an argument nobody can make
+today.
+
+**And it should re-ask which workload this milestone is optimising**, because milestone 38 measured
+4 KiB by convention rather than by need. A Time Machine backup writes **band files**, which are large
+and sequential, and a 128 KiB record is plausibly right for those. It is possible that the customer
+path wants the current setting and that the 4 KiB figure is the atypical case. That would not make
+the gap uninteresting, but it would change what "close the gap" means and which milestone owns it.
 
 ## What is out of scope, deliberately
 
@@ -67,6 +104,10 @@ measurements rather than asserted, and this is the measurement that most weakens
   an all-zero file reads and writes several times faster than an incompressible one. Milestone 38's
   figures use an incompressible payload, which is the conservative choice and the one a backup
   workload resembles; a re-measurement that quietly changes payload is not comparable.
+- **This block asserts that RedoxFS is not the cause, on a reading of the code rather than on a
+  measurement.** The per-node `record_level` field is real and is honoured on both paths; that a
+  lower level actually closes the gap is a prediction, and the sweep above is what would test it.
+  Nobody has run it.
 - **`Transaction::write_node` compares before writing**, so rewriting a block with identical contents
   costs a read and no write. A benchmark that sends one constant page repeatedly measures the
   comparison rather than the store.
