@@ -21,8 +21,10 @@
 //!   so every scheduled child is born supervised (DECISIONS §26), and invoked with
 //!   `Endpoint::REAP` to collect the corpses (§32).
 //! - `a0`: how many fires to perform before summarising and exiting. `0` means forever.
-//! - `a1`: the length of the initrd archive, which the spawn site mapped read-only at
-//!   [`INITRD_VA`].
+//! - `a1`: the length of the archive the spawn site mapped read-only at [`INITRD_VA`]. **Not the
+//!   initrd**: it holds exactly the programs this document will ever build, because the plan is
+//!   computable before the first tick and so the endowment can be narrowed to it. This process
+//!   audits that and says what it found, in the line after the plan.
 //!
 //! **It wants a bigger stack than a small program does**, and a spawn site has to say so: a
 //! `grant_plan::Endowment` is about a kilobyte (mostly the name set a directory grant can carry) and
@@ -34,6 +36,19 @@
 //! **And nothing else.** No clock page, no directory, no console, no network, no device. That list
 //! is not modesty: it is why a scheduled `date` in `timetable.conf` is refused at registration
 //! rather than run, and why the refusal names the timetable rather than the line.
+//!
+//! # The archive is narrowed to the plan, and this process says so
+//!
+//! `Registry::programs` is the complete set of programs the document will ever start, and it is
+//! known before anything fires. So the spawn site builds an archive of exactly that set and hands
+//! *that* over, rather than the initrd: after milestone 129's second stratum this process cannot
+//! load `date`, `ps`, `swish` or anything else it will never run, even though it holds a working
+//! image loader.
+//!
+//! It cannot narrow its own endowment, so what it does instead is **measure it** and print the
+//! answer next to the plan (`timetable::Audit`). A scheduler handed the whole initrd still works
+//! and says a different sentence, which is the property worth having: the width of the endowment is
+//! a line on the console rather than a fact only the spawn site knows.
 //!
 //! # The loop, and the one thing it cannot do
 //!
@@ -71,18 +86,31 @@
 //!   worse than it is for a shell: at a prompt the person who typed the command is sitting there and
 //!   can press `^C`, and behind a schedule there is nobody.
 //!
-//! - **It holds the whole initrd archive, which is wider than its plan.** The set of programs it
-//!   will ever build is fixed at registration and printable (`Registry::programs`), but the
-//!   *capability* it holds is the archive, so a compromise reaches any program in it. The narrower
-//!   shape exists in this tree already: `user/src/spawner.rs` is handed one image and cannot be
-//!   asked to build anything else. Doing that here needs the spawn site to hand over one image per
-//!   admitted entry, which needs a sub-archive built where the timetable is spawned; it is a
-//!   milestone rather than a drive-by, and it is proposed in the lane report.
+//! - **The narrowing is to the plan, not to one image per entry.** `user/src/spawner.rs` is handed
+//!   a single image and "build me program X" is not a thing that can be asked of it; this is handed
+//!   an archive and can still name anything in it. The residual is therefore the *union* of the
+//!   plan's programs rather than one program per entry, so a document admitting three programs
+//!   leaves an instance of one able to reach the other two's images. Closing that needs a
+//!   capability per entry rather than one per timetable, which is a shape this tree does not have.
 //!
-//! - **`--mem` entries are refused.** `Held::mem_pages` is zero, so an entry naming a memory grant
-//!   is `Unbacked::Memory` even though this process holds a budget. Backing one means splitting the
-//!   grant out of the instance's own region so that a single `DESTROY` still reclaims both, which is
-//!   a small change and an untested one; `crates/timetable` supports it and its host tests cover it.
+//! - **`--mem` entries are refused**, and the mechanism the roadmap sketched for backing one does
+//!   not work. `Held::mem_pages` is zero, so an entry naming a memory grant is `Unbacked::Memory`
+//!   even though this process holds a budget.
+//!
+//!   The sketch said to split the grant out of the instance's own region "so a single `DESTROY`
+//!   still reclaims both". **The kernel refuses exactly that**: `regions::destroy_outcome` returns
+//!   `Refused` for any region with a live child, Kani proves it, and `sched::reap_supervised` hands
+//!   that refusal straight back, so a corpse whose region carries a split grant can never be
+//!   collected until the grant is destroyed first.
+//!
+//!   What the nesting *does* buy is the only correlation available, which is why it is still the
+//!   right shape: a refused reap names the instance that carried a grant. Nothing here can pair a
+//!   death with a grant otherwise, because a builder is never told its child's tid
+//!   (`supervision_proto::build_child` hands back a TCB capability, and `abi::tcb` has no method
+//!   that reads one out), so the only fact a supervisor has about a death is the tid the kernel
+//!   stamped on it. What remains is therefore a decision rather than wiring: **how many `--mem`
+//!   instances may be outstanding at once**, since the refusal only identifies one. `crates/timetable`
+//!   already plans and refuses memory grants against `Held::mem_pages`, and its host tests cover it.
 //!
 //! - **Nothing is persistent.** Entries live in a document compiled into this binary, and both die
 //!   with the boot. Milestone 129's block records this and points at whatever milestone gives
@@ -174,6 +202,23 @@ pub extern "C" fn _start(fires_wanted: u64, initrd_len: u64, _a2: u64) -> ! {
     let Ok(fs) = nifefs::Fs::parse(archive) else {
         done(E_ARCHIVE)
     };
+
+    // **What the archive it was handed reaches, next to what the plan will build.** The plan above
+    // says what each scheduled child holds; this says what *this* process holds, and the two are
+    // different questions. A scheduler handed the whole initrd has a one-program plan and a
+    // capability that reaches every program in the tree, and nothing in the plan would say so.
+    //
+    // It measures rather than enforces, because a process cannot narrow its own endowment: the
+    // width is the spawn site's decision (`kernel/src/user/timetable_tests.rs` builds a sub-archive
+    // from exactly `Registry::programs`), and saying it out loud is what makes the decision
+    // checkable from in here rather than only from out there.
+    let mut audit = timetable::Audit::of(&reg);
+    for entry in fs.entries() {
+        if let Some(name) = entry.name_str() {
+            audit.saw(name);
+        }
+    }
+    audit.write(&mut say);
 
     // Resolve every admitted entry's program **now**, so a plan that names a program the archive
     // does not carry fails loudly at startup rather than as a fire that quietly does not happen.

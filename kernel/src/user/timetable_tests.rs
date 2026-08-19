@@ -32,6 +32,64 @@ const TIMETABLE_STACK_PAGES: u64 = 32;
 /// the end of the stream without the reader having to guess where each stops.
 const ARMED: &str = "timetable: armed";
 
+/// **The programs the timetable's document will ever build**, and the whole of what this spawn site
+/// hands over.
+///
+/// The archive below holds exactly these and nothing else, which is milestone 129's second stratum:
+/// `timetable::Registry::programs` is complete and computable at registration, so the endowment can
+/// be narrowed to it instead of being the whole initrd.
+///
+/// **It is a written list rather than a computation here, and that is forced rather than chosen.**
+/// Computing it means calling `timetable::Registry::register`, which means `grant_plan::plan`, and
+/// those two carry 21632-byte and 12048-byte frames: `Registry` is a `[Row; MAX_ENTRIES]` and a
+/// `Row` holds a kilobyte of `Endowment`. That is exactly the shape `script/stack-frame-check`
+/// exists to refuse, because a frame larger than the 4096-byte guard page can step `sp` past the
+/// guard without touching it and land in the neighbouring thread's stack. The sizes are fine in
+/// `user/src/timetable.rs`, which is a process with a 32-page stack and says so; they are not fine
+/// in this binary, and no threshold should be widened to make them fine.
+///
+/// **What keeps the list honest is a host test rather than a comment.**
+/// `timetable::tests::the_archive_a_timetable_holds_is_measured_against_what_it_will_build` registers
+/// the same `user/timetable.conf` against the same `Held::default()` and asserts the plan is exactly
+/// this set, by name. Editing the document without editing this list fails that test in
+/// milliseconds, on the host, with no emulator. The program itself then audits what it was handed
+/// and prints the answer, and the assertions below read it, so a wrong list fails twice.
+const PLANNED_PROGRAMS: [&str; 1] = ["worker"];
+
+/// **Room for the archive this spawn site builds**, which is not the initrd.
+///
+/// Sized for a handful of debug-build user programs (each is under a megabyte) plus nifefs's six
+/// directory blocks. It is a fixed buffer because the kernel has no heap: `alloc` is not linked
+/// here, deliberately, and a test that needed one would be the first. Overflowing it is a loud
+/// `Error::OutOfBounds` from `nifefs::write_image` rather than a corrupt archive.
+///
+/// It is a `static`, not a local, for the reason the list above is a list: four megabytes on the
+/// stack is four megabytes past the guard page.
+const NARROWED_ARCHIVE_BYTES: usize = 4 << 20;
+
+/// The narrowed archive itself. `#[cfg(test)]` reaches this module, so this costs nothing in a
+/// shipping kernel; it is `.bss`, so it costs no image bytes either.
+static mut NARROWED_ARCHIVE: [u8; NARROWED_ARCHIVE_BYTES] = [0; NARROWED_ARCHIVE_BYTES];
+
+/// **Build an archive holding exactly [`PLANNED_PROGRAMS`], and nothing else.**
+///
+/// The timetable is handed this instead of the initrd, so a process whose document admits one
+/// program cannot load the other fifty-six. It copies images out of the initrd into a fresh archive;
+/// the initrd is untouched.
+fn narrowed_archive() -> &'static [u8] {
+    let mut files: [(&str, &[u8]); PLANNED_PROGRAMS.len()] = [("", &[]); PLANNED_PROGRAMS.len()];
+    for (i, name) in PLANNED_PROGRAMS.iter().enumerate() {
+        let bytes = program(name).expect("a planned program is not in the initrd archive");
+        files[i] = (name, bytes);
+    }
+
+    // SAFETY: single-threaded test setup; this is the only reference taken to the buffer, and the
+    // slice returned below is read-only from here on.
+    let buf = unsafe { &mut *core::ptr::addr_of_mut!(NARROWED_ARCHIVE) };
+    let len = nifefs::write_image(&files, buf).expect("the narrowed archive does not fit");
+    &buf[..len]
+}
+
 /// **Spawn the timetable the way a boot would**, and hand back the three endpoints it is wired to.
 ///
 /// Deliberately the same endowment shape `spawn_init` and `c_seam_tests::spawn_confiner` use (the
@@ -40,8 +98,12 @@ const ARMED: &str = "timetable: armed";
 /// below, which is the same list `user/src/timetable.rs`'s header states and the reason a scheduled
 /// `date` in the shipped document is refused.
 fn spawn_timetable(fires: u64) -> (EpId, EpId, EpId) {
-    let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
-    let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+    // **Not the initrd.** The archive this process is handed holds exactly the programs its own
+    // document will ever build; see [`narrowed_archive`] for why the spawn site is the only place
+    // that decision can be made.
+    let archive = narrowed_archive();
+    let archive_len = archive.len() as u64;
+    let archive_pages = archive_len.div_ceil(FRAME_SIZE);
     let bytes = program("timetable").expect("no timetable program in the initrd archive");
     let elf = Elf::parse(bytes).expect("timetable is not loadable");
 
@@ -53,7 +115,13 @@ fn spawn_timetable(fires: u64) -> (EpId, EpId, EpId) {
         })
         .sum::<u64>()
         + 1
-        + initrd_pages / 512
+        // The archive is **copied** into fresh pages rather than shared with the initrd's, so it
+        // costs the address space a page each rather than only the tables reaching them. That is
+        // the price of the narrowing: there is no capability in this system for "these blocks of
+        // that archive", so a narrower endowment is a smaller archive, and a smaller archive is
+        // bytes somebody has to own.
+        + archive_pages
+        + archive_pages / 512
         + TIMETABLE_STACK_PAGES
         + 8;
     let mut space = AddressSpace::new(content).expect("no memory for the timetable");
@@ -63,14 +131,13 @@ fn spawn_timetable(fires: u64) -> (EpId, EpId, EpId) {
             .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
             .expect("could not map the timetable's stack");
     }
-    for i in 0..initrd_pages {
-        space
-            .map_physical(
-                INITRD_VA + i * FRAME_SIZE,
-                initrd_start + i * FRAME_SIZE,
-                Flags::user_rodata(),
-            )
-            .expect("could not map the initrd");
+    for i in 0..archive_pages {
+        let page = space
+            .map_new(INITRD_VA + i * FRAME_SIZE, Flags::user_rodata())
+            .expect("could not map the narrowed archive");
+        let from = (i * FRAME_SIZE) as usize;
+        let to = (from + FRAME_SIZE as usize).min(archive.len());
+        page[..to - from].copy_from_slice(&archive[from..to]);
     }
     let aspace = readopt_user_aspace(space).expect("register the timetable aspace");
 
@@ -109,7 +176,7 @@ fn spawn_timetable(fires: u64) -> (EpId, EpId, EpId) {
     assert_eq!(s, 3, "the supervision endpoint must land in slot 3");
 
     crate::sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace).expect("configure");
-    crate::sched::start_tcb(tid, [fires, initrd_len, 0]).expect("start");
+    crate::sched::start_tcb(tid, [fires, archive_len, 0]).expect("start");
     (out, child_report, deaths)
 }
 
@@ -180,6 +247,8 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
     // nothing can have fired before the plan was complete.
     let mut saw_worker_grant = false;
     let mut saw_nothing_else = false;
+    let mut saw_exact_archive = false;
+    let mut saw_wide_archive = false;
     let mut saw_clock_refusal = false;
     let mut saw_domain_refusal = false;
     let mut saw_mem_refusal = false;
@@ -195,6 +264,12 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
             break;
         }
         saw_worker_grant |= s.contains("grants worker exactly:");
+        // **The endowment, audited by the process that holds it.** `worker` is the only program the
+        // shipped document admits, so a correctly narrowed archive carries exactly one.
+        saw_exact_archive |=
+            s == "timetable: the archive it holds carries exactly the 1 program its plan names";
+        saw_wide_archive |= s.starts_with("timetable: the archive it holds carries ")
+            && s.ends_with("of them beyond its plan");
         saw_nothing_else |=
             s.contains("and nothing else: no clock, no disk, no console, no network");
         saw_clock_refusal |= s.contains("this timetable holds no clock, so it cannot grant one");
@@ -225,6 +300,23 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
     assert!(
         saw_mem_refusal && saw_input_refusal,
         "the prompt's own refusals must arrive here unchanged",
+    );
+    // **The negative control for the endowment**, which is milestone 129's second stratum. Before
+    // it, this spawn site handed the timetable the whole initrd and the program said so: an archive
+    // reaching every program in the tree behind a plan that names one. After it, the spawn site
+    // builds a sub-archive from `Registry::programs` and the program can no longer reach `date`,
+    // `ps`, `swish` or anything else it will never run. Asserting both directions is what makes
+    // this a control rather than a spelling check: a spawn site that quietly went back to the
+    // initrd would trip the second assertion, not merely fail to trip the first.
+    assert!(
+        saw_exact_archive,
+        "the timetable must be handed an archive holding exactly the programs its plan builds, and \
+         must say so; a wider one is authority no line in the document asked for",
+    );
+    assert!(
+        !saw_wide_archive,
+        "the timetable reported an archive wider than its plan, so the spawn site handed it \
+         programs it will never run",
     );
 
     // ---- what actually fired ----
