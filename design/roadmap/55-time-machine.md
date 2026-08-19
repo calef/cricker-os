@@ -45,7 +45,15 @@ the code was:
   expensive exists, and what is missing is the **SMB** half of alternate data streams (a stream name
   in a CREATE path, `FileStreamInformation`, `FILE_NAMED_STREAMS` in the volume attributes). The
   stream-versus-sidecar choice is still open and still a decision about what lands on disk; it is
-  just no longer a stack-deep one.
+  just no longer a stack-deep one. **It is written up as §99 and waiting on calef** (2026-08-18),
+  with four options and their measured costs. The finding that block's reader most needs: **none of
+  it is on the Time Machine path.** A backup writes a sparse bundle, which is directories and band
+  files with no extended attributes and no forks, so this is a file-server feature milestone 55
+  inherited by proximity rather than a Time Machine requirement. The second finding is that the
+  sidecar option is not something this server implements: macOS's own VFS writes `._name` files when
+  a share does not claim `FILE_NAMED_STREAMS`, so **the tree is already running it**, at zero lines.
+  **The status does not move.** That lane answered the fork instead of building it, which is what it
+  was asked for; 55 stays PARTIAL until a decision lands and something is built on it.
 
 What remains of this milestone: Apple metadata (the choice above, then the SMB stream surface) and
 the first contact with a real Mac. The durability macOS trusts landed 2026-08-18; see below.
@@ -137,6 +145,12 @@ xattrs, and we have neither layer.
 files** (`._name`) needing no filesystem support whatsoever. calef's router uses `stream` because ext4
 has xattrs. So this is a **design choice between adding xattrs down the whole stack (protocol, FS
 server, RedoxFS) and accepting sidecar files**, not the hard blocker it first appears to be.
+
+**Corrected 2026-08-18, and the correction is about the reference rather than about us.** The
+router's stanza sets `fruit:metadata = stream` and does **not** set `fruit:resource`, whose default
+is `file`, meaning a `._` AppleDouble sidecar. So the working reference implementation is a
+**hybrid**: Finder metadata in an extended attribute, resource forks in sidecars on the disk. Read
+off Samba's own manual page rather than recalled. §99 carries this and the rest of the evidence.
 
 ## `fruit:posix_rename` lands squarely on work already scoped
 

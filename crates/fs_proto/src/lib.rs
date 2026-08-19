@@ -1723,8 +1723,15 @@ pub mod xattr {
     /// Three kibibytes, and the bound that sets it is the transport: [`fs::SETXATTR`] carries a name
     /// and a value in one [`super::PAGE`], so `MAX_NAME + MAX_VALUE` must fit 4096 with room that a
     /// reader can see is room. It is far above what the application needs (Apple's `AFP_AfpInfo` is
-    /// 402 bytes, a `FinderInfo` blob is 32) and far below what Samba's `streams_xattr` can be asked
+    /// 60 bytes, a `FinderInfo` blob is 32) and far below what Samba's `streams_xattr` can be asked
     /// to hold, because that feature stores whole alternate data streams as attributes.
+    ///
+    /// **Corrected 2026-08-18.** This said `AFP_AfpInfo` was 402 bytes, which conflated two
+    /// different blobs. `AFP_INFO_SIZE` is `0x3c`, 60, in Samba's `source3/include/MacExtensions.h`,
+    /// and Apple's own SMB client carries it as `uint8_t afpinfo[60]`. The 402 is the
+    /// AppleDouble-shaped buffer on Samba's *netatalk* metadata path, `uint8_t ad_data[402]` in
+    /// `vfs_fruit.c`. The sizing argument above survives the correction with more room, not less;
+    /// see §99 for what does and does not fit here.
     ///
     /// **BUGS.** A resource fork larger than this is refused with [`E2BIG`], loudly, per DECISIONS
     /// §42: an attribute store that silently truncated a value would hand back a file that looked
