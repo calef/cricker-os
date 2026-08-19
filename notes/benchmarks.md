@@ -1869,3 +1869,54 @@ step 1 shipped and measured, that can be restated against real numbers rather th
   when it does, none of the ratios on this page survive as ratios: the sweep already showed that at a
   64 KiB request every level from 0 to 4 costs the same, so step 1's 5.13x is a number about the
   contract as it is today rather than a permanent property of the store.
+
+## The two controlled comparisons nobody has run (2026-08-19)
+
+**Every filesystem comparison above is uncontrolled**, and this section exists so that is a known
+limitation rather than a thing a reader works out. The published pairing is nife-on-RedoxFS against
+Linux-on-ext4, where **the operating system and the filesystem differ at once**. A gap can be
+attributed to either, which is why milestone 138's answer to *"does this architecture have a
+disk-read liability that cannot be overcome"* is assembled from decomposition (the block server is at
+parity with raw virtio, the per-request residual is ~13 us, everything else found so far is an
+implementation choice) rather than read off one number.
+
+Two comparisons would control it. Both were calef's, on 2026-08-19, and neither has been run.
+
+### Linux-on-ext2 against nife-on-ext2
+
+Holds the **filesystem** constant and leaves the architecture. Wanted when milestone 140's ext2
+stratum exists, and argued in that block: the ext2 row isolates the operating system, the nife column
+isolates the filesystem, and today's diagonal isolates neither.
+
+Its honest ceiling: our ext2 would be new against a thirty-year-old one, so the result bounds what
+the architecture can cost rather than deciding it.
+
+### Redox-on-RedoxFS against nife-on-RedoxFS
+
+**The sharper of the two, and the reason is how we got RedoxFS.** We vendor it, so this is not an
+equivalent implementation, it is *the same code*. Every difference is ours: the IPC, the scheduler,
+the block driver, the shared-page contract. There is no filesystem-maturity caveat to make, because
+it is their filesystem.
+
+It also asks a different question from the Linux comparison. **Linux tells us whether the
+architecture is viable; Redox tells us whether we are a good instance of it**, against a project
+about a decade older than this one.
+
+**And it has a falsifiable prediction attached, which is what makes it worth running rather than
+merely interesting.** `redoxfs::DiskCache` is std-only and is never wrapped around `IpcDisk` here
+(measured while identifying the 208 us). Redox has `std`. So Redox is expected to run that cache and
+this system is known not to. If Redox is faster by roughly the 195 us the metadata walk costs, that
+confirms milestone 138's step 2 from an independent direction. **If it is faster by substantially
+more than that, something is wrong somewhere nobody has looked**, and that is the more valuable
+outcome.
+
+**Caveats, both directions:**
+
+- **Pin the same RedoxFS revision.** This tree carries five divergences against the vendored engine,
+  including step 1's `RECORD_LEVEL_MAX`. Comparing against a different revision measures the
+  divergence rather than the operating system.
+- **Schemes are not capabilities.** Redox's IPC has different semantics, so "the difference is ours"
+  is not the same as "the difference is implementation quality". Some of it is design, and a report
+  that elides that is overclaiming in whichever direction the number happens to point.
+- **The cost is the setup, not the measurement**: Redox booted at the same tier, same machine model,
+  same device, same payload, with the noise control this page already uses. That is the work.
