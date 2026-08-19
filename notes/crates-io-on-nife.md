@@ -523,6 +523,40 @@ fabrication.
 Nothing about the fifty-crate split moved: all three were runtime behaviour, and every probe that
 built before builds now.
 
+### The fourth pass, 2026-08-18: the reading became a check, and it found a fifth
+
+The third pass ended by saying its method was *"a sweep somebody has to run rather than a gate, and
+nothing in the tree runs it."* The fourth built the gate, and the gate immediately found something
+the sweep could not have.
+
+**`std::process::exit()` was a trap instruction.** `sys/exit.rs`'s `_ =>` arm is
+`crate::intrinsics::abort()`, so a nife program calling `std::process::exit(0)` compiled perfectly
+and then executed `brk`; the kernel takes that as a fault, prints it, and reports `EVENT_FAULT` to
+the process's supervisor. **A clean exit arrived as a crash**, which is how almost every CLI-shaped
+program ends.
+
+**Why the third pass's method could not reach it, and this is the finding rather than the function.**
+That method was "read every module the PAL falls through and ask what its neighbours do". It works
+on `sys/<module>/mod.rs` dispatchers, which is what `env`, `paths` and `process` are. `sys/exit.rs`
+is not one: it is a single file whose `cfg_select!` lives *inside* `pub fn exit`, so there is no
+module to read and no neighbours to compare. Two passes of careful reading walked past it, and a
+third would have too.
+
+It also hid behind a second thing worth recording: **the two ways a Rust program ends took different
+exits, and only one was wired.** Returning from `main` reaches `_start`, which calls the PAL's
+`rt::exit` directly; `std::process::exit` is the *only* caller of `sys::exit::exit` anywhere in std.
+Every std test in this tree ended the first way, so the broken path never ran.
+
+**The check is `cargo xtask std-aborts`** (provisional name), documented with its worked examples and
+its limits in notes/std.md. It asks cargo's own dep-info which `library/std/src/sys/**` sources
+rustc compiled for the nife targets and greps exactly those for process-ending bodies, comparing the
+result against a list that carries a reason per entry. It is rung two of AGENTS.md's ladder where
+this note's BUGS section had rung four, and it runs inside `script/test`.
+
+Nothing about the fifty-crate split moved: this was runtime behaviour, and every probe that built
+before builds now. What moved is the count of process-ending calls that a green build hides, which
+is now zero as far as a mechanism can see, and the mechanism's own blind spot is written down.
+
 ### Five of these were bindings, not verbs, and milestone 64 bound them
 
 Ranks 5, 11, 12, 13 and 25 (`create_dir`, `read_dir`, `remove_file`, `remove_dir`, `rename`) were
@@ -579,8 +613,13 @@ with a narrowed directory capability does not exist yet; that wants a lane).
   (`env::vars`, then `env::temp_dir`, `env::split_paths` and `process::id`), and the ranked list
   below could not have contained any of them, because a function that aborts never returns the
   refusal the census greps for. The method that found them is not a list at all: read every module
-  the PAL falls through instead of binding, and read what its *neighbours* do. That is a sweep
-  somebody has to run rather than a gate, and nothing in the tree runs it.
+  the PAL falls through instead of binding, and read what its *neighbours* do.
+
+  **This is now a gate, `cargo xtask std-aborts`** (milestone 64's fourth pass), and building it
+  found a fifth that the reading could not have: `std::process::exit` was `intrinsics::abort()`,
+  in a file that is not a module dispatcher at all. The gate's own blind spot is that it covers
+  `sys/` only; see notes/std.md, "What still ends a nife process", for why that boundary and what
+  it costs.
 - **The census counts call sites, not reachable calls.** A `fs::read_dir` inside a `#[cfg(windows)]`
   block counts. The over-count is roughly uniform across rows, so the *ordering* is trustworthy and
   the absolute numbers are not. The precise version (make each `unsupported()` a distinct undefined

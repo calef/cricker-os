@@ -65,7 +65,7 @@ it does not use.
 The scripts do almost nothing themselves. `script/test` is `cargo xtask test`; `script/server`
 is `cargo xtask run`; `script/console` is `cargo xtask shell`. **`cargo xtask` is still the
 engine** and still the place the real build logic lives (and it exposes more than the scripts do:
-`gdb`, `objdump`, `image`). The scripts add a normalized interface on top, and nothing was
+`gdb`, `objdump`, `image`, `std-aborts`). The scripts add a normalized interface on top, and nothing was
 duplicated to get it. If you prefer typing `cargo xtask …`, it all still works.
 
 ## Two things that are deliberately the way they are
@@ -95,7 +95,7 @@ how to add one, and for the honest limits.
 
 **This section is prose and not a row in that table on purpose**, and the reason is worth knowing
 before you edit either. `script/lint`'s row is the longest line in the repository's markdown at
-1841 bytes <!--count:longest-markdown-line-->, and `manual`'s renderer sizes `LINE_MAX` at 2048
+1896 bytes <!--count:longest-markdown-line-->, and `manual`'s renderer sizes `LINE_MAX` at 2048
 against exactly that measurement. Extending
 that row by a sentence overflows the buffer, and the way you find out is a `manual` render test
 failing while pointing at text three hundred lines further down the file.

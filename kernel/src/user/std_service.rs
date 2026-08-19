@@ -23,14 +23,19 @@ pub const BUDGET_PAGES: u64 = 256;
 /// total), generous so a stack-depth surprise is not what a first std bring-up debugs.
 const EXTRA_STACK_PAGES: u64 = 32;
 
+/// Wire a std program and hand back the endpoint it prints on **and the thread it runs as**.
+///
+/// The tid is what lets a caller wait for the program to be *gone* rather than merely quiet
+/// (milestone 64). The transcript ends at `cleanup`, which runs before the process leaves, so a
+/// test that stops at the last byte is still racing the exit it wants to make a claim about.
 pub fn start(
     image: &'static [u8],
     clock_image: &'static [u8],
     entropy_image: &'static [u8],
-) -> EpId {
+) -> (EpId, crate::thread::Tid) {
     let report = crate::sched::create_endpoint();
-    start_on(image, clock_image, entropy_image, report);
-    report
+    let tid = start_on(image, clock_image, entropy_image, report);
+    (report, tid)
 }
 
 /// The same spawn, with **the output sink chosen by the caller** (milestone 50).
@@ -45,7 +50,7 @@ pub fn start_on(
     clock_image: &'static [u8],
     entropy_image: &'static [u8],
     report: EpId,
-) {
+) -> crate::thread::Tid {
     let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for std_exerciser");
 
     // The entropy service, wired once per boot and shared with the milestone-56 tests. Its
@@ -116,5 +121,5 @@ pub fn start_on(
             },
         )
     })
-    .expect("could not spawn std_exerciser");
+    .expect("could not spawn std_exerciser")
 }

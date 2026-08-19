@@ -156,6 +156,10 @@ fn main() -> ExitCode {
             true
         }
         "std-exerciser" => std_exerciser(),
+        // The abort sweep (milestone 64): which std calls kill a nife process instead of refusing
+        // it. Runs at the end of `std-exerciser` (and so inside `script/test`); exposed on its own
+        // because re-reading the list after a nightly bump should not need a rebuild.
+        "std-aborts" => std_aborts(),
         "shell-check" => shell_check(),
         "test" => test(),
         "undefined-behavior-check" => undefined_behavior_check(),
@@ -171,7 +175,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|manual|apropos|std-src|std-stamp|std-exerciser|test|undefined-behavior-check|bench|icount|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|smb-serve|initrd-riscv|manual|apropos|std-src|std-stamp|std-exerciser|std-aborts|test|undefined-behavior-check|bench|icount|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(
@@ -228,7 +232,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-nife", "riscv64-unknown-nife"];
 const NIFE_TOOLCHAIN: &str = "nife-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 7;
+const STD_SRC_PATCH_VERSION: u32 = 8;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/nife-farm")
@@ -728,6 +732,29 @@ fn std_patch_dispatch() -> bool {
         "cfg_select! {",
         "    target_os = \"nife\" => {\n        #[allow(dead_code)]\n        mod unsupported;\n        mod nife;\n        mod imp {\n            pub use super::nife::getpid;\n            pub use super::unsupported::{\n                ChildPipe, Command, CommandArgs, EnvKey, ExitCode, ExitStatus, ExitStatusError,\n                Process, Stdio, output, read_output,\n            };\n        }\n    }",
     ) && patch_after(
+        // **exit: `std::process::exit` was a trap instruction** (milestone 64, fourth pass).
+        //
+        // `sys/exit.rs` is not a `sys/<module>/mod.rs` backend dispatcher; it is one file whose
+        // `cfg_select!` sits *inside* `pub fn exit`, and its `_ =>` arm is
+        // `crate::intrinsics::abort()`. So a nife program calling `std::process::exit(0)` compiled
+        // perfectly and then executed `brk`, which the kernel reports as `EVENT_FAULT` with a pc
+        // and an address: a clean exit arriving at its supervisor as a crash, and a fault report on
+        // the console for a program that did nothing wrong.
+        //
+        // Nothing noticed because the normal path never goes through here. `sys/pal/nife/mod.rs`'s
+        // `_start` calls `rt::exit` on `main`'s return value directly, and `std::process::exit` is
+        // the *only* caller of `sys::exit::exit` in the whole of std. The two ways a Rust program
+        // ends took different exits, and only one of them was wired.
+        //
+        // The arm is what `_start` already does, which is why this needs no new decision: the same
+        // `SYS_EXIT` with the same code. The kernel discards the code (`sched::exit` is
+        // `depart(EVENT_EXIT, 0, 0)`), which is a real limitation recorded in notes/std.md rather
+        // than something this arm can fix; what it fixes is exit-versus-fault, which is observable
+        // today and which `a_whole_std_program_runs_on_the_native_abi` now asserts.
+        &sys.join("exit.rs"),
+        "pub fn exit(code: i32) -> ! {\n    cfg_select! {",
+        "        target_os = \"nife\" => {\n            crate::sys::pal::nife::rt::exit(code as i64)\n        }",
+    ) && patch_after(
         // io/error has no fallback arm; route nife to the generic backend.
         &sys.join("io/error/mod.rs"),
         "cfg_select! {",
@@ -791,7 +818,332 @@ fn std_exerciser() -> bool {
             return false;
         }
     }
-    true
+    // The build just produced the dep-info the sweep reads, so this costs a few file reads and
+    // nothing else. Running it here rather than in `script/lint` is deliberate: the sweep's input
+    // is "which std sources did rustc actually compile for nife", which only exists after a build.
+    std_aborts()
+}
+
+// ===========================================================================================
+// The abort sweep (milestone 64, fourth pass).
+// ===========================================================================================
+
+/// **Every std call that kills a nife process instead of refusing it** (milestone 64).
+///
+/// This exists because milestone 64's own `BUGS` section said it did not, and named the cost:
+/// *"Nothing runs the sweep that found the three aborts. It is a person reading every module the
+/// PAL falls through and asking what its neighbours do, which is rung four of AGENTS.md's ladder.
+/// The three found so far were each found by accident or by one deliberate pass, and a fourth
+/// would be found the same way."* It was, and the fourth (`std::process::exit`) is the one that
+/// argues hardest for a gate: it does not live in a `sys/<module>/mod.rs` backend at all, so the
+/// by-hand method of reading module dispatchers would not have reached it however carefully
+/// somebody ran it.
+///
+/// **The method, and why it is exact rather than a grep over std.** The prioritised gap list in
+/// notes/crates-io-on-nife.md is built from PAL functions that answer `Unsupported`, and a
+/// function that aborts never answers, so it is structurally invisible there. This asks the
+/// complementary question directly: of the std sources rustc **actually compiled for this
+/// target**, which ones contain a body that terminates the process? The compiled set comes from
+/// cargo's own dep-info rather than from reading `cfg_select!` arms, so it is what the compiler
+/// did and not what we believe it did; nothing here has to model `cfg` evaluation.
+///
+/// **What it deliberately does not do.** It does not judge. Most of what it finds is correct
+/// (`Once::wait` cannot work without threads; a recursive `RwLock` on a single-threaded target is
+/// a deadlock either way), so the output is a set compared against [`ABORTS_ACCEPTED`], where each
+/// entry carries the reason it is allowed. A new one fails the build and has to be answered:
+/// either bind it in the PAL, or add it with its reason. That is the whole mechanism, and it is
+/// rung two of AGENTS.md's ladder where the milestone had rung four.
+fn std_aborts() -> bool {
+    let compiled = compiled_std_sources();
+    if compiled.is_empty() {
+        eprintln!(
+            "std-aborts: found no compiled std sources in the dep-info under std_exerciser/target.\n\
+             std-aborts: this check is meaningless without them; run `cargo xtask std-exerciser` first."
+        );
+        return false;
+    }
+
+    let mut found = Vec::new();
+    for path in &compiled {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        // The path as std names it (`sys/exit.rs`), which is what a reader greps for and what the
+        // accepted list below is written in.
+        let rel = std_relative(path);
+        for (n, line) in text.lines().enumerate() {
+            if let Some(what) = abort_shaped(line) {
+                found.push((
+                    rel.clone(),
+                    n + 1,
+                    what.to_string(),
+                    line.trim().to_string(),
+                ));
+            }
+        }
+    }
+
+    let mut unexpected = Vec::new();
+    for (file, line, _what, text) in &found {
+        if !ABORTS_ACCEPTED
+            .iter()
+            .any(|(f, needle, _why)| f == file && text.contains(needle))
+        {
+            unexpected.push((file, line, text));
+        }
+    }
+
+    if unexpected.is_empty() {
+        println!(
+            "std-aborts: {} process-ending bodies across {} compiled std sources, all accounted for",
+            found.len(),
+            compiled.len()
+        );
+        return true;
+    }
+
+    eprintln!("std-aborts: a std source compiled for nife ends the process somewhere new:");
+    for (file, line, text) in &unexpected {
+        eprintln!("  {file}:{line}: {text}");
+    }
+    eprintln!(
+        "\nstd-aborts: each of these is one of two things, and the difference is milestone 64's whole line.\n\
+         If a nife program can REACH it, it is a defect: the call compiles, then kills the process,\n\
+         which is what `env::vars`, `env::temp_dir`, `env::split_paths`, `process::id` and\n\
+         `process::exit` each were. Bind it in patches/std-nife (and add a `target_os = \"nife\"` arm\n\
+         in `std_patch_dispatch` if the fallback is a dispatcher's).\n\
+         If it cannot be reached, or if ending the process is the honest answer, add it to\n\
+         `ABORTS_ACCEPTED` in xtask/src/main.rs WITH THE REASON. An entry with no reason is the\n\
+         thing this check exists to stop.\n\
+         See notes/std.md, \"What still ends a nife process\"."
+    );
+    false
+}
+
+/// Is this line a body that ends the process, rather than a mention of one?
+///
+/// Returns the shape it matched, or `None`. Doc comments and `//` comments are skipped, because
+/// this tree's PAL files talk *about* the panics they replaced at length, and a check that could
+/// not tell a fix from its own explanation would be useless the day it was written.
+fn abort_shaped(line: &str) -> Option<&'static str> {
+    let t = line.trim_start();
+    if t.starts_with("//") || t.starts_with("///") || t.starts_with("*") {
+        return None;
+    }
+    // `unreachable!` is not here: it asserts an invariant of the code rather than declaring a
+    // platform's answer, and including it would bury the signal under std's own assertions.
+    for pat in [
+        "panic!(",
+        "unimplemented!(",
+        "todo!(",
+        "rtabort!(",
+        "intrinsics::abort()",
+        "panic_nounwind(",
+    ] {
+        if t.contains(pat) {
+            return Some(match pat {
+                "panic!(" => "panic",
+                "unimplemented!(" => "unimplemented",
+                "todo!(" => "todo",
+                "rtabort!(" => "rtabort",
+                "intrinsics::abort()" => "abort",
+                _ => "panic_nounwind",
+            });
+        }
+    }
+    None
+}
+
+/// Every process-ending body a nife build compiles today, with the reason it stays.
+///
+/// `(file as std names it, a substring of the line, why it is allowed)`. Matching on a substring
+/// rather than a line number is what keeps this from being rewritten by every nightly that adds a
+/// blank line; it still moves when upstream rewords the panic, which is a rebuild-and-reread this
+/// check is *for*.
+///
+/// **Read the third column before adding a fourth entry.** Three distinct reasons appear, and only
+/// one of them is a licence:
+///
+///   - *unreachable on nife*: the body sits behind a `cfg` nife does not satisfy, so it is
+///     compiled-adjacent rather than compiled. These are the safe ones.
+///   - *no answer exists*: single-threaded, so the call can only deadlock or end. Upstream chose
+///     to end, and there is no third option to build.
+///   - *ours, and deliberate*: the PAL's own, where ending the process is the honest report.
+const ABORTS_ACCEPTED: &[(&str, &str, &str)] = &[
+    // ---- unreachable on nife ------------------------------------------------------------------
+    (
+        "sys/alloc/mod.rs",
+        "add a value for MIN_ALIGN",
+        "a const-eval arm for architectures with no known minimum alignment; aarch64 and riscv64 both have one",
+    ),
+    (
+        "sys/exit.rs",
+        "std::process::exit called re-entrantly",
+        "inside the `target_os = \"linux\"` arm of `unique_thread_exit`",
+    ),
+    (
+        "sys/exit.rs",
+        "rtabort!(\"exit({}) called\", code)",
+        "the `solid_asp3` arm of `exit`",
+    ),
+    (
+        "sys/exit.rs",
+        "TA should not call `exit`",
+        "the `teeos` arm of `exit`",
+    ),
+    (
+        "sys/exit.rs",
+        "crate::intrinsics::abort()",
+        "two sites: the `uefi` arm's last resort, and the `_ =>` arm nife USED to take. Milestone 64 \
+         added a nife arm above it, so the fallback is no longer ours; the line stays compiled \
+         because `cfg_select!` keeps every arm's source in the file",
+    ),
+    (
+        "sys/pipe/unsupported.rs",
+        "creating pipe on this platform is unsupported!",
+        "inside `mod unix_traits`, gated `#[cfg(any(unix, hermit, wasi))]`; nife is none of them. \
+         The reachable half of this backend refuses honestly: `pipe()` returns `UNSUPPORTED_PLATFORM` \
+         and `Pipe` is uninhabited",
+    ),
+    (
+        "sys/process/unsupported.rs",
+        "no pids on this platform",
+        "`getpid` here is the one item the nife arm of `sys/process/mod.rs` does NOT re-export; it \
+         takes `sys/process/nife.rs`'s instead. The module is pulled in `#[allow(dead_code)]` for \
+         everything else, so this body is compiled and unreachable",
+    ),
+    (
+        "sys/personality/mod.rs",
+        "core::intrinsics::abort()",
+        "the `msvc`/`wasm` arm's stub personality routine",
+    ),
+    (
+        "sys/path/mod.rs",
+        "path_separator_bytes must be ASCII bytes",
+        "a `const` assertion inside the separator macro, evaluated at compile time",
+    ),
+    // ---- no answer exists: single-threaded ----------------------------------------------------
+    (
+        "sys/sync/condvar/no_threads.rs",
+        "condvar wait not supported",
+        "a wait with no other thread to notify it can only block forever. Upstream ends the process \
+         instead, and there is no third answer to build until milestone 64's `thread::spawn` fork is \
+         decided. Recorded in notes/std.md rather than fixed",
+    ),
+    (
+        "sys/sync/once/no_threads.rs",
+        "not implementable on this target",
+        "`Once::wait` waits for another thread's initialisation; same reason as the condvar above",
+    ),
+    (
+        "sys/sync/once/no_threads.rs",
+        "Once instance has previously been poisoned",
+        "poison propagation, which is `Once`'s documented behaviour on every platform",
+    ),
+    (
+        "sys/sync/once/no_threads.rs",
+        "one-time initialization may not be performed recursively",
+        "a recursive `call_once`, which is a bug in the caller on every platform",
+    ),
+    (
+        "sys/sync/rwlock/no_threads.rs",
+        "rwlock locked for writing",
+        "taking a read lock while this same thread holds the write lock. On a threaded platform it \
+         deadlocks; here it is caught and named, which is strictly better",
+    ),
+    (
+        "sys/sync/rwlock/no_threads.rs",
+        "rwlock locked for reading",
+        "the mirror case, and the same argument",
+    ),
+    (
+        "sys/thread_local/mod.rs",
+        "thread local panicked on drop",
+        "a destructor that panicked; unwinding out of TLS teardown is undefined on every platform",
+    ),
+    (
+        "sys/thread_local/no_threads.rs",
+        "Attempted to initialize thread-local while it is being dropped",
+        "a TLS access from inside TLS teardown, a caller bug on every platform",
+    ),
+    (
+        "sys/os_str/bytes.rs",
+        "is not an OsStr boundary",
+        "a slicing bounds assertion, the `OsStr` twin of `str`'s",
+    ),
+    // ---- ours, and deliberate ------------------------------------------------------------------
+    (
+        "sys/random/nife.rs",
+        "panic!(",
+        "the entropy service's own refusals: `std::random` promises cryptographic strength, so a \
+         service that cannot deliver it must not return bytes (DECISIONS §44, milestone 56)",
+    ),
+    (
+        "sys/time/nife.rs",
+        "panic!(",
+        "the clock page's refusals: a wall clock that reads a torn or unrecognised page must not \
+         invent a time (milestone 51)",
+    ),
+    (
+        "sys/pal/nife/clockproto.rs",
+        "panic!(",
+        "the clock contract's own host-side test assertions, generated verbatim from \
+         crates/clock_proto and unreachable in a target build",
+    ),
+];
+
+/// Every `library/std/src/**` source cargo recorded as an input to this target's builds.
+///
+/// **From the dep-info, not from reading `cfg_select!`.** Every `.d` file under the `std_exerciser`
+/// target directories is scanned and the std paths unioned, which makes this robust to cargo
+/// moving where it files dep-info and to the two ISAs compiling slightly different sets: a union
+/// over both targets is exactly the set the sweep wants, since a body reachable on either ISA is
+/// reachable.
+fn compiled_std_sources() -> Vec<PathBuf> {
+    let mut deps = Vec::new();
+    for triple in STD_TARGETS {
+        collect_files(
+            &workspace_root().join(format!("std_exerciser/target/{triple}")),
+            &mut deps,
+        );
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in deps {
+        if d.extension().and_then(|e| e.to_str()) != Some("d") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&d) else {
+            continue;
+        };
+        for tok in text.split_whitespace() {
+            // **`sys/` only, and the boundary is the claim rather than a convenience.** `sys` IS
+            // std's platform abstraction layer: everything under it is one platform's answer, and
+            // everything above it is portable code that behaves the same here as on Linux. A panic
+            // in `sys/` says "this platform has nothing to offer"; a panic in `thread/scoped.rs`
+            // or `path.rs` says "you called this wrong", and it says it identically everywhere.
+            // Sweeping all of std mixes the two and buries about forty of the second under none of
+            // the first, which is what the first version of this check did. The limit is recorded
+            // in notes/std.md's BUGS, because it is a real gap: portable std code that is only
+            // *reachable* on a platform this thin would not be caught here.
+            if tok.contains("library/std/src/sys/") && tok.ends_with(".rs") {
+                let p = PathBuf::from(tok);
+                if p.is_file() && !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `.../library/std/src/sys/exit.rs` as `sys/exit.rs`, which is how std's own source refers to it.
+fn std_relative(p: &Path) -> String {
+    let s = p.display().to_string();
+    match s.split_once("library/std/src/") {
+        Some((_, rest)) => rest.to_string(),
+        None => s,
+    }
 }
 
 // ===========================================================================================

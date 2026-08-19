@@ -206,7 +206,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
   rust-src, why the symlink farm was measured to fail, and the honest caveats (what the PAL still
-  refuses and why, and the std-internals coupling a nightly bump can break). The "no create or
+  refuses and why, and the std-internals coupling a nightly bump can break), including what still
+  ends a nife process and the gate that now enumerates it. The "no create or
   truncate verb, monotonic-only clock, non-crypto random" caveats this line used to list are all
   gone: milestone 31 phase 2 bound `CREATE` and `TRUNCATE`, milestone 51 gave `SystemTime` a real
   wall clock, and milestone 56 put `std::random` on the entropy service.
@@ -218,7 +219,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   the split was recorded as 35/15 and is 39/11, why nine of the top gaps turned out to be **bindings
   rather than missing verbs**, which gaps were declined and for what reason, and the sting in two
   places: `tempfile` compiles and returns "not supported" from every call, and `std::env::vars()`
-  used to abort the process.
+  used to abort the process. Five std calls have now been found that **compile perfectly and kill
+  the process**, the last of them `std::process::exit`, which is why the reading that found them is
+  a check now (`cargo xtask std-aborts`, described in std.md).
 - [Running a foreign language: the C seam](c-seam.md): milestone 36: memory-unsafe C, compiled by
   bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
   confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`

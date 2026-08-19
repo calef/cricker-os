@@ -576,6 +576,27 @@ completes, not why the poll path did not.
   comparisons right rather than merely quiet. A scheme that wanted cross-process uniqueness from a
   pid would be broken here with nothing reporting it, and a real per-process identity is a
   syscall-surface decision rather than a PAL one.
+- **`std::process::exit` is a real exit, and the code it carries is dropped on the floor**
+  (milestone 64). It was the fourth `panic!`-shaped finding of the same sweep and the worst of them:
+  `sys/exit.rs`'s `_ =>` arm is `crate::intrinsics::abort()`, so a nife program calling
+  `std::process::exit(0)` compiled perfectly and then executed `brk`. The kernel takes that as a
+  fault, reports it on the console, and delivers `EVENT_FAULT` with a pc and a faulting address to
+  the process's supervisor (§26). **A clean exit arrived as a crash**, and this is the way almost
+  every CLI-shaped program ends.
+
+  Nothing had noticed because the two ways a Rust program ends took different exits and only one was
+  wired: `_start` calls the PAL's `rt::exit` on `main`'s return value directly, and
+  `std::process::exit` is the *only* caller of `sys::exit::exit` in the whole of std. Both now reach
+  the same `SYS_EXIT`.
+
+  **The code is still discarded, and that is the kernel's, not the PAL's.** `sched::exit()` is
+  `depart(abi::fault::EVENT_EXIT, 0, 0)`: the §26 message carries the event and the tid, and the
+  two remaining words are a pc and a fault address that a clean exit has nothing to put in. So a
+  supervisor can tell exit from crash and cannot tell `exit(0)` from `exit(1)`. Widening that is a
+  wire-format change to a message two programs agree on, which is the expensive category rather
+  than the cheap one; it is not something a PAL arm can decide. Until it happens, a nife program
+  that wants to report *why* it stopped says so on an endpoint it holds, the way every other
+  result travels here.
 - **`fs` is bound, with the gaps listed above.** A program granted no directory capability still gets
   `Unsupported` from all of it, and the offline demo checks exactly that: same binary, no slot 4, and
   `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
@@ -629,6 +650,121 @@ completes, not why the poll path did not.
   that reshapes a `cfg_select!` dispatcher fails loudly in `std_patch_dispatch` ("anchor not found"),
   which is the intended tripwire: re-point the anchor, do not paper over it. `rust-toolchain.toml`
   pins the channel; the coupling is the price of build-std against a std we do not fork.
+
+## What still ends a nife process
+
+*(Milestone 64, fourth pass, 2026-08-18.)*
+
+**The dangerous std call is not the one that returns `Unsupported`. It is the one that compiles and
+then kills you.** Four have been found so far, each by a different accident:
+
+| call | what it was | found by |
+|---|---|---|
+| `std::env::vars()` | `panic!("not supported on this platform")` | working the ranked gap list and noticing a *neighbour* |
+| `std::env::temp_dir()` | `panic!("no filesystem on this platform")` | reading every module the PAL falls through |
+| `std::env::split_paths()` | `panic!("unsupported")` | the same reading |
+| `std::process::id()` | `panic!("no pids on this platform")` | the same reading |
+| `std::process::exit()` | `crate::intrinsics::abort()` | `cargo xtask std-aborts` |
+
+**None of them could appear on a gap list**, because notes/crates-io-on-nife.md's list is built from
+PAL functions that answer `Unsupported`, and a function that ends the process never answers. And the
+fifth could not be found by the method that found the middle three either: `sys/exit.rs` is not a
+`sys/<module>/mod.rs` backend, it is one file with a `cfg_select!` inside a function, so "read every
+module the PAL falls through" walks straight past it however carefully somebody does it.
+
+So the reading became a check.
+
+```sh
+cargo xtask std-aborts       # on its own, against whatever the farm last built
+script/test                  # runs it too: `std-exerciser` ends with it
+```
+
+### What it does
+
+It asks the compiler which `library/std/src/sys/**` sources it **actually compiled** for the nife
+targets, by unioning every `library/std/src/sys/` path out of cargo's own dep-info under
+`std_exerciser/target/`, and greps exactly those for bodies that end a process: `panic!`,
+`unimplemented!`, `todo!`, `rtabort!`, `intrinsics::abort()`, `panic_nounwind`. Comment lines are
+skipped, which is not fussiness: this tree's PAL files discuss the panics they replaced at length,
+and a check that could not tell a fix from its own explanation would have been useless on the day it
+was written.
+
+What it finds is compared against `ABORTS_ACCEPTED` in `xtask/src/main.rs`, **which carries the
+reason for every entry**. A new one fails the build with the file, the line, and the two things it
+can be. Today there are 26 across 79 compiled sources, in three groups:
+
+- **unreachable on nife** (nine): a body behind a `cfg` this target does not satisfy. `cfg_select!`
+  keeps every arm's source in the file, so they are read but not compiled into anything reachable.
+- **no answer exists** (nine): single-threaded, so the call can only deadlock or end, and upstream
+  chose to end. `Condvar::wait` and `Once::wait` are the two that matter, and they stay open until
+  milestone 64's `thread::spawn` fork is decided rather than being fixable by a PAL arm.
+- **ours, and deliberate** (three files' worth): the clock and entropy refusals, where ending the
+  process is the honest report because the call has no error channel and inventing a value would be
+  the lie §42 forbids.
+
+### EXAMPLES
+
+Adding a `panic!` to a compiled fallback and running the check:
+
+```
+$ cargo xtask std-aborts
+std-aborts: a std source compiled for nife ends the process somewhere new:
+  sys/net/hostname/unsupported.rs:7: pub fn invented() -> ! { panic!("no hostname on this platform") }
+```
+
+and a clean tree:
+
+```
+$ cargo xtask std-aborts
+std-aborts: 26 process-ending bodies across 79 compiled std sources, all accounted for
+```
+
+The fix the check prompted, read off the binary rather than off the source, which is the form of
+evidence this milestone is short of:
+
+```
+$ llvm-objdump -d --demangle std_exerciser/target/aarch64-unknown-nife/release/std_exerciser
+000000000040c290 <std::process::exit>:
+  40c290: stp  x30, x19, [sp, #-0x10]!
+  40c294: mov  w19, w0
+  40c298: bl   0x40eaf0 <std::rt::cleanup>      ; flush stdout, announce end of stream
+  40c29c: sxtw x0, w19                          ; the exit code
+  40c2a0: mov  x8, xzr                          ; SYS_EXIT
+  40c2a4: svc  #0
+
+000000000040c2b0 <std::process::abort>:
+  40c2b0: brk  #0                               ; still a fault, which is what abort MEANS
+```
+
+`exit` used to be the second of those two. That is the whole bug in six instructions: the same
+`brk`, under the name of the call that is supposed to be the clean one.
+
+### BUGS
+
+- **It covers `sys/` and nothing else, on purpose, and that is a real gap.** `sys` *is* std's
+  platform layer: a panic under it says "this platform has nothing to offer", while a panic in
+  `path.rs` or `thread/scoped.rs` says "you called this wrong" and says it identically on Linux. The
+  first version swept all of std, found about forty of the second kind and none of the first, and
+  would have been abandoned within a week. The cost of the narrowing is that **portable std code
+  which is only reachable on a platform this thin is invisible here** (a `LazyLock` poisoned by an
+  earlier panic, say), and finding those still needs somebody reading.
+- **An accepted entry matches a substring of a line, not a line number.** That is what stops a
+  nightly's blank line from rewriting the list, and it means one entry can bless two sites when the
+  same text appears twice in a file. `sys/exit.rs`'s `crate::intrinsics::abort()` is exactly that
+  case: the UEFI arm's last resort and the `_ =>` arm nife used to take are the same string, so
+  after this milestone one accepted entry covers a line nobody reaches and a line nobody takes.
+  **Three entries are deliberately blanket**, matching bare `panic!(` in `sys/random/nife.rs`,
+  `sys/time/nife.rs` and `sys/pal/nife/clockproto.rs`: those are the PAL's own files, where every
+  panic is one this project wrote on purpose and a new one arrives through review rather than
+  through a nightly. A blanket entry over a file we do not own would be the wrong trade.
+- **It proves reachability of a *body*, never of a *call*.** A body compiled into the reachable set
+  might still be dead. The check deliberately does not try to decide that, because deciding it is
+  reading the call sites, which is the work it exists to prompt rather than to replace.
+- **It needs a build.** The dep-info only exists after `cargo xtask std-exerciser`, which is why the
+  check runs at the end of that step rather than in `script/lint`. Run against a stale farm it
+  reports the stale farm, honestly and uselessly.
+- **`std-aborts` is a provisional name** (milestone 64, 2026-08-18). Names are calef's; this one is
+  not ratified.
 
 ## The proof
 
