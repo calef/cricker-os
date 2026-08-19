@@ -64,6 +64,55 @@ fn frame() -> u64 {
     p
 }
 
+/// **How many pages the file channel spans**, straight from the contract, so this wiring cannot
+/// disagree with the two programs that speak it.
+const FILE_PAGES: usize = fs_proto::fs::TRANSFER_PAGES;
+
+/// **The file channel: [`FILE_PAGES`] fresh, zeroed, physically contiguous frames**, returned by
+/// the base physical address (milestone 138 step 3).
+///
+/// Contiguous rather than a list of frames, and that is what keeps this change from spreading. Both
+/// halves of the agreement already pass the channel around as one `u64`; a run of frames keeps that
+/// signature, and every mapping site becomes a loop over [`FILE_PAGES`] instead of a struct change
+/// in nine places. The block server's DMA region is already wired exactly this way (two contiguous
+/// pages at `DMA_VA`), so this is the tree's existing shape for a multi-page share rather than a
+/// new one.
+///
+/// It is zeroed for the same reason one frame was: no stale RAM is ever visible across a share.
+fn file_channel() -> u64 {
+    let p = crate::memory::alloc_contiguous(FILE_PAGES)
+        .expect("no contiguous run for the fs service's file channel")
+        .addr();
+    // SAFETY: a fresh run of FILE_PAGES frames, reachable through the direct map.
+    unsafe {
+        core::ptr::write_bytes(
+            mmu::phys_to_virt(p) as *mut u8,
+            0,
+            FILE_PAGES * FRAME_SIZE as usize,
+        );
+    };
+    p
+}
+
+/// Write the file channel's mappings into `maps`, `va` upward against `phys` upward, and answer how
+/// many entries that took. One call per party that shares the channel, so the "map every page of
+/// it" rule lives in one place rather than in each of them.
+///
+/// **`pages` is how much of the channel this party maps**, and it is a parameter rather than always
+/// [`FILE_PAGES`] because a client is entitled to map less: a client that only ever moves one page
+/// needs one page, and `fs_proto::fs::TRANSFER_PAGES` says so. The FS server is the one party that
+/// must map all of it.
+fn map_channel(maps: &mut [Mapping], va: u64, phys: u64, pages: usize) -> usize {
+    for (i, m) in maps.iter_mut().take(pages).enumerate() {
+        *m = Mapping {
+            va: va + i as u64 * FRAME_SIZE,
+            phys: phys + i as u64 * FRAME_SIZE,
+            flags: Flags::user_data(),
+        };
+    }
+    pages
+}
+
 /// How many FS servers one boot can start, and therefore how many banks of poisoned stack pages
 /// [`FS_STACK_PHYS`] holds: the ordinary one, and milestone 37's two (the server that is killed
 /// mid-transaction, and the one that mounts the disk it left behind).
@@ -189,7 +238,7 @@ fn wire_servers(
 ) -> Option<(EpId, EpId, EpId, u64)> {
     let (blk_ep, blk_ready, blk_shared) =
         spawn_block_server(blk_image, crate::virtio::find_block_device_n(1)?);
-    let file_shared = frame();
+    let file_shared = file_channel();
     let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
     let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
     spawn_fs_server(
@@ -339,19 +388,18 @@ fn spawn_fs_server(fs_server_image: &'static [u8], cfg: FsServer) {
             va: 0,
             phys: 0,
             flags: Flags::user_data(),
-        }; 2 + FS_STACK_PAGES as usize];
+        }; 1 + FILE_PAGES + FS_STACK_PAGES as usize];
         maps[0] = Mapping {
             va: BLK_PAGE_FS,
             phys: cfg.blk_shared,
             flags: Flags::user_data(),
         };
-        maps[1] = Mapping {
-            va: FILE_PAGE_FS,
-            phys: cfg.file_shared,
-            flags: Flags::user_data(),
-        };
+        // **The FS server maps the whole file channel**, and it is the one party that must: it
+        // serves whatever length a client asks for, up to `fs_proto::fs::TRANSFER_MAX`, and its
+        // clamp is what keeps a request inside the region. A client maps only what it uses.
+        let n = 1 + map_channel(&mut maps[1..], FILE_PAGE_FS, cfg.file_shared, FILE_PAGES);
         for (i, &phys) in stack.iter().enumerate() {
-            maps[2 + i] = Mapping {
+            maps[n + i] = Mapping {
                 va: super::USER_STACK_VA - (i as u64 + 1) * FRAME_SIZE,
                 phys,
                 flags: Flags::user_data(),
@@ -433,7 +481,7 @@ pub fn start_crash(
     CRASH_BLK_EP.store(blk_ep, Ordering::Relaxed);
     CRASH_BLK_SHARED.store(blk_shared, Ordering::Relaxed);
 
-    let file_shared = frame();
+    let file_shared = file_channel();
     let file_ep = crate::sched::create_endpoint();
     let fs_ready = crate::sched::create_endpoint();
     spawn_fs_server(
@@ -473,7 +521,7 @@ pub fn start_crash(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn recover_crash(fs_server_image: &'static [u8], client_image: &'static [u8]) -> (EpId, EpId) {
     use core::sync::atomic::Ordering;
-    let file_shared = frame();
+    let file_shared = file_channel();
     let file_ep = crate::sched::create_endpoint();
     let ready = crate::sched::create_endpoint();
     spawn_fs_server(
@@ -531,11 +579,15 @@ fn spawn_fs_client(
     let report = crate::sched::create_endpoint();
     crate::sched::spawn(move || {
         let mut maps = [Mapping {
-            va: FILE_VA_CLIENT,
-            phys: file_shared,
+            va: 0,
+            phys: 0,
             flags: Flags::user_data(),
-        }; 1 + CLIENT_EXTRA_STACK];
-        for (k, m) in maps[1..=extra_stack].iter_mut().enumerate() {
+        }; FILE_PAGES + CLIENT_EXTRA_STACK];
+        // The whole channel, because this is the spawn the throughput benchmark comes through and
+        // a client may not ask for more than it mapped (`fs_proto::fs::TRANSFER_PAGES`). It costs
+        // fifteen extra page-table entries against the same frames, not fifteen extra frames.
+        let n = map_channel(&mut maps, FILE_VA_CLIENT, file_shared, FILE_PAGES);
+        for (k, m) in maps[n..n + extra_stack].iter_mut().enumerate() {
             m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
             m.phys = frame();
         }
@@ -552,7 +604,7 @@ fn spawn_fs_client(
                     endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                     endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
                 ],
-                maps: &maps[..1 + extra_stack],
+                maps: &maps[..n + extra_stack],
             },
         )
     })

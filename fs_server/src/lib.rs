@@ -1013,6 +1013,15 @@ const _: () = {
     // the two `BlockTrait::empty` guards enforce are separate constants since milestone 138, and
     // this is what stops them being separated in the wrong direction.
     assert!(redoxfs::RECORD_LEVEL <= redoxfs::RECORD_LEVEL_MAX);
+
+    // **The file channel is a whole number of blocks** (milestone 138 step 3). A `READ` or `WRITE`
+    // now carries up to `fs::TRANSFER_MAX` bytes straight into the shared region, and RedoxFS reads
+    // and writes it a record at a time from there; a channel that ended part way through a block
+    // would make the last chunk of every full-channel request a partial one, which is the shape the
+    // repeat-write bug had. Nothing else in the tree can check this: `fs_proto` has never heard of
+    // the store and the store has never heard of `fs_proto`.
+    assert!(fs_proto::fs::TRANSFER_MAX.is_multiple_of(BLOCK));
+    assert!(fs_proto::fs::TRANSFER_MAX >= BLOCK);
 };
 
 /// A block-granular transport: read or write one whole filesystem block, or report the disk size.
