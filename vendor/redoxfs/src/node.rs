@@ -91,6 +91,12 @@ type BlockListL2 = BlockList<BlockListL1>;
 type BlockListL3 = BlockList<BlockListL2>;
 type BlockListL4 = BlockList<BlockListL3>;
 
+/// **nife pin divergence (milestone 138): the byte totals in the comments below assume a 128 KiB
+/// record**, which was upstream's only possible answer and is no longer this build's. A record is
+/// per node (`Node::record_level`, set from `RECORD_LEVEL`, now 1), so divide every parenthesised
+/// figure by 16 for a file this build created: the direct pointers cover 1 MiB rather than 16 MiB,
+/// and the whole tree reaches 256 TiB rather than 4 PiB. The pointer counts are exact either way,
+/// and they are what the struct actually declares.
 #[repr(C, packed)]
 pub struct NodeLevelData {
     /// The first 128 blocks of this file.

@@ -136,10 +136,113 @@
          self.hash = self.create_hash().into();
          // Make sure to do this second, it relies on the hash being up to date
          self.encrypted_hash = self.create_encrypted_hash(cipher_opt);
+--- a/src/htree.rs
++++ b/src/htree.rs
+@@ -5,7 +5,8 @@
+ use syscall::error::{Error, Result, EEXIST, EIO};
+ 
+ use crate::{
+-    BlockLevel, BlockPtr, BlockRaw, BlockTrait, DirEntry, DirList, BLOCK_SIZE, RECORD_LEVEL,
++    BlockLevel, BlockPtr, BlockRaw, BlockTrait, DirEntry, DirList, BLOCK_SIZE,
++    RECORD_LEVEL_MAX,
+ };
+ 
+ pub const HTREE_IDX_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<HTreePtr<BlockRaw>>();
+@@ -182,7 +183,9 @@
+ 
+ unsafe impl<T> BlockTrait for HTreeNode<T> {
+     fn empty(level: BlockLevel) -> Option<Self> {
+-        if level.0 <= RECORD_LEVEL {
++        // nife pin divergence (milestone 138): the CEILING, not the creation default; same reason
++        // as `RecordRaw::empty` in record.rs.
++        if level.0 <= RECORD_LEVEL_MAX {
+             Some(Self {
+                 ptrs: [HTreePtr::default(); HTREE_IDX_ENTRIES],
+                 padding: [0; HTREE_IDX_PADDING],
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,9 +12,33 @@
+ // The alloc log grows by 1 block about every 21 generations
+ pub const ALLOC_GC_THRESHOLD: u64 = 1024;
+ pub const BLOCK_SIZE: u64 = 4096;
+-// A record is 4KiB << 5 = 128KiB
+-pub const RECORD_LEVEL: usize = 5;
+-pub const RECORD_SIZE: u64 = BLOCK_SIZE << RECORD_LEVEL;
++// nife pin divergence (milestone 138): **the level a new file is created at**, lowered from
++// upstream's 5 to 1, so a record is 4 KiB << 1 = 8 KiB rather than 128 KiB. Every file request in
++// this system carries at most one 4 KiB page (`fs_proto::PAGE`), so a 128 KiB record fetched 32
++// blocks to serve one of them and rewrote all 32 to change one. Measured on milestone 38's harness:
++// a 4 KiB read goes from 1,458 us to 284 us. Level 1 rather than 0 because RedoxFS compresses a
++// record only when it is larger than one block, so level 0 gives up lz4 for 8.7% more read speed
++// and roughly twice the space overhead. See notes/benchmarks.md and vendor/README.md divergence 5.
++pub const RECORD_LEVEL: usize = 1;
++
++// nife pin divergence (milestone 138): **the largest level this build can read.** Upstream needed
++// only one constant because the level a new file is CREATED at and the largest level a build can
++// READ were the same number by construction. They stop being the same the moment the first is
++// lowered, and the difference is not cosmetic: `record_level` is a per-node field in the on-disk
++// format, so an image written by any other build carries whatever level that build chose, and the
++// two `BlockTrait::empty` guards (`record.rs`, `htree.rs`) refuse a level above this constant,
++// which `read_block` turns into `ENOENT` on a perfectly good image.
++//
++// Holding the ceiling at upstream's 5 is what makes lowering the default **reversible**. Nothing
++// stored at any level from 0 to 5 becomes unreadable, and a future change to `RECORD_LEVEL` cannot
++// orphan data written by this one. It is also half of what a genuine per-file level would need: the
++// guards already compare against a maximum rather than against the default.
++pub const RECORD_LEVEL_MAX: usize = 5;
++
++// nife pin divergence (milestone 138): the **ceiling** rather than the default, because the one
++// thing this sizes is the lz4 scratch buffer in `filesystem.rs`, which has to fit any record this
++// build might rewrite, including one an older image created at level 5.
++pub const RECORD_SIZE: u64 = BLOCK_SIZE << RECORD_LEVEL_MAX;
+ pub const SIGNATURE: &[u8; 8] = b"RedoxFS\0";
+ pub const VERSION: u64 = 8;
+ pub const DIR_ENTRY_MAX_LENGTH: usize = 252;
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -91,6 +91,12 @@
+ type BlockListL3 = BlockList<BlockListL2>;
+ type BlockListL4 = BlockList<BlockListL3>;
+ 
++/// **nife pin divergence (milestone 138): the byte totals in the comments below assume a 128 KiB
++/// record**, which was upstream's only possible answer and is no longer this build's. A record is
++/// per node (`Node::record_level`, set from `RECORD_LEVEL`, now 1), so divide every parenthesised
++/// figure by 16 for a file this build created: the direct pointers cover 1 MiB rather than 16 MiB,
++/// and the whole tree reaches 256 TiB rather than 4 PiB. The pointer counts are exact either way,
++/// and they are what the struct actually declares.
+ #[repr(C, packed)]
+ pub struct NodeLevelData {
+     /// The first 128 blocks of this file.
 --- a/src/record.rs
 +++ b/src/record.rs
-@@ -1,3 +1,4 @@
+@@ -1,14 +1,19 @@
 +use alloc::vec::Vec; // cricker-os pin divergence: patches/redoxfs-no-std-vec-import.patch
  use alloc::vec;
  use core::ops;
  
+-use crate::{BlockLevel, BlockTrait, RECORD_LEVEL};
++use crate::{BlockLevel, BlockTrait, RECORD_LEVEL_MAX};
+ 
+ #[derive(Clone)]
+ pub struct RecordRaw(pub(crate) Vec<u8>);
+ 
+ unsafe impl BlockTrait for RecordRaw {
+     fn empty(level: BlockLevel) -> Option<Self> {
+-        if level.0 <= RECORD_LEVEL {
++        // nife pin divergence (milestone 138): the CEILING, not the creation default. This guard
++        // is what a read of an existing record passes through (`read_block` allocates through
++        // `T::empty(ptr.addr().level())` and answers ENOENT on None), so comparing it against the
++        // creation level would make every record stored above that level unreadable.
++        if level.0 <= RECORD_LEVEL_MAX {
+             Some(Self(vec![0; level.bytes() as usize]))
+         } else {
+             None
+@@ -31,7 +36,7 @@
+ 
+ #[test]
+ fn record_raw_size_test() {
+-    for level_i in 0..RECORD_LEVEL {
++    for level_i in 0..RECORD_LEVEL_MAX {
+         let level = BlockLevel(level_i);
+         assert_eq!(
+             RecordRaw::empty(level).unwrap().len(),
