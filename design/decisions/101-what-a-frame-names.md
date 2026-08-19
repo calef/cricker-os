@@ -24,12 +24,12 @@ in the tree where a single object is a run of hundreds of pages.
 
 ## 1. What else was considered, and why each lost
 
-The four options are set out in full in §101.6 below with their measured prices. In summary:
+The four options are set out in full in section 6 below with their measured prices. In summary:
 
 | | What changes | Verdict on the evidence |
 |---|---|---|
 | **A. A `Frame` names a run** `(pa, pages)` | `Object::Frame`, `frame::MAP`, `frame::REVOKE`, the revocation database's key | Live. The most general answer and the one that most changes what a capability means. |
-| **B. Grow `CSPACE_SLOTS`** | one constant | **Dominated, and by arithmetic rather than taste.** See §101.5. A TCB is written into one 4 KiB page and a slot is 24 bytes, so **at most 170 slots fit a page even if a `Thread` held nothing else**; 475 frames needs 480. This is not "a one-number change paid in TCB size", which is what `kernel/src/cap.rs` currently says. |
+| **B. Grow `CSPACE_SLOTS`** | one constant | **Dominated, and by arithmetic rather than taste.** See section 5. A TCB is written into one 4 KiB page and a slot is 24 bytes, so **at most 170 slots fit a page even if a `Thread` held nothing else**; 475 frames needs 480. This is not "a one-number change paid in TCB size", which is what `kernel/src/cap.rs` currently says. |
 | **C. `aspace::MAP_INTO` at spawn** | nothing in the model | Live, and the only option that changes no syscall meaning. Costs 475 map calls, and the client ends up holding **no capability for its own pixels**, which is what milestone 108 spent itself closing on this exact path. |
 | **D. A large `Frame`: one 2 MiB page** | `PageFormat` gains block descriptors; `Object::Frame` gains an order | Live, and cheaper than this lane expected. `800x608x4 = 1,945,600` fits one 2 MiB page with 37 pages to spare, and `SURFACE_VA` is already 2 MiB-aligned. |
 
@@ -78,7 +78,7 @@ The claim was that an fpage is *"a power-of-two-sized, power-of-two-aligned regi
 in map and grant operations, the canonical prior art for exactly this problem."*
 
 **The geometry is exactly right.** L4 X.2 (the *L4 eXperimental Kernel Reference Manual*, Rev 7,
-`l4ka.org/l4ka/l4-x2-r7.pdf`, §4.1):
+`l4ka.org/l4ka/l4-x2-r7.pdf`, its section 4.1):
 
 > Fpages (Flexpages) are regions of the virtual address space. [...] An fpage of size 2^s has a
 > 2^s-aligned base address b, i.e., b ≡ 0 (mod 2^s), where s≥10 for all architectures.
@@ -91,14 +91,14 @@ and, which is the part that reads most like what we want, until its second half:
 > unmapping an fpage might or might not work on some systems. The kernel will give no indication as
 > to whether such an operation succeeded or not.
 
-**That last sentence is L4 conceding exactly the invariant §101.5 is worried about**, and conceding
+**That last sentence is L4 conceding exactly the invariant section 5 is worried about**, and conceding
 it as undefined behaviour rather than as a rule. A receiver may split a run into smaller runs, and
 what a partial unmap then does is unspecified and unreported. Whatever this tree decides, it should
 not decide that.
 
 **But an fpage is not a capability, and classic L4 has none.** An fpage is a **two-word descriptor
 placed in message registers** and interpreted by the map/grant operation; the authority behind it is
-the mapper's *own existing mapping*, not a slot in a table. From the same manual (§5.2, MapItem):
+the mapper's *own existing mapping*, not a slot in a table. From the same manual, under MapItem:
 
 > An fpage (see page 40) or IO fpage that should be mapped is sent to the mappee as part of a
 > message. [...] The fpage is specified by a two-word descriptor:
@@ -144,7 +144,7 @@ The claim was that seL4 keeps one capability per frame, but frames come in sizes
 framebuffer is one frame capability. **Correct**, verified against the *seL4 Reference Manual*
 version 16.0.0, 22 July 2026 (`sel4.systems/Info/Docs/seL4-manual-latest.pdf`).
 
-AArch64, §7.1.2.2: `seL4_PageBits` 4 KiB at mapping level 3, `seL4_LargePageBits` 2 MiB at level 2,
+AArch64, the manual's section 7.1.2.2: `seL4_PageBits` 4 KiB at mapping level 3, `seL4_LargePageBits` 2 MiB at level 2,
 `seL4_HugePageBits` 1 GiB at level 1. The manual's own gloss on that column is the block-descriptor
 confirmation: the mapping level *"refers to the level of the paging structure at which this page must
 be mapped."* The object types are `seL4_ARM_SmallPageObject`, `seL4_ARM_LargePageObject`
@@ -152,7 +152,7 @@ be mapped."* The object types are `seL4_ARM_SmallPageObject`, `seL4_ARM_LargePag
 (`libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/objecttype.h`).
 
 **And the size is chosen by the object type, not by a size argument**, which is a shape decision
-worth copying or refusing deliberately. §2.4.2:
+worth copying or refusing deliberately. The manual's section 2.4.2:
 
 > For all other object types, the size is fixed, and the size_bits argument to
 > seL4_Untyped_Retype() is ignored.
@@ -160,20 +160,20 @@ worth copying or refusing deliberately. §2.4.2:
 Only CNode, SchedContext and Untyped are variable-sized. So seL4 spells a large frame as an
 **order**, and there is nothing between 4 KiB and 2 MiB.
 
-**The riscv64 parity is exact**, which matters for rule 5: §7.1.2.6 gives 4 KiB at level 2, 2 MiB at
+**The riscv64 parity is exact**, which matters for rule 5: the manual's section 7.1.2.6 gives 4 KiB at level 2, 2 MiB at
 level 1, 1 GiB at level 0, as `seL4_RISCV_4K_Page`, `seL4_RISCV_Mega_Page`, `seL4_RISCV_Giga_Page`.
 (The naming is inconsistent between the two architectures, `*PageObject` against `*_Page`. If we take
 the shape, we should not take that.)
 
 **Two corrections to what was assumed alongside the claim.** The manual states the **virtual**
-address alignment explicitly (§7.1.2: *"The virtual address for a Page mapping must be aligned to the
+address alignment explicitly (section 7.1.2: *"The virtual address for a Page mapping must be aligned to the
 size of the Page"*, and `seL4_ARM_Page_Map` returns `seL4_AlignmentError` for it), and this lane
 found **no sentence stating a physical alignment requirement**; that follows from retype allocating
 size-aligned within an untyped rather than from a rule anyone wrote down, so the manual should not be
 cited for it. And the AArch64 page-size table is **not** qualified by hypervisor configuration: the
 guess that `arm_hyp` or a 40-bit PA changes the frame sizes is not supported by this revision.
 
-Note also what seL4 does *not* do, because §101.5's overlap argument depends on it: it has no
+Note also what seL4 does *not* do, because section 5's overlap argument depends on it: it has no
 `Frame::SPLIT`. A large frame is retyped from untyped, the untyped is spent, and the same memory
 cannot also be a small frame. That is what keeps its frame capabilities equal-or-disjoint, and it is
 the invariant we would be putting at risk.
@@ -383,7 +383,7 @@ driver worth having: a NIC's ring buffers, an NVMe queue pair, a second display.
 
 ### B. Grow `CSPACE_SLOTS`
 
-**Dominated by arithmetic** (§101.5). Include it only as the small, orthogonal change it actually is.
+**Dominated by arithmetic** (section 5). Include it only as the small, orthogonal change it actually is.
 
 ### C. `aspace::MAP_INTO` at spawn
 
@@ -427,9 +427,9 @@ tenet's first irreversible category:
   (`disk_surveyor`, the roster probe, `disk_partitioner`, `mkfs`, the virtio-gpu driver, `painter`,
   `display_terminal`). A change here is not a change to one call site; it is a change to what those
   programs mean.
-- **The revocation key is a wire fact**, because §13's guarantee ("a mapping revocation cannot see is
-  the use-after-free") is a claim made in prose, in tests, and in `notes/frames.md`. Weakening it by
-  admitting overlapping frames is the kind of fact that leaves the machine.
+- **The revocation key is a wire fact**, because §13's guarantee is asserted in prose, in tests and
+  in `notes/frames.md`, and rests on a frame being a page. Weakening it by admitting overlapping
+  frames is the kind of fact that leaves the machine.
 - **C changes nothing anybody has agreed on**, and is therefore the reversible option. That is its
   strongest argument and it should be weighed as one.
 
@@ -451,7 +451,7 @@ recorded in `notes/frames.md`'s `BUGS` rather than left to be rediscovered. If t
 
 Two small things are yours only if you want them; they block nothing:
 
-- the `size_of::<Thread>() <= FRAME_SIZE` assertion and the corrected `CSPACE_SLOTS` comment (§101.5),
+- the `size_of::<Thread>() <= FRAME_SIZE` assertion and the corrected `CSPACE_SLOTS` comment (section 5),
   which are worth doing whichever option wins;
 - whether a large frame, if D wins, is spelled as an **order** (seL4's shape: 4 KiB / 2 MiB / 1 GiB
   and nothing between) or as a **page count** (A's shape at a coarser grain). They are different
