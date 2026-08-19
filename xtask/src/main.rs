@@ -2041,8 +2041,10 @@ fn probe_inbound(
     let addr: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
     let mut done = 0usize;
     let mut last = String::from("nothing ever answered on the forwarded port");
+    let mut trace = InboundTrace::new();
 
     while done < INBOUND_OFFERED && !stop.load(Ordering::Relaxed) {
+        let opened = std::time::Instant::now();
         let mut s = match std::net::TcpStream::connect_timeout(
             &addr,
             std::time::Duration::from_millis(500),
@@ -2050,6 +2052,7 @@ fn probe_inbound(
             Ok(s) => s,
             Err(e) => {
                 last = format!("could not connect to 127.0.0.1:{port}: {e}");
+                trace.note("connect-failed", opened, 0);
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
@@ -2063,15 +2066,29 @@ fn probe_inbound(
                 "the guest closed before reading our {} bytes: {e}",
                 INBOUND_IN.len()
             );
+            trace.note("write-failed", opened, 0);
             std::thread::sleep(std::time::Duration::from_millis(100));
             continue;
         }
 
         let mut got = Vec::new();
         let mut buf = [0u8; 64];
+        // What ended this connection, for the tally the failure text prints. The read loop has
+        // five exits and they mean different things: only two of them are "nothing was consumed",
+        // and telling them apart is the whole diagnosis when a round goes missing.
+        let mut outcome = "answered";
         while got.len() < INBOUND_OUT.len() {
             match s.read(&mut buf) {
-                Ok(0) => break, // the guest had no listener and closed; nothing was consumed
+                Ok(0) => {
+                    // The guest had no listener and closed; nothing was consumed. Unless bytes had
+                    // already arrived, in which case a round WAS served and we lost the tail of it.
+                    outcome = if got.is_empty() {
+                        "closed-empty"
+                    } else {
+                        "closed-partial"
+                    };
+                    break;
+                }
                 Ok(n) => got.extend_from_slice(&buf[..n]),
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                     // Still waiting on a guest that has not polled yet. Hold the connection: see
@@ -2082,11 +2099,18 @@ fn probe_inbound(
                             "the run ended while a connection was still waiting for the guest to \
                              accept it",
                         );
+                        outcome = "stopped-while-waiting";
                         break;
                     }
                 }
                 Err(e) => {
                     last = format!("reading the guest's answer failed: {e}");
+                    outcome = match e.kind() {
+                        ErrorKind::ConnectionReset => "reset",
+                        ErrorKind::ConnectionAborted => "aborted",
+                        ErrorKind::BrokenPipe => "broken-pipe",
+                        _ => "read-failed",
+                    };
                     break;
                 }
             }
@@ -2095,8 +2119,14 @@ fn probe_inbound(
 
         if got == INBOUND_OUT {
             done += 1;
+            trace.note("answered", opened, got.len());
             continue;
         }
+        if outcome == "answered" {
+            // The loop filled its quota without matching: bytes that are not the guest's answer.
+            outcome = "wrong-bytes";
+        }
+        trace.note(outcome, opened, got.len());
         // Not an answer: almost always "no listener yet", which is the normal state for most of the
         // run. Keep the last one only so a genuine failure has something to say.
         if !got.is_empty() {
@@ -2109,14 +2139,85 @@ fn probe_inbound(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
+    if std::env::var_os("NIFE_INBOUND_TRACE").is_some() {
+        eprintln!("inbound prober trace (port {port}): {}", trace.summary());
+    }
     if done >= INBOUND_REQUIRED {
         Ok(())
     } else {
         Err(format!(
             "the guest served {done} of the {INBOUND_OFFERED} inbound connections it offers on the \
              port forwarded to 127.0.0.1:{port}, and {INBOUND_REQUIRED} is the floor that proves \
-             both listeners answered; last attempt: {last}"
+             both listeners answered; last attempt: {last}\n  what the {} attempts did: {}",
+            trace.attempts,
+            trace.summary(),
         ))
+    }
+}
+
+/// **What every prober connection did, kept so a failure can name a mechanism instead of a count.**
+///
+/// The check has failed twice with nothing to go on but "the guest served 3 of 4", which does not
+/// distinguish an abandoned connection from a lost answer from a teardown race, and each of those
+/// wants a different fix. The read loop in `probe_inbound` has five exits; this records which one
+/// each connection took, how long it was held, and how many bytes it had collected when it ended.
+///
+/// **Deliberately cheap and unconditional.** A boot makes a few hundred attempts at most, the
+/// counters are increments, and the per-connection lines are kept only for the ones that carried
+/// bytes or were held long enough to be interesting. `NIFE_INBOUND_TRACE=1` prints the summary on a
+/// passing run too, which is how you measure the shape of a green boot to compare a red one against.
+#[derive(Default)]
+struct InboundTrace {
+    attempts: usize,
+    counts: std::collections::BTreeMap<&'static str, usize>,
+    /// `(ms since the prober started, outcome, held ms, bytes)` for connections worth a line: the
+    /// ones that collected bytes, and the ones held over a second. A connection that was reset in
+    /// under a millisecond with nothing on it is the boring majority and is only counted.
+    events: Vec<(u128, &'static str, u128, usize)>,
+    started: Option<std::time::Instant>,
+}
+
+impl InboundTrace {
+    fn new() -> Self {
+        Self {
+            started: Some(std::time::Instant::now()),
+            ..Default::default()
+        }
+    }
+
+    fn note(&mut self, outcome: &'static str, opened: std::time::Instant, bytes: usize) {
+        self.attempts += 1;
+        *self.counts.entry(outcome).or_insert(0) += 1;
+        let held = opened.elapsed().as_millis();
+        if bytes > 0 || held >= 1000 || outcome == "answered" {
+            let at = self
+                .started
+                .map(|s| s.elapsed().as_millis())
+                .unwrap_or_default();
+            // Bounded, so a pathological run cannot grow this without limit.
+            if self.events.len() < 64 {
+                self.events.push((at, outcome, held, bytes));
+            }
+        }
+    }
+
+    fn summary(&self) -> String {
+        let mut out = String::new();
+        for (k, v) in &self.counts {
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("{k} x{v}"));
+        }
+        if out.is_empty() {
+            out.push_str("no attempts");
+        }
+        for (at, outcome, held, bytes) in &self.events {
+            out.push_str(&format!(
+                "\n    +{at} ms: {outcome} after {held} ms, {bytes} bytes"
+            ));
+        }
+        out
     }
 }
 
