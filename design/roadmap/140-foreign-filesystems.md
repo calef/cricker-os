@@ -110,6 +110,50 @@ inherited.
 `second_mount` shows the shape already runs: a second FS-server process against the same block
 server.
 
+## ext2 is also the controlled experiment, and that may be worth more than the interop
+
+**calef, 2026-08-19**, thinking ahead to the ext2 stratum: benchmark Linux-on-ext2 against
+nife-on-ext2 and against nife-on-RedoxFS, when ext2 exists.
+
+**Every filesystem comparison this project has published is uncontrolled.** `notes/benchmarks.md`
+measures nife-on-RedoxFS against Linux-on-ext4, and **two things differ at once**: the operating
+system's architecture and the filesystem. A gap can be attributed to either, which is why milestone
+138's answer to *"does this architecture have a disk-read liability that cannot be overcome"* has to
+be assembled from decomposition (the block server is at parity, the residual is 13 us, the rest is
+implementation) rather than read off a single number.
+
+**ext2 on both sides holds the filesystem constant.** What remains is the architecture, and nothing
+else. That is the experiment the thesis actually wants, and it is a reason to build ext2 that has
+nothing to do with mounting a stranger's drive:
+
+| | Linux | nife |
+|---|---|---|
+| ext4 | measured | not planned |
+| **ext2** | **wanted** | **wanted** |
+| RedoxFS | not possible | measured |
+
+The diagonal we have today compares two things at once. **The ext2 row isolates the operating system;
+the nife column isolates the filesystem.**
+
+**The honest caveats, which must travel with any number this produces**, because a controlled
+experiment reported carelessly is worse than an uncontrolled one reported honestly:
+
+- **Our ext2 would be new and Linux's is thirty years old.** A gap is then implementation maturity as
+  much as architecture, and saying otherwise would be the overclaim this tree's benchmark discipline
+  exists to prevent. The comparison is strongest as a *ceiling* on how much the architecture can
+  cost, not as a verdict on it.
+- **Measure after milestone 138's steps land, not before.** A young ext2 without the multi-page
+  transfer, measured against a mature ext2 that has it, prices our implementation's youth rather than
+  anything structural.
+- **ext2 has no journal**, so an ext2-versus-ext4 write comparison is not apples-to-apples and never
+  will be. ext2 against ext2 is, which is the whole point.
+- The existing discipline applies unchanged: same machine model, same device, same tier, same
+  transfer sizes, and the noise control `notes/benchmarks.md` already uses.
+
+**This does not reorder the strata.** FAT32 is still first, because a USB stick is what a person meets
+and because interop was the requirement that minted this block. It does mean the ext2 lane should
+budget for a benchmark rather than treating one as optional.
+
 ## What each one has to answer
 
 Recorded here so a later lane does not rediscover them per filesystem:
