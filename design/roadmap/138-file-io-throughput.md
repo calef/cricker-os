@@ -114,6 +114,36 @@ and sequential, and a 128 KiB record is plausibly right for those. It is possibl
 path wants the current setting and that the 4 KiB figure is the atypical case. That would not make
 the gap uninteresting, but it would change what "close the gap" means and which milestone owns it.
 
+## The 208 us is the absence of a cache, counted rather than argued (2026-08-18)
+
+The record-level sweep (notes/benchmarks.md) fit every read to `cost = 208 us + 39.0 us x 2^level`
+and attributed the fixed term to "RedoxFS re-reading its own metadata, about 5.3 block reads". calef
+asked the question that attribution left open: **is the 208 us inherent to RedoxFS's design, or is it
+the absence of a cache that any store would also need?**
+
+**It is the absence of a cache.** Every 4 KiB read of an ordinary file makes **exactly five
+single-block reads** below the record, and they are **the same five block numbers on every request**:
+`Transaction::read_tree_and_addr`'s walk of the node tree (L3 root, L2, L1, L0) and then the file's
+own `Node` block. Measured at 5.00 per request over 256 requests per phase, sequential and random,
+with 99.6% of them a block already read in the same phase, and unchanged at record levels 1, 2 and 5.
+The first four are the tree spine and are shared by every file whose node id falls in the same 256,
+so two different files differ in one block out of five.
+
+At the sweep's measured 39.0 us per block-server round trip that is **195 us of the 208, 94% of it**.
+The remaining ~13 us is the file-IPC round trip and the server's own work. The same number arrives
+independently from a measurement already on the page: `fs_read` reads an inline `motd`, does exactly
+these five reads and no record read at all, and costs 203 to 208 us.
+
+**What it means for option 3.** It rules it out on this evidence, and now for a measured reason. The
+walk is structural only in that the format fixes its depth; what makes it cost 195 us is that the
+same five blocks are fetched off the device 256 times in a row. Every store that maps an id to a node
+has a root-to-node path it would fetch too, so replacing RedoxFS buys a rewrite and arrives needing
+the identical cache. The cache is small: the spine of a 65,536-node filesystem is 259 blocks, about
+1 MiB, and the fifth block is a node the server could hold per open handle.
+
+**What it does not settle**: that a cache is cheap to build. It says which milestone owns the 208 us,
+not how to close it. See the out-of-scope section below, which this does not overturn.
+
 ## Decided 2026-08-18: all of them, then measure again
 
 **calef:** *"it seems like we do them all. And then we measure and we figure out other optimization
@@ -313,10 +343,15 @@ measurements rather than asserted, and this is the measurement that most weakens
   an all-zero file reads and writes several times faster than an incompressible one. Milestone 38's
   figures use an incompressible payload, which is the conservative choice and the one a backup
   workload resembles; a re-measurement that quietly changes payload is not comparable.
-- **This block asserts that RedoxFS is not the cause, on a reading of the code rather than on a
-  measurement.** The per-node `record_level` field is real and is honoured on both paths; that a
-  lower level actually closes the gap is a prediction, and the sweep above is what would test it.
-  Nobody has run it.
+- **This block asserted that RedoxFS is not the cause on a reading of the code rather than on a
+  measurement, and that is now measured twice over.** The sweep ran on 2026-08-18 and the prediction
+  held: a one-block record makes a 4 KiB read 5.6x faster and a write 3.0x faster
+  (notes/benchmarks.md). The fixed term the sweep left over was then counted and is five repeated
+  block reads, above. **The rest of this block still reads as though neither had happened**: the
+  "measurement that should come before any of the three" section describes the sweep as unrun, and
+  the "in brief" and comparison sections still quote milestone 38's 46.2 us per block, which the
+  sweep corrected to a 39.0 us marginal cost plus a separate 208 us walk. Bringing the block into
+  line with its own notes is work this lane identified and did not do.
 - **`Transaction::write_node` compares before writing**, so rewriting a block with identical contents
   costs a read and no write. A benchmark that sends one constant page repeatedly measures the
   comparison rather than the store.
