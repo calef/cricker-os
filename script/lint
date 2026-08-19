@@ -828,6 +828,123 @@ def _security_audits():
     return len(re.findall(r'^\| \d{4}-\d\d-\d\d \| security \|.*\]\(', text, re.M))
 
 
+# The unsafe census (milestone 134), raised by calef on 2026-08-18 as one question: "how much
+# unsafe code is there in a code base, and is that something we should be monitoring and driving in
+# a particular direction over time?" A standalone census would have answered it with another
+# one-time number nobody re-takes, which is the failure this milestone exists to fix, so it is a
+# derivation here instead. See notes/register-of-measures.md and notes/unsafe-obligations.md.
+#
+# Rust source is not a regular language, so this strips comments and literals with a lexer-shaped
+# regex and then matches the keyword forms. The stripping is what makes the count honest rather
+# than close: a naive grep for `unsafe {` over the tree scores 1071 against this function's 1057,
+# and the fourteen it invents are all `unsafe {}` written inside a `//!` doc example in `intrusive`,
+# `ipc`, `paging` and `user_heap`. Those are documentation ABOUT unsafe, and a ceiling that counted
+# them would fire when somebody improved a doc comment, which is the exact signature of the three
+# checks this script has already had deleted.
+#
+# Shapes assumed, each checked against the real tree rather than against expectation:
+#   - a block is `unsafe` then optional whitespace then `{`, MINUS the `unsafe extern "C" {` form,
+#     which is a linkage declaration and not a block anybody reasons about (zero in the tree today,
+#     subtracted anyway so the day one lands it does not read as unsafe code);
+#   - a thread-safety claim is an `unsafe impl` of Send or Sync SPECIFICALLY, which is a different
+#     animal from an `unsafe impl` of an unsafe trait (`GlobalAlloc`, `intrusive::Node`): the trait
+#     is unsafe there because its own contract is, while `unsafe impl Send for T` is a hand-written
+#     assertion that the compiler is wrong about T, and it is the most consequential unsafe in this
+#     tree. The `[^{;]*?` tail keeps it inside one item header so a body cannot donate a match;
+#   - a **code line** is a non-blank line of the same stripped text, so a comment block and a
+#     multi-line string literal both contribute nothing. That is what makes the DENSITY below a
+#     quantity nobody can move by writing prose.
+#
+# **Why density and not a raw count, which was measured before it was chosen.** The obvious ceiling
+# is on the number of `unsafe {}` blocks, and it is the wrong one for a tree this young: outside
+# `kernel/src/arch/` the count went 171 -> 747 between 2026-07-15 and 2026-08-18, almost all of it
+# the system being BUILT rather than anything drifting. A raw ceiling would have fired on nearly
+# every lane, which is the signature of the three checks this script has already had deleted.
+#
+# Per 10,000 code lines, the same period reads 22.8 -> 11.8 -> 9.3, falling at every sample: this
+# tree is getting proportionally safer, and it did so without anybody measuring it. That is the
+# claim worth holding, and holding it is what a ceiling is for. A lane that adds a driver at the
+# tree's own density does not move the number and hears nothing; a lane that makes the tree
+# proportionally less safe does, which is the event actually worth a stop.
+#
+# Blocks per 10,000 rather than per 1,000 because the marker mechanism reads integers, and 93 keeps
+# a digit that 9 would throw away.
+#
+# Block comments are matched non-greedily and do NOT nest, which Rust's do. The tree has none
+# nested; a nested one would end the strip early and could only ADD to the count, which fails loud
+# rather than quiet.
+_NON_CODE = re.compile(
+    r'/\*.*?\*/'                        # block comment
+    r'|//[^\n]*'                        # line comment, doc comment included
+    r'|r(#*)"(?:.|\n)*?"\1'             # raw string, any hash count
+    r'|"(?:[^"\\\n]|\\.)*"'             # ordinary string
+    r"|'(?:[^'\\]|\\.)'",               # char literal (a lifetime has no closing quote, so it is
+    re.S)                               # left alone, which is what we want)
+#
+# There is deliberately NO `unsafe fn` count here. The `==> unsafe fn contracts` check further up
+# this script already derives one and prints it, and a second count of the same thing, taken from a
+# slightly different scope, is the exact drift milestone 134 exists to stop. The register cites that
+# line rather than duplicating it.
+_UNSAFE_BLOCK = re.compile(r'\bunsafe\s*\{')
+_UNSAFE_EXTERN = re.compile(r'\bunsafe\s+extern\s+"[^"]*"\s*\{')
+_THREAD_SAFETY = re.compile(r'\bunsafe\s+impl\b[^{;]*?\b(?:Send|Sync)\s+for\b')
+
+# What is out of scope, and every exclusion has a reason rather than a convenience.
+#
+# `bench/host/` holds the Linux and macOS programs the cross-OS comparison runs: ~100 `unsafe`
+# blocks of libc FFI that those operating systems require and that say nothing about nife's
+# soundness. Counting them would move this census every time somebody added a comparison.
+# `xtask/`, `tools/`, `fuzz/` and `scripts/` are build and image tooling that runs on the
+# developer's Mac and cannot fault the kernel.
+#
+# `patches/` is excluded for a different reason and it is the one worth reading: it holds our
+# platform layer for Rust's `std`, which DOES run on the machine, so this is a real hole rather
+# than a tidy boundary. It is out because a ceiling asserts a direction, and that code's shape is
+# upstream's rather than ours -- it implements `std`'s internal interfaces and cannot be
+# restructured to hold fewer unsafe blocks without diverging further from the crate we are trying
+# to track. It also matches the `unsafe fn contracts` check's scope, so this script has one answer
+# to "which Rust is ours" instead of two. The 37 blocks it leaves uncounted are recorded in
+# notes/register-of-measures.md's BUGS, where a reader meets them.
+#
+# The list is exclusions rather than inclusions on purpose: a new subsystem directory is counted by
+# default, and being left out has to be somebody's decision.
+_HOST_ONLY = ('bench/host/', 'xtask/', 'tools/', 'fuzz/', 'scripts/', 'patches/')
+
+_census = {}
+
+
+def _unsafe_census():
+    """Every unsafe number this tree tracks, in one pass over the source that runs on nife.
+
+    Cached, because several numbers come out of one walk and `script/lint` runs on every build.
+    The walk is about half a second over ~300 files, which is why it is one pass and not three.
+    """
+    if _census:
+        return _census
+    files = subprocess.run(['git', 'ls-files', '*.rs', ':!vendor'],
+                           capture_output=True, text=True, check=True).stdout.split()
+    counts = {'in_arch': 0, 'outside_arch': 0, 'thread_safety': 0, 'code_lines': 0}
+    for name in files:
+        if name.startswith(_HOST_ONLY):
+            continue
+        code = _NON_CODE.sub(lambda m: re.sub(r'[^\n]', ' ', m.group(0)),
+                             pathlib.Path(name).read_text(errors='replace'))
+        blocks = len(_UNSAFE_BLOCK.findall(code)) - len(_UNSAFE_EXTERN.findall(code))
+        counts['thread_safety'] += len(_THREAD_SAFETY.findall(code))
+        if name.startswith('kernel/src/arch/'):
+            counts['in_arch'] += blocks
+        else:
+            counts['outside_arch'] += blocks
+            # Only the non-arch denominator, so the density and its numerator describe the same
+            # code. Mixing arch lines in would let assembly-heavy months dilute a number that is
+            # deliberately not about assembly.
+            counts['code_lines'] += sum(1 for line in code.split('\n') if line.strip())
+    # Truncated rather than rounded: the ceiling must never fail a tree that is exactly at it.
+    counts['density'] = 10000 * counts['outside_arch'] // counts['code_lines']
+    _census.update(counts)
+    return _census
+
+
 REGISTRY = {
     'longest-markdown-line': (
         "how long the repository's longest markdown line is, in bytes, which is what "
@@ -867,6 +984,16 @@ REGISTRY = {
         'how many security audits are on the record in design/audit-reports/README.md',
         _security_audits,
     ),
+    'unsafe-density-outside-arch': (
+        'how many `unsafe {}` blocks there are per 10,000 lines of code outside '
+        'kernel/src/arch/, which is the unsafe that is not paying for hardware access',
+        lambda: _unsafe_census()['density'],
+    ),
+    'unsafe-thread-safety-claims': (
+        'how many `unsafe impl Send`/`Sync` claims the tree makes, each one a hand-written '
+        'assertion that the compiler is wrong about a type',
+        lambda: _unsafe_census()['thread_safety'],
+    ),
 }
 
 # --- finding the markers ------------------------------------------------------------------------
@@ -875,23 +1002,45 @@ REGISTRY = {
 # binaries and anything ignored, so target/ and a stray build directory cannot slow it down or
 # confuse it. vendor/ is excluded for the reason the rest of this script excludes it -- it is not
 # our prose.
-# Two relations, and the second exists because equality is the wrong one for a growing quantity.
+# THREE relations, and neither of the other two is equality, because equality is the wrong one for
+# any quantity that moves on its own.
 #
 #   <!--count:NAME-->           the number must EQUAL the tree. A census.
-#   <!--count-at-least:NAME-->  the number must be a FLOOR. Fires only when the claim goes FALSE.
+#   <!--count-at-least:NAME-->  the number must be a FLOOR. Fires only when the count goes DOWN.
+#   <!--count-at-most:NAME-->   the number must be a CEILING. Fires only when the count goes UP.
 #
-# Why (2026-08-17): `kani-harnesses` was marked in four claim sites and the count moved three times
-# in one day, so every lane that added a harness had to edit four files, one of them README.md,
-# which nearly every other lane touches too. That is a merge hotspot manufactured by the convention
-# rather than by the tree. Reading what each site actually claimed split them cleanly: two are a
-# census and want equality; two were conveying **scale** ("121 Kani harnesses across 21 crates: the
-# capability model, IPC, MMU isolation, ..."), and for a monotonically growing quantity a floor is
-# the *true* claim while an exact equality is a maintenance tax that buys nothing.
+# Why the floor (2026-08-17): `kani-harnesses` was marked in four claim sites and the count moved
+# three times in one day, so every lane that added a harness had to edit four files, one of them
+# README.md, which nearly every other lane touches too. That is a merge hotspot manufactured by the
+# convention rather than by the tree. Reading what each site actually claimed split them cleanly:
+# two are a census and want equality; two were conveying **scale** ("121 Kani harnesses across 21
+# crates: the capability model, IPC, MMU isolation, ..."), and for a monotonically growing quantity
+# a floor is the *true* claim while an exact equality is a maintenance tax that buys nothing.
 #
 # The ratchet is intact, which is the only test that matters here: a floor that goes false still
 # fails the build. Deleting harnesses below a stated floor is exactly the event worth catching, and
 # it is the one an equality check would have drowned in noise.
-MARKER = re.compile(r'<!--count(-at-least)?:([a-z0-9-]+)-->')
+#
+# **Why the ceiling (milestone 134, 2026-08-18), and it is the floor's mirror rather than a third
+# idea.** A floor suits a quantity where MORE IS BETTER and the bad event is a deletion. Some
+# quantities are the other way up, and unsafe is the tree's clearest one: nobody wants more of it,
+# every addition should be a deliberate act with a written reason, and the bad event is a drift
+# upward that no single commit looks responsible for. calef raised it as one question -- "is that
+# something we should be monitoring and driving in a particular direction over time?" -- and a
+# direction is exactly what the other two relations cannot express. Equality says "this is the
+# number"; a floor says "at least"; only a ceiling says "and it should not grow".
+#
+# **What a ceiling is NOT.** It is not zero-slack, and this was measured before it was chosen. Over
+# the 14 days to 2026-08-18, 38 non-merge commits changed the number of `unsafe {` outside
+# kernel/src/arch/. A ceiling written at exactly the tree's value would have fired on all 38 and
+# sent every one of them to edit the same line of the same note, which is precisely the merge
+# hotspot the paragraph above records the convention manufacturing once already. A ceiling is
+# written ABOVE the tree, with the headroom stated, so it fires on drift rather than on a lane.
+#
+# The exception is a population small and consequential enough that every addition deserves the
+# stop: `unsafe-thread-safety-claims` is written at the tree's exact value for that reason, and it
+# moved twice in three weeks rather than 38 times in two.
+MARKER = re.compile(r'<!--count(-at-least|-at-most)?:([a-z0-9-]+)-->')
 
 # Prose explaining this convention has to be able to spell it, which is the same exemption the
 # "daemon" check below carries for the documents that argue about the word. A marker inside a
@@ -950,7 +1099,8 @@ def claimed_value(text):
     return WORD_VALUES.get(token.lower())
 
 grep = subprocess.run(
-    ['git', 'grep', '-n', '-e', '<!--count:', '-e', '<!--count-at-least:', '--', ':!vendor'],
+    ['git', 'grep', '-n', '-e', '<!--count:', '-e', '<!--count-at-least:',
+     '-e', '<!--count-at-most:', '--', ':!vendor'],
     capture_output=True, text=True,
 )
 # git grep exits 1 for "no matches", which is a legitimate state for a ratchet that starts empty.
@@ -988,7 +1138,7 @@ for line in grep.stdout.splitlines():
     # uses. Searched from `text`, and blanked into a parallel string, so the markers are still found.
     numbers_only = MARKER.sub(lambda m: ' ' * len(m.group(0)), text)
     for match in MARKER.finditer(text):
-        at_least, name = bool(match.group(1)), match.group(2)
+        relation, name = match.group(1), match.group(2)
         seen.add(name)
         if name not in REGISTRY:
             bad.append(f'{path}:{lineno}: {match.group(0)} names no entry in the registry')
@@ -1002,13 +1152,25 @@ for line in grep.stdout.splitlines():
             derived[name] = REGISTRY[name][1]()
         actual = derived[name]
         checked += 1
-        if at_least:
+        if relation == '-at-least':
             # A floor. Only a claim that has gone FALSE is a problem; the tree growing past it is
             # the expected case and must stay silent, which is the whole point of the relation.
             if claimed > actual:
                 bad.append(f'{path}:{lineno}: claims at least {claimed}, the tree has {actual} '
                            f'({name}: {REGISTRY[name][0]}). A floor is only wrong when it stops '
                            f'being true, so this means the count went DOWN')
+        elif relation == '-at-most':
+            # A ceiling, the floor read upside down: the tree falling below it is the wanted
+            # direction and must stay silent. The message says what the two honest responses are,
+            # because a ceiling that only says "no" teaches a lane to delete the marker. Raising it
+            # is a legitimate answer AS LONG AS the reason is written where the number lives, which
+            # is the whole mechanism: the edit is cheap and the sentence beside it is the point.
+            if claimed < actual:
+                bad.append(f'{path}:{lineno}: claims at most {claimed}, the tree has {actual} '
+                           f'({name}: {REGISTRY[name][0]}). A ceiling is only wrong when it stops '
+                           f'being true, so this means the count went UP by {actual - claimed} '
+                           f'past the headroom. Take the addition back out, or raise the ceiling '
+                           f'in this commit and say beside it why the addition was worth it')
         elif claimed != actual:
             bad.append(f'{path}:{lineno}: says {claimed}, the tree says {actual} '
                        f'({name}: {REGISTRY[name][0]})')
@@ -1026,6 +1188,21 @@ unused = sorted(set(REGISTRY) - seen)
 extra = f'; {len(unused)} registered and unmarked ({", ".join(unused)})' if unused else ''
 print(f'counted claims: {checked} markers over {len(derived)} counts, all agreeing with the tree'
       f'{extra}')
+
+# The two unsafe numbers that are REPORTED rather than asserted, and the distinction is milestone
+# 134's rule: a number with a consumer gets a relation, a number with only a reader gets printed.
+#
+# `kernel/src/arch/` deliberately has no ceiling. Driving that number down means either writing
+# assembly wrong or moving it out of arch/, and DECISIONS rule 1 says arch code belongs there, so a
+# target would be a gate pushing against the architecture. But an unmarked number in a note is a
+# snapshot of whenever somebody last counted, which is this whole convention's founding complaint,
+# so it is printed on every build instead: on screen every time, asserted never.
+if _census:
+    print(f'unsafe census: {_census["outside_arch"]} blocks in {_census["code_lines"]} lines '
+          f'outside kernel/src/arch/, {_census["density"]} per 10,000 (ceiling); '
+          f'{_census["in_arch"]} blocks inside arch/ (no target: rule 1 puts assembly there); '
+          f'{_census["thread_safety"]} Send/Sync claims (ceiling). '
+          f'See notes/register-of-measures.md')
 PYEOF
 
 # The naming conventions, for the ones a machine can check (milestone 46, DECISIONS §39). The rest of

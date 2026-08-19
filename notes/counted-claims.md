@@ -192,11 +192,12 @@ mistake:
   finished the job. Real, common, and **not checkable**: it needs a reader who knows the system, which
   is milestone 117, the stranger test.
 
-## Two relations, and equality is the wrong one for a growing count
+## Three relations, and equality is the wrong one for anything that moves
 
 ```markdown
-**124 harnesses** <!--count:kani-harnesses-->            a census: must EQUAL the tree
-**over 100 harnesses** <!--count-at-least:kani-harnesses-->   a floor: fires only when FALSE
+**124 harnesses** <!--count:kani-harnesses-->                  a census: must EQUAL the tree
+**over 100 harnesses** <!--count-at-least:kani-harnesses-->    a floor: fires when the count DROPS
+**at most 100** <!--count-at-most:unsafe-density-outside-arch--> a ceiling: fires when it RISES
 ```
 
 **Why the second exists, measured 2026-08-17.** `kani-harnesses` was marked at four claim sites and
@@ -223,6 +224,32 @@ edit every time somebody proved something new.
 the build, and going false means harnesses were **deleted**, which is precisely the event worth
 catching and the one an equality check was drowning in noise. Rounded to 100 it will not move for
 months, and when it does, moving it is a deliberate act rather than bookkeeping.
+
+### The ceiling, which is the floor read upside down (milestone 134, 2026-08-18)
+
+The floor suits a quantity where **more is better** and the bad event is a deletion. Some quantities
+are the other way up, and unsafe is this tree's clearest one: nobody wants more of it, every
+addition should carry a reason, and the bad event is an upward drift that no single commit looks
+responsible for. calef asked it as one question, *"is that something we should be monitoring and
+driving in a particular direction over time?"*, and a **direction** is exactly what the other two
+relations cannot express. Equality says "this is the number"; a floor says "at least"; only a
+ceiling says "and it should not grow".
+
+**A ceiling is written above the tree, and the headroom is measured rather than guessed.** In the
+fourteen days to 2026-08-18, 38 non-merge commits changed the number of `unsafe {` outside
+`kernel/src/arch/`. A ceiling written at the tree's exact value would have fired on all 38 and sent
+every one of them to edit the same line of the same note, which is the merge hotspot this convention
+already manufactured once with `kani-harnesses`. The exception is a population small and
+consequential enough that every addition deserves the stop: `unsafe-thread-safety-claims` is written
+at the tree's exact value, and it moved twice in three weeks rather than 38 times in two.
+
+**And the quantity often has to change to make a ceiling honest.** The obvious ceiling on unsafe is
+a count of blocks, and it is wrong for a tree that is still being built: outside `arch/` the count
+went 171 to 747 in a month while the **density** fell from 228 to 93 per 10,000 lines. A count
+ceiling would have fired on almost every lane, which is the signature of a check that gets deleted;
+a density ceiling holds a trend that is already going the right way and stays silent for a lane
+adding a driver at the tree's own rate. Choosing the relation is half the work and choosing the
+quantity is the other half.
 
 **Deliberately not built: an auto-fix.** A `--fix` that rewrote marked numbers was considered and
 refused. This gate's failure message offers two responses, and they are not equally likely to be
