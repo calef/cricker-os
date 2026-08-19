@@ -48,7 +48,7 @@ demonstration rather than an assurance.
 
 **It is also what this tree already does.** `net_stack`, `smb_server` and `sub_server_supervisor` are
 separate confined programs, `fs_server` already ships three binaries, and one of them is
-`second_mount` — a second FS-server process against the same block server. A single server speaking
+`second_mount`, a second FS-server process against the same block server. A single server speaking
 five formats would be the exception here, not the pattern.
 
 **And `Server<D: Disk>` is already generic on the wrong axis for this.** It abstracts the layer
@@ -59,6 +59,25 @@ refusal of speculative trait-ification is the rule that says so.
 the shared-page plumbing, the `fs_proto` decode, the parts that are not filesystem-specific. That is
 §94's question (what must be per-binary, and what can be lifted) rather than an abstraction over two
 stores that disagree about allocation, atomicity, transactions and whether a rename can be atomic.
+
+### `fs_server` is misnamed, and the architecture is what makes it wrong
+
+**calef, 2026-08-18**, on reading the section above: *"Which also means fs_server is misnamed. Its
+something like redoxfs_server."*
+
+He is right, and the name was accurate until this decision. A single server for all filesystems is
+`fs_server`; **one program per filesystem makes that name a claim the program cannot meet**, and the
+next reader would infer that a second filesystem goes inside it, which is exactly the architecture
+just refused. §39's rule applies: a name is a claim, and the reader meets it first.
+
+`fs_proto` is **not** misnamed and should not move. It is the protocol every filesystem server
+speaks, so a generic name is the true one; that the client cannot tell which server is behind its
+endpoint is the whole point.
+
+The rename is mechanical and wide (a crate directory, a package name, three binaries, every
+reference), so it wants its own lane rather than riding on prose. Doing it **before** the first FAT32
+program is cheaper than after, because after there are two servers whose names disagree about what
+kind of thing they are.
 
 ### Open: one process per volume, or one per filesystem type
 
