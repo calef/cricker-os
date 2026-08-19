@@ -99,10 +99,40 @@
 # which is a different thing and has held for four runs. Step 6 above is the response: disclose,
 # record the disclosure, and ask the stranger at debrief what it knew and what that changed.
 #
-# **A stranger that reads this file learns the debrief questions and the shape of the withholding.**
-# The rubric itself is not here, and the "pass means" column that made run 1 unscorable is not here,
-# but the contamination questions are. No run has opened the harness; that is luck rather than
-# design, and the honest price of a mechanism a newcomer can find.
+# **A stranger that reads this file learns the debrief questions and the shape of the withholding,
+# and run 5 did, about thirty minutes in.** The rubric itself is not here, and the "pass means"
+# column that made run 1 unscorable is not here, but the contamination questions are, along with a
+# step-by-step description of the isolation it is inside. The first draft of this entry said "no run
+# has opened the harness; that is luck rather than design", and the first run conducted through this
+# script falsified it. **It was not luck and it was not curiosity: the run below leaked a foreign
+# absolute path into the stranger's own build output, and this was the only file in the tree
+# containing that string, so grep sent it here.** Its own words: *"I did not go looking for it."*
+# The harness's paragraph about restoring the `nife-dev` link is then what let it diagnose the
+# failure, so this file both contaminated the run and rescued it, which is the worst possible shape
+# for a contamination to take: it is now load-bearing for the result it corrupted.
+#
+# **It isolates a tree and cannot isolate a machine, which run 5 hit in its first ten minutes.**
+# `nife-dev` is an account-wide `rustup` link and this script records and restores it, which is
+# necessary and is not sufficient: **during** the run the clone's first `script/test` compiles
+# `std` out of whichever worktree built the farm last, the `-Zbuild-std` dep-info caches those
+# absolute paths, and `std-aborts` reports them as a source defect with file and line numbers. So a
+# stranger told "the repository is in ./nife and it is the only thing you have; do not look for
+# another checkout on this machine" was handed the path of another checkout by its own build, and
+# ran `ls -la` against it to see whether it existed. **The task text asks for something the machine
+# does not support**, and until the farm is per-worktree the honest options are to pre-warm the
+# clone's farm before handing it over, or to say in the task that the machine is shared. Recorded
+# rather than fixed: changing the task text makes the runs incomparable, and that is a decision
+# above a lane.
+#
+# **`--safe-mode` does not empty the stranger's context, it only empties the project's part of it.**
+# The `--smoke` run's stranger, asked what was in its context before its first tool call, answered
+# "no CLAUDE.md, AGENTS.md, user memory or project memory" and then listed what *was* there: the
+# CLI's system prompt, an environment block, a skills list with descriptions, an agent-types list,
+# and the bypass-permissions instruction to prefer `Bash` over `Read`. None of that is repository
+# authored and none of it mentions this project, so the isolation claim holds as written. What it
+# changes is smaller and worth knowing when reading a transcript: run 5 read files with `sed` and
+# `grep` rather than with `Read`, so a per-file read count taken from the transcript's tool calls
+# undercounts, and the file list has to come from the debrief instead.
 #
 # **The build half cannot be measured from a warm machine**, and every contributor's is warm. This
 # script does nothing about `rustup`, `brew` or the cargo cache, so on a developer laptop
@@ -112,6 +142,18 @@
 # **It does not schedule itself.** Recurrence here means the run costs one command rather than an
 # afternoon of reconstruction. Putting it on an interval is milestone 129's machinery and a decision
 # about how often the answer is worth its cost, which is calef's.
+#
+# **The `reached_withheld_note` tripwire is a false positive by construction and fired on the first
+# real run.** It greps the transcript for the string `stranger-test.md`, and three things in the
+# tree contain that string with the note itself absent: this script's own header says it twice,
+# `notes/adding-a-program.md` names the note in prose (bare prose mentions are deliberately left
+# alone by the withholding, since cutting them would fabricate a tree), and any run that reads
+# either will trip it. Run 5 tripped it on all three and had not been near the answer key. So the
+# summary's warning line means "somebody typed the filename", never "somebody read the note", and
+# an operator who takes it at face value will void a sound run. What it should compare against is
+# content from the note that exists nowhere else, or the `git show HEAD~1:` invocation that would
+# actually recover it. Recorded rather than fixed, because the run that found it is not the run
+# that should change the instrument it was measured by.
 #
 # **The withholding is invisible to `git status` and recoverable from `git`.** The deletion is
 # amended into the tip, so the working tree is clean and the reflog is removed, but the tip commit's

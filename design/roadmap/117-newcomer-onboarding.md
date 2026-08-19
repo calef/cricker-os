@@ -2,17 +2,24 @@
 
 **Status: PARTIAL.** Minted 2026-08-05 by calef, to put the third principle to a test rather than
 leave it as an aspiration. The rubric was written 2026-08-14 (notes/stranger-test.md), run 1 went the
-same day, run 2 went 2026-08-16 (pull request #219), run 3 went 2026-08-18, and **run 4 went
-2026-08-18**. Four runs, eleven defects fixed between the first two, and the two documents the block
-predicted have now been seen by a stranger for the first time: `CONTRIBUTING.md` at the repository
-root, and a reading order at the top of `README.md`, both still **provisional**, because a reading
-order is a claim about what matters and those are calef's.
+same day, run 2 went 2026-08-16 (pull request #219), runs 3 and 4 went 2026-08-18, and **run 5 went
+2026-08-18, the first conducted through `script/stranger-test` rather than rebuilt by hand.** Five
+runs, eleven defects fixed between the first two, and the two documents the block predicted have now
+been seen twice: `CONTRIBUTING.md` at the repository root, and a reading order at the top of
+`README.md`, both still **provisional**, because a reading order is a claim about what matters and
+those are calef's.
 
-**Gate: NONE.** The instrument exists and has now been run four times. What is missing is a
-mechanism that runs it without being remembered, which is rung four holding up the milestone that
-exists to fix rung-four problems. **That, and not the worklist, is what blocks this milestone**, and
-run 4 is the evidence: it produced the best result of any run and moved the status not at all,
-because the status was never gated on the result.
+**Gate: NONE.** What that costs is now visible rather than inferred. Run 4 said the blocker was
+the missing recurrence mechanism rather than the worklist. That mechanism was built the same day and
+**run 5 is the evidence it works**: one command, no isolation failure of the four kinds each earlier
+run hit, the account-wide toolchain link restored, and a real measurement rather than a test of the
+script. **The status still does not move**, and the reason is no longer inherited. Two things are
+outstanding and only one of them is a lane's: the milestone's own sentence is *fix what the run
+finds, then run it again*, and run 5's findings are recorded rather than fixed; and nothing
+schedules a run, which is a cadence decision about how often the answer is worth `$10.56` and half
+an hour, and cadence decisions are calef's. **A gate would be the thing that moves this**, and
+writing one is not a lane's call either, because it would be a gate on somebody's attention rather
+than on the tree.
 
 **Run 4 scored eight of eight on the mental model and passed B1 for the first time**, which is the
 two provisional documents working. `CONTRIBUTING.md` is directly responsible for two rows: the
@@ -341,6 +348,82 @@ rather than closed, since the summary reports whether the transcript ever mentio
 
 **The name `stranger-test` is provisional**, as `script/` names are calef's. It takes its noun from
 the note that named the instrument first, so the command and the record share a word.
+
+## What run 5 found and hands off, 2026-08-18
+
+**Status does not move: still `PARTIAL`**, for the reason in the second paragraph of this block
+rather than for run 4's reason. Run 4's handoff 1 is the one this run closes and it closes it only
+half way: the mechanism exists, it has now been exercised by somebody who did not write it, and
+nothing schedules it.
+
+**What run 5 measured that no previous run could.** It is the first run through
+`script/stranger-test`, the first whose stranger was told at turn zero that it was being measured,
+and the first on an uncontended machine (load average 2.44 on 8 cores at launch, no other lane, no
+QEMU). 201 turns, about 29 minutes, `$10.56`, plus a `--smoke` run at `$0.09` that exercised every
+stage first. Six of eight mental-model rows answered, one partly, one absent. Full record and the
+scored rubric in notes/stranger-test.md.
+
+**The result that matters most is not on the rubric.** The harness isolates a tree and cannot
+isolate a machine. `nife-dev` is an account-wide `rustup` link, so the clone's first `script/test`
+compiled `std` out of another worktree's farm, and `std-aborts` failed **naming two files and two
+line numbers inside a checkout the stranger had been told did not exist for it**. Both fixes the
+error message suggested would have written a false statement into `ABORTS_ACCEPTED`. The stranger
+diagnosed it only by grepping for the foreign path, which led it to `script/stranger-test` itself,
+so **the harness contaminated the run and then rescued it**. Recorded in notes/std.md's `BUGS` and
+in `script/stranger-test`'s.
+
+**`script/apropos` did not fire, and that is this run's cleanest negative result.** It landed
+2026-08-18 because three runs could not reach `notes/net.md`, `notes/capabilities.md`, any
+`design/decisions/` file, or `crates/abi/src/lib.rs`. Run 5 never ran it, still reached no
+`design/decisions/` file, and still never opened `notes/net.md`. It had the name in front of it
+three times: in `ls script/`, in the guest builtin in `crates/swish/src/lib.rs`, and in
+`SHELL_CHECK_SCRIPT`'s transcript. The only page that says what it does is `notes/scripts.md`, which
+five runs have not opened. Recorded in `script/apropos`'s `BUGS`.
+
+**`AGENTS.md` was never opened**, by a stranger that read `CONTRIBUTING.md` third and shipped a
+working program on both ISAs. Run 4 read `AGENTS.md` seventh and complained that `CONTRIBUTING.md`
+was sixteenth; fixing the second appears to have cost the first, because a reader who meets a
+shorter document summarising a longer one stops. Its own reason: *"66 KB is a large upfront cost
+when a task is in front of you, and everything I actually needed turned out to be reachable from
+code."* This is the same criticism run 4 made of the tree's prose habit, arriving independently and
+with a falsifiable instance attached.
+
+**What run 5 hands off.** None of it was done in its lane, per the same rule runs 3 and 4 followed.
+
+1. **Assert that `std_aborts()`' dep-info paths are under `farm_dir()`.** One comparison, and it
+   turns a false accusation about somebody else's source into a true statement about the machine.
+   Say the recovery (`rm -rf std_exerciser/target`) in the failure message, since the failure caches
+   and re-running reproduces it in thirty seconds, which reads as stable rather than stale. This is
+   the cheapest item here and it is on the customer path by way of trust: a gate that names a file
+   and a line and is wrong costs more than a gate that says nothing.
+2. **Decide whether an argument-plus-input manifest is wanted.** Today it is possible to declare and
+   it turns `the_arg_line_follows_the_manifest_for_every_program` red, in `crates/swish`, which the
+   person adding the program has no reason to open. The test sweeps the enum and asks the manifest
+   about the argument, then hard-codes `Holdings::default()` and the line `"<name> 21"`. Either the
+   sweep learns the rest of the manifest or the combination is refused at `plan_against_with` with a
+   comment, the way file-plus-input already is. **This is a fork rather than a lane**: a comment
+   there rules out file-plus-input on `ArgSpec` grounds and says nothing about this case, so a
+   newcomer cannot tell headroom from a deliberate gap. Recorded in notes/adding-a-program.md's
+   `BUGS`.
+3. **`CONTRIBUTING.md` says `script/gates` runs three stages and it runs five.** Five minutes. The
+   two it omits are `script/icount` and `script/test --hvf`, and the HVF leg is the slowest and the
+   only stage that flaked in this run. It matters more than an ordinary drift because that sentence
+   is what earned run 4's best unforced result.
+4. **Two stale counts, each five minutes**: `script/setup`'s comment names `nightly-2026-07-26` when
+   the pin is `nightly-2026-08-18`, and `README.md`'s reading order counts 403 markdown files and
+   143 notes when there are 413 and 145. Both are the failure this tree already names, a duplicated
+   fact rotting, and both were the first things run 5 wrote down.
+5. **Say where `script/apropos` is, somewhere a newcomer reaches.** Its own `BUGS` now records that
+   five runs missed it; where it should be named is a claim about the reading order, so it is
+   calef's rather than a lane's. **Until it is answered, the tool built to close the
+   `design/decisions/` gap has closed nothing**, which is measurable and was measured.
+6. **Handoff 4 from runs 3 and 4 is unchanged and is now nominated by three successive strangers**:
+   adding a program should not need eight hand-maintained lists. Run 5 adds that the eighth is not
+   even a constant, since it depends on the manifest shape.
+7. **The cadence for running this is calef's and nothing else can move the status.** The mechanism
+   is built and proven. A run costs about `$10.56` and half an hour, produces about seven findings,
+   and its value decays as the tree changes. Milestone 129 is the machinery. **This is the decision
+   the milestone is waiting on**, and it is one sentence rather than a lane.
 
 ## Scope note
 

@@ -236,6 +236,7 @@ $ triple 21
   | 2026-08-18 (run 3) | `triangle` | the aarch64 tier again (milestone 130 had deleted both shapes it described), and `manifest()` missing from the `grant_plan` list |
   | 2026-08-18 (this lane) | a scratch binary, added and removed | `cargo xtask build` claimed to pack both archives and packs one, the `SHELL_CHECK_SCRIPT` example did not compile, and nothing said which of the seven `grant_plan` edits the machine catches |
   | 2026-08-18 (run 4) | `tally`, added and removed | **nothing.** The first walk of four to find no defect, including `crates/swish/src/lib.rs:864`, which the page quotes by line number and which still is that line |
+  | 2026-08-18 (run 5) | `nth`, kept | an **eighth** edit site the list of seven does not have: a manifest that requires an argument *and* an input fails `the_arg_line_follows_the_manifest_for_every_program` in `crates/swish/src/lib.rs`, in a crate the walker did not edit |
 
   Run 3 recorded its two rather than fixing them, deliberately and per its own convention: a run
   that stops to fix things stops measuring, and its findings stop being traceable to it (see
@@ -256,6 +257,21 @@ $ triple 21
   prose a fourth time will not change it. The tracked home for the mechanism is milestone 117's
   handoff "adding a program should not need five hand-maintained lists": a `Prog` variant could carry
   its archive name and its manifest as data, and both initrd tables could be generated from it.
+- **There is an eighth edit site and it depends on your manifest, so the count above is a lower
+  bound.** Found 2026-08-18 by milestone 117's fifth stranger, which deliberately picked the one
+  manifest combination nothing in the tree had used: a **required argument together with a required
+  input**. `the_arg_line_follows_the_manifest_for_every_program` in `crates/swish/src/lib.rs` sweeps
+  `Prog` and asks each program's manifest whether it takes an argument, which is the generalisation
+  its own doc comment argues for at length. Then it builds the line `"<name> 21"` against
+  `Holdings::default()` and hard-codes everything else, so the planner refuses it for any program
+  that also requires an input, and the sweep goes red on a program whose only sin is a manifest
+  shape nothing had used yet. **A test written to survive the next program added does not survive
+  this one**, and it is in a crate the person adding the program has no reason to open. The
+  stranger repaired it in its own disposable clone and the tree is unchanged: on `main` an
+  argument-plus-input program cannot be added without a host test going red. Whether that
+  combination is wanted at all is an open question this page cannot answer: `plan_against_with`
+  carries a comment ruling out file-plus-input on `ArgSpec` grounds and says nothing about
+  argument-plus-input, so a newcomer cannot tell headroom from a gap left on purpose.
 - **The program's name is written in seven places** and nothing joins them: the `[[bin]]` block in
   `user/Cargo.toml`, `mkinitrd()`'s table, `initrd_riscv()`'s `--bin` list, `initrd_riscv()`'s table,
   the seven-part `Prog` table in `grant_plan`, the exhaustive match in `swish`, and
