@@ -79,6 +79,34 @@ rather than per file, and **nothing fences**, because `fs_proto` has no ordering
 that lies about its own flush is outside anything a protocol can check, which is the same limit
 notes/fs-server.md's crash-injection table records from the other side.
 
+**The 64 KiB transfer reached the mounted share 2026-08-19**, and it is the first thing in this
+block that made a backup *faster* rather than possible. Milestone 138 step 3 grew the file
+contract's transfer to 64 KiB and measured 8.02x on a sequential write; **none of it reached a
+mount**, because `smb_server` chunked every SMB read and write into `fs_proto::PAGE`-sized requests
+and so turned a Mac's 64 KiB write into sixteen 4 KiB ones. Both clamps now read
+`fs::TRANSFER_MAX` from the contract, and the kernel maps the whole channel at the adapter's
+`FS_VA` because nothing checks that a client asked for no more than it mapped.
+
+Measured through the host SMB prober rather than through `fs_proto` (`bench/smb-throughput.sh`, two
+rounds, aarch64): **write 4.8x (0.065 to 0.31 MiB/s), read 2.4x (0.15 to 0.36)**. Most of the write
+speedup arrived and about half the read speedup did, and **where the rest went is a different
+contract**: `socket_proto::DATA_MAX` is 4080 bytes, so every 64 KiB SMB message still crosses the
+socket contract about seventeen times in each direction, and that is now the dominant cost of a
+transfer. It is step 3's defect one contract over; notes/smb.md's `BUGS` carries it with its
+promotion trigger. **SMB's own ceiling binds too**: `smb_proto::MAX_TRANSACT` is 64 KiB for
+`MaxRead`, `MaxWrite` and `MaxTransact`, so raising `fs::TRANSFER_PAGES` past 16 buys this path
+nothing without raising that as well.
+
+What that is worth to a backup, stated at the depth it was measured: **the write path alone** goes
+from the record-level sweep's 17.6 hours for a 100 GiB first backup to **40 minutes** at step 3's
+42.77 MiB/s, and this is what puts a Mac's bytes on that path. **No end-to-end hours figure is
+offered**, on purpose: the table above is a debug build under QEMU user-mode networking, which is
+the wrong instrument for a wall clock, and what transfers from it is the ratio rather than the rate.
+
+**The status does not move.** This is throughput on a share that already worked; what remains is
+unchanged, and the honest reading is that this milestone got cheaper to *use* rather than closer to
+done.
+
 **The identity substrate arrived 2026-08-17** (milestone 54, pull request #274), which was this
 block's other SMB-side prerequisite and the reason a Time Machine target could not have been serious
 before: a backup share that admits guests is a share anyone on the segment can rewrite. What this
