@@ -201,11 +201,24 @@ every fault point start from a byte-identical image, which matters here more tha
 harness that leaves state behind between runs produces the exact class of false result the section
 above spends 60 lines on.
 
-| injection | fault points | result |
-|---|---|---|
-| power cut, at every write | 93 | all prefix-consistent |
-| power cut, last write torn, 4 offsets | 372 | all prefix-consistent |
-| a lying device (drop or tear one write, keep persisting after) | 186 | 112 recovered, 74 refused, **0 silently wrong** |
+| injection | fault points | result at the 8 KiB record | result at the 128 KiB record |
+|---|---|---|---|
+| power cut, at every write | 134 | all prefix-consistent | all prefix-consistent |
+| power cut, last write torn, 4 offsets | 536 | all prefix-consistent | all prefix-consistent |
+| a lying device (drop or tear one write, keep persisting after) | 268 | 196 recovered, 72 refused, **0 silently wrong** | 185 recovered, 83 refused, **0 silently wrong** |
+
+**Both columns were re-run on 2026-08-18**, when milestone 138 took the record level from 5 to 1,
+because a store's safety claim measured at one geometry is not automatically true at another. The
+property is unchanged and the fault-point count is identical; what moves is *where* the lying device
+is caught, and it moves the harmless way. Eleven cases go from "refused at a read" to "recovered",
+which is what a smaller record predicts: a dropped write damages less. **0 silently wrong in both.**
+
+**A correction this re-run forced, and it is not about the record level.** The counts above used to
+read 93, 372 and 186, with 112 recovered and 74 refused. Those are milestone 37's, and the workload
+has grown since: the same suite at the *old* record level counts 134 fault points today, not 93. The
+numbers were stale before this lane touched anything, and nothing was checking them, because they
+live in prose and the tests assert the property rather than the count. That is rung four working as
+badly as rung four works; the property is gated and the arithmetic describing it is not.
 
 The third row is the honest limit. RedoxFS's `Disk` trait has no flush and no barrier, so ordering is
 the device's job, and a device that acknowledges a write it never persists can leave a valid commit
@@ -676,12 +689,19 @@ was no MB/s figure at all, which is what milestone 38 was for. The four phases n
 throughput role and `kernel/src/bench.rs`'s `fs_throughput`, and the cross-OS side is in
 notes/benchmarks.md. Two results belong here, next to the server they are about.
 
-**Every 4 KiB read of an ordinary file fetches 128 KiB, whatever offset it asked for.** `fs_read`
-reads `motd`, 69 bytes, which RedoxFS keeps *inline in the node*: that is the cheapest read this
-server can serve, at ~207 us, and it is a tree walk with no record at the end of it. A 4 KiB read of
-an ordinary file is ~1.51 ms, and dividing by the 32 blocks a 128 KiB record holds gives **46.2 us
-per 4 KiB block through the block server**, a constant that then explains every other figure: an
-inline read is 4.5 blocks, a sequential write is 55, a random write is 74.
+**Every 4 KiB read of an ordinary file fetches the whole record, whatever offset it asked for**, and
+at milestone 38's 128 KiB record that was 32 blocks for 4 KiB of use. `fs_read` reads `motd`, 69
+bytes, which RedoxFS keeps *inline in the node*: that is the cheapest read this server can serve, at
+~207 us, and it is a tree walk with no record at the end of it. A 4 KiB read of an ordinary file was
+~1.51 ms, and dividing by 32 gave **46.2 us per 4 KiB block through the block server**, a constant
+that then explained every other figure: an inline read is 4.5 blocks, a sequential write is 55, a
+random write is 74.
+
+**Two things about that paragraph are now superseded and it is kept because the reasoning is why.**
+The 46.2 us was an *average* that charged the per-request tree walk to the blocks; milestone 138's
+sweep separated the two with six points and a slope, and the marginal cost of a block is **39.0 us**
+with a separate **~208 us** walk per request. And the record is no longer 128 KiB: step 1 took it to
+8 KiB, so a 4 KiB read is now ~284 us and fetches two blocks. See notes/benchmarks.md.
 
 **The mechanism is one level below where it looks like it is**, and milestone 38's bench found that
 out by predicting the wrong thing and measuring. `read_node_inner` asks for the record at
@@ -705,18 +725,17 @@ measurement.
 
 ### BUGS
 
-- **A 4 KiB request moves 128 KiB, in both directions.** The client's transfer unit is one page,
-  because that is what a `fs_proto` request can carry; RedoxFS's record is 128 KiB. A read fetches
-  the whole record (32 blocks); a write reads it, changes 4 KiB, and writes a new copy, because the
-  store is copy-on-write. Measured: ~1.51 ms per 4 KiB read and ~2.57 ms per 4 KiB written, against
-  ~207 us for the cheapest read this server can do. **This is the single largest term in every
-  throughput figure this project has**, and the fix is not in this server: it is either a multi-page
-  transfer on the contract, or a record level chosen to match the transfer unit, and both are
-  decisions rather than patches. **Milestone 138 owns it, and the record level has now been swept.**
-  A one-block record makes a 4 KiB read 5.6x faster and a 4 KiB write 3.0x faster, which is most of
-  what is available at this contract and is not the 32x, because a fixed ~208 us per request survives
-  it. notes/benchmarks.md has the sweep, the two-term model the six points fit, and what each of the
-  milestone's three options costs.
+- **A 4 KiB request no longer moves 128 KiB, and what is left is the part the record never
+  explained.** This entry used to record a 32x amplification: the client's transfer unit is one page,
+  because that is what a `fs_proto` request can carry, and RedoxFS's record was 128 KiB, so a read
+  fetched 32 blocks and a write read 32, changed one and wrote 32 back. **Milestone 138 step 1 took
+  the record to 8 KiB** (`RECORD_LEVEL` 1, vendor/README.md divergence 5), measured at **5.13x on a
+  4 KiB read and 3.01x on a 4 KiB write**: 1,458 us to 284 us, and 2,400 us to 797 us.
+  **What survives is a fixed ~206 us per read that no record level touches**, and after step 1 it is
+  **72% of a read**, up from 14%. On a write the equivalent term is ~690 us and **87%** of it, and
+  that one is the transaction rather than the walk: allocate, rewrite the node, commit to the header
+  ring, on every 4 KiB request. Milestone 138's remaining three steps own both.
+  notes/benchmarks.md has the before-and-after, the two-term model, and the residual.
 - **The block contract has the same one-page limit the file contract has, and it is the wall behind
   the record level.** `IpcDisk::read_at` chunks every record into one `fs_proto::blk` request per
   4 KiB block, so a 128 KiB record read is 32 device round trips rather than one 128 KiB transfer.
@@ -731,8 +750,9 @@ measurement.
   no write at all. That is a sensible store optimisation and a trap for anyone measuring: a
   benchmark that sends one constant page repeatedly measures the comparison. It also means a client
   cannot use a rewrite to force an allocation.
-- **RedoxFS compresses records with lz4 when the record is larger than one block**, which is always
-  here (128 KiB records). Payload entropy therefore changes throughput: an all-zero or repetitive
+- **RedoxFS compresses records with lz4 when the record is larger than one block**, which is still
+  always here: milestone 138 chose an 8 KiB record (two blocks) rather than a one-block record
+  partly to keep it. Payload entropy therefore changes throughput: an all-zero or repetitive
   file writes and reads several times faster than an incompressible one. Every number above and in
   notes/benchmarks.md uses an incompressible payload, which is the conservative choice and the one
   a backup workload resembles.
