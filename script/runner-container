@@ -75,7 +75,7 @@
 # every one of them with it. That is a genuinely better containment than the bounded-run discipline
 # the rest of this tree needs, and it is worth knowing before someone adds a `qemu-bounded.sh` here.
 #
-# Name: **provisional**, minted by the `ci/runner-container` lane on 2026-08-19 and not yet put to
+# Name: provisional, minted by the `ci/runner-container` lane on 2026-08-19 and not yet put to
 # calef. It names what the thing is (a container that stands in for the CI runner) rather than what
 # it was built for, on `repeat-under-load`'s reasoning: the instrument outlives this hunt, and a
 # name like `flake-hunt` would be naming a hope. Hyphenated per milestone 63's rule for this
@@ -199,10 +199,13 @@ podman volume create "$VOLUME" >/dev/null 2>&1 || true
 #             is already ignored.
 # The two host binds are deliberately left unlabelled. They come through virtiofs from macOS, which
 # carries no labels to honour, and relabelling somebody's repository is not a hunt script's business.
+# `$TTY` is set only by `--shell`, and deliberately not by the hunt: a TTY makes podman line-edit
+# the stream, and the fifty-boot log is read by grep afterwards rather than by a person.
+TTY=
 run_container() {
     runs="$1"
     shift
-    podman run --rm -i \
+    podman run --rm -i $TTY \
         -v "$src:/src:ro" \
         -v "$(pwd):/harness:ro" \
         -v "$VOLUME:/cache:z" \
@@ -222,6 +225,7 @@ case "$MODE" in
         run_container 0 /harness/script/runner-container --inside
         ;;
     shell)
+        TTY=-t
         run_container 0 /bin/bash
         ;;
     hunt)
