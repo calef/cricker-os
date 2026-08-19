@@ -154,6 +154,24 @@ pub const MAX_CELLS: usize = MAX_COLS * MAX_ROWS;
 /// a bad test: two channels at 0 and one at 255 means half the failure modes (a swapped channel, a
 /// dropped shift) produce another legal colour. These have all three channels distinct in most
 /// entries.
+///
+/// # BUGS
+///
+/// **That last sentence is false, measured 2026-08-19, and the argument above does not hold as
+/// written.** *No* entry has three distinct channel values: every one of the sixteen is built from
+/// at most two levels (`0xcd0000` is `cd,00,00`; `0xe5e5e5` is one level three times). And **eight
+/// pairs are related by a channel permutation**, so a swapped channel turns one legal palette colour
+/// into another legal palette colour, which is exactly the failure this palette claims to catch.
+/// `(1, 2)` is red and green: swap red and green and red becomes green, undetected.
+///
+/// The *shape* of the argument is right and the palette does not implement it. What it does buy is
+/// real but smaller: values at `0xcd` and `0xe5` rather than `0xff` mean a dropped shift or a
+/// saturating write lands off-palette. **Nothing gates any of this**, which is why a false claim sat
+/// in a comment; a check that every entry has three distinct channels, and that no two entries are
+/// permutations of each other, is a few lines and is milestone 141's first piece.
+///
+/// This matters beyond tidiness because the claim is what makes the palette ugly on purpose. See
+/// design/roadmap/141-a-palette-worth-looking-at.md.
 pub const PALETTE: [u32; 16] = [
     0x0000_0000, // 0 black
     0x00cd_0000, // 1 red
