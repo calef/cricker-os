@@ -712,7 +712,20 @@ measurement.
   ~207 us for the cheapest read this server can do. **This is the single largest term in every
   throughput figure this project has**, and the fix is not in this server: it is either a multi-page
   transfer on the contract, or a record level chosen to match the transfer unit, and both are
-  decisions rather than patches. Recorded rather than milestoned for now, per §71.
+  decisions rather than patches. **Milestone 138 owns it, and the record level has now been swept.**
+  A one-block record makes a 4 KiB read 5.6x faster and a 4 KiB write 3.0x faster, which is most of
+  what is available at this contract and is not the 32x, because a fixed ~208 us per request survives
+  it. notes/benchmarks.md has the sweep, the two-term model the six points fit, and what each of the
+  milestone's three options costs.
+- **The block contract has the same one-page limit the file contract has, and it is the wall behind
+  the record level.** `IpcDisk::read_at` chunks every record into one `fs_proto::blk` request per
+  4 KiB block, so a 128 KiB record read is 32 device round trips rather than one 128 KiB transfer.
+  The measured marginal cost is ~39.0 us per block (notes/benchmarks.md), which puts a ceiling of
+  about 100 MiB/s on this stack whatever the record level is and whatever the file contract carries.
+  Linux moves 64 KiB through one virtio request for ~67 us at the same tier, and that is where the
+  rest of the gap lives. Recorded rather than milestoned, per §71: it is one layer below what
+  milestone 138 is about, and nothing above it is close enough to the ceiling to be blocked by it
+  yet.
 - **A write whose bytes match what is already there is not a write.** `Transaction::write_node`
   compares before it does anything, so rewriting a block with identical contents costs a read and
   no write at all. That is a sensible store optimisation and a trap for anyone measuring: a
