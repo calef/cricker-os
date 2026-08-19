@@ -399,22 +399,48 @@ pub fn write(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], data: &[u8]) -> Ms
     write_at(msg_id, sid, tid, fid, 0, data)
 }
 
+/// The size of the WRITE request [`write_at_into`] builds around `len` bytes of payload: the
+/// header and the 48-byte body. A caller sizing its own buffer adds this to what it means to send.
+pub const WRITE_OVERHEAD: usize = HDR_LEN + 48;
+
+/// **Build a WRITE of `data` at `offset` into `out`**, and answer how many bytes it took.
+///
+/// The form for a payload that does not fit [`MSG_MAX`], which is every bulk write: the builders
+/// return an owned fixed-capacity [`Msg`] because this crate has no allocator, and a 64 KiB message
+/// cannot be one. A caller with a buffer passes it here instead. `out` must be at least
+/// [`WRITE_OVERHEAD`] plus `data.len()`.
+///
+/// [`write_at`] is this function with a [`Msg`]'s buffer, so there is one WRITE request in the tree
+/// rather than one per caller shape.
+pub fn write_at_into(
+    out: &mut [u8],
+    msg_id: u64,
+    sid: u64,
+    tid: u32,
+    fid: &[u8; 16],
+    offset: u64,
+    data: &[u8],
+) -> usize {
+    request_header(out, 0, CMD_WRITE, msg_id, sid, tid);
+    let h = HDR_LEN;
+    out[h..h + 48].fill(0);
+    w16(out, h, 49);
+    let data_at = h + 48;
+    w16(out, h + 2, data_at as u16); // DataOffset, from the start of the header
+    w32(out, h + 4, data.len() as u32);
+    w64(out, h + 8, offset);
+    out[h + 16..h + 32].copy_from_slice(fid);
+    out[data_at..data_at + data.len()].copy_from_slice(data);
+    data_at + data.len()
+}
+
 /// A WRITE of `data` at `offset`. The bytes must fit [`MSG_MAX`] minus the header and body; a
-/// prober writing more than that chunks its own writes, exactly as a real client does against
-/// `MaxWriteSize`.
+/// caller writing more than that either chunks its own writes as a real client does against
+/// `MaxWriteSize`, or uses [`write_at_into`] with a buffer of its own.
 pub fn write_at(msg_id: u64, sid: u64, tid: u32, fid: &[u8; 16], offset: u64, data: &[u8]) -> Msg {
     let mut b = [0u8; MSG_MAX];
-    request_header(&mut b, 0, CMD_WRITE, msg_id, sid, tid);
-    let h = HDR_LEN;
-    b[h..h + 48].fill(0);
-    w16(&mut b, h, 49);
-    let data_at = h + 48;
-    w16(&mut b, h + 2, data_at as u16); // DataOffset, from the start of the header
-    w32(&mut b, h + 4, data.len() as u32);
-    w64(&mut b, h + 8, offset);
-    b[h + 16..h + 32].copy_from_slice(fid);
-    b[data_at..data_at + data.len()].copy_from_slice(data);
-    msg(data_at + data.len(), b)
+    let len = write_at_into(&mut b, msg_id, sid, tid, fid, offset, data);
+    msg(len, b)
 }
 
 /// The `Count` a WRITE response reports: how many bytes the share actually took.
