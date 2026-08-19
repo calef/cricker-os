@@ -41,6 +41,19 @@
 #   how many pages matched in total.
 # - **It rebuilds the whole index on every run** (about a second). There is no cache, because a
 #   cache that can be stale is worse here than a second of work.
+# - **The first stranger it was built for never ran it, and had the name in front of it three
+#   times.** Milestone 117's run 5 (2026-08-18) is the first onboarding run against a tree
+#   containing this script, and this script exists because three earlier runs could not reach
+#   `notes/net.md`, `notes/capabilities.md`, any `design/decisions/` file, or
+#   `crates/abi/src/lib.rs`. Run 5 listed `script/`, so `apropos` was the first name in that
+#   listing; it read the guest's `apropos` builtin in `crates/swish/src/lib.rs`; and it read the
+#   `apropos photosynthesis` line in `SHELL_CHECK_SCRIPT`. It ran neither this nor anything like
+#   it, reached no `design/decisions/` file and never opened `notes/net.md`, which is the exact
+#   gap this was written to close. **The reason is placement, not the tool**: the only page that
+#   says what this does is `notes/scripts.md`, and no stranger in five runs has opened it. A
+#   search tool nobody is told about is a search tool nobody uses, and the honest reading is that
+#   this is currently written for people who already know the tree. Recorded rather than fixed,
+#   because where it should be named is a claim about the reading order and those are calef's.
 #
 # Name: unrecorded. Provisional, minted by milestone 40's lane on 2026-08-18 and not put to calef.
 # It is deliberately the same word as the builtin at the nife prompt, which is the claim: one verb,

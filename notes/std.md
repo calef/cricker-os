@@ -787,6 +787,21 @@ $ llvm-objdump -d --demangle std_exerciser/target/aarch64-unknown-nife/release/s
 - **It needs a build.** The dep-info only exists after `cargo xtask std-exerciser`, which is why the
   check runs at the end of that step rather than in `script/lint`. Run against a stale farm it
   reports the stale farm, honestly and uselessly.
+- **It never checks that the paths it scans are under `farm_dir()`, and a contaminated build is
+  therefore reported as a source defect with file and line numbers.** Found 2026-08-18 by milestone
+  117's fifth stranger, on its first `script/test` from a fresh clone. `nife-dev` is an
+  account-wide `rustup` link, so a clone whose farm has not been built yet compiles `std` out of
+  **whichever worktree built the farm last**, the `-Zbuild-std` dep-info under
+  `std_exerciser/target/` caches those absolute paths, and cargo then considers the unit fresh, so
+  re-running reproduces the same failure in about thirty seconds and looks like a stable defect
+  rather than a stale one. What the stranger saw was two files, two line numbers and two suggested
+  fixes, all of them naming source inside another checkout on the machine; it wrote in its journal
+  that **both suggested fixes would have committed a false statement to `ABORTS_ACCEPTED`**, and
+  the only reason it did not was that it went looking for why the path was foreign. **The recovery
+  is `rm -rf std_exerciser/target`, which nothing in the tree says**, and the assertion that would
+  have made the message true is one comparison against `farm_dir()`. The bullet above says a stale
+  farm is reported "honestly and uselessly"; run 5 is the case where it is reported dishonestly,
+  because the paths belong to a farm this checkout never built.
 - **`std-aborts` is a provisional name** (milestone 64, 2026-08-18). Names are calef's; this one is
   not ratified.
 
