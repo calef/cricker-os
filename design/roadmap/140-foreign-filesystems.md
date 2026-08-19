@@ -75,9 +75,23 @@ speaks, so a generic name is the true one; that the client cannot tell which ser
 endpoint is the whole point.
 
 The rename is mechanical and wide (a crate directory, a package name, three binaries, every
-reference), so it wants its own lane rather than riding on prose. Doing it **before** the first FAT32
-program is cheaper than after, because after there are two servers whose names disagree about what
-kind of thing they are.
+reference), so it wants its own lane rather than riding on prose.
+
+**It belongs to this milestone as increment zero, and not to one of its own** (calef asked which
+milestone owns it, 2026-08-19). It has no independent design content: it is a consequence of the
+decision above, and it is prerequisite to the first stratum rather than parallel to it, because once
+FAT32 exists two servers carry names that disagree about what kind of thing they are. Milestones 46
+and 63 were the naming milestones and both are `BUILT`, but each was a *sweep* of many names with
+rules to write down; this is one name following from a decision already made, and minting a number
+for it would be inflation.
+
+**It must wait for milestone 138's steps to settle, and that is the constraint that actually decides
+when.** `fs_server` is under active change: step 1 shipped the record level, step 3 shipped the
+multi-page transfer, step 2 and step 4 are queued, and a lane is moving `smb_server` onto the larger
+transfer. A rename touching a crate directory, a package name, three binaries and every reference
+would conflict with all of it, in the file every one of those lanes is editing. **After 138 settles
+and before FAT32 starts** is the window, and it is a real window rather than a preference: renaming
+into a quiet tree is an afternoon, renaming into four open branches is a week of conflicts.
 
 ### Decided: one process per volume
 
