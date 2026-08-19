@@ -549,8 +549,10 @@ failure §27 records.
 
 `TRUNCATE` (opcode 7) sets a file's size in **both** directions: growing extends with zeroes,
 shrinking discards. The shrink is the point. The new size rides in the *second word*, not the length
-field, because the length field is clamped to one page in the serve loop and would have silently
-capped every truncate at 4096 bytes.
+field, because the length field is what the serve loop clamps to the shared region and it would have
+silently capped every truncate at the region's size. That was 4096 bytes when this was written and is
+64 KiB now (milestone 138 step 3), which changes the number and not the argument: a size is an
+offset-shaped quantity and does not belong in a field bounded by how much a request can carry.
 
 Adding `CREATE` surfaced a rule that had been true by accident. RedoxFS's `check_name` rejects `:`,
 over-long names, and duplicates; `/`, `.` and `..` pass straight through. Nothing walked paths, so
@@ -650,9 +652,11 @@ size in those units, and how many are free) and `r0` is its length. That is `REA
 Three choices in it are worth disagreeing with rather than skipping past:
 
 - **The allocation unit is a field, not `fs_proto::PAGE`.** They are the same number today (4096)
-  and they are not the same *thing*: one is the filesystem's granularity, the other is the IPC
-  transfer unit. A client that assumed they were equal would mis-size a volume the day a filesystem
-  with 64 KiB records is served through this contract.
+  and they are not the same *thing*: one is the filesystem's granularity, the other is a page. A
+  client that assumed they were equal would mis-size a volume the day a filesystem with 64 KiB
+  records is served through this contract. **The IPC transfer unit stopped being either of them at
+  milestone 138 step 3** and is now `fs_proto::fs::TRANSFER_MAX`, which is the same distinction
+  arriving a second time and proving the field was worth having.
 - **The record's length is its version.** A later field extends the record and raises `LEN`; a
   client written against this version reads its prefix correctly because it checks `r0 >= LEN` for
   the fields it knows, which is how `statfs::decode` is written. There is deliberately no version
@@ -723,28 +727,68 @@ per-request cost to within 3% (1.51, 1.48 and 1.48 ms). A path with a cache or a
 that. It also finally retired a comment in `fs_test_client` that had claimed `fs_read` was a warm
 measurement.
 
+### The transfer unit: one page until milestone 138 step 3, sixteen since
+
+A `READ` or `WRITE` moves its bytes through the region the client and the FS server share, and that
+region was one page. **Nothing in the wire word ever required that**: `fs::req` has carried a 40-bit
+length since milestone 32. So the multi-page transfer milestone 38's `BUGS` entry called for turned
+out to be one constant, `fs_proto::fs::TRANSFER_PAGES`, and no new opcode, reply word, descriptor or
+changed field.
+
+**What a party maps, and the one rule that makes old clients safe.** The FS server maps the whole
+channel, because it serves whatever length a request asks for. A client maps as much as it intends
+to use, and `swish`, the three caretakers, the sinks and the `std` PAL still map exactly one page and
+still ask for one page; they are untouched by the step and cannot tell it happened. That is a
+property rather than a convention, and the serve loop is where it is enforced:
+
+- **A length the client chooses** (`READ`, `WRITE`) is clamped to `fs::TRANSFER_MAX`. A client that
+  asks for one page gets one page, and a client that maps sixteen may ask for sixteen.
+- **A length the server chooses** (`READDIR`, the four attribute verbs, a rename's two names) is
+  clamped to one page, as it always was. This is the half that matters: a `READDIR` that filled
+  64 KiB would write into a single-page client's *unmapped* second page, and no client asked for it.
+
+**What is not checked**, marked because it is rung four of CLAUDE.md's ladder and not rung one:
+nothing stops a client asking for more than it mapped. It gets a data abort on its own second page,
+after the server has already done the work. It is the same agreement a client already has with its
+wiring about where the region lives (every FS client hardcodes its `FILE_VA` and
+`kernel/src/user/fs_service.rs` carries a comment saying it must match), one number wider rather than
+a new category. Making it unrepresentable needs the channel size to travel on the wire, which is a
+new concept on this contract and was deliberately not taken.
+
+**The kernel wiring allocates the channel as a contiguous run of frames** (`file_channel`), so both
+halves of the agreement still pass it around as one physical base address and each mapping site is a
+loop rather than a signature change. The block server's DMA region was already wired this way.
+
 ### BUGS
 
-- **A 4 KiB request no longer moves 128 KiB, and what is left is the part the record never
-  explained.** This entry used to record a 32x amplification: the client's transfer unit is one page,
-  because that is what a `fs_proto` request can carry, and RedoxFS's record was 128 KiB, so a read
-  fetched 32 blocks and a write read 32, changed one and wrote 32 back. **Milestone 138 step 1 took
-  the record to 8 KiB** (`RECORD_LEVEL` 1, vendor/README.md divergence 5), measured at **5.13x on a
-  4 KiB read and 3.01x on a 4 KiB write**: 1,458 us to 284 us, and 2,400 us to 797 us.
-  **What survives is a fixed ~206 us per read that no record level touches**, and after step 1 it is
-  **72% of a read**, up from 14%. On a write the equivalent term is ~690 us and **87%** of it, and
-  that one is the transaction rather than the walk: allocate, rewrite the node, commit to the header
-  ring, on every 4 KiB request. Milestone 138's remaining three steps own both.
-  notes/benchmarks.md has the before-and-after, the two-term model, and the residual.
-- **The block contract has the same one-page limit the file contract has, and it is the wall behind
-  the record level.** `IpcDisk::read_at` chunks every record into one `fs_proto::blk` request per
-  4 KiB block, so a 128 KiB record read is 32 device round trips rather than one 128 KiB transfer.
-  The measured marginal cost is ~39.0 us per block (notes/benchmarks.md), which puts a ceiling of
-  about 100 MiB/s on this stack whatever the record level is and whatever the file contract carries.
-  Linux moves 64 KiB through one virtio request for ~67 us at the same tier, and that is where the
-  rest of the gap lives. Recorded rather than milestoned, per §71: it is one layer below what
-  milestone 138 is about, and nothing above it is close enough to the ceiling to be blocked by it
-  yet.
+- **A 4 KiB request no longer moves 128 KiB, and the transfer unit is no longer 4 KiB.** This entry
+  used to record a 32x amplification: the client's transfer unit is one page, because that is what a
+  `fs_proto` request can carry, and RedoxFS's record was 128 KiB, so a read fetched 32 blocks and a
+  write read 32, changed one and wrote 32 back. Both halves are gone.
+  **Milestone 138 step 1 took the record to 8 KiB** (`RECORD_LEVEL` 1, vendor/README.md divergence
+  5), measured at **5.13x on a 4 KiB read and 3.01x on a 4 KiB write**: 1,458 us to 284 us, and
+  2,400 us to 797 us. **Step 3 then took the transfer unit to 64 KiB**
+  (`fs_proto::fs::TRANSFER_PAGES`, below), measured at **5.67x on a read and 8.02x on a sequential
+  write** against the same harness: 80.30 MiB/s and 42.77, from 14.16 and 5.33.
+  What survives is a fixed ~204 us per request that neither touches, and step 3 moved it from 74% of
+  a read to **26%**, because the payload it is charged against is sixteen times larger. The write's
+  ~690 us transaction is the same story and is where step 3's biggest number comes from: it is
+  charged once per request, so it went from 690 us per 4 KiB to **43**.
+  notes/benchmarks.md has both before-and-afters, the two-term model fitted twice from two different
+  variables, and the residual.
+- **The block contract has the one-page limit the file contract used to have, and it is now the
+  binding constraint rather than the wall behind one.** `IpcDisk::read_at` chunks every record into
+  one `fs_proto::blk` request per 4 KiB block, so a 64 KiB read is 16 device round trips rather than
+  one 64 KiB transfer. The measured marginal cost is ~36 to 39 us per block (notes/benchmarks.md,
+  fitted twice from two different sweeps), which puts a ceiling of about 100 MiB/s on this stack
+  whatever the record level is and whatever the file contract carries. Linux moves 64 KiB through
+  one virtio request for ~67 us at the same tier, and that is where the rest of the gap lives.
+  **This entry's own promotion trigger has fired** (§71: a limitation becomes a plan when something
+  above it is blocked by it). It was recorded rather than milestoned because "nothing above it is
+  close enough to the ceiling to be blocked by it yet"; after milestone 138 step 3 a sequential read
+  measures **80.30 MiB/s against that ~100 MiB/s ceiling**, and the read path's cost is 74% block
+  trips. It is milestone 138's **step 4** in that block's table, which is where the intent now
+  lives; this entry is the fact it is measured against.
 - **A write whose bytes match what is already there is not a write.** `Transaction::write_node`
   compares before it does anything, so rewriting a block with identical contents costs a read and
   no write at all. That is a sensible store optimisation and a trap for anyone measuring: a

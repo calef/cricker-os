@@ -15,7 +15,8 @@
 //!   capability, bound in the server to the image's root (phase 2). A client without it opens
 //!   nothing.
 //! - **[`BLK_PAGE`]**: a page shared with the block server (the block buffer).
-//! - **[`FILE_PAGE`]**: a page shared with the client (a name on open, file bytes on read/write).
+//! - **[`FILE_PAGE`]**: the base of the file channel shared with the client, `fs::TRANSFER_MAX`
+//!   bytes of contiguous pages (a name on open, file bytes on read/write).
 //!
 //! The server only ever OPENS the image (never creates: creation is std-gated and host-side), and
 //! it maps RedoxFS's error type to the wire exactly once, in [`serve`], via `fs_proto::reply_err`.
@@ -38,8 +39,12 @@ const FILE: u64 = 2;
 /// A readiness endpoint: the server SENDs one word here once the image is open, before it serves.
 const READY: u64 = 3;
 
-/// Where the kernel maps the two shared pages. Above the program image (0x40_0000) and the heap
+/// Where the kernel maps the two shared regions. Above the program image (0x40_0000) and the heap
 /// (0x4000_0000 + a few MiB), so nothing collides.
+///
+/// [`FILE_PAGE`] is `fs::TRANSFER_MAX` bytes wide rather than one page (milestone 138 step 3), and
+/// it is the higher of the two so that growing it cannot walk into [`BLK_PAGE`]. Nothing else this
+/// process maps is within 8 MiB above it.
 const BLK_PAGE: u64 = 0x5000_0000;
 const FILE_PAGE: u64 = 0x5000_1000;
 
@@ -240,14 +245,14 @@ impl IpcDisk {
     }
 }
 
-/// The file-service pages, as slices. The FS server reads a name (open) or file bytes (write) from
-/// [`FILE_PAGE`] and writes read results back into it.
+/// The file-service channel, as a slice. The FS server reads a name (open) or file bytes (write)
+/// from [`FILE_PAGE`] and writes read results back into it.
 ///
 /// # Safety
-/// `len` must be at most 4096. `FILE_PAGE` is a mapped, writable page of 4096 bytes shared with the
-/// one client bound to this endpoint, and every call site clamps to it before this runs. The
-/// returned slice is `'static` and aliases that page, so no two live slices from here may overlap
-/// in a way that outlives one request.
+/// `len` must be at most [`fs::TRANSFER_MAX`]. [`FILE_PAGE`] is the base of that many mapped,
+/// writable, contiguous bytes shared with the clients bound to this endpoint, and every call site
+/// clamps before this runs. The returned slice is `'static` and aliases that region, so no two live
+/// slices from here may overlap in a way that outlives one request.
 ///
 /// (The contract was already written, spelled `SAFETY:` in the doc comment rather than as a
 /// `# Safety` section, which is the form rustdoc renders as the contract and the form
@@ -272,7 +277,15 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
         // caller; endpoint-only naming means we never learn who they are, only how to answer.
         let (w0, reply_slot, w1) = recv_cap(FILE);
         let handle = fs::req_handle(w0) as u32;
-        let len = fs::req_len(w0).min(BLOCK); // never touch past the shared page
+        // **Two clamps, and which one a verb gets is the compatibility property** (milestone 138
+        // step 3). The channel is `fs::TRANSFER_MAX` bytes now, but a client maps only as much of
+        // it as it intends to use, so a reply whose length THIS SERVER chooses must stay inside the
+        // one page every client has always mapped: a `READDIR` that filled 64 KiB would be written
+        // into a single-page client's unmapped second page. `READ` and `WRITE` are the two verbs
+        // whose length the CLIENT chooses, so they are the two that may use the whole channel, and
+        // a client asking for one page still gets exactly one page. See `fs_proto::fs::TRANSFER_PAGES`.
+        let len = fs::req_len(w0).min(BLOCK);
+        let bulk_len = fs::req_len(w0).min(fs::TRANSFER_MAX);
         let offset = w1;
 
         let result: Result<i64> = match op(w0) {
@@ -287,14 +300,14 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                 }
             }
             fs::READ => {
-                // SAFETY: read straight into the shared page, up to one page.
-                let buf = unsafe { file_page(len) };
+                // SAFETY: read straight into the shared channel, up to the whole of it.
+                let buf = unsafe { file_page(bulk_len) };
                 server.read(handle, offset, buf).map(|n| n as i64)
             }
             fs::WRITE => {
                 inject::note_write(); // milestone 37: arm the crash if this is the named request
-                // SAFETY: the data is `len` bytes the client wrote into the shared page.
-                let data = unsafe { file_page(len) };
+                // SAFETY: the data is `bulk_len` bytes the client wrote into the shared channel.
+                let data = unsafe { file_page(bulk_len) };
                 server.write(handle, offset, data).map(|n| n as i64)
             }
             fs::FSTAT => server.fstat(handle).map(|s| s as i64),

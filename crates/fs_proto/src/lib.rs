@@ -24,9 +24,14 @@
 //!
 //! Both protocols are an endpoint `CALL`: the client sends two words and blocks until the server
 //! replies through the one-shot Reply capability the kernel mints. Bulk bytes never ride in the
-//! words. They travel in a page the two parties share, exactly [`PAGE`] bytes, one per channel. For
-//! blk IPC the page holds one filesystem block; for file IPC it holds a name (on open) or file data
-//! (on read/write).
+//! words. They travel in a region the two parties share, one per channel. For blk IPC that region
+//! is exactly [`PAGE`] bytes and holds one filesystem block; for file IPC it is
+//! [`fs::TRANSFER_PAGES`] contiguous pages ([`fs::TRANSFER_MAX`] bytes) and holds a name (on open)
+//! or file data (on read/write).
+//!
+//! **The file channel was one page until milestone 138 step 3**, and that, rather than anything in
+//! the packing, is what made 4 KiB the transfer unit; see [`fs::TRANSFER_PAGES`] for what changed
+//! and for the one thing the change does not check.
 //!
 //! ## The error boundary
 //!
@@ -70,6 +75,23 @@
 //! let w0 = fs::req(fs::OPEN, fs::ROOT, b"report.txt".len() as u64);
 //! assert_eq!(fs::req_handle(w0), fs::ROOT);
 //! assert_eq!(fs::req_len(w0), 10);
+//! ```
+//!
+//! A bulk request is the same word with a bigger length, which is the whole of milestone 138 step
+//! 3: sixteen pages in one round trip instead of sixteen round trips, and no new opcode to learn.
+//!
+//! ```
+//! use fs_proto::{PAGE, fs};
+//!
+//! // The largest read this contract permits, in one request.
+//! let w0 = fs::req(fs::READ, 3, fs::TRANSFER_MAX as u64);
+//! assert_eq!(fs::req_len(w0), fs::TRANSFER_MAX);
+//! assert_eq!(fs::TRANSFER_MAX, fs::TRANSFER_PAGES * PAGE);
+//!
+//! // A client that shares only the first page keeps working untouched: it asks for one page,
+//! // and one page is what the region behind its request has always been.
+//! let w0 = fs::req(fs::READ, 3, PAGE as u64);
+//! assert_eq!(fs::req_len(w0), PAGE);
 //! ```
 //!
 //! [`dir::Rights`] is where the interesting claim is, and it is a claim about what is **absent**:
@@ -126,9 +148,13 @@
 
 #![no_std]
 
-/// The shared-page size, in bytes. One RedoxFS block (`redoxfs::BLOCK_SIZE`) and one host page, so a
-/// block move is a page move and the frame the kernel maps into both address spaces holds exactly
-/// one unit of transfer. A read or write larger than this is chunked by the caller.
+/// One page, in bytes. Also one RedoxFS block (`redoxfs::BLOCK_SIZE`), so a block move is a page
+/// move and the frame the kernel maps into both address spaces holds exactly one block.
+///
+/// **This is the blk channel's whole size and the file channel's unit**, and the two stopped being
+/// the same thing at milestone 138 step 3: a `blk` request still moves exactly one of these, while
+/// a file request moves up to [`fs::TRANSFER_PAGES`] of them. A file read or write larger than
+/// [`fs::TRANSFER_MAX`] is still chunked by the caller.
 pub const PAGE: usize = 4096;
 
 /// Where a request packs its opcode: bits 63:56 of the first `CALL` word, the same position
@@ -617,10 +643,69 @@ pub mod fs {
     ///   backup client's own write-then-flush is sequential, which is why this has not needed one.
     pub const SYNC: u64 = 19;
 
-    /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
-    /// so a single request never carries more than one page of payload regardless; the bound only
-    /// guards the bit-packing.
+    /// **How many pages the file channel spans** (milestone 138 step 3). The client and the FS
+    /// server share this many *contiguous* pages, not one, and a [`READ`] or [`WRITE`] may carry
+    /// up to [`TRANSFER_MAX`] bytes through them in a single request.
+    ///
+    /// # Why this is the whole of the change
+    ///
+    /// The request word has carried a 40-bit length field, [`MAX_LEN`], since this contract was
+    /// written, so nothing in the packing ever limited a transfer to 4096 bytes. **The page did.** Bulk rides in the
+    /// region the two parties share, that region was one page, and so a request that asked for
+    /// more would have had the server write past the end of it. Growing the region is therefore
+    /// the entire multi-page transfer: no new opcode, no second reply word, no descriptor, and no
+    /// change to a single packed field. Milestone 38's `BUGS` entry called the fix "a multi-page
+    /// transfer on the contract"; this is what that turned out to cost.
+    ///
+    /// 16 pages, so [`TRANSFER_MAX`] is 64 KiB, which is the size milestone 38 measured ext4
+    /// moving "for about what it charges for 4 KiB". It is a tuning number and it is the one place
+    /// to change it.
+    ///
+    /// # What a party has to map, and the one thing that is not checked
+    ///
+    /// The FS server maps all [`TRANSFER_PAGES`] pages, because it must be able to serve any
+    /// request this contract permits. **A client maps as many as it intends to use**, and asks for
+    /// no more than it mapped. A client that only ever moves 4096 bytes therefore needs no change
+    /// at all: it maps one page, sends `len` 4096, and cannot tell that the region behind the
+    /// server grew. That is the compatibility property, and it is a real one rather than a
+    /// courtesy: `swish` and the caretakers are unmodified by this step.
+    ///
+    /// **The foot gun, marked because it is rung four of `CLAUDE.md`'s ladder and not rung one:**
+    /// nothing checks that a client asked for no more than it mapped. A client that sends
+    /// `len = TRANSFER_MAX` with one page mapped gets a data abort on its own second page, and it
+    /// gets it *after* the server has already done the work. This is the same agreement a client
+    /// already has with its wiring about where the region lives at all (every FS client hardcodes
+    /// its own `FILE_VA` and the kernel's wiring carries a comment saying it must match), one
+    /// number wider rather than a new category. Making it unrepresentable needs the channel size
+    /// to travel on the wire, which is a new concept on this contract and is not this step's.
+    pub const TRANSFER_PAGES: usize = 16;
+
+    /// **The largest payload one [`READ`] or [`WRITE`] may carry**, in bytes: the whole file
+    /// channel ([`TRANSFER_PAGES`] pages). The FS server clamps every request's length to this,
+    /// which is the one bound that keeps a request inside the region it shares.
+    ///
+    /// Setting [`TRANSFER_PAGES`] to 1 makes this [`super::PAGE`] again and reproduces the
+    /// contract exactly as it stood before milestone 138 step 3, which is what
+    /// `bench/transfer-size-sweep.sh` uses to measure a before against an after on one harness.
+    pub const TRANSFER_MAX: usize = TRANSFER_PAGES * super::PAGE;
+
+    /// The largest length or offset that fits the packing below (40 bits). Far above
+    /// [`TRANSFER_MAX`], so the bit-packing has never been what bounds a transfer; the bound only
+    /// guards the packing itself, and [`TRANSFER_MAX`] is what bounds a payload.
     pub const MAX_LEN: u64 = (1 << 40) - 1;
+
+    /// **The channel's arithmetic, checked by the build rather than by a test**, because a test does
+    /// not run in the EL0 build and a build is the only artifact that can be wrong about this.
+    ///
+    /// Both halves have a failure mode worth naming. A channel that is not a whole number of pages
+    /// cannot be wired at all, since a mapping is per page. And a length the packing truncates would
+    /// arrive at the server as a **smaller successful** read rather than as an error, which is
+    /// DECISIONS §27's half-working write wearing a different hat.
+    const _: () = {
+        assert!(TRANSFER_PAGES >= 1);
+        assert!(TRANSFER_MAX == TRANSFER_PAGES * super::PAGE);
+        assert!(TRANSFER_MAX as u64 <= MAX_LEN);
+    };
     /// The largest handle the packing can carry (16 bits). The server's table is far smaller.
     pub const MAX_HANDLE: u64 = 0xffff;
 
@@ -2289,19 +2374,44 @@ pub mod fixture {
     /// results (`kernel/src/bench.rs`). Two programs agree on these, so they are a crate and not a
     /// constant written twice (CLAUDE.md rule 7).
     pub mod throughput {
-        /// **The transfer unit: one page, which is the most a single `fs_proto` request can
-        /// carry.** Not a tuning choice. A `READ` or `WRITE` moves bytes through the one page the
-        /// client shares with the server, so 4096 is the protocol's ceiling per request, and a
-        /// throughput figure here is therefore "how fast can this architecture move 4 KiB at a
-        /// time", not "how fast can it move a file". Any comparison that lets the other system use
-        /// a larger buffer is measuring a different thing; see notes/benchmarks.md.
-        pub const UNIT: usize = super::super::PAGE;
+        /// **The transfer unit: the whole file channel, which is the most a single `fs_proto`
+        /// request can carry.** Still not a tuning choice *here*: it is
+        /// [`super::super::fs::TRANSFER_MAX`], so this phase always measures the protocol's own
+        /// ceiling and the tuning lives at the one constant that sets that ceiling.
+        ///
+        /// It was 4096 until milestone 138 step 3, because the region a request moved bytes
+        /// through was one page. A throughput figure here is therefore still "how fast can this
+        /// architecture move one request's worth", and what changed is how much that is. A
+        /// comparison against a system whose client may pass a differently sized buffer is
+        /// comparing two different things, and **that caveat did not go away when the number got
+        /// bigger**; see notes/benchmarks.md.
+        pub const UNIT: usize = super::super::fs::TRANSFER_MAX;
 
-        /// Transfers per phase. 256 x 4 KiB = 1 MiB, which is small for a throughput benchmark and
-        /// is bounded by the fixture image (16 MiB) rather than chosen for statistics: the write
-        /// phases have to fit beside everything else the image carries, and RedoxFS is
-        /// copy-on-write, so a rewritten block consumes fresh space until the old one is freed.
-        pub const BLOCKS: u64 = 256;
+        /// **Bytes moved per phase, held constant across transfer sizes on purpose.** 1 MiB, which
+        /// is small for a throughput benchmark and is bounded by the fixture image (16 MiB) rather
+        /// than chosen for statistics: the write phases have to fit beside everything else the
+        /// image carries, and RedoxFS is copy-on-write, so a rewritten block consumes fresh space
+        /// until the old one is freed.
+        ///
+        /// It is the **bytes** that are pinned rather than the transfer count, because milestone
+        /// 138 step 3 made the transfer size a variable and a benchmark that kept the count would
+        /// have moved sixteen times as much data at 64 KiB as at 4 KiB. Two runs of this phase move
+        /// the same file however the requests are shaped, which is what makes a before and an after
+        /// comparable.
+        pub const TOTAL: u64 = 1024 * 1024;
+
+        /// Transfers per phase: [`TOTAL`] divided by [`UNIT`]. 256 at one page, 16 at sixteen.
+        pub const BLOCKS: u64 = TOTAL / UNIT as u64;
+
+        /// **The phase moves exactly [`TOTAL`] bytes at every transfer size**, which is what makes a
+        /// before and an after on `bench/transfer-size-sweep.sh` a comparison rather than two
+        /// numbers, and what the sequential phase's `FSTAT` check against the file size depends on.
+        /// A build is where this has to hold, because the phase runs at EL0 where no test does.
+        const _: () = {
+            assert!(BLOCKS >= 1);
+            assert!(BLOCKS * UNIT as u64 == TOTAL);
+            assert!(TOTAL.is_multiple_of(RECORD));
+        };
 
         /// Untimed transfers before each phase: the `OPEN`, the first cold block, and whatever the
         /// engine touches on its first walk of the file.
@@ -4725,5 +4835,23 @@ mod tests {
             255,
             "the eight required claims, bits 0 through 7"
         );
+    }
+    /// **A single-page request still means one page**, which is the compatibility claim
+    /// [`fs::TRANSFER_PAGES`] makes in prose, checked through the packing rather than beside it.
+    ///
+    /// The arithmetic the channel has to satisfy is a `const` block next to the constants
+    /// themselves, because a build is the only artifact that can be wrong about it and a test does
+    /// not run in the EL0 build. What is left here is the round trip, which needs the packing.
+    #[test]
+    fn a_single_page_request_still_means_one_page() {
+        let w0 = fs::req(fs::READ, 1, PAGE as u64);
+        assert_eq!(fs::req_len(w0), PAGE);
+        assert_eq!(fs::req_handle(w0), 1);
+        assert_eq!(op(w0), fs::READ);
+
+        // And the largest the channel permits survives the same 40-bit field.
+        let w0 = fs::req(fs::WRITE, 1, fs::TRANSFER_MAX as u64);
+        assert_eq!(fs::req_len(w0), fs::TRANSFER_MAX);
+        assert_eq!(op(w0), fs::WRITE);
     }
 }

@@ -12,7 +12,9 @@
 //! - **slot 0**: the file-service endpoint, `WRITE` (this is the directory capability; the client
 //!   `CALL`s here).
 //! - **slot 1**: the report endpoint, `WRITE`.
-//! - **[`FILE_VA`]**: the page shared with the FS server (a name out, file bytes both ways).
+//! - **[`FILE_VA`]**: the base of the channel shared with the FS server (a name out, file bytes
+//!   both ways). `fs_proto::fs::TRANSFER_PAGES` pages, all of them mapped by this client's wiring,
+//!   because the throughput role asks for the whole of it in one request.
 //!
 //! Name: ratified 2026-08-01 (calef, milestone 63), replacing `fsclient`. Refused `fsclient`
 //! (squished) and `fs_client` (any program that wants files is an FS client, so that name belongs
@@ -30,7 +32,12 @@ use user_rt::{call, exit, now, send};
 const FILE: u64 = 0;
 /// Where the client reports success (WRITE).
 const REPORT: u64 = 1;
-/// The client's mapping of the page it shares with the FS server.
+/// The base of the client's mapping of the channel it shares with the FS server.
+///
+/// **It is `fs_proto::fs::TRANSFER_MAX` bytes wide, not one page** (milestone 138 step 3), and the
+/// kernel's wiring maps every page of it here (`kernel/src/user/fs_service.rs`, `map_channel`). A
+/// client may not ask for more than it mapped, and this one maps all of it, which is what lets the
+/// throughput role measure the contract's own ceiling rather than a page.
 const FILE_VA: u64 = 0x0000_0000_0060_0000;
 
 /// A failed check is a fault, not a wrong answer: panic, and the handler traps.
@@ -43,7 +50,8 @@ fn check(ok: bool) {
 /// Copy `bytes` into the shared page (a name to open, or data to write).
 fn put_page(bytes: &[u8]) {
     for (i, &b) in bytes.iter().enumerate() {
-        // SAFETY: FILE_VA is a mapped, writable 4096-byte page; `bytes` is far shorter.
+        // SAFETY: FILE_VA is a mapped, writable region of fs::TRANSFER_MAX bytes; a name is far
+        // shorter than one page of it.
         unsafe { core::ptr::write_volatile((FILE_VA + i as u64) as *mut u8, b) };
     }
 }
@@ -52,7 +60,7 @@ fn put_page(bytes: &[u8]) {
 /// rename's source and destination names sit back to back.
 fn put_page_at(off: usize, bytes: &[u8]) {
     for (i, &b) in bytes.iter().enumerate() {
-        // SAFETY: FILE_VA is a mapped, writable 4096-byte page; two names are far shorter.
+        // SAFETY: as above; two names are far shorter than one page of the channel.
         unsafe { core::ptr::write_volatile((FILE_VA + (off + i) as u64) as *mut u8, b) };
     }
 }
@@ -1281,11 +1289,16 @@ fn bench() -> ! {
 /// `fs_rand_read` / `fs_record_read` / `fs_rand_write` / `fs_payload_fill` lines and into MiB/s.
 ///
 /// **What one transfer is, and why that is the whole story.** One `fs_proto` request moves at most
-/// one page, because the payload travels through the single page the client shares with the server.
-/// So every phase here is 4 KiB per request, and the throughput is the request rate times 4 KiB. A
-/// Linux program reading the same file would use a 64 KiB or 1 MiB buffer and pay one syscall for
-/// it; that difference is a property of this protocol, not of the measurement, and it is the first
-/// thing notes/benchmarks.md says next to the numbers.
+/// `fs::TRANSFER_MAX` bytes, because the payload travels through the region the client shares with
+/// the server. That was one page until milestone 138 step 3 and is sixteen now, so a phase here is
+/// `UNIT` per request and the throughput is the request rate times `UNIT`. A Linux program reading
+/// the same file would use a 64 KiB or 1 MiB buffer and pay one syscall for it; **that difference
+/// is a property of this protocol, not of the measurement**, and it is still the first thing
+/// notes/benchmarks.md says next to the numbers. It got smaller; it did not go away.
+///
+/// **The bytes moved per phase are held constant** (`tp::TOTAL`, 1 MiB) rather than the transfer
+/// count, so a run at one page and a run at sixteen move the same file and their MiB/s figures are
+/// a before and an after rather than two unrelated numbers.
 ///
 /// **Why the write phase comes first.** It creates the file, so it is the only phase that pays
 /// allocation, and the read phases have something laid out by the server under test rather than by
@@ -1452,8 +1465,9 @@ fn paint_page(state: &mut u64) {
         x ^= x >> 7;
         x ^= x << 17;
         *state = x;
-        // SAFETY: FILE_VA is a mapped, writable, 8-byte-aligned page of exactly UNIT bytes, and `i`
-        // walks it in 8-byte steps.
+        // SAFETY: FILE_VA is a mapped, writable, 8-byte-aligned channel of at least UNIT bytes
+        // (UNIT is fs::TRANSFER_MAX and this client maps all of it), and `i` walks it in 8-byte
+        // steps.
         unsafe { core::ptr::write_volatile((FILE_VA + i as u64) as *mut u64, x) };
         i += 8;
     }
