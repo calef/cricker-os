@@ -836,6 +836,128 @@ fn write_grant(e: &Endowment, out: &mut dyn FnMut(&[u8])) {
 }
 
 // ===============================================================================================
+// The archive endowment, audited against the plan.
+// ===============================================================================================
+
+/// **What the archive a timetable was handed carries, measured against what its plan will build.**
+///
+/// [`Registry::programs`] says which programs a document will ever start, and it says so before the
+/// first tick. That number is only worth printing next to the other one: how many programs the
+/// *capability* this process holds can actually reach. A scheduler handed the whole initrd has a
+/// plan naming one program and an archive reaching fifty-seven, and nothing in the plan says so.
+///
+/// This is the sentence that says so, and it is here rather than in the program because it is a
+/// comparison rather than a print: the program contributes the names it can see, this decides what
+/// they mean, and a host test pins the wording.
+///
+/// **It measures, it does not enforce.** A wider archive is a fact about the spawn site, and a
+/// scheduler cannot narrow its own endowment; what it can do is say out loud how wide it is. That
+/// asymmetry is the same one [`Unbacked`] has: the fix is a decision somebody makes at the spawn
+/// site, not an edit to the document.
+///
+/// # Examples
+///
+/// ```
+/// # use timetable::{Audit, Held, Registry};
+/// let doc = timetable::parse("every 30s worker 7\nevery 30s date\n").unwrap();
+/// let reg = Registry::register(&doc, Held::default());
+///
+/// // Handed an archive holding exactly what the plan builds.
+/// let mut narrow = Audit::of(&reg);
+/// narrow.saw("worker");
+/// assert!(narrow.is_exact());
+/// assert_eq!(narrow.planned(), 1);
+///
+/// // Handed the whole initrd. `date` is refused, so the plan never names it, and holding an
+/// // image of it is authority nothing in the document asked for.
+/// let mut wide = Audit::of(&reg);
+/// for name in ["worker", "date", "swish", "budgeter"] {
+///     wide.saw(name);
+/// }
+/// assert!(!wide.is_exact());
+/// assert_eq!(wide.beyond(), 3);
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Audit {
+    /// The plan's program set, as [`Registry::programs`] computes it.
+    plan: u64,
+    held: usize,
+    beyond: usize,
+}
+
+impl Audit {
+    /// Start an audit against `reg`'s plan, having seen nothing yet.
+    pub fn of(reg: &Registry<'_>) -> Self {
+        Audit {
+            plan: reg.programs(),
+            held: 0,
+            beyond: 0,
+        }
+    }
+
+    /// Record one name the endowed archive carries.
+    ///
+    /// A name this crate does not recognise as a program counts as **beyond the plan**, which is the
+    /// safe direction: an archive holding something nobody can name is still an archive holding
+    /// something, and a reader would rather be told the endowment is wide than be told nothing.
+    pub fn saw(&mut self, name: &str) {
+        self.held += 1;
+        let planned = grant_plan::Prog::from_name(name.as_bytes())
+            .is_some_and(|p| self.plan & (1 << p.id()) != 0);
+        if !planned {
+            self.beyond += 1;
+        }
+    }
+
+    /// How many programs the archive carries.
+    pub fn held(&self) -> usize {
+        self.held
+    }
+
+    /// How many of them the plan will never build.
+    pub fn beyond(&self) -> usize {
+        self.beyond
+    }
+
+    /// How many distinct programs the plan will build.
+    pub fn planned(&self) -> usize {
+        self.plan.count_ones() as usize
+    }
+
+    /// Whether the archive reaches nothing beyond the plan.
+    pub fn is_exact(&self) -> bool {
+        self.beyond == 0
+    }
+
+    /// **The sentence a reader gets**, host-tested so the wording cannot drift.
+    ///
+    /// Two forms, and the second is the one that was true before the endowment was narrowed. Both
+    /// are printed in the same place for the same reason the refusals are: an endowment nobody
+    /// states is an endowment nobody checks.
+    pub fn write(&self, out: &mut dyn FnMut(&[u8])) {
+        let mut buf = [0u8; 20];
+        if self.is_exact() {
+            out(b"timetable: the archive it holds carries exactly the ");
+            let n = write_u64(self.held as u64, &mut buf);
+            out(&buf[..n]);
+            out(if self.held == 1 {
+                b" program its plan names\n"
+            } else {
+                b" programs its plan names\n"
+            });
+        } else {
+            out(b"timetable: the archive it holds carries ");
+            let n = write_u64(self.held as u64, &mut buf);
+            out(&buf[..n]);
+            out(b" programs, ");
+            let n = write_u64(self.beyond as u64, &mut buf);
+            out(&buf[..n]);
+            out(b" of them beyond its plan\n");
+        }
+    }
+}
+
+// ===============================================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1211,6 +1333,106 @@ mod tests {
                 assert_ne!(a.message(), b.message(), "{a:?} and {b:?} read the same");
             }
         }
+    }
+
+    /// **The endowment a spawn site hands over, measured against the plan it can compute.**
+    ///
+    /// The whole point of [`Registry::programs`] being computable at registration is that the spawn
+    /// site can narrow what it hands over to exactly that set. This is the check that says whether
+    /// it did, and the two sentences are what a reader meets on the console: one for an archive that
+    /// reaches nothing beyond the plan, one for the whole initrd.
+    ///
+    /// **This test is also the mechanism behind a written list in another file**, which is why the
+    /// first assertion names `worker` rather than counting to one.
+    /// `kernel/src/user/timetable_tests.rs` builds the narrowed archive from a `PLANNED_PROGRAMS`
+    /// list it does not compute, because computing it there means a `Registry` on a kernel stack and
+    /// a `Registry` is 21632 bytes against a 4096-byte guard page (`script/stack-frame-check`). So
+    /// the plan is computed **here**, on the host, in milliseconds, and a document edited without
+    /// that list being edited fails right here. Change the shipped document's admitted set and this
+    /// assertion is the first thing that goes red; keep them in step and nothing else has to
+    /// remember.
+    #[test]
+    fn the_archive_a_timetable_holds_is_measured_against_what_it_will_build() {
+        let doc = parse(REFERENCE).expect("the shipped document parses");
+        let reg = Registry::register(&doc, Held::default());
+
+        // The shipped document admits `worker` twice and refuses everything else, so its plan is
+        // one program however many entries name it. Asserted **by name**, because a spawn site in
+        // another crate carries this same set as a written list and this is what keeps it true.
+        assert_eq!(
+            reg.programs(),
+            1 << Prog::Worker.id(),
+            "the shipped document's plan changed; \
+             kernel/src/user/timetable_tests.rs's PLANNED_PROGRAMS must change with it",
+        );
+        assert_eq!(Audit::of(&reg).planned(), 1);
+
+        // Narrowed to the plan: what the spawn site hands over after milestone 129's second
+        // stratum. `worker` and nothing else.
+        let mut narrow = Audit::of(&reg);
+        narrow.saw("worker");
+        assert!(narrow.is_exact());
+        assert_eq!(narrow.held(), 1);
+        assert_eq!(narrow.beyond(), 0);
+        assert_eq!(
+            shown(|out| narrow.write(out)),
+            "timetable: the archive it holds carries exactly the 1 program its plan names\n",
+        );
+
+        // The whole initrd: what it used to be handed. Every program the plan refused is still an
+        // image this process could load, which is authority no line in the document asked for.
+        // `date` is the sharpest case, because the document names it and registration refused it.
+        let mut wide = Audit::of(&reg);
+        for name in ["worker", "date", "ps", "budgeter", "wc", "swish"] {
+            wide.saw(name);
+        }
+        assert!(!wide.is_exact());
+        assert_eq!(wide.held(), 6);
+        assert_eq!(wide.beyond(), 5);
+        assert_eq!(
+            shown(|out| wide.write(out)),
+            "timetable: the archive it holds carries 6 programs, 5 of them beyond its plan\n",
+        );
+
+        // A name this tree does not know is still authority, and counts against the plan rather
+        // than being waved through as unrecognised.
+        let mut stranger = Audit::of(&reg);
+        stranger.saw("not_a_program_in_this_tree");
+        assert_eq!(stranger.beyond(), 1);
+    }
+
+    /// **Widening the scheduler widens the plan, and the audit follows it.** The same pairing
+    /// [`Held`] has everywhere else: what counts as authority beyond the plan is a fact about a
+    /// particular scheduler, not a constant.
+    #[test]
+    fn a_wider_scheduler_plans_more_programs_and_the_audit_agrees() {
+        let doc = parse("every 1s worker 7\nevery 1s date\n").expect("well formed");
+
+        let bare = Registry::register(&doc, Held::default());
+        let mut a = Audit::of(&bare);
+        a.saw("worker");
+        a.saw("date");
+        assert_eq!(
+            a.beyond(),
+            1,
+            "a refused `date` is an image nothing will run"
+        );
+
+        let with_clock = Registry::register(
+            &doc,
+            Held {
+                clock: true,
+                ..Held::default()
+            },
+        );
+        let mut b = Audit::of(&with_clock);
+        b.saw("worker");
+        b.saw("date");
+        assert!(
+            b.is_exact(),
+            "granting the scheduler a clock admits `date`, so its image is in the plan",
+        );
+        assert_eq!(b.planned(), 2);
     }
 }
 

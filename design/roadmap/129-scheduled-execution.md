@@ -9,9 +9,9 @@ on the roadmap runs anything on a schedule.
 the temptation was there. Every ingredient existed as predicted: §43's clock authority and
 `clock_proto`, the spawn machinery and program manifests (milestone 31's grant expressions), and
 supervision (§40) for what happens when a scheduled child dies. No new syscall surface was needed.
-Two of the three remaining pieces need nobody (wiring a `--mem` grant, narrowing the archive
-endowment); only a **runtime** registration protocol is calef's, and a gate reading `DECISION` would
-say the milestone is blocked when most of it is not.
+The remaining pieces that need nobody are the `--mem` grant and the per-entry image (the archive
+endowment was narrowed to the plan on 2026-08-18); only a **runtime** registration protocol is
+calef's, and a gate reading `DECISION` would say the milestone is blocked when most of it is not.
 
 What the build did find is that the *absence* of a syscall shapes the whole program: see "The
 finding" below.
@@ -70,18 +70,55 @@ in the code: `Registry::next_deadline` computes exactly the instant a timed wait
 computed today although nothing can use it, so the loop changes by one line rather than being
 restructured.
 
+## Built: the archive endowment narrowed to the plan, 2026-08-18
+
+The scheduler was handed the whole initrd, which is every program in the tree behind a document that
+names one. It is now handed an archive holding **exactly the programs its plan will build**, and the
+argument is the one this milestone is made of: `Registry::programs` is complete and known before the
+first tick, so the endowment can be narrowed to it. `kernel/src/user/timetable_tests.rs` builds the
+sub-archive with `nifefs::write_image`.
+
+**The set is computed on the host, not in the kernel, and that is a constraint rather than a
+preference.** `Registry::register` carries a 21632-byte frame (a `[Row; MAX_ENTRIES]` where a `Row`
+holds a kilobyte of `Endowment`) and `grant_plan::plan` a further 12048, against a 4096-byte guard
+page; `script/stack-frame-check` refuses both, correctly. So the spawn site carries a written list
+and a host test asserts it equals the plan, by name, from the same document and the same `Held`. A
+document edited without the list fails on the host in milliseconds, and fails the cross-ISA test
+again through the program's own audit line.
+
+**A process cannot narrow its own endowment, so it measures it.** `timetable::Audit` compares the
+names the archive carries against the plan's program set and prints the answer next to the plan, in
+one of two sentences. The test asserts the narrow one and asserts the wide one never appears, so a
+spawn site that went back to handing over the initrd fails rather than passes.
+
+```text
+timetable: the archive it holds carries exactly the 1 program its plan names   <- now
+timetable: the archive it holds carries 57 programs, 56 of them beyond its plan <- before
+```
+
 ## Still to build
 
 - **A `--mem` grant a scheduled entry can actually be backed with.** `Held::mem_pages` is zero today,
-  so an entry naming one is refused although the process holds a budget. Backing it means splitting
-  the grant out of the *instance's own region*, so a single `DESTROY` still reclaims both and a
-  restart loop is not a leak. `crates/timetable` supports it and its host tests cover it; only the
-  program's wiring is missing. Needs nobody.
-- **Narrow the archive endowment to the plan.** The scheduler is handed the whole initrd, which is
-  wider than the set of programs it can ever build (that set is fixed at registration and printable,
-  `Registry::programs`). `user/src/spawner.rs` already shows the narrow shape: one image, and "build
-  me program X" is not a thing that can be asked of it. Doing it here needs the spawn site to hand
-  over one image per admitted entry. Needs nobody.
+  so an entry naming one is refused although the process holds a budget.
+
+  **This block's own sketch for backing it is wrong and is corrected here** (2026-08-18, found by
+  reading the kernel rather than by failing). It said to split the grant out of the *instance's own
+  region* so a single `DESTROY` reclaims both. `regions::destroy_outcome` answers `Refused` for any
+  region with a live child, and `sched::reap_supervised` passes that back, so a corpse whose region
+  carries a grant cannot be collected at all until the grant is destroyed first.
+
+  The nesting survives the correction for a better reason: **a refused reap is the only thing that
+  pairs a death with a grant.** A supervisor learns a tid and nothing else, because nothing hands a
+  builder its child's tid (`build_child` returns a TCB capability and `abi::tcb` reads none out). So
+  what is left is a decision rather than wiring: how many `--mem` instances may be outstanding at
+  once, since the refusal identifies one. Serialising them is the small answer.
+  `crates/timetable` supports the planning and refusal already, and its host tests cover both. Needs
+  nobody.
+- **One image per entry rather than one archive per timetable.** The narrowing above is to the plan's
+  *union*, so a document admitting three programs leaves each instance's loader able to name the
+  other two's images. `user/src/spawner.rs` has the narrow shape (one image, and "build me program X"
+  cannot be asked of it) and reaching it here needs a capability per entry. Needs nobody, and it is
+  smaller than it looks now that the sub-archive exists.
 - **A runtime registration protocol, and who holds the right to use it.** calef's, per above.
 - **Calendar syntax, wall-clock entries, persistence.** Each its own later decision, per the scope
   note below, and none of them started.

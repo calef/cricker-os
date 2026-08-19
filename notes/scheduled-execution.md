@@ -113,6 +113,69 @@ No clock, no directory, no console, no network, no device. **Widening it is an e
 visible change in the printed plan**, which is the property worth having: a scheduler gets wider
 because somebody decided it should, not because an entry talked it into it.
 
+## The archive it holds is narrowed to the plan
+
+The endowment above is what a scheduled *child* holds. What the **scheduler** holds is a different
+question, and until 2026-08-18 the answer had one embarrassing entry in it: the whole initrd,
+mapped read-only, which is every program in the tree.
+
+That is wider than anything the document can ask for, and the plan is what makes the gap
+measurable. `Registry::programs` is the complete set of programs a document will ever start, as a
+bitmask, computable at registration and therefore **before the spawn site has to decide what to hand
+over**. So the spawn site builds an archive of exactly that set with `nifefs::write_image`, and the
+timetable is handed that instead of the initrd.
+
+### Where the set is computed, and why not at the spawn site
+
+The obvious shape is for the spawn site to register the document itself and read `programs()` off the
+result. **The kernel cannot do that, and the reason is worth knowing before anyone tries again.**
+
+`timetable::Registry` is a `[Row; MAX_ENTRIES]` and a `Row` carries an `Admission`, which carries a
+kilobyte of `grant_plan::Endowment`. So `Registry::register` compiles to a **21632-byte stack
+frame**, and the `grant_plan::plan` underneath it to a further 12048. In `user/src/timetable.rs`
+those numbers are fine and stated: it is a process with a 32-page stack, and
+`kernel/src/user/timetable_tests.rs` says why it maps 32 pages. In the **kernel** they are exactly
+what `script/stack-frame-check` refuses, because a frame larger than the 4096-byte guard page can
+move `sp` from inside a thread's stack to below the guard in one step, touching nothing in between,
+so the guard never faults and the write lands in the neighbouring thread's stack. This tree measured
+that on riscv64 on 2026-08-14, at 4088 bytes below the bottom of a 4096-byte guard; eight more bytes
+would have produced no fault at all. See notes/stack-high-water.md.
+
+Neither number is a bug in `timetable`. A plan you can print is a plan you have to hold, and holding
+one entry's worth of authority costs a kilobyte because that is what the authority *is*. What it
+means is that **the plan is computed where there is stack for it**, which is the host and the
+program, and never in the kernel.
+
+So the spawn site carries the program set as a written list, `PLANNED_PROGRAMS`, and the thing that
+keeps it equal to the plan is a **host test** rather than a comment:
+`the_archive_a_timetable_holds_is_measured_against_what_it_will_build` registers the same
+`user/timetable.conf` against the same `Held::default()` and asserts the plan is exactly that set, by
+name. Editing the document without editing the list fails in milliseconds with no emulator, and the
+program's own audit line then fails the cross-ISA test as well, so a wrong list goes red twice.
+
+That is rung two of AGENTS.md's ladder where the first draft of this reached for rung one, and the
+demotion is forced rather than chosen: the rung-one version does not fit on a kernel stack.
+
+**A process cannot narrow its own endowment**, so what `timetable` does instead is measure it.
+`timetable::Audit` compares the names the archive carries against the plan's program set and prints
+one of two sentences after the plan:
+
+```text
+timetable: the archive it holds carries exactly the 1 program its plan names
+timetable: the archive it holds carries 57 programs, 56 of them beyond its plan
+```
+
+The second one is what the shipped program printed before this landed, and keeping both is the
+point rather than politeness: the width of an endowment should be a line on the console rather than
+a fact only the spawn site knows. `kernel/src/user/timetable_tests.rs` asserts the first sentence
+**and** asserts the second never appears, so a spawn site that quietly went back to handing over the
+initrd fails a test rather than passing one it no longer earns.
+
+What this does not do is narrow per *entry*: the residual is the union of the plan's programs, so a
+document admitting three programs leaves each instance's loader able to name the other two's images.
+`user/src/spawner.rs` has the narrower shape (one image, and "build me program X" cannot be asked),
+and reaching it here needs a capability per entry rather than one per timetable. Recorded in `BUGS`.
+
 ## Registration is the security boundary
 
 Milestone 129's block puts it in one sentence: *whoever can register an entry can make its grants
@@ -220,19 +283,37 @@ tree and this is not the lane to take it out again).
 
 ## BUGS
 
-- **The scheduler holds the whole initrd archive, which is wider than its plan.** The set of programs
-  it will ever build is fixed at registration and printable (`Registry::programs`), but the
-  *capability* it holds reaches any program in the archive. The narrower shape already exists in this
-  tree: `user/src/spawner.rs` is handed one image and "build me program X" is not a thing that can be
-  asked of it. Doing that here needs the spawn site to hand over one image per admitted entry, which
-  needs a sub-archive built where the timetable is spawned; that is a milestone rather than a
-  drive-by and it is proposed as one.
+- **The narrowing is to the plan, not to one image per entry.** The archive the scheduler holds now
+  carries exactly the programs its document will build, and no more; what it does not do is give each
+  entry its own image. So a compromise of the timetable reaches the *union* of the plan's programs
+  rather than one of them. `user/src/spawner.rs` is the narrower shape and needs a capability per
+  entry to reach here, which this tree does not have.
 
-- **`--mem` entries are refused.** `Held::mem_pages` is zero on the shipped scheduler, so an entry
-  naming a memory grant is `Unbacked::Memory` even though the process holds a budget. Backing one
-  means splitting the grant out of the *instance's own region*, so that a single `Untyped::DESTROY`
-  still reclaims both and a restart loop is not a leak. `crates/timetable` supports it and its host
-  tests cover it; only the wiring in the program is missing.
+- **`--mem` entries are refused, and the mechanism first sketched for backing one does not work.**
+  `Held::mem_pages` is zero on the shipped scheduler, so an entry naming a memory grant is
+  `Unbacked::Memory` even though the process holds a budget.
+
+  Milestone 129's block said to split the grant out of the *instance's own region*, "so that a
+  single `Untyped::DESTROY` still reclaims both and a restart loop is not a leak". **The kernel
+  refuses precisely that.** `regions::destroy_outcome` answers `Refused` for any region with a live
+  child, `split_stays_within_budget_and_progresses`' sibling proof pins it, and
+  `sched::reap_supervised` passes the refusal straight back as `NotPermitted`. So a corpse whose
+  region carries a split grant is uncollectable until the grant is destroyed first, and the pages of
+  *both* stay out of the budget until then: the nesting makes the leak worse rather than better if
+  nothing destroys the grant.
+
+  The nesting is still the right shape, for a reason the block did not state. **A refused reap is
+  the only thing in this system that pairs a death with a grant.** A supervisor learns a tid and
+  nothing else: `supervision_proto::build_child` hands back a TCB capability, `abi::tcb` has no
+  method that reads a tid out of one, and `abi::fault`'s five-word message carries no builder-chosen
+  tag. So a timetable holding several grants cannot tell which one belongs to the child that just
+  died, except by the refusal that only a grant-carrying region produces.
+
+  What is left is therefore a decision rather than wiring: **how many `--mem` instances may be
+  outstanding at once**, because the refusal identifies one. Serialising them (fire, then collect
+  before returning to the clock) is the small answer and costs a stall this program's other `BUGS`
+  entries already describe. `crates/timetable` plans and refuses memory grants against
+  `Held::mem_pages` today, and its host tests cover both directions.
 
 - **Nothing is persistent.** Entries die with the boot, which is fine for a heartbeat and wrong for a
   backup server's housekeeping. Milestone 129's block records this and points at whatever milestone
