@@ -29,10 +29,19 @@
 #   - the emulator, built from `.qemu-version`'s pin by `script/ci-qemu`, THE SAME SCRIPT the
 #     workflow runs, into the same `~/.cache/nife-qemu` prefix an actions/cache would restore;
 #   - the provisioning, `script/bootstrap`, again the workflow's own;
-#   - the core count. `--cpuset-cpus` and not `--cpus`, and the difference is the point: `--cpus` is
-#     a CFS quota and leaves `nproc` reading the whole machine, so the guest would still be scheduled
-#     across every core, throttled. A cpuset actually narrows `sched_getaffinity`, so TCG's threads
-#     see four processors the way the runner's do. CI's own load diagnostic reports 4.
+#   - the core count, narrowed by AFFINITY and not by a quota, which is the difference that decides
+#     whether this measures anything. `podman run --cpus 4` is a CFS quota: `nproc` still reads the
+#     whole machine, TCG still spreads its threads across every core, and they are merely throttled,
+#     which is not the runner's shape at all. What is wanted is `sched_getaffinity` returning four,
+#     so the guest is scheduled the way the runner's is. CI's own load diagnostic reports 4.
+#
+#     `--cpuset-cpus` would say exactly that and **does not work here**: rootless podman on this
+#     machine has no `cpuset` controller delegated to the user slice, and the container fails to
+#     start with "controller `cpuset` is not available". Enabling it means a `Delegate=` drop-in for
+#     `user@.service` inside the podman VM, which is a change to somebody's machine for a hunt
+#     script's convenience. `taskset` sets the identical mask from inside, needs no privilege, and
+#     is inherited by every process the run forks, QEMU included. The run prints `nproc` so the
+#     narrowing is visible in the log rather than assumed.
 #
 # **What it does NOT match, stated here rather than discovered later**, because the bar is "close
 # enough that a one-in-six failure appears" and not "identical":
@@ -177,21 +186,31 @@ podman volume create "$VOLUME" >/dev/null 2>&1 || true
 #             script inside it is whatever that branch has, which on `main` is nothing at all. The
 #             container has to be handed the harness separately from the tree it clones.
 #   /cache    the volume: the built QEMU, the toolchains, the cargo registry, the clone's `target/`.
+#             **`:z` on this one and on no other**, and it is not decoration. The podman machine is
+#             Fedora CoreOS with SELinux enforcing, and every container gets its own MCS category,
+#             so files a container writes into an unlabelled volume are readable by that container
+#             and by nothing afterwards. The symptom is worth recognising because it does not say
+#             SELinux anywhere: the SECOND run rebuilt QEMU from source, then died with
+#             `PermissionError` unlinking a file it owns, and `qemu-system-riscv64 --version` in a
+#             fresh container answered `Permission denied` for a binary that `ls` shows as `-rwxr-xr-x`
+#             and root is looking at. `:z` relabels the volume shared, once, which is exactly right
+#             for a cache that exists to be reused.
 #   /logs     the only writable path that leads back to the host, and it is under `target/`, which
 #             is already ignored.
-# `:z` is deliberately absent: this is not SELinux-labelled storage on macOS, and relabelling a
-# read-only mount of somebody's repository is not something a hunt script should do.
+# The two host binds are deliberately left unlabelled. They come through virtiofs from macOS, which
+# carries no labels to honour, and relabelling somebody's repository is not a hunt script's business.
 run_container() {
+    runs="$1"
+    shift
     podman run --rm -i \
-        --cpuset-cpus "$CPUSET" \
         -v "$src:/src:ro" \
         -v "$(pwd):/harness:ro" \
-        -v "$VOLUME:/cache" \
+        -v "$VOLUME:/cache:z" \
         -v "$logs:/logs" \
         -e NIFE_RUNNER_REF="$ref" \
-        -e NIFE_RUNNER_RUNS="$1" \
+        -e NIFE_RUNNER_RUNS="$runs" \
         -e NIFE_RUNNER_LEG="$LEG" \
-        "$IMAGE" "${2:-/harness/script/runner-container}" "${3:---inside}"
+        "$IMAGE" taskset -c "$CPUSET" "$@"
 }
 
 case "$MODE" in
@@ -200,13 +219,13 @@ case "$MODE" in
         # provisions the volume and the hunt uses it; a second copy of the clone-and-bootstrap
         # sequence here would be a thing to keep in agreement for no gain.
         echo "==> warming the cache (QEMU from source on a cold volume; ~15 minutes)"
-        run_container 0
+        run_container 0 /harness/script/runner-container --inside
         ;;
     shell)
-        run_container 0 /bin/bash -i
+        run_container 0 /bin/bash
         ;;
     hunt)
         echo "==> $RUNS boots of the $LEG leg on $CPUSET, logs in $logs"
-        run_container "$RUNS"
+        run_container "$RUNS" /harness/script/runner-container --inside
         ;;
 esac
