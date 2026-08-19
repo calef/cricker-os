@@ -25,9 +25,10 @@ From milestone 38, all medians, ns per 4 KiB, at a matched virtualization tier:
 
 **The architecture is not the problem, and that is the finding that makes this milestone tractable.**
 The confined-server tax is about 1 us per request against a 1.5 to 3.4 ms operation: 0.07% of the
-measurement. The confined userspace block server is **at parity with Linux's block layer** (46.2 us
+measurement. The confined userspace block server is **at parity with Linux's block layer** (39.0 us
 per 4 KiB against 39 to 53 us for Linux's own raw virtio reads on the same device). Every nife figure
-is 46.2 us times a small integer, and nothing was fitted. **The 32x is the entire remaining gap** and
+is 39.0 us times a small integer plus a fixed walk, and nothing was fitted. **The 32x is most of the
+remaining gap** and
 it belongs to the vendored store's record size, not to the microkernel.
 
 ## The candidate fixes, none priced against the others
@@ -65,7 +66,29 @@ options and their costs rather than a recommendation.
    is a project"*), and RedoxFS is the case §46 itself cites for vendoring, where correctness is won
    by exposure rather than by reading a spec.
 
-## The measurement that should come before any of the three
+## The measurement was taken, and it moved two of the three
+
+**Superseded 2026-08-18.** This section asked for a record-level sweep before any option was chosen.
+It was run (PR #338) and the result is in notes/benchmarks.md; what follows is kept because the
+question it asked is why the answer is trustworthy, and struck through in substance rather than
+deleted so a reader can see what was asked.
+
+**What it found**, all measured on milestone 38's own harness across twenty interleaved passes:
+`cost = 208 us + 39.0 us x 2^level`, read residuals within 5% at every level. So a one-block record
+buys **5.6x on reads and 3.0 to 3.8x on writes, not 32x**, because the record is only one of two
+terms. Option 1 is worth more (16x) because it amortises both. Both together are 28x.
+
+**And it corrected two things this block asserted.** Milestone 38's 46.2 us per block was an average
+that charged the per-request walk to the blocks; the marginal cost is 39.0 us and the walk is a
+separate 208 us. And this block said option 2 is "not a fork of the vendored crate": **it is one.**
+`Node::new` takes no level and has no setter, and three call sites gate on `RECORD_LEVEL`, so
+lowering the constant makes every record already stored at a higher level unreadable.
+
+**The 208 us was then identified** (PR #348): five single-block reads per request, the *same* five
+blocks every time, 99.6% repeat rate, 94% of the fixed term. That is the absence of a cache rather
+than a property of RedoxFS, which is what rules out option 3.
+
+## The question this section originally asked
 
 **Nobody has measured throughput against record level, and it is the cheap experiment that decides
 between all three options.** Sweep the per-file record level against the transfer size and the access
