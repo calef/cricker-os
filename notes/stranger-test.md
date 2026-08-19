@@ -203,6 +203,65 @@ other worktrees, and this time the tree can say so: `script/test` prints the hos
 beside a failing timing leg as of 2026-08-18. Whether a stranger meeting that message needs `uptime`
 anyway is itself a measurement this run gets for free.
 
+### What run 5 changes, decided 2026-08-18 before the run
+
+**This is the first run conducted through `script/stranger-test` rather than rebuilt by hand.** The
+lane that wrote the harness deliberately ran nothing through it, so nothing about the instrument has
+been exercised by anyone except its author and a `--smoke` reply. Run 5's brief is one line,
+`script/stranger-test --commit origin/main`, and the first thing it measures is the harness itself:
+whether the isolation, the withholding, the shims and the toolchain restore hold when somebody who
+did not write them runs them. A defect in the harness is a finding about the harness and is recorded
+rather than worked around, because a run that patches its own instrument mid-flight is measuring
+something it can no longer name.
+
+**The disclosure is live for the first time.** Run 4's handoff 5 said run 5 should be told it is
+being measured, on the reasoning that the tree leaks the fact within half an hour anyway and
+pretending otherwise buys nothing while costing the disclosure. The harness implements it in the
+task text. **That makes this the first run whose stranger knows at turn zero**, so it is not
+comparable to runs 1 through 4 on anything the knowledge touches, and the two questions worth asking
+of it are what the stranger says the disclosure changed, and whether the performance run 4 confessed
+to shows up anyway. The task also asks it not to perform, in those words, which is a second new
+variable in the same paragraph. If the result is good, the two cannot be separated, and this note
+should say so rather than credit either.
+
+**What is genuinely new in the tree, and it is one command.** `script/apropos` landed 2026-08-18 and
+exists because of this instrument: three runs measured that a stranger doing ordinary work reaches
+neither `notes/net.md` nor `notes/capabilities.md` nor any file under `design/decisions/`, and none
+found `crates/abi/src/lib.rs`, which is four syscall numbers and the whole design on one screen.
+All four are now one search away. **Whether the stranger discovers it on its own is the
+measurement**, so it is not in the task text and it is not hinted at. It is named in exactly one
+place a newcomer might reach, `notes/scripts.md`'s table, which sits behind item 8 of the README's
+reading order, and item 8 points at `notes/README.md`, which no stranger has yet opened. The
+prediction registered here is that the stranger does not find it.
+
+`CONTRIBUTING.md` and the `## Start here` order have now been seen once, by run 4, so this run is
+their second data point rather than their first. The specific failure run 4 left is the one to
+watch: `CONTRIBUTING.md` is item 2 of 8 and was read sixteenth of twenty-two.
+
+**The machine is uncontended, which no previous run could say.** Run 3 gated against a load average
+of 45 to 63 and reported a 2-in-13 red rate; run 4 ran between about 3 and 17.5 with four other
+lanes. At this run's launch the load average is 4.04 on 8 cores with no other lane running and no
+QEMU on the machine. So a red timing leg here cannot be blamed on the host, and the load-average
+diagnostic that run 3 bought and run 4 could not exercise gets its second chance to stay silent
+honestly.
+
+**The rubric is not amended by this lane, and that is a deliberate departure from run 4.** Run 4's
+lane edited the table before running against it, and its own contamination section says that made
+things slightly worse. Run 5 grades against the table exactly as it stands after run 4's
+amendments, eight mental-model rows and four build rows, scored `answered`, `partly answered`,
+`wrong` or `absent`. If this run falsifies a row, it is recorded here in run 3's shape, as a
+correction the next lane applies, rather than applied by the lane that would then score against it.
+
+**Three predictions, registered so the result cannot be read generously afterwards.** They are the
+lane's, not the stranger's, and each is falsifiable.
+
+1. The stranger does not find `script/apropos`, and therefore still does not reach any file under
+   `design/decisions/`.
+2. `notes/README.md` goes unopened for the fifth run running, since nothing in the reading order
+   sends a reader there until item 8 and item 8 is the one that says to stop reading in order.
+3. The build half is green first try with no change to the tree, and the B2 row measures nothing
+   again, because the machine has the pinned nightly, both QEMUs and a warm cargo cache.
+
 ## The rubric, written 2026-08-14, before the first run
 
 Two halves. Only the first is mechanical.
