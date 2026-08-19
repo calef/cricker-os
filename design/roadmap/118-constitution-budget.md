@@ -176,6 +176,25 @@ something load-bearing.
 by deleting what that rule replaced. That is the shape the budget is trying to make normal, and it
 already happened once unprompted.
 
+### Applied 2026-08-18 by the integrator: four cuts, 1,212 bytes
+
+**Landed.** `AGENTS.md` went 955 lines / 11,062 words to 942 / 10,880. The three deletions removed
+292, 377 and 543 bytes; cut 4 is a reword and saves nothing. Every line number in the proposal below
+was still exact when it was applied, except rule 7's block, whose stated range included a trailing
+blank line; applying by text match rather than by index is the lesson, and it is why this was applied
+by search rather than by `sed`.
+
+The two rewordings the proposal said an integrator would have to write:
+
+- *"The rule that matters more than the tidiness:"* became a standalone opener, **"An unmerged branch
+  is either abandoned..."**, since the paragraph it referred back to is gone.
+- *"Three reasons, and the second is the one that matters"* became **"Two reasons, and `script/lint`
+  check 5 carries the third"**, which names where the deleted argument went rather than leaving a
+  reader to wonder.
+
+Cut 4 kept its prohibition and lost its overreach: *"Never squash across purposes"* stays a rule
+because nothing gates it, and the squash-*merge* half now says the platform refuses it.
+
 ### Verified: four cuts, ~15 lines and ~1,150 bytes net
 
 Small, and deliberately so. **The honest total is about 1.7% of the file**, against the audit's
