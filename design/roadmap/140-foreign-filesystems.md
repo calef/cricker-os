@@ -79,22 +79,36 @@ reference), so it wants its own lane rather than riding on prose. Doing it **bef
 program is cheaper than after, because after there are two servers whose names disagree about what
 kind of thing they are.
 
-### Open: one process per volume, or one per filesystem type
+### Decided: one process per volume
 
-Both shapes have one *program* per format, so the installation benefit is the same either way: **a
-machine that never mounts FAT32 never installs `fat32_server`, and the parser is absent rather than
-merely confined.** What differs is how many *instances* run.
+**calef, 2026-08-18.** Each mounted volume gets its own server process holding exactly one
+block-device capability.
 
-**Per volume** gives each mounted volume its own process holding exactly one block-device capability.
-Two sticks cannot reach each other, a panic takes down one mount, unmounting is destroying one
-region, and `caps` names exactly one volume. `second_mount` shows the shape already runs.
+Both shapes have one *program* per format, so the installation benefit is the same either way and is
+worth stating because it is the strongest of them: **a machine that never mounts FAT32 never installs
+`fat32_server`, and the parser is absent rather than confined.** What was decided is how many
+*instances* run.
 
-**Per type** runs fewer processes, and pays for it by making one process hold N block-device
-capabilities at once, which is the confused-deputy shape a capability system exists to avoid.
+**Why per volume wins, and the deciding argument is not isolation strength.** Per-volume needs no
+correctness argument at all. A per-type server holds N block-device capabilities and must get right,
+on every request, which volume that request is for; that is the confused-deputy shape a capability
+system exists to avoid, and it would have to be argued and tested. Per volume there is only ever one,
+so the mistake is **unrepresentable rather than unlikely**, which is rung one of the ladder against a
+test.
 
-The cost of per-volume is memory and a process per mount, which milestone 129's `--mem` work is
-already pricing. **Undecided here on purpose**; it wants calef and it is not needed before the first
-FAT32 mount.
+What it also buys: two USB sticks cannot reach each other, where per-type would put a hostile stick
+and an innocent one in one address space. A panic takes down one mount. Unmounting is destroying one
+region, which is `Untyped::DESTROY` doing what it already does. And `caps` names exactly one volume,
+which is the tightest statement available of what a process may touch.
+
+**The cost, stated plainly:** a process per mount, its memory and its supervision entry. Milestone
+129's `--mem` work is already pricing that, and this workload barely feels it, because a home backup
+server mounts one volume permanently and a stick occasionally. **The arithmetic changes on a machine
+with twenty volumes**, and if that machine ever exists this decision should be re-taken rather than
+inherited.
+
+`second_mount` shows the shape already runs: a second FS-server process against the same block
+server.
 
 ## What each one has to answer
 
