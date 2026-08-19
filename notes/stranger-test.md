@@ -342,6 +342,67 @@ the second run, with a different stranger, after the worklist is fixed.
 2026-08-14. If a run shows a stranger falling down somewhere the rubric does not ask about, the
 finding is real and the rubric is what needs amending.
 
+## The cadence: monthly, decided 2026-08-18
+
+calef, 2026-08-18: **the stranger test runs monthly.** That closes the one thing five runs each
+named as the reason milestone 117 could not move. The milestone's own sentence is *fix what the run
+finds, then run it again*, and until this decision nothing scheduled the "again": the test ran when
+somebody thought of it, which is rung four of CLAUDE.md's ladder holding up the milestone that
+exists to move things off rung four. Four runs said so in their handoffs and the fifth said it was
+the only remaining decision.
+
+**A run is due every 30 days.** Thirty rather than a calendar month because a month is not a number
+of days and the difference cannot matter to a signal that is asked once a week. The sentence above
+is the cadence in the literal sense: `script/stranger-test --due` matches that line and reads the
+integer out of it, so the interval a reader meets and the interval the tripwire uses are the same
+characters. Changing the cadence is editing that sentence, and there is nowhere else to edit.
+
+**The date of the last run comes from the `### Run <n>, <date>:` headings below**, which every run
+already writes because that is how this note records a run. Nothing is maintained for the tripwire's
+benefit, which is the property that stops a schedule and a record from disagreeing: a second copy of
+the date, in a script or in a workflow, would be a fact kept in two places, and this tree has
+watched that fail often enough to name it. §74 put the audit cadences in the audit index for the
+same reason.
+
+**The mechanism is notification, and it cannot be anything else.** A run spawns a `claude` process,
+spends real budget, needs a machine with the pinned toolchain and both QEMUs, and ends in a debrief
+that a person scores against the rubric above. No part of that is a thing CI can do, and pretending
+otherwise would be worse than the gap it closed. So:
+
+- `script/stranger-test --due` exits 1 when a run is due and prints the command to run, plus what a
+  run costs. It runs nothing.
+- `.github/workflows/stranger-cadence.yml` asks it every Monday, in its own workflow rather than in
+  `script/lint`, because a run coming due is information about the tree and not a defect in whichever
+  commit happened to be pushed that week. Same split, and the same argument, as the audit cadence.
+- `script/stranger-test --check` is the structural half and does run in `script/lint`: the cadence
+  sentence appears exactly once, the run headings are numbered from 1 without a gap, and their dates
+  are in order. A malformed record **is** a defect in the commit that malformed it, and it silently
+  moves the date the tripwire reads.
+
+**Red means run the test.** Closing it by editing a heading is available, cheap, and the one thing
+that makes the whole mechanism a lie.
+
+### What a run costs, stated where the cadence is decided
+
+**One stranger session plus one lane**: roughly 200k lane tokens on top of the stranger's own, and
+about half an hour of wall clock, with the score and the write-up on the end of that.
+
+Run 5's `$10.56` is the number to quote carefully, and it has been quoted without its caveat
+already. It is the CLI's `total_cost_usd` for the **stranger process alone**. It excludes the lane
+that pre-registered the run, watched it, debriefed it, scored it and wrote it up, which is the
+larger half of the cost. A monthly cadence is therefore a claim that a stranger's questions are
+worth about that much once a month, which is the claim calef made and which the runs support: five
+runs have produced roughly seven findings each, including two defects nobody in the tree could see.
+
+**The value decays with the tree rather than with the clock**, which is the honest argument for a
+count-based trigger of the kind §74 chose for audits, and against 30 days being the right unit
+forever. It is not built that way here for one reason worth writing down rather than inferring: an
+audit's triggers are countable (milestones built, components, ABI constants, packages) and this
+one's are not. What ages a stranger run is how much of the *documentation* has moved, and the only
+count for that is `script/audits --worklist`, which is a heuristic that never reads a sentence. So
+the calendar is doing the whole job here where for audits it is a backstop, and it should be
+revisited the first time a run comes back saying nothing had changed.
+
 ## Runs
 
 ### Run 1, 2026-08-14: an x86_64 container, no QEMU
@@ -1065,6 +1126,18 @@ committed before the clone was cut, and the stranger's answers are recorded as i
   somebody runs it. What run 5 adds is that the price is now one command **and** that the thing the
   price bought is a real measurement, since a fifth run through an unexercised script would have
   been measuring the script.
+
+  **Half of this closes 2026-08-18, and it is the scheduling half rather than the running half.**
+  calef decided the cadence (monthly, recorded above), which was the decision the entry was waiting
+  on rather than a missing afternoon of work. `script/stranger-test --due` reads the interval and
+  the last run's date out of this note and exits 1 when a run is owed;
+  `.github/workflows/stranger-cadence.yml` asks it weekly. **So something now goes red when the test
+  has not been run in a month, which is the sentence this entry has been asking for since run 1.**
+  What does not close, and never will, is the first clause read literally: nothing *runs* the test.
+  A run is a person spending half an hour and the budget, and a mechanism that pretended otherwise
+  would be a worse defect than the gap. The residual is the one every record-derived signal has:
+  the tripwire believes the headings, so a run nobody writes up leaves it red and a heading nobody
+  earned turns it green.
 - **The build half cannot be measured from a warm machine**, and every contributor's is warm. The
   first run should be from a container with nothing installed, or the B-rows measure nothing. Run 2
   came closest and still fell short: the maintainer's own `cargo --version` inside the repository had

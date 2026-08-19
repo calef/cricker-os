@@ -1,0 +1,84 @@
+name: stranger cadence
+
+# **Is a stranger run due?** Asked weekly, answered before somebody has to remember to ask.
+#
+# Milestone 117 hands this repository to a process that has never seen it and records what it could
+# not work out. Five runs happened between 2026-08-14 and 2026-08-18, and every one of them happened
+# because a person thought of it. That is the failure this closes: the milestone's own sentence is
+# *fix what the run finds, then run it again*, and "again" had no mechanism, which is rung four of
+# CLAUDE.md's ladder holding up the milestone that exists to move things off rung four. Four
+# consecutive runs named it in their handoffs and none of them built it.
+#
+# calef decided the cadence on 2026-08-18: **monthly**. Both numbers the check needs live in
+# notes/stranger-test.md, the interval as the sentence a reader meets and the date as the newest
+# `### Run <n>, <date>:` heading, so the schedule and the record cannot drift apart.
+#
+# **Nothing here runs the test, and nothing here can.** A run spawns a `claude` process, spends real
+# budget, needs a machine with the pinned toolchain and both QEMUs, and ends in a debrief a person
+# scores against a rubric. **Red means run it**, exactly as audit-cadence.yml means run the audit.
+#
+# **Its own workflow, deliberately, so that red here never blocks a merge.** A run coming due is
+# information about the tree rather than a defect in whichever commit happened to be pushed that
+# week. The structural half (`script/stranger-test --check`: the cadence sentence appears once, the
+# run headings are numbered without a gap and in date order) runs in script/lint on every pull
+# request, because a malformed record IS a defect in the commit that malformed it and it silently
+# moves the date this job reads. Same arrangement, and the same argument, as audit-cadence.yml and
+# toolchain-drift.yml.
+
+on:
+  schedule:
+    # 08:00 UTC Mondays, matching the audit cadence. Weekly against a monthly interval because a
+    # daily run would report the same thing thirty times and then be right on the thirty-first; the
+    # up-to-six-day delay is nothing next to the half hour a run takes to conduct.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+# Least privilege, the same as every other workflow here.
+permissions:
+  contents: read
+
+concurrency:
+  group: stranger-cadence
+  cancel-in-progress: true
+
+jobs:
+  overdue:
+    name: is a stranger run due
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # No toolchain, no cache, no build, no `claude`: this reads one markdown file. The cadence
+      # modes are handled at the top of script/stranger-test, above every line that would clone or
+      # spawn anything, so a runner without the CLI is not a problem and a dropped flag cannot fall
+      # through into a run.
+      #
+      # `set -o pipefail` is load-bearing and not decoration. The default shell here is `bash -e`
+      # WITHOUT pipefail, so a pipeline exits with `tee`'s status and `tee` always succeeds: without
+      # this line the step would be green no matter what the script said, and the mechanism would
+      # report the absence of a signal as the absence of a problem.
+      - name: script/stranger-test --due
+        shell: bash
+        run: |
+          set -o pipefail
+          script/stranger-test --due | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: What to do if this went red
+        if: failure()
+        run: |
+          {
+            echo
+            echo 'A stranger run is **due**. This job failing is information about the tree, not a'
+            echo 'defect in any commit; `main` is unaffected and every gate still passes.'
+            echo
+            echo 'To resolve it, deliberately: read `notes/stranger-test.md` for the rubric and what'
+            echo 'the previous runs cost and found, run `script/stranger-test --commit origin/main`'
+            echo 'on a machine with the toolchain, score the debrief against the rubric, and land a'
+            echo '`### Run <n>, <date>:` section under `## Runs` with what it found. Route what it'
+            echo 'finds into `BUGS` sections and roadmap handoffs rather than fixing it in the same'
+            echo 'lane: a run that stops to fix things stops measuring.'
+            echo
+            echo 'Closing it by editing a heading without running the test is available, cheap, and'
+            echo 'the one thing that makes this whole mechanism a lie.'
+          } >> "$GITHUB_STEP_SUMMARY"

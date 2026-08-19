@@ -1452,6 +1452,15 @@ echo "        every name carries its provenance"
 echo "==> the audit index"
 "$(dirname "$0")/audits" --check
 
+#    **And the stranger test's run record, for the same reason and with the same split**
+#    (milestone 117, 2026-08-18). `script/stranger-test --due` is the tripwire and lives in its own
+#    weekly workflow; this is the structural half. The cadence sentence in notes/stranger-test.md
+#    appears exactly once, the `### Run <n>, <date>:` headings are numbered from 1 without a gap,
+#    and their dates are in order. Both numbers the tripwire needs come out of that note, so a
+#    malformed heading does not fail loudly, it silently moves the date a run is measured from.
+echo "==> the stranger test's run record"
+"$(dirname "$0")/stranger-test" --check
+
 # 9. **An environment variable named in prose has to exist** (milestone 93's first documentation
 #    sweep, 2026-08-16). This is the compounding half of that mechanism rather than a check somebody
 #    thought of: a sweep is supposed to convert checkable claims into checked ones, and this class

@@ -6,6 +6,8 @@
 #   script/stranger-test                          run against HEAD
 #   script/stranger-test --commit origin/main     run against a named commit
 #   script/stranger-test --prepare-only           build the isolated tree and stop
+#   script/stranger-test --due                    is a run due? exit 1 if it is; runs nothing
+#   script/stranger-test --check                  the run record parses (script/lint)
 #   script/stranger-test --help
 #
 # Why this exists, and why it is a script rather than a page. Milestone 117 asks whether a competent
@@ -53,6 +55,31 @@
 #      answers are not shaped by the rubric, then the rubric's own mental-model questions, which are
 #      READ OUT OF `notes/stranger-test.md` rather than copied here. That keeps one rubric in the
 #      tree instead of two, and an amendment to the table is picked up without editing this file.
+#
+# **The cadence, and the two modes that never run anything.** calef decided on 2026-08-18 that the
+# stranger test runs **monthly**, which closes the one thing five runs each named as the reason
+# milestone 117 could not move: the milestone's sentence is *fix what the run finds, then run it
+# again*, and "again" had no mechanism. `--due` answers "is a run due" and exits 1 when one is, and
+# .github/workflows/stranger-cadence.yml asks it every week so that recurrence does not depend on
+# anyone remembering. `--check` is the structural half and runs in script/lint, because a run record
+# that does not parse is a defect in the commit that malformed it while a due run is not.
+#
+# **Both read notes/stranger-test.md and nothing else, and both are handled before this script does
+# any of the work above.** They need no clone, no `claude`, and no toolchain, which is what lets the
+# weekly workflow run them in seconds on a checkout; and a flag dropped from that workflow's command
+# line cannot fall through into a run, because the cadence block exits before the run path is
+# reachable. That matters more here than it does for script/audits, whose every mode is a report:
+# this script's *default* mode spawns a stranger and spends money.
+#
+# **The signal is notification, never execution, and the reason is not squeamishness.** A run spawns
+# a `claude` process, spends real budget, needs a machine with the toolchain and both QEMUs, and
+# ends in a debrief that a person has to score against a rubric. None of that is a thing CI can do.
+# **Red means run the test**, exactly as `script/audits` means run the audit.
+#
+# **Both numbers come out of the note**, the interval and the date of the last run, so the schedule
+# and the record cannot disagree. The date is the newest `### Run <n>, <date>:` heading, which every
+# run already writes because that is how the note records a run; nothing here is maintained by hand
+# for the tripwire's benefit. §74 put the audit cadences in the audit index for the same reason.
 #
 # What it restores. `script/test` inside the clone takes the account-wide `nife-dev` toolchain link,
 # because `xtask` rebuilds the std farm in whatever worktree ran it last. This script records where
@@ -139,9 +166,21 @@
 # `script/setup` has nothing to do and the B2 row measures nothing. A cold measurement wants a
 # container and is a separate run; `--commit` plus a container image is the shape it would take.
 #
-# **It does not schedule itself.** Recurrence here means the run costs one command rather than an
-# afternoon of reconstruction. Putting it on an interval is milestone 129's machinery and a decision
-# about how often the answer is worth its cost, which is calef's.
+# **It still does not run itself, and nothing will.** `--due` and the weekly workflow close the
+# *scheduling* half: something now knows when a run is owed and says so loudly. The run is still a
+# person deciding to spend half an hour and the budget, and that is not a limitation to fix later.
+# An earlier draft of this entry pointed at milestone 129 as the machinery a schedule would use;
+# that was wrong in a way worth recording rather than deleting, because 129 is *nife's own* cron and
+# this run happens on a host with a `claude` CLI and two QEMUs. The machinery is the same as the
+# audit cadence's, one directory over.
+#
+# **A cadence check is only as good as the record it reads, and this one reads prose.** The last-run
+# date is the newest `### Run <n>, <date>:` heading in notes/stranger-test.md. A run conducted and
+# not written up is invisible to it, which is the correct direction to be wrong in (the note is the
+# only place a run exists at all), but it does mean the tripwire can be silenced by editing a
+# heading. That is the same hole `script/audits` has, named the same way there: closing a cadence by
+# editing the record instead of doing the work is available, cheap, and the one thing that makes the
+# whole mechanism a lie.
 #
 # **The `reached_withheld_note` tripwire is a false positive by construction and fired on the first
 # real run.** It greps the transcript for the string `stranger-test.md`, and three things in the
@@ -189,6 +228,8 @@ script/stranger-test: hand this repository to a process that has never seen it.
   --budget <usd>     stop the stranger at this spend (default: 40)
   --prepare-only     build the isolated tree, run the probe, and stop
   --smoke            exercise the whole pipeline with a trivial task; NOT a measurement
+  --due              is a run due? exit 1 if one is. Runs nothing and spends nothing
+  --check            the run record in notes/stranger-test.md parses (script/lint)
   --help
 USAGE
 }
@@ -199,6 +240,7 @@ model=""
 budget="40"
 prepare_only=0
 smoke=0
+cadence=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -208,10 +250,125 @@ while [ $# -gt 0 ]; do
         --budget) budget="$2"; shift 2 ;;
         --prepare-only) prepare_only=1; shift ;;
         --smoke) smoke=1; budget="5"; shift ;;
+        --due)   cadence="due";   shift ;;
+        --check) cadence="check"; shift ;;
         --help|-h) usage; exit 0 ;;
         *) echo "stranger-test: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+# The rubric lives in one place and this script reads it rather than restating it, so an amendment
+# to the table is asked at the next debrief without anyone editing this file. It is also the file
+# the clone does not get, which is why it is read from the source repository and never from there.
+# The cadence below reads the same file for the same reason, one level out: the interval and the
+# date of the last run are sentences a person reads, not numbers kept somewhere for a script.
+KEY="notes/stranger-test.md"
+[ -f "$REPO/$KEY" ] || {
+    echo "stranger-test: $REPO/$KEY is missing, so there is no rubric to ask and no answer key to" >&2
+    echo "               withhold. Run this from a full checkout." >&2
+    exit 1
+}
+
+# --- the cadence, and it exits before anything else can happen ---------------------------------
+#
+# Deliberately above the tool check and above every line that builds a clone. `--due` and `--check`
+# read one file, spend nothing and start no process, so they must work on a CI runner with neither
+# `claude` nor a toolchain; and putting them here means a workflow that loses its flag cannot fall
+# through into a run. See the cadence paragraphs in this file's header for why the signal is
+# notification rather than execution.
+if [ -n "$cadence" ]; then
+    command -v python3 >/dev/null 2>&1 || {
+        echo "stranger-test: 'python3' is not on PATH, and the cadence check needs it" >&2
+        exit 1
+    }
+    exec python3 - "$REPO/$KEY" "$KEY" "$cadence" <<'PY'
+import datetime
+import re
+import sys
+
+path, shown, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open(path, errors="replace") as f:
+    text = f.read()
+
+# One sentence in the note carries the interval, and it is the sentence a reader meets rather than a
+# number kept for the tripwire. One heading per run carries the dates, and every run already writes
+# it because that is how the note records a run. Nothing here is maintained for this script's sake,
+# which is the property that stops the schedule and the record from drifting apart.
+CADENCE = re.compile(r"^\*\*A run is due every (\d+) days\.\*\*", re.M)
+RUN = re.compile(r"^### Run (\d+), (\d{4}-\d{2}-\d{2}):", re.M)
+
+problems = []
+
+intervals = CADENCE.findall(text)
+if len(intervals) != 1:
+    problems.append(
+        f"{len(intervals)} lines match '**A run is due every N days.**' and exactly one must. That "
+        f"sentence is the cadence: the tripwire reads the same characters a reader does, so a "
+        f"second copy is a second cadence and none at all is a schedule nobody can find.")
+
+runs = []
+for num, date in RUN.findall(text):
+    try:
+        runs.append((int(num), datetime.date.fromisoformat(date)))
+    except ValueError:
+        problems.append(f"run {num}: {date!r} is not a real date")
+
+if not runs:
+    problems.append(
+        "no '### Run <n>, <YYYY-MM-DD>: ' heading, so the date of the last run has nowhere to come "
+        "from. A run that is not written up did not happen as far as this tree is concerned.")
+
+if [n for n, _ in runs] != list(range(1, len(runs) + 1)):
+    problems.append(
+        f"the run headings are numbered {[n for n, _ in runs]} and must be 1..{len(runs)} in order. "
+        f"The tripwire reads the last one, so a gap or a repeat silently moves the date.")
+
+if any(runs[i][1] < runs[i - 1][1] for i in range(1, len(runs))):
+    problems.append("the runs are not in date order, and the last heading is what the tripwire "
+                    "reads")
+
+if problems:
+    for p in problems:
+        print(f"stranger-test: {shown}: {p}", file=sys.stderr)
+    sys.exit(1)
+
+interval = int(intervals[0])
+number, when = runs[-1]
+days = (datetime.date.today() - when).days
+
+if mode == "check":
+    print(f"stranger-test: {len(runs)} runs on record, last {when} (run {number}), "
+          f"cadence {interval} days")
+    sys.exit(0)
+
+print(f"Last run: {number}, {when}, {days} day{'' if days == 1 else 's'} ago.")
+print(f"Cadence:  every {interval} days ({shown}).")
+print()
+
+if days < interval:
+    print(f"stranger-test: not due for another {interval - days} day"
+          f"{'' if interval - days == 1 else 's'}.")
+    sys.exit(0)
+
+print(f"stranger-test: DUE. Run {number} was {days} days ago and the cadence is {interval}.")
+print()
+print("  script/stranger-test --commit origin/main")
+print()
+print("Then score it against the rubric in the same file and add a '### Run <n>, <date>:' section")
+print("under '## Runs' with what it found. That heading is what this check reads, so a run that is")
+print("not written up leaves this red.")
+print()
+print("Nothing here ran the test and nothing here can: a run spawns a claude process, spends real")
+print("budget, and needs a machine with the toolchain and both QEMUs. Red means run it.")
+print()
+print("What it costs: one stranger session plus one lane to brief it and score it. Roughly 200k")
+print("lane tokens on top of the stranger's own, and about half an hour of wall clock. Run 5's")
+print("$10.56 is the CLI's total_cost_usd for the stranger process alone and excludes the lane,")
+print("which is the larger half.")
+sys.exit(1)
+PY
+fi
 
 for tool in git claude python3; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -219,16 +376,6 @@ for tool in git claude python3; do
         exit 1
     }
 done
-
-# The rubric lives in one place and this script reads it rather than restating it, so an amendment
-# to the table is asked at the next debrief without anyone editing this file. It is also the file
-# the clone does not get, which is why it is read from the source repository and never from there.
-KEY="notes/stranger-test.md"
-[ -f "$REPO/$KEY" ] || {
-    echo "stranger-test: $REPO/$KEY is missing, so there is no rubric to ask and no answer key to" >&2
-    echo "               withhold. Run this from a full checkout." >&2
-    exit 1
-}
 
 sha="$(git -C "$REPO" rev-parse --verify "$commit^{commit}")"
 public_url="$(git -C "$REPO" remote get-url origin 2>/dev/null || echo "")"
