@@ -712,8 +712,14 @@ prober already handles. It was left undone deliberately: with no reproduction, a
 change is indistinguishable from a green run before it, and this check has been widened once already
 on evidence that thin.
 
+**And the aarch64 leg is closer to the cliff than riscv is**, which is worth knowing because the
+flake has only ever been seen on riscv. On the same laptop its first round is held **41998 ms**
+before it is answered, against riscv's 29973, and its prober logs twenty `connect-failed` attempts
+at the start of the boot because it is poking the forwarded port before QEMU has bound it. Nothing
+about this hazard is riscv-specific; riscv is simply where it has landed so far.
+
 **Why it does not reproduce on a developer machine.** Five riscv boots on macOS on a quiet Apple
-Silicon laptop: 4 of 4 every time, with the timings above. The lane that built the check got 0 in 5
+Silicon laptop: 4 of 4 every time, with the timings above, plus one full two-ISA `script/test`. The lane that built the check got 0 in 5
 as well. CI runs on `ubuntu-24.04-arm`, so the QEMU build, the libslirp version, the host TCP stack
 and the core count all differ, and this is an emulator-timing failure. **A reproduction attempt that
 is not on that runner class is not a reproduction attempt**; that is the single most useful thing to
