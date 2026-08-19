@@ -1908,8 +1908,15 @@ const INBOUND_OFFERED: usize = 4;
 /// script's own load instrument called not oversubscribed. So the guest served four and the host
 /// collected three: one answer went somewhere the prober was not reading. Five local riscv boots did
 /// not reproduce it, which puts it around one in six on that runner class, and it is exactly the
-/// kind of intermittent red that notes/net.md records misleading three separate milestones. The
-/// mechanism is not yet identified and is tracked as its own work; this constant makes the gate
+/// kind of intermittent red that notes/net.md records misleading three separate milestones.
+///
+/// **The mechanism is still not identified**, and a second lane went looking on 2026-08-19 without
+/// finding it. What that lane did establish is worth having before you start: the failure is
+/// host-side by elimination (every guest path that serves fewer than two rounds is loud), the
+/// teardown race is ruled out by timing, and it does not reproduce on macOS because CI is
+/// `ubuntu-24.04-arm` and this is an emulator-timing failure. It also left the prober's transcript
+/// printing on green runs, so the next red one has a known-good shape to be read against. The whole
+/// finding is in notes/net.md; read it before touching this number. This constant makes the gate
 /// robust to losing one round without letting it claim less than it proves.
 const INBOUND_REQUIRED: usize = 3;
 
@@ -2139,16 +2146,23 @@ fn probe_inbound(
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    if std::env::var_os("NIFE_INBOUND_TRACE").is_some() {
-        eprintln!("inbound prober trace (port {port}): {}", trace.summary());
-    }
     if done >= INBOUND_REQUIRED {
+        // Printed on a GREEN run too, and that is the point: a red run is only diagnosable against
+        // a known-good shape, and the first two failures of this check had none to compare with.
+        // It is one line and at most four more.
+        eprintln!("inbound prober (port {port}): {}", trace.summary());
         Ok(())
     } else {
         Err(format!(
             "the guest served {done} of the {INBOUND_OFFERED} inbound connections it offers on the \
              port forwarded to 127.0.0.1:{port}, and {INBOUND_REQUIRED} is the floor that proves \
-             both listeners answered; last attempt: {last}\n  what the {} attempts did: {}",
+             both listeners answered; last attempt: {last}\n  what the {} attempts did: {}\n  \
+             READ THE TIMESTAMPS FIRST. The four rounds come from two listeners in two separate \
+             windows about eight seconds apart, two rounds in each, so the answers cluster. Two \
+             clusters and a missing round means the host lost one that the guest served, and the \
+             outcome beside it names how. ONE cluster means a whole listener never ran: look for \
+             `(no virtio-net device attached; skipping)` in the transcript, which is the only way \
+             either guest test passes without offering its two. See notes/net.md.",
             trace.attempts,
             trace.summary(),
         ))
@@ -2164,8 +2178,9 @@ fn probe_inbound(
 ///
 /// **Deliberately cheap and unconditional.** A boot makes a few hundred attempts at most, the
 /// counters are increments, and the per-connection lines are kept only for the ones that carried
-/// bytes or were held long enough to be interesting. `NIFE_INBOUND_TRACE=1` prints the summary on a
-/// passing run too, which is how you measure the shape of a green boot to compare a red one against.
+/// bytes or were held long enough to be interesting. The summary prints on a **passing** run too,
+/// which is the half that was missing: a red run is only readable against a known-good shape, and
+/// the two failures on record had none to compare with.
 #[derive(Default)]
 struct InboundTrace {
     attempts: usize,

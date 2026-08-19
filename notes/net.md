@@ -607,9 +607,12 @@ answer to a connection it did not make. It retries for the whole run, because no
 knows when the accept test starts; a connection that lands while another net test holds the NIC finds
 no listener and is reset by smoltcp, which costs nothing.
 
-It requires **two** completed connections, and the second is the load-bearing one. A listener that
-accepts once and goes deaf would pass a one-connection gate, and is exactly what a file server cannot
-use.
+It requires **three of the four** connections the guest offers, and the gap is deliberate: two
+listeners serve two rounds each, neither can supply more than two, so a host that collected three
+collected at least one from each. The second round of each pair is the load-bearing one. A listener
+that accepts once and goes deaf would pass a one-connection gate, and is exactly what a file server
+cannot use. (It required two, from one listener, until milestone 64 added the `std::net` half; see
+the BUGS section below for why the floor is three and not four.)
 
 **A host prober must never abandon a connection because it is slow**, which the first green run
 taught by failing in the most instructive way available: the guest passed and the prober reported
@@ -636,6 +639,85 @@ The **grant** half rides in the same exchange, ahead of the first connection: 80
 matter of authority, 7778 binds, and asking for 7778 again on a second socket id reports
 `LISTEN_IN_USE`. No frame is attached until all of that has passed, which is the two-object claim
 proved by construction rather than by assertion.
+
+### BUGS: the check fails intermittently, and the mechanism is still not identified
+
+**The state of it.** `inbound check (riscv64)` has gone red twice with nothing wrong that anybody
+could name, and the floor has already been lowered once (from all four to three) to absorb it. It
+must not be lowered again: at three it still proves each of the two listeners answered, and at two it
+proves nothing that one listener could not fake. A second lane went hunting on 2026-08-19 and did not
+find the mechanism either. What follows is what that lane ruled out and what it measured, so the next
+person starts where it stopped rather than where it started.
+
+**The two observations.** Run 32195227733's riscv64 leg served 3 of 4 with all 279 guest tests
+passing, on a runner the load instrument called not oversubscribed. On 2026-08-19, on pull request
+348, a leg served **2 of 4**, below the floor, with the load average at 1.05 on four cores. So
+contention is not the explanation, and the second one is not the same shape as the first.
+
+**Ruled out: the teardown race.** The prober's `report()` sets `stop` after the child exits, and a
+connection still waiting at that moment is lost. It cannot be this: the four rounds are answered
+around **30 s and 39 s into a boot that runs about 180 s**, so the last one has well over two minutes
+of slack before QEMU goes away. Measured over five boots, all four rounds every time.
+
+**Ruled out: the guest quietly serving fewer than four.** Every guest path that serves fewer than two
+rounds is loud. `socket_test_client::serve_one_inbound` calls `done(0xE060)`/`done(0xE070)` when
+`ACCEPT` returns `REP_ERR`, and `std_exerciser::serve_one_inbound` panics, because the overlay's
+`accept` turns the bounded wait's expiry into `WouldBlock` and the exerciser unwraps it. There is
+**exactly one silent path**, and it is worth knowing: `virtio_service::start_net_std` and its SMB
+sibling begin with `find_net_device()?`, so a leg that cannot find the NIC prints
+`(no virtio-net device attached; skipping)` and the test passes having offered nothing. That would
+produce **2 of 4 on the nose**, which is the second observation's number.
+
+**How to tell those apart in one look, which is what the prober now prints.** The four rounds come
+from two listeners in two windows about eight seconds apart, two rounds each, so the answers cluster.
+The prober records every connection's outcome and the timestamp of every answer, and prints the
+summary **on a green run too**, which is the half that was missing both times this went red: nobody
+had a known-good shape to read the red one against. A green riscv boot looks like this, and it is
+stable to within a few hundred milliseconds across five of them:
+
+```console
+inbound prober (port 55788): answered x4, closed-empty x1, connect-failed x2, reset x15
+    +30179 ms: answered after 29973 ms, 9 bytes
+    +30190 ms: answered after 11 ms, 9 bytes
+    +38671 ms: answered after 5634 ms, 9 bytes
+    +38674 ms: answered after 2 ms, 9 bytes
+```
+
+Two clusters with a round missing means the **host** lost one the guest served, and the outcome
+recorded beside it says how (`reset`, `closed-partial`, `stopped-while-waiting`, `wrong-bytes`). One
+cluster means a whole listener never ran, and the `skipping` line above is the thing to grep for.
+
+**What that transcript also shows, and it is the most alarming number in this section.** Look at the
+hold times. The connection that serves round one is opened **at boot** and answered **29973 ms
+later**; the one that serves round three is held 5.6 s. The prober offers the guest exactly one
+connection at a time and never abandons it, for the good reason two paragraphs down, so throughout
+those 30 seconds slirp is retransmitting a single SYN into a guest with no stack yet, **backing off
+as it goes**: roughly 1, 2, 4, 8, 16, 32 seconds. The guest's `ACCEPT` waits `service_until`'s
+**15 s** and then gives up.
+
+So the gate's first round lands because a SYN whose retransmit interval had grown to about 32 seconds
+happened to arrive about a second after the listener came up. **That is a one-second margin against a
+fifteen-second cliff**, on a timer nothing here controls, and it is the same shape on every ISA and
+every runner; what differs between this laptop and CI is only where in the backoff the guest's
+listener happens to appear. It has not been shown to be the mechanism of either observed failure. It
+is a measured hazard the design has, it is enough on its own to make the leg's behaviour depend on
+an emulator's retransmit timer, and it is where the next lane should look first.
+
+**The proposal that follows from it, not taken here because it could not be measured.** Offer the
+guest **several connections at once**, staggered, all held and all read. Every answer is still
+collected (nothing is abandoned, so the rule below is kept), but no window ever depends on a SYN
+timer that has been backing off for half a minute: there is always a recently-opened connection with
+a short one. The extras hit `net_stack`'s one-deep backlog and are reset, which costs nothing and the
+prober already handles. It was left undone deliberately: with no reproduction, a green run after the
+change is indistinguishable from a green run before it, and this check has been widened once already
+on evidence that thin.
+
+**Why it does not reproduce on a developer machine.** Five riscv boots on macOS on a quiet Apple
+Silicon laptop: 4 of 4 every time, with the timings above. The lane that built the check got 0 in 5
+as well. CI runs on `ubuntu-24.04-arm`, so the QEMU build, the libslirp version, the host TCP stack
+and the core count all differ, and this is an emulator-timing failure. **A reproduction attempt that
+is not on that runner class is not a reproduction attempt**; that is the single most useful thing to
+know before spending an afternoon on it.
 
 ### The std client is a server too: `TcpListener` on this contract (milestone 64)
 
