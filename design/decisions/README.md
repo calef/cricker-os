@@ -158,6 +158,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 97 | PROPOSED | [Six gates run on every pull request and none of them can stop one](97-advisory-checks.md) |
 | 98 | PROPOSED | [`OPENDIR` cannot be asked to attenuate, so a held directory probes for its own rights](98-opendir-cannot-attenuate.md) |
 | 99 | DECIDED | [Where Apple's metadata lands: stream or sidecar](99-apple-metadata-at-rest.md) |
+| 100 | DECIDED | [The terminal font is gohufont-14](100-the-terminal-font.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
