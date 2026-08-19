@@ -68,10 +68,115 @@ that fact away.
 
 ## 3. The prior art, read rather than recalled
 
-*Filled in by this lane against primary sources. Four claims were offered from memory when this fork
-was raised; each is marked below with whether it survived.*
+Four systems were offered from memory when this fork was raised, and marked as recalled. This lane
+opened the sources. **Three survived; the first did not, and the word it got wrong is the
+load-bearing one.** Everything quoted below was retrieved from the URL beside it.
 
-<!-- PRIOR-ART -->
+### L4 flexpages: the geometry is right and "names" is wrong
+
+The claim was that an fpage is *"a power-of-two-sized, power-of-two-aligned region named as one unit
+in map and grant operations, the canonical prior art for exactly this problem."*
+
+**The geometry is exactly right.** L4 X.2 (the *L4 eXperimental Kernel Reference Manual*, Rev 7,
+`l4ka.org/l4ka/l4-x2-r7.pdf`, §4.1):
+
+> Fpages (Flexpages) are regions of the virtual address space. [...] An fpage of size 2^s has a
+> 2^s-aligned base address b, i.e., b ≡ 0 (mod 2^s), where s≥10 for all architectures.
+
+and, which is the part that reads most like what we want, until its second half:
+
+> Mapped fpages are considered inseparable objects. That is, if an fpage is mapped, the mapper can
+> not later partially unmap the mapped page; the whole fpage must be unmapped in a single operation.
+> The mappee can, however, separate the fpage and map fpages (objects) of smaller size. Partially
+> unmapping an fpage might or might not work on some systems. The kernel will give no indication as
+> to whether such an operation succeeded or not.
+
+**That last sentence is L4 conceding exactly the invariant §101.5 is worried about**, and conceding
+it as undefined behaviour rather than as a rule. A receiver may split a run into smaller runs, and
+what a partial unmap then does is unspecified and unreported. Whatever this tree decides, it should
+not decide that.
+
+**But an fpage is not a capability, and classic L4 has none.** An fpage is a **two-word descriptor
+placed in message registers** and interpreted by the map/grant operation; the authority behind it is
+the mapper's *own existing mapping*, not a slot in a table. From the same manual (§5.2, MapItem):
+
+> An fpage (see page 40) or IO fpage that should be mapped is sent to the mappee as part of a
+> message. [...] The fpage is specified by a two-word descriptor:
+
+> The effective access rights for the newly mapped page are calculated by bitwise AND-ing the access
+> rights specified in the snd fpage and the access rights that the mapper itself has on that fpage.
+
+The lane's check on this: **the string "capabilit" does not occur anywhere in the L4 X.2 reference
+manual.** X.2 has no capability space at all; the address space *is* the protection domain. The V2
+manual (Au and Heiser, UNSW-CSE-TR-9801, `cgi.cse.unsw.edu.au/~reports/papers/9801.pdf`) says the
+same thing in its own words: *"Fpages are specified by the mapper and received by the mappee as part
+of an IPC message."* The fpage survives into L4Ka::Pistachio and OKL4 2.1.1 in that same role
+(OKL4's `fpage.h`: *"Flexpages are size-aligned memory objects and can cover multiple hardware
+pages"*).
+
+**So the fpage is prior art for a map operation over a run, not for a capability that names one.**
+That distinction is the entire fork: option C is an operation over a run and options A and D are
+capabilities that name one, and citing fpages as support for A or D would have been citing the wrong
+half.
+
+**The L4 family's actual answer arrives with its capabilities, and it is an indirection object.**
+Fiasco.OC and L4Re did add a capability table (`l4re.org/doc/l4re_concepts_naming.html`:
+*"Capabilities are stored in per-task capability tables (the object space)"*), and in that system
+memory is named by a **dataspace capability**, with the fpage demoted to the transfer descriptor:
+
+> A dataspace is an abstraction for any thing that is available via usual memory access
+> instructions. (`l4re.org/doc/classL4Re_1_1Dataspace.html`)
+
+One dataspace capability, arbitrary size, attached to a task's region map; `map()` then *"will
+attempt to map the largest possible flexpage that covers the given local address."* **That is option
+A's shape, arrived at by a system that started from option C's and found it insufficient once it had
+capabilities to name things with.** It is the single most relevant piece of prior art on this fork
+and it was not the one offered.
+
+One aside worth recording because it is a lever nobody listed. L4Re's fpage grew a type field
+(`L4_FPAGE_MEMORY`, `L4_FPAGE_IO`, `L4_FPAGE_OBJ`), and an `L4_FPAGE_OBJ` fpage describes a
+power-of-two-aligned range of **capability slots**. If the sixteen-slot cspace ever becomes the
+binding limit for a reason that is not this one, that is the prior art for addressing slots in runs.
+
+### seL4 frame sizes: correct, with one caveat about what the manual actually says
+
+The claim was that seL4 keeps one capability per frame, but frames come in sizes, so a 2 MiB
+framebuffer is one frame capability. **Correct**, verified against the *seL4 Reference Manual*
+version 16.0.0, 22 July 2026 (`sel4.systems/Info/Docs/seL4-manual-latest.pdf`).
+
+AArch64, §7.1.2.2: `seL4_PageBits` 4 KiB at mapping level 3, `seL4_LargePageBits` 2 MiB at level 2,
+`seL4_HugePageBits` 1 GiB at level 1. The manual's own gloss on that column is the block-descriptor
+confirmation: the mapping level *"refers to the level of the paging structure at which this page must
+be mapped."* The object types are `seL4_ARM_SmallPageObject`, `seL4_ARM_LargePageObject`
+(`libsel4/arch_include/arm/sel4/arch/objecttype.h`) and `seL4_ARM_HugePageObject`
+(`libsel4/sel4_arch_include/aarch64/sel4/sel4_arch/objecttype.h`).
+
+**And the size is chosen by the object type, not by a size argument**, which is a shape decision
+worth copying or refusing deliberately. §2.4.2:
+
+> For all other object types, the size is fixed, and the size_bits argument to
+> seL4_Untyped_Retype() is ignored.
+
+Only CNode, SchedContext and Untyped are variable-sized. So seL4 spells a large frame as an
+**order**, and there is nothing between 4 KiB and 2 MiB.
+
+**The riscv64 parity is exact**, which matters for rule 5: §7.1.2.6 gives 4 KiB at level 2, 2 MiB at
+level 1, 1 GiB at level 0, as `seL4_RISCV_4K_Page`, `seL4_RISCV_Mega_Page`, `seL4_RISCV_Giga_Page`.
+(The naming is inconsistent between the two architectures, `*PageObject` against `*_Page`. If we take
+the shape, we should not take that.)
+
+**Two corrections to what was assumed alongside the claim.** The manual states the **virtual**
+address alignment explicitly (§7.1.2: *"The virtual address for a Page mapping must be aligned to the
+size of the Page"*, and `seL4_ARM_Page_Map` returns `seL4_AlignmentError` for it), and this lane
+found **no sentence stating a physical alignment requirement**; that follows from retype allocating
+size-aligned within an untyped rather than from a rule anyone wrote down, so the manual should not be
+cited for it. And the AArch64 page-size table is **not** qualified by hypervisor configuration: the
+guess that `arm_hyp` or a 40-bit PA changes the frame sizes is not supported by this revision.
+
+Note also what seL4 does *not* do, because §101.5's overlap argument depends on it: it has no
+`Frame::SPLIT`. A large frame is retyped from untyped, the untyped is spent, and the same memory
+cannot also be a small frame. That is what keeps its frame capabilities equal-or-disjoint, and it is
+the invariant we would be putting at risk.
 
 ---
 
