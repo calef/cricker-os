@@ -66,6 +66,17 @@ doing, and it is doing it beautifully, which is exactly what stops anyone from f
 three instances are all things this tree has written about at length and not changed: `AGENTS.md`'s
 misleading name, this page's fourth rewrite, and the eight-place program problem whose one-place fix
 is handoff 4 below.
+**The harness.** For the first time that claim costs one command rather than an afternoon.
+`script/stranger-test` landed 2026-08-18: a lane that wants to run the test cuts nothing by hand, so
+"a lane could start today" is now true in the sense the token means. What the milestone still owes is
+a run conducted **through** the harness and recorded in notes/stranger-test.md, plus whatever that run
+finds. No run has used it, so this block does not get to count the instrument as the measurement.
+
+**What blocked this milestone was never the worklist.** Every run produced a fixable list, three of
+the four had their lists fixed, and the status did not move, because the milestone's own sentence is
+*fix what the run finds, then run it again* and "again" had no mechanism. Four lanes each rebuilt
+the harness by hand and **each got the isolation wrong somewhere the others had not**, which is the
+tell CLAUDE.md names for being on too low a rung: a fact that exists only in an operator's memory.
 
 **Run 3 closed the isolation question, which was the only thing making run 2 unscorable.** Run 2's
 strangers were subagents of a maintainer session whose working directory was the repository, so
@@ -297,6 +308,39 @@ declined to build.
 5. **Run 5 should be told it is being measured, rather than hidden from it.** The tree's own record
    now leaks that fact within half an hour and cannot stop; pretending otherwise buys nothing and
    costs the disclosure. What still must be withheld is the answer key, which has held four times.
+## The recurrence lane, 2026-08-18
+
+**Status stays `PARTIAL`, and the gate is no longer `NONE`.** This lane built `script/stranger-test`
+and ran nothing through it, on purpose: conducting run 5 in the lane that wrote the instrument would
+make the harness's author the harness's only evidence.
+
+**What it holds.** The clone goes inside the stranger's working directory rather than being it,
+which is the isolation run 3 established and the only reason the mental-model rows are scorable. The
+answer key is withheld the way runs 2 through 4 withheld it, extended to cover markdown links to the
+note, because `script/lint` fails on a relative link that does not resolve and a red gate the
+harness caused is a worse contamination than the edit. Logs go in a sibling directory with no run
+number in any path element. `pkill` and `killall` are shadowed to this clone's QEMU, which run 4 did
+by hand and recommended keeping. The isolation is probed before the run and the run stops if the
+probe does not answer NONE. The stranger is told it is being measured, which is run 4's handoff 5
+acted on. The account-wide `nife-dev` link is recorded before the run and restored after, since a
+stranger's `script/test` takes it and its tree is disposable in a way a lane's is not.
+
+**Three defects in the harness were found by testing it rather than by reading it**, which is the
+argument for `--smoke` being part of the deliverable rather than scaffolding. The first clone leaked
+this project's live branch names, including this lane's, to `git branch -a`. The reflog was cleared
+before the withholding amend instead of after, so it carried a line reading `commit (amend)` beside
+the tip's subject. And the rubric extractor matched every `| M<n> |` row in the note, which handed a
+stranger runs 3 and 4's *scores* as part of its own question list; the smoke run's reply quoted them
+back, which is how it was caught.
+
+**What it does not do**, in its own `BUGS` section where a reader meets it: it cannot make the
+operator un-read `AGENTS.md`; it cannot stop the tree leaking that a test exists, and it adds one
+more leak by being a `script/` entry point; it does not schedule itself, which is a cadence decision
+and calef's; and the withheld note is still one `git show HEAD~1:<path>` away, which is measured
+rather than closed, since the summary reports whether the transcript ever mentions it.
+
+**The name `stranger-test` is provisional**, as `script/` names are calef's. It takes its noun from
+the note that named the instrument first, so the command and the record share a word.
 
 ## Scope note
 

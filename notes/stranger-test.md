@@ -32,6 +32,45 @@ to any question it asks.
    than one that is silent.
 5. **No help mid-run.** If it is stuck, that is the measurement finishing, not a prompt to intervene.
 
+## The harness, built 2026-08-18
+
+`script/stranger-test` runs the protocol above. Before it existed, four runs each rebuilt it by
+hand, and **each got the isolation wrong somewhere the others had not**: run 2's stranger was a
+subagent and had `AGENTS.md` in context at turn zero, run 3's log files sat in the stranger's own
+working directory under names that told it which run it was, and run 4's `pkill` shim was right
+because somebody remembered rather than because anything held it. That is rung four of CLAUDE.md's
+ladder holding up the milestone that exists to move things off rung four, and the `BUGS` entry
+below has said so since run 1.
+
+    script/stranger-test                       run against HEAD
+    script/stranger-test --commit origin/main  run against a named commit
+    script/stranger-test --prepare-only        build the isolated tree, probe it, and stop
+    script/stranger-test --smoke               exercise the whole pipeline; not a measurement
+
+What it now holds, each of which a person previously had to remember: the clone goes **inside** the
+stranger's working directory rather than being it; the answer key is this note, its `notes/README.md`
+entry and any markdown link to it, removed with the deletion amended into the tip; every artifact
+the harness writes goes in a sibling directory with no run number in any path element; `pkill` and
+`killall` are shadowed so a stranger following `README.md`'s own quit instruction cannot kill
+another lane's emulator; the isolation is **probed** before the run rather than assumed, and the run
+stops if the probe does not answer NONE; the stranger is told it is being measured, which is run 4's
+finding acted on rather than a softening; and the account-wide `nife-dev` link goes back where it
+was found, because a stranger's `script/test` takes it like any other lane and unlike a lane its
+tree is disposable.
+
+**The rubric is read out of this file rather than copied into the script**, so the table below stays
+the only rubric and an amendment to it is asked at the next debrief without anyone editing the
+harness. Only the question column ever leaves this file. The first draft of that extraction matched
+every `| M<n> |` row in the note, which swept the *scoring* tables of runs 3 and 4 into the
+stranger's own question list; the `--smoke` run caught it, in the reply, and that is the whole
+argument for `--smoke` existing.
+
+**What the harness cannot do is in its own `BUGS` section**, where a reader meets the tool rather
+than here. Two of those belong in this note as well, because they bound what any future run can
+claim: it cannot make the operator un-read `AGENTS.md`, and it cannot stop the tree leaking that a
+test exists, which is now a `script/` entry point and a row in `notes/scripts.md`'s table on top of
+everything that leaked before. The response to the second is disclosure, not concealment.
+
 ### What run 2 withholds, and what it cannot, decided 2026-08-16 before the run
 
 Run 1's first `BUGS` entry said run 2 must not have this note in the tree it is given. Trying to
@@ -735,6 +774,14 @@ the stranger's answers are recorded as it gave them.
   possible and is not built. **Run 3 makes it cheaper rather than automatic**: the harness is a
   clone, one `sed`, and one `claude --safe-mode` invocation from the clone's parent, which is a
   script somebody could write in an afternoon and nobody has. **Run 4 ran the same harness by hand again and did not write it either**, which is now four runs of a rung-four mechanism inside the milestone that exists to move things off rung four. This is the reason 117 does not move.
+  script somebody could write in an afternoon and nobody has.
+
+  **Written 2026-08-18 as `script/stranger-test`, and this entry does not close.** What changed is
+  the price of a run, from an afternoon of reconstruction to one command, and the four isolation
+  failures are now the script's problem rather than the operator's memory. What did not change is
+  the sentence this entry opens with: nothing schedules it, and nothing goes red when it has not
+  been run in a month. A cadence is a decision about how often the answer is worth its cost, which
+  is calef's rather than a lane's, and milestone 129 is the machinery it would use.
 - **The build half cannot be measured from a warm machine**, and every contributor's is warm. The
   first run should be from a container with nothing installed, or the B-rows measure nothing. Run 2
   came closest and still fell short: the maintainer's own `cargo --version` inside the repository had
