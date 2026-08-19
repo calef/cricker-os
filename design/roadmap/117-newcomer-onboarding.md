@@ -9,17 +9,22 @@ been seen twice: `CONTRIBUTING.md` at the repository root, and a reading order a
 `README.md`, both still **provisional**, because a reading order is a claim about what matters and
 those are calef's.
 
-**Gate: NONE.** What that costs is now visible rather than inferred. Run 4 said the blocker was
-the missing recurrence mechanism rather than the worklist. That mechanism was built the same day and
-**run 5 is the evidence it works**: one command, no isolation failure of the four kinds each earlier
-run hit, the account-wide toolchain link restored, and a real measurement rather than a test of the
-script. **The status still does not move**, and the reason is no longer inherited. Two things are
-outstanding and only one of them is a lane's: the milestone's own sentence is *fix what the run
-finds, then run it again*, and run 5's findings are recorded rather than fixed; and nothing
-schedules a run, which is a cadence decision about how often the answer is worth `$10.56` and half
-an hour, and cadence decisions are calef's. **A gate would be the thing that moves this**, and
-writing one is not a lane's call either, because it would be a gate on somebody's attention rather
-than on the tree.
+**Gate: NONE.** Run 4 said the blocker was the missing recurrence mechanism rather than the
+worklist; that mechanism was built the same day and **run 5 is the evidence it works**. Run 5 then
+said the only remaining thing was a cadence, and **calef decided it on 2026-08-18: monthly.**
+
+**So of the two outstanding things this block named, the second is closed and the first is not.**
+Nothing scheduled a run; something does now (`## The cadence lane` below). What remains is the
+milestone's own sentence, *fix what the run finds, then run it again*: run 5's seven handoffs are
+recorded rather than fixed, and B4 failed with eight entries, the most any run has produced. That is
+ordinary lane work with no decision owed, which is why the gate is `NONE` and why the status is
+`PARTIAL` rather than `BUILT`.
+
+**This block previously said "a gate would be the thing that moves this, and writing one is not a
+lane's call either, because it would be a gate on somebody's attention rather than on the tree."
+The first half was right and the second was overtaken.** A gate on somebody's attention is exactly
+what a cadence is, and deciding how much attention the answer is worth was calef's call rather than
+a reason no gate could exist. The sentence stayed true for four days and was answered in one.
 
 **Run 4 scored eight of eight on the mental model and passed B1 for the first time**, which is the
 two provisional documents working. `CONTRIBUTING.md` is directly responsible for two rows: the
@@ -420,10 +425,68 @@ with a falsifiable instance attached.
 6. **Handoff 4 from runs 3 and 4 is unchanged and is now nominated by three successive strangers**:
    adding a program should not need eight hand-maintained lists. Run 5 adds that the eighth is not
    even a constant, since it depends on the manifest shape.
-7. **The cadence for running this is calef's and nothing else can move the status.** The mechanism
-   is built and proven. A run costs about `$10.56` and half an hour, produces about seven findings,
-   and its value decays as the tree changes. Milestone 129 is the machinery. **This is the decision
-   the milestone is waiting on**, and it is one sentence rather than a lane.
+7. **The cadence for running this is calef's and nothing else can move the status.**
+   ***Answered 2026-08-18: monthly, and built the same day.*** Two things in this handoff were
+   wrong and are worth correcting rather than deleting. Milestone 129 is **not** the machinery: it
+   is nife's own cron, and this run happens on a host with a `claude` CLI and two QEMUs, so the
+   machinery is the audit cadence's, one directory over. And the `$10.56` is the CLI's
+   `total_cost_usd` for the **stranger process alone**; it excludes the lane that pre-registers,
+   watches, debriefs, scores and writes up the run, which is the larger half. Quoting it without
+   that caveat under-prices a run by more than half, and this block had already done so twice.
+
+
+## The cadence lane, 2026-08-18
+
+**Status stays `PARTIAL`, and for the first time the reason is not "nothing schedules a run".**
+calef decided the cadence (monthly) and this lane made it mechanical, in the shape §74 and
+`script/audits` already established for security audits rather than in a second one invented for the
+same job.
+
+**What it is.** `script/stranger-test --due` exits 1 when a run is owed and prints the command to
+run and what a run costs. `.github/workflows/stranger-cadence.yml` asks it at 08:00 UTC on Mondays,
+in its own workflow rather than in `script/lint`, because a run coming due is information about the
+tree and not a defect in whichever commit happened to be pushed that week. `script/stranger-test
+--check` is the structural half and **is** in `script/lint`: the cadence sentence appears exactly
+once, the run headings are numbered from 1 without a gap, and their dates are in order. A malformed
+record is a defect in the commit that malformed it, and it does not fail loudly, it silently moves
+the date the tripwire measures from.
+
+**Where the numbers come from, which is the part worth copying.** Both live in
+notes/stranger-test.md and nowhere else: the interval is the sentence a reader meets
+(`**A run is due every 30 days.**`, matched literally) and the date is the newest
+`### Run <n>, <date>:` heading, which every run already writes because that is how the note records
+a run. Nothing is maintained for the tripwire's benefit, so the schedule and the record cannot
+disagree. A hand-maintained date in a workflow or a script would have been a fact kept in two
+places, which is the failure this tree has watched often enough to have named.
+
+**Both cadence modes are handled above every line that clones or spawns anything**, which is a
+guard rather than tidiness. This script's *default* mode spends money, unlike `script/audits`, whose
+every mode is a report. So `--due` needs no `claude`, no clone and no toolchain (the weekly job runs
+it in seconds on a bare checkout), and a workflow that loses its flag cannot fall through into a
+run.
+
+**The honest limit, stated in the script, the workflow, the note and here.** This is
+**notification, never execution**. A run spawns a `claude` process, spends real budget, needs a
+machine with the pinned toolchain and both QEMUs, and ends in a debrief a person scores against the
+rubric. Nothing in CI can do any of that. **Red means run the test.**
+
+**Watched firing and watched staying quiet**, because a mechanism nobody has seen fire is not a
+mechanism. Against the real record (run 5, 2026-08-18) it exits 0 and says "not due for another 30
+days". Against a copy of the note with the run headings shifted back it exits 1 at 30 and 31 days
+and 0 at 28 and 29, so the boundary is where the sentence says it is. Six malformations of the
+record were fed to `--check` and each was rejected with the reason: the cadence sentence deleted,
+the cadence sentence written twice, a run number skipped, the runs out of date order, no run
+heading at all, and `2026-02-31`.
+
+**What this does not do**, and it is the residual every record-derived signal has: the tripwire
+believes the headings. A run conducted and never written up leaves the check red, which is the right
+direction to be wrong in since the note is the only place a run exists. A heading nobody earned
+turns it green, which is the same hole `script/audits` names in the same words: closing a cadence by
+editing the record instead of doing the work is available, cheap, and the one thing that makes the
+whole mechanism a lie.
+
+**What would make this `BUILT`.** Run 5's handoffs landed, and run 6 conducted under the cadence
+rather than because somebody thought of it. The second is the one that has never happened.
 
 ## Scope note
 
