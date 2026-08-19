@@ -725,6 +725,85 @@ and the core count all differ, and this is an emulator-timing failure. **A repro
 is not on that runner class is not a reproduction attempt**; that is the single most useful thing to
 know before spending an afternoon on it.
 
+**The runner class was brought to the laptop on 2026-08-19, and the result is one notch short of a
+reproduction.** `script/runner-container` boots the leg inside an ubuntu 24.04 aarch64 container on
+the developer machine, with `.qemu-version`'s QEMU 11.0.2 built by `script/ci-qemu` (the workflow's
+own script, not a package), four processors by affinity, and no induced load. Fifty boots:
+
+- **The gate never went red. 50 of 50 green**, which is a real if narrow statement. At the roughly
+  one-in-six rate this failure is estimated to have on CI, fifty clean boots have probability
+  1.1e-4, so whatever the container is doing, it is not doing that. Read as a bound rather than as a
+  refutation: 0 of 50 puts the 95% one-sided ceiling on the per-boot red rate at **5.8%**, so a
+  one-in-twenty flake would have sat inside this run unnoticed.
+- **The loss itself reproduced once**, and that is the finding. Run 45 of 50 collected **3 of 4**,
+  which is the first CI observation's shape exactly, on a boot whose 279 guest tests all passed. It
+  did not turn the leg red only because the floor is three. One in fifty is 2%, 95% CI
+  **[0.05%, 10.65%]**, which overlaps the CI estimate at its top end and is a point estimate to
+  distrust: it rests on one event.
+
+The trace, beside a green one from the same fifty for comparison:
+
+```console
+inbound prober (port 34033): answered x3, closed-empty x2, connect-failed x1, read-failed x1, reset x4
+    +15119 ms: read-failed after 15019 ms, 0 bytes
+    +21097 ms: answered after 5877 ms, 9 bytes
+    +27105 ms: answered after 5579 ms, 9 bytes
+    +27108 ms: answered after 3 ms, 9 bytes
+
+inbound prober (port 38119): answered x4, closed-empty x1, connect-failed x1, reset x3
+    +18071 ms: answered after 17969 ms, 9 bytes
+    +18082 ms: answered after 11 ms, 9 bytes
+    +24066 ms: answered after 5527 ms, 9 bytes
+    +24070 ms: answered after 3 ms, 9 bytes
+```
+
+**Read it the way the failure text says to.** Two clusters, and the first one has one answer where it
+should have two, so the host lost a round the guest served. The outcome beside it names how, and it
+is not a timeout: `read-failed` is `probe_inbound`'s catch-all `_ =>` arm, reached only by an error
+that is not `WouldBlock`, `TimedOut`, `ConnectionReset`, `ConnectionAborted` or `BrokenPipe`. **The
+never-abandon rule did not protect this connection, because a hard error is exactly the case that
+rule allows to give up on**, and the paragraph above about abandoned requests still being executed
+then applies in full: the guest answered into a socket whose host end had gone.
+
+**The connection died at 15019 ms**, held from 100 ms into the boot. That number is not obviously a
+coincidence next to `service_until`'s 15 s, and pinning it is the next lane's first job.
+
+**What blocks pinning it today, and it is a two-line fix somebody should make before the next
+hunt.** The errno was captured. `probe_inbound` formats it into `last`, and `last` is printed only
+when the check FAILS. This run passed, so the one fact that would have named the mechanism was
+computed and thrown away. `InboundTrace` should keep the error string on the event rather than only
+the label. Not done here on purpose: this lane was measuring, and changing the prober mid-measurement
+would have made the fifty boots incomparable with each other.
+
+**The timing is bimodal, deterministically so, and nobody had looked before.** Across the fifty
+boots the first round is answered at either **17.95-18.04 s (24 boots)** or **29.97-30.08 s (25
+boots)**, with nothing in between and under 100 ms of spread inside each mode; run 45 is the only
+outlier. The whole boot follows it, taking ~49 s or ~62 s. Twelve seconds apart is a retransmit
+ladder, and the near-even split says the guest's listener comes up **right on top of one of its
+rungs** and falls to one side or the other essentially at random. That is the previous lane's
+one-second margin, measured from the other end and confirmed: the leg's behaviour is decided by
+which rung of an emulator's SYN backoff the listener happens to appear next to. It also means the
+laptop's steady 29973 ms is one of two modes rather than the number, so a fix should be judged
+against both.
+
+**What the container matches**: the distribution and release, hence libslirp and the scheduler tick;
+the emulator, from the same `script/ci-qemu` and the same pin; the provisioning, from
+`script/bootstrap`; and the core count, narrowed by affinity rather than by a CFS quota, which is the
+difference between four processors and four processors' worth of throttled time on eight.
+
+**What it does not match, and any one of these could be where the missing rate lives**: the kernel is
+the podman machine's Fedora CoreOS, not the runner's Ubuntu one; the container is nested inside a VM
+on a laptop rather than being the VM; memory is the podman machine's rather than the runner's 16 GiB;
+and the image is `ubuntu:24.04` rather than a `runner-images` build. A reproduction here would have
+been strong evidence; a clean run is weak evidence, and the honest reading of 50 green is that this
+narrows the search rather than closing it.
+
+**Where the next person should start.** Keep the errno, then re-run this. If the rate stays near 2%,
+the remaining gap to CI is in the four unmatched things above and the cheapest of them to test is
+memory. The proposal in the paragraph below (several staggered connections at once) is now measurable
+for the first time: run the fifty boots before and after it and compare the count of lost rounds,
+which is a number this instrument produces on green runs and the old evidence never had.
+
 ### The std client is a server too: `TcpListener` on this contract (milestone 64)
 
 Everything above is `socket_test_client`, which is hand-written and speaks the wire directly. The

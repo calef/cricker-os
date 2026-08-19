@@ -1,0 +1,235 @@
+#!/bin/sh
+#
+# script/runner-container: boot the suite over and over inside an approximation of the CI runner,
+# because the failure being hunted has never once appeared outside one.
+#
+#   script/runner-container                       50 riscv64 boots, the default hunt
+#   script/runner-container -n 5                  5 boots
+#   script/runner-container -n 20 --arch aarch64  a different leg
+#   script/runner-container --build-only          build the image and warm the cache, run nothing
+#   script/runner-container --shell               a shell in the container, cache warm
+#   script/runner-container --help
+#
+# **What it is for.** `inbound check (riscv64)` has gone red on CI three times with nothing anybody
+# could name, at roughly one boot in six, and fifteen boots across three developer lanes on macOS
+# have produced zero failures. notes/net.md's inbound BUGS section draws the conclusion: this is an
+# emulator-timing failure, CI is `ubuntu-24.04-arm`, and **a reproduction attempt that is not on that
+# runner class is not a reproduction attempt.** So the instrument is not another loop on the laptop.
+# It is the runner class, brought to the laptop.
+#
+# **Why podman and not a second machine.** `ubuntu-24.04-arm` is aarch64 and so is this laptop, so
+# the container runs NATIVE: no second layer of emulation between the host and the QEMU under
+# examination, which for a timing measurement is the whole reason a container is admissible here at
+# all. On an x86 developer machine this script would be measuring qemu-user and would be worthless.
+#
+# **What it matches, and this list is the argument that the run means anything:**
+#
+#   - the distribution and release, ubuntu 24.04 aarch64, hence its libc, its libslirp and its
+#     scheduler tick;
+#   - the emulator, built from `.qemu-version`'s pin by `script/ci-qemu`, THE SAME SCRIPT the
+#     workflow runs, into the same `~/.cache/nife-qemu` prefix an actions/cache would restore;
+#   - the provisioning, `script/bootstrap`, again the workflow's own;
+#   - the core count, narrowed by AFFINITY and not by a quota, which is the difference that decides
+#     whether this measures anything. `podman run --cpus 4` is a CFS quota: `nproc` still reads the
+#     whole machine, TCG still spreads its threads across every core, and they are merely throttled,
+#     which is not the runner's shape at all. What is wanted is `sched_getaffinity` returning four,
+#     so the guest is scheduled the way the runner's is. CI's own load diagnostic reports 4.
+#
+#     `--cpuset-cpus` would say exactly that and **does not work here**: rootless podman on this
+#     machine has no `cpuset` controller delegated to the user slice, and the container fails to
+#     start with "controller `cpuset` is not available". Enabling it means a `Delegate=` drop-in for
+#     `user@.service` inside the podman VM, which is a change to somebody's machine for a hunt
+#     script's convenience. `taskset` sets the identical mask from inside, needs no privilege, and
+#     is inherited by every process the run forks, QEMU included. The run prints `nproc` so the
+#     narrowing is visible in the log rather than assumed.
+#
+# **What it does NOT match, stated here rather than discovered later**, because the bar is "close
+# enough that a one-in-six failure appears" and not "identical":
+#
+#   - **the kernel.** Podman on macOS is a Linux VM (applehv), so the container shares THAT kernel,
+#     not GitHub's. Its version, its scheduler and its virtio timer sources are the VM's.
+#   - **nested virtualisation.** The runner is a VM on GitHub's fabric; this is a container in a VM
+#     on a laptop that is also running a browser. Scheduling jitter, which is the family this bug is
+#     in, is exactly what differs.
+#   - **the host TCP stack.** The connections the prober makes are host-loopback, and they are
+#     terminated by the podman VM's Linux stack rather than by macOS's, which is a match; but the
+#     path from the `podman run` process to it is not the runner's.
+#   - **memory.** A GitHub `ubuntu-24.04-arm` runner has 16 GiB. The podman VM ships with 4 and this
+#     script does not change it, because a machine's shape is the operator's; `--build-only` will
+#     tell you if yours is too small to build QEMU.
+#   - **the image.** ubuntu:24.04, not a `runner-images` build. See the Containerfile.
+#
+# So a reproduction here is strong evidence and a clean run is weak evidence. That asymmetry is why
+# the failure to reproduce still has to be reported as a result: it says the failure depends on
+# something in the list above, which narrows where the next person looks.
+#
+# **Nothing here writes into the repository.** The tree is bind-mounted READ-ONLY and cloned inside
+# the container; the clone, the build products and the toolchains live in a named podman volume.
+# A lane's worktree cannot be touched by a run, and neither can the account-global `nife-dev`
+# toolchain link, because the container has a `$HOME` of its own. That last one is not tidiness: on
+# this project `script/test` takes that link account-wide, and a fifty-boot loop that held it for
+# three hours would break every other lane on the machine.
+#
+# **QEMU cannot leak out of a run.** The emulators live in the container's PID namespace inside the
+# podman VM, so the host's `pgrep qemu` never sees them and `--rm` on a container that exits takes
+# every one of them with it. That is a genuinely better containment than the bounded-run discipline
+# the rest of this tree needs, and it is worth knowing before someone adds a `qemu-bounded.sh` here.
+#
+# Name: provisional, minted by the `ci/runner-container` lane on 2026-08-19 and not yet put to
+# calef. It names what the thing is (a container that stands in for the CI runner) rather than what
+# it was built for, on `repeat-under-load`'s reasoning: the instrument outlives this hunt, and a
+# name like `flake-hunt` would be naming a hope. Hyphenated per milestone 63's rule for this
+# directory. Considered and not taken: `ci-container` (reads as "the container CI uses", which it is
+# not: CI has no container), and `runner-repro` (names an outcome the script cannot promise, which
+# is the same objection `flake-hunt` failed on).
+
+set -e
+cd "$(dirname "$0")/.."
+
+IMAGE=nife-runner-container
+VOLUME=nife-runner-container-cache
+CPUSET=0-3
+RUNS=50
+LEG=riscv64
+MODE=hunt
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n) RUNS="$2"; shift 2 ;;
+        --arch) LEG="$2"; shift 2 ;;
+        --build-only) MODE=build; shift ;;
+        --shell) MODE=shell; shift ;;
+        --inside) MODE=inside; shift ;;
+        -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+        *)
+            echo "runner-container: unknown option '$1'" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------------------------
+# The half that runs INSIDE the container. It is in this file rather than in a second one so that
+# `script/lint` shellchecks it, and so that a reader sees the whole experiment in one place; the
+# container reaches it through the read-only mount of the tree.
+# ---------------------------------------------------------------------------------------------
+if [ "$MODE" = inside ]; then
+    ref="${NIFE_RUNNER_REF:?the host half sets this}"
+
+    # A fresh clone every time, so no run can be contaminated by the last one's working tree, with
+    # `target/` symlinked onto the volume so the several minutes of cargo build are paid once. The
+    # tree's own code reaches build products through the relative path `target/`, so a symlink is
+    # the one way to persist them without teaching xtask about a second location.
+    echo "==> cloning $ref from the read-only mount"
+    rm -rf /work
+    git clone --quiet --no-hardlinks --branch "$ref" /src /work
+    mkdir -p /cache/target
+    ln -s /cache/target /work/target
+    cd /work
+    echo "==> under test: $(git rev-parse --short HEAD) on $ref"
+
+    # The workflow's own two steps, in the workflow's own order. `ci-qemu` is idempotent and exits in
+    # milliseconds once the volume holds the pinned build, which is what makes the second run of this
+    # script cheap.
+    script/ci-qemu
+    script/bootstrap
+
+    echo "==> $(nproc) processors visible, $(qemu-system-riscv64 --version | head -1)"
+
+    # `-s 0`: NO induced load. That is deliberate and it is the opposite of what
+    # `script/repeat-under-load` is normally for. Both CI observations of this failure had a load
+    # average around 1 on four cores, so contention is already ruled out as the explanation; adding
+    # spinners would be manufacturing a different bug. What is wanted is fifty quiet boots on the
+    # runner's shape, which is the one variable that has never been tried.
+    script/repeat-under-load -n "$NIFE_RUNNER_RUNS" -s 0 -- --arch "$NIFE_RUNNER_LEG" || true
+
+    # The logs are the deliverable, so they leave the container even if the loop died partway.
+    mkdir -p /logs
+    cp -R target/acceptance/. /logs/ 2>/dev/null || true
+    echo "==> logs copied to the host"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------------------------
+# The half that runs on the host.
+# ---------------------------------------------------------------------------------------------
+command -v podman >/dev/null 2>&1 || {
+    echo "runner-container: podman is not on PATH; see the Containerfile for what this needs." >&2
+    exit 1
+}
+
+# The clone source is the MAIN checkout, not this worktree: a worktree's `.git` is a file pointing
+# into the shared object store, so a container that mounted only the worktree could not clone from
+# it. `--git-common-dir` is the one command that answers this correctly from either.
+common="$(git rev-parse --git-common-dir)"
+case "$common" in
+    /*) ;;
+    *) common="$(pwd)/$common" ;;
+esac
+src="$(dirname "$common")"
+ref="$(git rev-parse --abbrev-ref HEAD)"
+
+logs="$(pwd)/target/runner-container-logs"
+mkdir -p "$logs"
+
+echo "==> building $IMAGE"
+podman build -t "$IMAGE" -f .github/runner-container/Containerfile .github/runner-container
+
+podman volume create "$VOLUME" >/dev/null 2>&1 || true
+
+# The mounts, and each one is a decision:
+#   /src      read-only, and it is the whole point of the isolation: the run cannot write into the
+#             repository or into any lane's worktree, which is the hazard a fifty-boot loop
+#             otherwise carries. `:ro` is checked by the kernel, not by the script's intentions.
+#   /harness  read-only, THIS worktree, and it exists for one reason: /src is a repository whose
+#             working tree is checked out at whatever branch its owner is on, so the copy of this
+#             script inside it is whatever that branch has, which on `main` is nothing at all. The
+#             container has to be handed the harness separately from the tree it clones.
+#   /cache    the volume: the built QEMU, the toolchains, the cargo registry, the clone's `target/`.
+#             **`:z` on this one and on no other**, and it is not decoration. The podman machine is
+#             Fedora CoreOS with SELinux enforcing, and every container gets its own MCS category,
+#             so files a container writes into an unlabelled volume are readable by that container
+#             and by nothing afterwards. The symptom is worth recognising because it does not say
+#             SELinux anywhere: the SECOND run rebuilt QEMU from source, then died with
+#             `PermissionError` unlinking a file it owns, and `qemu-system-riscv64 --version` in a
+#             fresh container answered `Permission denied` for a binary that `ls` shows as `-rwxr-xr-x`
+#             and root is looking at. `:z` relabels the volume shared, once, which is exactly right
+#             for a cache that exists to be reused.
+#   /logs     the only writable path that leads back to the host, and it is under `target/`, which
+#             is already ignored.
+# The two host binds are deliberately left unlabelled. They come through virtiofs from macOS, which
+# carries no labels to honour, and relabelling somebody's repository is not a hunt script's business.
+# `$TTY` is set only by `--shell`, and deliberately not by the hunt: a TTY makes podman line-edit
+# the stream, and the fifty-boot log is read by grep afterwards rather than by a person.
+TTY=
+run_container() {
+    runs="$1"
+    shift
+    podman run --rm -i $TTY \
+        -v "$src:/src:ro" \
+        -v "$(pwd):/harness:ro" \
+        -v "$VOLUME:/cache:z" \
+        -v "$logs:/logs" \
+        -e NIFE_RUNNER_REF="$ref" \
+        -e NIFE_RUNNER_RUNS="$runs" \
+        -e NIFE_RUNNER_LEG="$LEG" \
+        "$IMAGE" taskset -c "$CPUSET" "$@"
+}
+
+case "$MODE" in
+    build)
+        # Zero boots. `script/repeat-under-load -n 0` runs nothing, so the same one code path
+        # provisions the volume and the hunt uses it; a second copy of the clone-and-bootstrap
+        # sequence here would be a thing to keep in agreement for no gain.
+        echo "==> warming the cache (QEMU from source on a cold volume; ~15 minutes)"
+        run_container 0 /harness/script/runner-container --inside
+        ;;
+    shell)
+        TTY=-t
+        run_container 0 /bin/bash
+        ;;
+    hunt)
+        echo "==> $RUNS boots of the $LEG leg on $CPUSET, logs in $logs"
+        run_container "$RUNS" /harness/script/runner-container --inside
+        ;;
+esac
