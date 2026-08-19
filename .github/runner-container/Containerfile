@@ -1,0 +1,60 @@
+# The CI runner, approximated closely enough to hunt an emulator-timing flake in it.
+#
+# **Why this exists.** `inbound check (riscv64)` fails about one boot in six on CI and has never
+# failed once on a developer machine: fifteen local boots across three lanes, zero failures. The
+# difference that matters is not the tree, it is the host. CI is `ubuntu-24.04-arm`; the developer
+# machine is macOS on Apple Silicon, with a different QEMU build, a different libslirp, a different
+# host TCP stack and twice the cores. notes/net.md's inbound BUGS section states the consequence
+# outright: a reproduction attempt that is not on that runner class is not a reproduction attempt.
+# This is the runner class, on the developer's own machine.
+#
+# **What it deliberately does NOT do: install QEMU.** `apt-get install qemu-system-misc` would give
+# a QEMU 8.2 that cannot boot the riscv leg at all (no `-device riscv-iommu-pci`, milestone 16b), and
+# more to the point it would be a DIFFERENT emulator from the one CI runs, which for a timing bug is
+# the whole experiment thrown away. The workflow builds `.qemu-version`'s pin from source into
+# `~/.cache/nife-qemu` and caches it; `script/runner-container` runs that same `script/ci-qemu` inside
+# this image, into a podman volume that plays the part of the actions cache. One recipe, not two.
+#
+# So this image carries only what `script/ci-qemu` and `script/bootstrap` need to be ABLE to run:
+# their build dependencies, and `sudo`, because both call `sudo apt-get` and a container that is
+# already root still has to have the word on its PATH.
+#
+# Base: ubuntu:24.04 rather than a GitHub runner image, and the gap is recorded rather than papered
+# over. `ghcr.io/actions/actions-runner` and the `runner-images` recipes are large, x86-biased, and
+# carry a hundred toolchains this project never touches. What matters for a TCG timing failure is the
+# kernel, the scheduler, the core count and libslirp, and those come from the distribution release,
+# which is the same one.
+FROM docker.io/library/ubuntu:24.04
+
+# One layer, and `--no-install-recommends` throughout, because every package that is not here is one
+# fewer difference from the runner to reason about later.
+#
+# The first block is `script/ci-qemu`'s own list, copied deliberately rather than shared: this image
+# has no repository in it at build time, and a build that reached into the tree would bake a snapshot
+# of it into the image, which is the one thing this harness must not do (the tree is mounted
+# read-only at run time so the container cannot write into a lane's worktree).
+#
+# The second block is what `script/bootstrap` looks for and would otherwise `sudo apt-get` at run
+# time: clang with both backends for the C component (DECISIONS §30), shellcheck for the gates, and
+# `ipxe-qemu` for `efi-virtio.rom`. Installing them here rather than there keeps the timed part of a
+# run free of package downloads.
+#
+# `procps` is not incidental: `script/repeat-under-load` samples `pgrep -l qemu` every ten seconds,
+# and that instrument is how a run says whether a neighbouring boot was competing with it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ninja-build meson pkg-config python3 python3-venv \
+        libglib2.0-dev libslirp-dev libpixman-1-dev flex bison zlib1g-dev \
+        clang shellcheck ipxe-qemu \
+        curl ca-certificates git xz-utils file procps sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Everything that survives between runs lives under /cache, which `script/runner-container` binds to
+# a named podman volume: the built QEMU (as `$HOME/.cache/nife-qemu`, exactly where the workflow's
+# actions/cache puts it), the rustup toolchains, and the cargo registry. Nothing in the image itself
+# is stateful, so `podman build --no-cache` costs a package download and not a QEMU build.
+ENV HOME=/cache/home \
+    RUSTUP_HOME=/cache/rustup \
+    CARGO_HOME=/cache/cargo \
+    PATH=/cache/cargo/bin:/cache/home/.cache/nife-qemu/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /work
