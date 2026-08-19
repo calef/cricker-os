@@ -42,8 +42,8 @@
 //! - slot 1: the `Stack` endpoint (WRITE), shared with the stack's other client if any
 //! - slot 2: an untyped budget (to mint and delegate the shared frame)
 //! - slot 3: the file-service endpoint (WRITE), the directory capability the share serves.
-//!   Present only when `arg2` says fs-backed, along with [`FS_VA`] mapped to the page shared
-//!   with the FS server.
+//!   Present only when `arg2` says fs-backed, along with [`FS_VA`] mapped to the whole file
+//!   channel shared with the FS server (`fs::TRANSFER_MAX` bytes, not one page).
 //! - slot 4: the credential service's **verify** endpoint (WRITE), present only when `arg2` says
 //!   authenticated, along with [`CRED_VA`] mapped to the page shared with that service. Not the
 //!   provision endpoint, which does not exist any more by the time this program runs.
@@ -68,8 +68,8 @@
 //! - **A listing still costs a walk.** `QUERY_DIRECTORY` re-walks `READDIR` from cursor 0 for
 //!   each entry and pays an OPEN + FSTAT + CLOSE to learn its size, because `fs_proto`'s dirent
 //!   records carry name and kind only. Reads and writes no longer pay it: the write path made
-//!   the `Share` id the FS server's own handle, so a 64 KiB transfer is sixteen page-sized
-//!   `fs::READ`s and nothing else.
+//!   the `Share` id the FS server's own handle, and milestone 55 made the transfer the whole file
+//!   channel, so a 64 KiB read or write is **one** `fs::READ` or `fs::WRITE` and nothing else.
 //! - **A handle is never reclaimed if a client vanishes mid-connection.** The FS server's handle
 //!   table is per server, and this adapter closes what it opened only on CLOSE or when the
 //!   `Connection` is dropped at end of connection; a connection torn down between a CREATE and
@@ -148,8 +148,21 @@ const FS: u64 = 3;
 /// authenticate and no compromise of this process yields the ability to forge.
 const CRED: u64 = 4;
 
-/// Where the page shared with the FS server is mapped (a name out, file bytes and directory
-/// listings back). Must match the kernel-side wiring in `kernel/src/user/virtio_service.rs`.
+/// Where the **base** of the channel shared with the FS server is mapped (a name out, file bytes
+/// and directory listings back). Must match the kernel-side wiring in
+/// `kernel/src/user/virtio_service.rs`.
+///
+/// **It is [`fs::TRANSFER_MAX`] bytes wide, not one page** (milestone 55, on milestone 138 step 3's
+/// contract), and the kernel's wiring maps every page of it here. This program is a client that
+/// uses all of it: [`FsShare::read`] and [`FsShare::write`] ask for up to the whole channel in one
+/// request, which is the only reason an SMB client's 64 KiB transfer is one trip through the FS
+/// server rather than sixteen. A client may not ask for more than it mapped and nothing checks that
+/// it did not (`fs_proto::fs::TRANSFER_PAGES`' marked foot gun), so the two sides agreeing is a
+/// property of those two files reading the same constant, not of anything at runtime.
+///
+/// Everything else this program puts here (a name, a `READDIR` page, a `statfs` record, a rename's
+/// two names) still lives in the **first page**, which is the FS server's own clamp discipline: a
+/// reply whose length the server chooses stays inside one page.
 const FS_VA: u64 = 0x0000_0000_00B0_0000;
 
 /// Where the page shared with the **credential** service is mapped. A different frame from
@@ -577,10 +590,23 @@ impl Share for FsShare {
         fs_close(file);
     }
 
+    /// **One SMB read is one `fs::READ`**, for every size a client may ask for (milestone 55).
+    ///
+    /// The loop is still a loop and still has to be, because `out` is whatever the protocol layer
+    /// sized and the contract's ceiling is [`fs::TRANSFER_MAX`]; what changed is that the two
+    /// numbers now meet. `smb_proto::MAX_TRANSACT` is 64 KiB, which is the `MaxReadSize` this
+    /// server negotiates and the largest read any client may therefore issue, and `TRANSFER_MAX` is
+    /// 64 KiB as well, so the loop runs **once** for the largest transfer on the wire. It ran
+    /// sixteen times before, and that, rather than anything in the FS server, is why milestone 138
+    /// step 3's 5.67x sequential read did not reach a mounted share.
+    ///
+    /// The ceiling is read from the contract rather than spelled here on purpose: a future change
+    /// to `fs::TRANSFER_PAGES` reaches this program without anyone editing it, and a second
+    /// hardcoded 65536 in the tree would be a number that can disagree with the region behind it.
     fn read(&self, file: FileId, offset: u64, out: &mut [u8]) -> Result<usize, Error> {
         let mut done = 0usize;
         while done < out.len() {
-            let want = (out.len() - done).min(fs_proto::PAGE);
+            let want = (out.len() - done).min(fs::TRANSFER_MAX);
             let (r0, _) = call(
                 FS,
                 fs::req(fs::READ, file, want as u64),
@@ -607,10 +633,19 @@ impl Share for FsShare {
         Ok(done)
     }
 
+    /// **One SMB write is one `fs::WRITE`**, on [`FsShare::read`]'s reasoning and with more riding
+    /// on it: a backup is writes, and milestone 138 step 1 measured a write's fixed term at 690 us
+    /// per request against 87% of the request. Paying it once per 64 KiB instead of once per 4 KiB
+    /// is the whole of what milestone 55 takes from that milestone.
+    ///
+    /// This is the client-chosen length, which is what entitles it to the whole channel:
+    /// `fs_proto`'s serve loop clamps `READ` and `WRITE` to `fs::TRANSFER_MAX` and everything whose
+    /// length the **server** picks to one page, and this share sits on the correct side of that
+    /// split by only ever growing these two.
     fn write(&self, file: FileId, offset: u64, data: &[u8]) -> Result<usize, Error> {
         let mut done = 0usize;
         while done < data.len() {
-            let chunk = (data.len() - done).min(fs_proto::PAGE);
+            let chunk = (data.len() - done).min(fs::TRANSFER_MAX);
             for (i, &b) in data[done..done + chunk].iter().enumerate() {
                 w8(FS_VA + i as u64, b);
             }
