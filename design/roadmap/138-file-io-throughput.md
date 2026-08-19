@@ -4,7 +4,11 @@
 buffered Linux we are three orders of magnitude behind on reads. We need a milestone to optimize and
 close the gap."*
 
-**Gate: DECISION.** Both candidate fixes are things two programs agree on, which the *move fast on
+**Gate: NONE.** Decided by calef 2026-08-18: take all four steps in the order below, measuring at
+each. This gate read `DECISION` while the options were unpriced; the sweep (PR #338) and the
+metadata identification (PR #348) priced them, and the decision followed. The original reasoning is
+kept below because it is why the answer can be trusted: both candidate fixes are things two programs
+agree on, which the *move fast on
 what can be undone* tenet puts in the irreversible column, and milestone 38's own `BUGS` entry says
 so: *"the fix is not in this server: it is either a multi-page transfer on the contract, or a record
 level chosen to match the transfer unit, and both are decisions rather than patches."* The two must
@@ -102,6 +106,56 @@ today.
 and sequential, and a 128 KiB record is plausibly right for those. It is possible that the customer
 path wants the current setting and that the 4 KiB figure is the atypical case. That would not make
 the gap uninteresting, but it would change what "close the gap" means and which milestone owns it.
+
+## Decided 2026-08-18: all of them, then measure again
+
+**calef:** *"it seems like we do them all. And then we measure and we figure out other optimization
+options. Because disk performance is pretty critical to many real workloads."*
+
+Four pieces, and the ordering is set by what each one unblocks rather than by size:
+
+| | what | measured or modelled effect |
+|---|---|---|
+| **1** | **option 2**, the record level | 4 KiB read 2.7 -> 15.8 MiB/s. **Take it now**: no stored data exists, so the one-way door is a door onto an empty room, and the window closes at the first real backup |
+| **2** | **the metadata cache**, the five blocks | on its own worth 15%; with a small record it is **4.7x**. The two are multiplicative and neither is worth much alone |
+| **3** | **option 1**, multi-page transfer on the file contract | 64 KiB in one request: 75 MiB/s, and 98 with the cache. This is the customer path |
+| **4** | **the block contract**, one request per 4 KiB today | the ~100 MiB/s ceiling behind all three. Recorded in notes/fs-server.md's BUGS and not yet a milestone |
+
+**Then re-measure and re-decide.** The numbers above are a model calibrated against the sweep (it
+reproduces the measured 837 us per 64 KiB as 832), not a prediction anybody should spend four
+milestones on without checking at each step.
+
+## The question underneath, which is worth more than any of the four
+
+**Does this architecture have a disk-read liability that cannot be overcome?** calef, the same day,
+and it is a thesis question rather than an optimization one: DECISIONS §14 claims a capability
+microkernel that runs real workloads, and a structural inability to read a disk at speed would be the
+strongest thing anyone could say against it.
+
+**What is already answered.** The confined userspace block server measured **39.0 us per 4 KiB
+against Linux's own raw virtio at 38.7 to 53.3 us on the same device at the same tier**. The extra
+address-space crossing this design pays, client to FS server to block server, is **not measurable
+against the device round trip**. `relay_rtt` prices a two-hop confined relay at about 2 us. So the
+block layer is at parity and the architecture is not the cost there.
+
+**What is not answered, and is the number to watch.** Every request pays a residual of about **13 us**
+that no record level and no transfer size removes: the IPC round trip plus the server's own work.
+That is the floor, and it puts a cached 4 KiB read at roughly **300 MiB/s** however good everything
+else gets. ext4 buffered is 7,141 MiB/s, because it is a memcpy inside the kernel with **no
+address-space crossing at all**.
+
+So the honest statement of the frontier: **against uncached Linux this design reaches parity;
+against the page cache it does not, and the reason is structural rather than lazy.** Every gap found
+so far (a 128 KiB record, a page-sized file contract, a block-sized block contract, no cache) is an
+implementation choice Linux also had to solve. The 13 us is the first thing that is not.
+
+**And the way past it, if it is ever worth taking, is capability-shaped**: stop doing a round trip
+per request and grant the client frames it can read directly, which is what Linux's `mmap` over the
+page cache is. Frames are already capabilities here. Nobody has designed it and it is not this
+milestone; it is named so that the residual is understood as a frontier rather than a wall.
+
+**Each of the four steps should report that residual**, so the question gets answered by
+accumulation rather than by one argument at the end.
 
 ## What is out of scope, deliberately
 
