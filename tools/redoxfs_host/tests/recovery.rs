@@ -8,8 +8,9 @@
 //! reason. A test that writes and reads inside one process proves the two halves of one program
 //! agree; this proves the format is on the disk.
 //!
-//! The tree is deliberately not flat and not small. A 300 KiB file spans several 128 KiB RedoxFS
-//! records (and dozens of 4 KiB blocks), a three-deep directory chain exercises the path walk,
+//! The tree is deliberately not flat and not small. A 300 KiB file spans many RedoxFS records
+//! (37.5 of the 8 KiB records milestone 138 moved to, 2.3 of the 128 KiB ones before it, and dozens
+//! of 4 KiB blocks either way), a three-deep directory chain exercises the path walk,
 //! an empty file and an empty directory are the edges that a "did you write anything?" bug slips
 //! through, a symlink is a node kind that is neither, and an executable proves the mode survives.
 //!

@@ -650,8 +650,8 @@ fn resolve<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<TreeData<
 }
 
 /// Read a whole node's data. Loops because a short read is legal (`read_node_inner` stops at a
-/// record boundary in principle), so a file bigger than one 128 KiB record must not depend on a
-/// single call filling the buffer.
+/// record boundary in principle), so a file bigger than one record must not depend on a single call
+/// filling the buffer. The record size is a per-node field and this loop does not care what it is.
 fn read_all<D: Disk>(tx: &mut Transaction<D>, node: &TreeData<Node>) -> Result<Vec<u8>, String> {
     let size = node.data().size() as usize;
     let mut buf = vec![0u8; size];

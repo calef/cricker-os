@@ -46,7 +46,9 @@ const FILE_PAGE: u64 = 0x5000_1000;
 /// One filesystem block / one shared page, in bytes. The transfer unit both directions.
 const BLOCK: usize = blk::BLOCK_SIZE;
 
-/// The heap cap. RedoxFS keeps a record-sized compress buffer (128 KiB), block buffers, and small
+/// The heap cap. RedoxFS keeps a compress buffer sized by `RECORD_SIZE` (128 KiB, still the ceiling after milestone
+/// 138 lowered the *created* record level, because the buffer must fit any record this build can
+/// rewrite), block buffers, and small
 /// tree structures; a few MiB is comfortable for the small images phase 2 serves. The untyped the
 /// kernel grants is the real ceiling.
 const HEAP_MAX: u64 = 8 * 1024 * 1024;

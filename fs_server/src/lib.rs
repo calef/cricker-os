@@ -989,6 +989,32 @@ fn drop_store_if_empty<D: Disk>(tx: &mut Transaction<D>) -> Result<()> {
 /// One filesystem block, in bytes (RedoxFS's `BLOCK_SIZE`): the unit [`BlockIo`] transfers.
 pub const BLOCK: usize = 4096;
 
+/// **The one place in this tree that sees both the wire protocol and the store**, which is what
+/// makes the two assertions below possible at all: `fs_proto` deliberately depends on nothing, and
+/// the vendored engine has never heard of it. Milestone 138 wrote them because it moved the record
+/// level, and `fs_proto::fixture::throughput::RECORD`'s own comment named itself the soft spot a
+/// change like that would break silently.
+///
+/// They are `const` assertions rather than tests so that they fire in the EL0 build too, where no
+/// test harness runs. A build is the only artifact that can be wrong about this.
+const _: () = {
+    // `BLOCK` is the transfer unit for a store whose block size is `BLOCK_SIZE`. If they ever
+    // disagree, every chunked read and write in this file is off by a factor.
+    assert!(BLOCK as u64 == redoxfs::BLOCK_SIZE);
+
+    // The record-aligned throughput phase reads at multiples of `RECORD`, and that means what it
+    // claims only while every such multiple is also a record boundary. See that constant's comment.
+    assert!(
+        fs_proto::fixture::throughput::RECORD
+            .is_multiple_of(redoxfs::BLOCK_SIZE << redoxfs::RECORD_LEVEL)
+    );
+
+    // A file this build creates must be readable by this build. The creation level and the ceiling
+    // the two `BlockTrait::empty` guards enforce are separate constants since milestone 138, and
+    // this is what stops them being separated in the wrong direction.
+    assert!(redoxfs::RECORD_LEVEL <= redoxfs::RECORD_LEVEL_MAX);
+};
+
 /// A block-granular transport: read or write one whole filesystem block, or report the disk size.
 /// The EL0 binary implements this over blk IPC; a host test implements it over a `Vec`.
 ///
@@ -1150,9 +1176,15 @@ mod tests {
         }
     }
 
-    /// Repeat writes of a **record-sized** payload, so the chunking's multi-block path and the
-    /// compressed-record partial tail both get exercised across generations. 160 KiB is larger than
-    /// RedoxFS's 128 KiB record, so a write spans records and the tail is partial.
+    /// Repeat writes of a **multi-record** payload, so the chunking's multi-block path and the
+    /// compressed-record partial tail both get exercised across generations.
+    ///
+    /// **The length is derived from the record size rather than written down**, and milestone 138 is
+    /// why. This used to say `160 * 1024`, chosen because it was 1.25 of the 128 KiB record of the
+    /// day; at the 8 KiB record that milestone moved to, the same constant is exactly twenty whole
+    /// records and the partial tail this test exists to reach **stops existing**, silently, with the
+    /// test still passing. Two whole records plus one block is that shape at any level, so the
+    /// coverage cannot be lost by a constant moving somewhere else.
     #[test]
     fn repeat_record_sized_writes_through_the_chunking_do_not_loop() {
         let mut fs = FileSystem::create(BlockDisk(VecIo(vec![0u8; 32 * 1024 * 1024])), None, 0, 0)
@@ -1166,7 +1198,7 @@ mod tests {
 
         let mut srv = Server::open(BlockDisk(VecIo(image))).expect("open");
         let h = srv.open_file("big").expect("open big");
-        let len = 160 * 1024;
+        let len = 2 * (redoxfs::BLOCK_SIZE << redoxfs::RECORD_LEVEL) as usize + BLOCK;
         for pass in 1..=3u8 {
             // Position-dependent and pass-dependent, and deliberately not compressible to a tiny
             // size, so the record path does real work each pass.
