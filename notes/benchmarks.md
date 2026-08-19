@@ -1870,6 +1870,117 @@ step 1 shipped and measured, that can be restated against real numbers rather th
   64 KiB request every level from 0 to 4 costs the same, so step 1's 5.13x is a number about the
   contract as it is today rather than a permanent property of the store.
 
+## Step 3 taken: a file request carries 64 KiB, and the read path lands on the block contract (milestone 138, 2026-08-19)
+
+Taken **before step 2, deliberately**. Step 1 measured that after it a write's fixed term was 690 us
+per 4 KiB, 87% of the request, and that step 2's read cache does not touch a write at all. Only this
+step does, and a backup is writes.
+
+`fs_proto::fs::TRANSFER_PAGES` goes from an unwritten 1 to 16, so the region a client and the FS
+server share is 64 KiB of contiguous pages and a `READ` or `WRITE` may carry all of it in one
+request. Nothing in the packed request word changed: the length field has been 40 bits since
+milestone 32, and the page was always what bounded a transfer.
+
+### Before and after, on a machine that was quiet again
+
+Six interleaved rounds at each point (`sh bench/transfer-size-sweep.sh 6 1 16`), on milestone 38's
+harness and the same six phases as everything above. **The `fs_read` control measured 203,976 ns at
+one page and 203,326 at sixteen, a spread of 0.3%**, so these are raw means of six rounds with no
+normalisation. Load ran 3.6 to 5.2, inside milestone 38's own 4 to 9. The benchmark holds **bytes
+moved** constant (1 MiB per phase) rather than the transfer count, so both points move the same file.
+
+| phase | 4 KiB per request | 64 KiB per request | speedup |
+|---|---|---|---|
+| `fs_seq_write` | 732,541 ns (5.33 MiB/s) | **1,461,394 ns (42.77)** | **8.02x** |
+| `fs_rand_write` | 899,257 (4.34) | **1,991,506 (31.38)** | **7.22x** |
+| `fs_seq_read` | 275,860 (14.16) | **778,354 (80.30)** | **5.67x** |
+| `fs_rand_read` | 281,685 (13.87) | **830,341 (75.27)** | **5.43x** |
+| `fs_record_read` | 282,167 (13.84) | **840,962 (74.32)** | **5.37x** |
+
+The ns column is per **request** and a request is sixteen times larger on the right, so it is the
+MiB/s that compares. Per 4 KiB of payload a sequential write went from 732,541 ns to **91,337**.
+
+### The two-term model reproduced from a completely different sweep, and that is the check
+
+The record-level sweep fitted `cost = fixed + blocks x per_block` by varying the **record size**.
+This one varies the **transfer size**, which changes the same two terms through a different variable
+and had no way to be tuned to agree. A 4 KiB read at record level 1 fetches 2 blocks and a 64 KiB
+read fetches 16, so:
+
+- `275,860 = F + 2B` and `778,354 = F + 16B` give **B = 35.9 us** and **F = 204,076 ns**.
+- Step 1's fit, from six record levels on a different day, gave **39.1 us** and **205,698 ns**.
+
+The fixed term agrees to **0.8%**. Nothing was fitted to make that happen, and it is the strongest
+evidence this page has that the two-term model is the real shape of a request rather than a curve
+drawn through five points.
+
+### The residual: the composition inverted, and the new owner is the block contract
+
+Milestone 138 asks every step what it leaves behind. Step 1's answer was that the residual became the
+whole problem. Step 3's is that **the residual changed owner**:
+
+| 4 KiB sequential read | total | fixed term | block term |
+|---|---|---|---|
+| before (one page) | 275,860 ns | **204,076 (74%)** | 71,784 (26%) |
+| after (sixteen pages, per request) | 778,354 ns | 204,076 (**26%**) | **574,278 (74%)** |
+
+That is step 1's table read backwards. A read is no longer dominated by the per-request walk; it is
+dominated by **sixteen single-block trips through `fs_proto::blk`**, which is the block contract's
+one-page limit and is the thing notes/fs-server.md's BUGS section has recorded as a ~100 MiB/s
+ceiling since milestone 38. **`fs_seq_read` now measures 80.30 MiB/s, which is 80% of that ceiling.**
+
+So: nothing left on milestone 138's list moves a bulk read much. The next read win is the block
+contract, and that is step 4, which is a `BUGS` entry rather than a milestone.
+
+**The write residual moved, and it is the largest movement milestone 138 has produced.** The 690 us
+transaction (allocate, rewrite the node, commit to the header ring) is charged **once per request**,
+so it went from 690 us per 4 KiB to **43 us per 4 KiB**. A sequential write is 8.02x, which is more
+than any other number in this milestone, and it is exactly what step 1 predicted the transaction term
+would do under a larger transfer.
+
+### What step 2 is worth now, re-priced against measurement for the second time
+
+Step 1 re-priced the metadata cache from the block's modelled 4.7x to a measured 3.2x. Step 3
+re-prices it again, and this time the direction is down and the reason is that the two steps target
+the same term:
+
+- **On a 64 KiB read it is worth about 1.33x.** The five repeated block reads are ~195 us and they
+  are per request; against a 778 us request that is 25% rather than 69%.
+- **On a 4 KiB read it is still worth about 3.2x**, unchanged, because nothing about that request
+  changed.
+- **On writes it is still worth nothing**, for step 1's reason: they are writes.
+
+The block's table said steps 1 and 2 were multiplicative and that neither was worth much alone. That
+was right about those two. It did not say that step 3 would take most of what step 2 was going to
+get on the bulk path, and it does: **step 2's value is now a function of which request size the
+workload uses.** For milestone 55's backup, which reads and writes in 64 KiB units over SMB, step 2
+is worth a third; for a small-file or metadata-heavy workload it is worth three times. It is still
+worth building and it is no longer the headline.
+
+### What was not measured, and is the first thing to run next
+
+**The record level was not re-swept at 64 KiB.** The sweep above (2026-08-18) found that with a
+multi-page transfer, levels 4 and 0 cost the **identical** 837 us per 64 KiB, which predicts that
+step 1's 5.13x does not survive as a ratio at this transfer size. This run holds the level at 1 and
+varies only the transfer, so it cannot confirm or refute that. `sh bench/record-level-sweep.sh 3 0 1
+5` with `TRANSFER_PAGES` at 16 is the experiment and it is one command.
+
+### BUGS
+
+- **Sixteen timed requests per phase.** Bytes moved are held at 1 MiB and the fixture image bounds
+  that, so a 64 KiB point is 16 iterations where a 4 KiB point is 256. Each is long enough that the
+  counter resolution is not the issue, but the sample is small; the standard deviations in the sweep
+  are 0.5% at one page and 0.7 to 4.5% at sixteen, and `fs_seq_write` is the noisy one.
+- **`fs_payload_fill` grew sixteenfold in absolute terms and is unchanged per byte** (4,969 MiB/s
+  against 4,692). It is inside the write phases' timed window, so subtract it: it is 0.9% of a 64 KiB
+  write, the same fraction it was of a 4 KiB one.
+- **These are still not apples to apples with a buffered Linux read**, and the caveat did not go away
+  when the number got bigger. It got smaller: 64 KiB is the buffer size milestone 38's ext4
+  comparison used, so the *transfer size* half of the mismatch is now closed and the page-cache half
+  is not. ext4 buffered remains three orders of magnitude away and the reason is still structural.
+- **The write comparison is `O_DSYNC`-shaped, unchanged.** Every `fs_proto` write still commits a
+  RedoxFS transaction before it replies; what changed is how much payload one commit covers.
+
 ## The two controlled comparisons nobody has run (2026-08-19)
 
 **Every filesystem comparison above is uncontrolled**, and this section exists so that is a known

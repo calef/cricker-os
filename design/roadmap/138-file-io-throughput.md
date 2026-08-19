@@ -1,9 +1,12 @@
 # 138. Close the read gap: a 4 KiB request must stop moving 128 KiB
 
-**Status: PARTIAL.** Step 1 of four is **built and measured** (2026-08-18): the record level is
-1, a 4 KiB read is **5.13x** faster and a 4 KiB write **3.01x**, and the per-request residual it
-leaves is **206 us on a read (72% of it) and 690 us on a write (87%)**. See
-notes/benchmarks.md and vendor/README.md divergence 5. Steps 2, 3 and 4 are not started.
+**Status: PARTIAL.** Steps 1 and 3 of four are **built and measured**. Step 1 (2026-08-18): the
+record level is 1, a 4 KiB read is **5.13x** faster and a 4 KiB write **3.01x**, and the per-request
+residual it leaves is **206 us on a read (72% of it) and 690 us on a write (87%)**. Step 3
+(2026-08-19), taken before step 2 because that residual said to: a request carries **64 KiB**, a
+sequential write is **8.02x** and a read **5.67x**, and the residual changed owner rather than
+shrinking, from the file contract to the block contract. See notes/benchmarks.md,
+notes/fs-server.md and vendor/README.md divergence 5. Steps 2 and 4 are not started.
 Minted 2026-08-18 by calef, on milestone 38's measurement: *"Against
 buffered Linux we are three orders of magnitude behind on reads. We need a milestone to optimize and
 close the gap."*
@@ -121,9 +124,9 @@ Four pieces, and the ordering is set by what each one unblocks rather than by si
 | | what | measured or modelled effect |
 |---|---|---|
 | **1** | **option 2**, the record level | **DONE 2026-08-18, measured**: 4 KiB read 2.68 -> **13.76 MiB/s**, write 1.63 -> **4.90**. The modelled 15.8 was level 0's figure; this shipped at level 1, which keeps lz4 and halves the space cost for 8.7% of the read speed. **And there is no one-way door after all**: the created level and the largest readable level are now separate constants, so nothing stored at any level 0 to 5 becomes unreadable and the next change cannot orphan this one's data |
-| **2** | **the metadata cache**, the five blocks | on its own worth 15%; with a small record it is **4.7x**. The two are multiplicative and neither is worth much alone |
-| **3** | **option 1**, multi-page transfer on the file contract | 64 KiB in one request: 75 MiB/s, and 98 with the cache. This is the customer path |
-| **4** | **the block contract**, one request per 4 KiB today | the ~100 MiB/s ceiling behind all three. Recorded in notes/fs-server.md's BUGS and not yet a milestone |
+| **2** | **the metadata cache**, the five blocks | on its own worth 15%; with a small record it is **4.7x**. The two are multiplicative and neither is worth much alone. **Re-priced twice since**: 3.2x measured after step 1, and **1.33x on a 64 KiB read after step 3**, which turns out to target the same term |
+| **3** | **option 1**, multi-page transfer on the file contract | **DONE 2026-08-19, measured**: modelled 75 MiB/s, measured **80.30 on a read and 42.77 on a write**, 5.67x and 8.02x. The wire change is one constant: the length field was always 40 bits and the shared page was what bounded a transfer. This is the customer path |
+| **4** | **the block contract**, one request per 4 KiB today | the ~100 MiB/s ceiling behind all three. Recorded in notes/fs-server.md's BUGS and not yet a milestone. **After step 3 it is the binding constraint rather than a wall behind one**: a read measures 80.30 MiB/s against it and is 74% block trips |
 
 **Then re-measure and re-decide.** The numbers above are a model calibrated against the sweep (it
 reproduces the measured 837 us per 64 KiB as 832), not a prediction anybody should spend four
@@ -176,6 +179,83 @@ wrong** at both levels; eleven lying-device cases move from "refused at a read" 
 is what a smaller record predicts. It also turned up a stale record: notes/fs-server.md's counts were
 milestone 37's and the workload has grown since, so the table there was wrong before this lane
 touched it. Corrected in place.
+
+## Step 3, built and measured: a request carries 64 KiB (2026-08-19)
+
+**Taken before step 2, deliberately**, because step 1's residual said to: a write's fixed term was
+690 us per 4 KiB, 87% of the request, and step 2's read cache does not touch a write. A backup is
+writes.
+
+**8.02x on a sequential write and 5.67x on a read**, measured on milestone 38's harness over six
+interleaved rounds at each transfer size (`sh bench/transfer-size-sweep.sh 6 1 16`), on a machine
+whose `fs_read` control varied **0.3%** between the two points so no normalisation was needed.
+`fs_seq_write` 5.33 MiB/s to **42.77**; `fs_seq_read` 14.16 to **80.30**; random write 4.34 to
+**31.38**. notes/benchmarks.md has the table. The benchmark holds bytes moved constant at 1 MiB per
+phase rather than the transfer count, so both points move the same file.
+
+**The wire change is a constant, and that is the finding about the contract.**
+`fs_proto::fs::TRANSFER_PAGES` is 16 instead of 1, so the region a client and the FS server share is
+sixteen contiguous pages and a `READ` or `WRITE` may carry all of it. **Nothing in the packed request
+word changed**: `fs::req` has carried a 40-bit length since milestone 32, so the packing was never
+what limited a transfer to 4096 bytes. The page was. No new opcode, no second reply word, no
+descriptor, no changed field, and the shape a reader of `fs_proto` meets is the one already there.
+
+**A single-page client is untouched, and it is a property rather than a courtesy.** The serve loop
+clamps twice, and which clamp a verb gets is the whole compatibility story: a length the **client**
+chooses (`READ`, `WRITE`) may use the whole channel, and a length the **server** chooses (`READDIR`,
+the attribute verbs, a rename's two names) stays inside the one page every client has always mapped.
+A `READDIR` that filled 64 KiB would land in a single-page client's unmapped second page. `swish`,
+the three caretakers, the sinks and the `std` PAL are unmodified and cannot tell this happened.
+
+**What was refused, because milestone 138 authorises the step and not a shape.** A new opcode or a
+`READV`-shaped scatter list: unnecessary, since the length field already fits, and a new concept on
+this contract. A frame capability granted per request, which is the `mmap`-shaped answer: that is the
+frontier this block names below, not a transfer size. A negotiated channel size at bind time: a new
+verb, where every other agreement between a client and this wiring (the endpoint slot, the VA, the
+role number) is already a compile-time constant both sides carry.
+
+**The residual, and it changed owner rather than shrinking.** Step 1 reported that the fixed
+per-request term became the whole problem. Step 3 inverts step 1's table exactly:
+
+| 4 KiB sequential read | total | fixed term | block term |
+|---|---|---|---|
+| before step 3 | 275,860 ns | **204,076 (74%)** | 71,784 (26%) |
+| after, per 64 KiB request | 778,354 ns | 204,076 (**26%**) | **574,278 (74%)** |
+
+A read is now dominated by **sixteen single-block trips through `fs_proto::blk`**, which is step 4.
+`fs_seq_read` measures 80.30 MiB/s against the ~100 MiB/s ceiling that contract imposes, so **step 4
+stopped being a limitation recorded for later and became the binding constraint**;
+notes/fs-server.md's `BUGS` entry says so and cites its own promotion trigger.
+
+**The write residual moved, and by the most of anything in this milestone.** The 690 us transaction
+is charged once per request, so it went from 690 us per 4 KiB to **43**. That is where the 8.02x
+comes from, and it is what step 1 predicted a larger transfer would do.
+
+**The two-term model was fitted a second time, from a different variable.** Varying the transfer size
+gives a fixed term of **204,076 ns** and a per-block term of **35.9 us**, against step 1's 205,698
+and 39.1 fitted by varying the record level on a different day. The fixed term agrees to **0.8%**,
+and nothing was tuned to make it.
+
+**Crash consistency was re-run and is unchanged**: 134 fault points, 13 commits, 0 silently wrong,
+identical to step 1's. It is honest to say why it could not have changed: the injector drives
+`Server` on the host, below the wire, and its workload already contained a 160 KiB
+single-transaction write. What step 3 changed is that a **client** can now cause one; the
+engine-level case was always covered.
+
+**What step 2 is worth now, re-priced for the second time.** On a 64 KiB read the metadata cache is
+worth about **1.33x**, not the 3.2x step 1 measured and not the block's modelled 4.7x, because the
+five repeated block reads are ~195 us against a 778 us request instead of a 284 us one. On a 4 KiB
+read it is still 3.2x. On writes it is still worth nothing. **Steps 2 and 3 target the same term**,
+which the block's "multiplicative" note did not anticipate, so step 2's value is now a function of
+which request size the workload uses: a third for milestone 55's backup, three times for a
+small-file workload.
+
+**What step 3 did not do, and it is one command.** The record level was not re-swept at 64 KiB. The
+2026-08-18 sweep found that with a multi-page transfer levels 4 and 0 cost the **identical** 837 us
+per 64 KiB, which predicts that step 1's 5.13x does not survive as a ratio at this transfer size.
+`sh bench/record-level-sweep.sh 3 0 1 5` with `TRANSFER_PAGES` at 16 settles it, and until somebody
+runs it the level shipped in step 1 is chosen on 4 KiB evidence for a system that no longer moves
+4 KiB by default.
 
 ## The question underneath, which is worth more than any of the four
 
@@ -240,6 +320,17 @@ measurements rather than asserted, and this is the measurement that most weakens
 - **`Transaction::write_node` compares before writing**, so rewriting a block with identical contents
   costs a read and no write. A benchmark that sends one constant page repeatedly measures the
   comparison rather than the store.
+- **Step 1's record level was chosen on 4 KiB evidence and step 3 made 4 KiB the atypical request.**
+  The 2026-08-18 sweep measured levels 4 and 0 at the identical 837 us per 64 KiB, so the level's
+  effect at the shipped transfer size is plausibly nil and step 1's 5.13x is a ratio about a contract
+  that no longer describes the default. Nothing here is wrong; the ranking of steps 1 and 2 was made
+  against a transfer size that changed under them, and re-running the record sweep at
+  `TRANSFER_PAGES = 16` is what would say so.
+- **Nothing checks that a client asked for no more than it mapped** (step 3). The channel is 64 KiB
+  and a client maps as much of it as it uses; one that asks for more gets a data abort on its own
+  unmapped page, after the server has done the work. Rung four of `CLAUDE.md`'s ladder, marked as
+  such where a reader meets the constant, and the way to rung one is the channel size on the wire,
+  which is a new concept on this contract and was not taken.
 - **Step 1's 5.13x is a number about the contract as it is today, not a property of the store.** The
   sweep already showed that once a request carries 64 KiB, every record level from 0 to 4 costs the
   same, because the fixed term is per request and the block count is identical. So step 3 will
