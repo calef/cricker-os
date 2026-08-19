@@ -771,7 +771,11 @@ loop rather than a signature change. The block server's DMA region was already w
   (`fs_proto::fs::TRANSFER_PAGES`, below), measured at **5.67x on a read and 8.02x on a sequential
   write** against the same harness: 80.30 MiB/s and 42.77, from 14.16 and 5.33.
   What survives is a fixed ~204 us per request that neither touches, and step 3 moved it from 74% of
-  a read to **26%**, because the payload it is charged against is sixteen times larger. The write's
+  a read to **26%**, because the payload it is charged against is sixteen times larger. That term is
+  **identified rather than attributed**: five single-block reads, the *same* five block numbers on
+  every request (the node tree's L3 root, L2, L1, L0, then the file's own `Node`), 99.6% of them a
+  block already read, which is 195 us of it. It is the absence of a cache rather than a property of
+  RedoxFS, and that is what rules out replacing the store. The write's
   ~690 us transaction is the same story and is where step 3's biggest number comes from: it is
   charged once per request, so it went from 690 us per 4 KiB to **43**.
   notes/benchmarks.md has both before-and-afters, the two-term model fitted twice from two different
