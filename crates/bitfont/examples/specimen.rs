@@ -13,15 +13,27 @@
 //! cargo run -p bitfont --example specimen
 //! ```
 //!
-//! Or on a candidate, in any of the three formats a bitmap font arrives in. GNU Unifont `.hex`
+//! Or on a candidate, in any of the four formats a bitmap font arrives in. GNU Unifont `.hex`
 //! (`CODEPOINT:BITS`, one glyph per line), Adobe `.bdf` (what Terminus, Spleen and most X11 bitmap
-//! fonts ship as), and the `.art` format this tool also reads, which is a `#`/`.` picture per glyph
-//! and is the only sane way to *author* one by hand:
+//! fonts ship as), the `.art` format this tool also reads, which is a `#`/`.` picture per glyph and
+//! is the only sane way to *author* one by hand, and a raw character-generator ROM (`.rom`/`.bin`),
+//! which is the format a font arrived in before it was a file:
 //!
 //! ```text
 //! cargo run -p bitfont --example specimen -- --font unscii-8.hex --name unscii-8
 //! cargo run -p bitfont --example specimen -- --font ter-u16n.bdf --name terminus-16
 //! cargo run -p bitfont --example specimen -- --font bench/font-options/hand-drawn-8x8.art
+//! cargo run -p bitfont --example specimen -- --font 81-146a.bin --name kaypro-ii
+//! ```
+//!
+//! **Give `--font` more than once and the fonts are drawn interleaved**, sample line by sample
+//! line, with the name in a left gutter. That is the mode a choice is actually made in: two
+//! specimens in sections of their own is an inventory, and the eye cannot compare across a scroll.
+//! `--metrics` prints the table row for `notes/glyphs.md` instead of asserting the numbers.
+//!
+//! ```text
+//! cargo run -p bitfont --example specimen -- --metrics \
+//!     --font 81-146a.bin --name kaypro-ii --font gohufont-14.bdf --name gohufont-14
 //! ```
 //!
 //! Two rendering modes, and both are needed for different questions. Half blocks (the default) show
@@ -90,7 +102,7 @@ impl Font {
     /// Characters and rows this font fits on the display ladder's 128x64 scanout, which is the
     /// number that decides whether a bigger cell is affordable rather than merely nicer.
     fn grid(&self) -> (usize, usize) {
-        (128 / self.advance, 64 / self.height)
+        (SCANOUT_W / self.advance, SCANOUT_H / self.height)
     }
 
     /// How many of the 95 printable ASCII positions actually carry a picture. A font that is
@@ -315,6 +327,93 @@ fn parse_art(text: &str, name: &str) -> Font {
     }
 }
 
+/// A raw **character-generator ROM**, which is the format a bitmap font arrived in before it was a
+/// file: a chip on the video board, addressed by character code and scanline, whose data lines feed
+/// a shift register directly. There is no header and no metadata, so everything below is either
+/// derived from the bytes or is a fact about the machine's wiring, and the two are marked apart.
+///
+/// Three things are derived from the bytes, and each is checkable by looking at the ROM:
+///
+/// - **The used half.** A 2K part often carries a 1K font, and the unused half is uniform. Kaypro's
+///   `81-146a` is blank for its first 1024 bytes because the hardware selects that half during
+///   blanking, so the leading uniform 1K-aligned blocks are skipped.
+/// - **Rows per glyph**, which is then the used length over 128.
+/// - **Inversion.** A font is mostly paper, so if most bits in the used region are set, the part
+///   stores ink as zero. MAME says the same thing declaratively with `ROMREGION_INVERT`.
+///
+/// One thing is a fact about the wiring and is only **inferred** here: how many of the eight data
+/// lines reach the shift register. If the top bits are paper in every byte of the font, they are
+/// not connected, and the glyph is the remaining span plus one blank gutter column on each side.
+/// That gutter is Kaypro's (`kaypro_v.cpp` shifts out `0`, five bits, `0`), not a universal truth.
+///
+/// # BUGS
+///
+/// The gutter is assumed to be one column on each side, because that is what the one machine this
+/// was written against does. A chargen wired with two blank columns, or with the glyph left-aligned
+/// rather than right-aligned, comes out at the wrong pitch and looks loose rather than wrong, which
+/// is the hardest kind of error to see. Pass `--advance` to override it.
+///
+/// Rows are assumed to be contiguous per glyph, low address is the top scanline, and the code point
+/// is the ROM index. A machine whose video RAM permutes the code (Kaypro's own `chr ^ 0x80`, which
+/// is what puts its font in the second half) is handled by the used-half skip and by nothing else.
+fn parse_chargen(bytes: &[u8], name: &str, advance_override: Option<usize>) -> Font {
+    // Skip leading 1K blocks that carry no picture at all.
+    let mut start = 0;
+    while start + 1024 < bytes.len() {
+        let block = &bytes[start..start + 1024];
+        if block.iter().all(|&b| b == block[0]) {
+            start += 1024;
+        } else {
+            break;
+        }
+    }
+    let used = &bytes[start..];
+
+    // A font is mostly paper. If most bits are set, ink is zero and the part is stored inverted.
+    let set: u32 = used.iter().map(|b| b.count_ones()).sum();
+    let inverted = set * 2 > used.len() as u32 * 8;
+    let norm: Vec<u8> = used
+        .iter()
+        .map(|&b| if inverted { !b } else { b })
+        .collect();
+
+    let height = (norm.len() / 128).max(1);
+
+    // Which data lines are wired: the highest bit that is ever ink, counting from the left.
+    let union = norm.iter().fold(0u8, |a, &b| a | b);
+    let ink_bits = 8 - union.leading_zeros() as usize;
+    let ink_bits = ink_bits.clamp(1, 8);
+    let advance = advance_override.unwrap_or((ink_bits + 2).min(8));
+    // Place the glyph one column in from the left, converting MSB-left to this crate's bit 0-left.
+    let glyphs = (0..128)
+        .map(|c| {
+            (0..height)
+                .map(|r| {
+                    let byte = norm.get(c * height + r).copied().unwrap_or(0);
+                    let mut row = 0u8;
+                    for i in 0..ink_bits {
+                        // Bit `ink_bits-1-i` is the i'th pixel from the left of the glyph.
+                        if byte >> (ink_bits - 1 - i) & 1 != 0 {
+                            let x = i + usize::from(advance > ink_bits);
+                            if x < 8 {
+                                row |= 1 << x;
+                            }
+                        }
+                    }
+                    row
+                })
+                .collect()
+        })
+        .collect();
+
+    Font {
+        name: name.into(),
+        height,
+        advance,
+        glyphs,
+    }
+}
+
 /// The sample text, which is the same for every font on purpose: a scroll down two specimens is
 /// then a fair comparison rather than two different sentences.
 ///
@@ -381,57 +480,206 @@ fn dots(font: &Font, text: &str) -> String {
     out
 }
 
+/// What the shapes measure, over the 52 letters: the row of the table in `notes/glyphs.md`.
+///
+/// Ink per letter is weight. The two sigmas are consistency, which is what the eye reads as rhythm
+/// rather than as any one glyph: the left-edge sigma says whether the letters start in the same
+/// place, and the width sigma whether they are the same size. Cap, x-height and descender are the
+/// vertical proportions, with the baseline taken from the bottom of `x` and the descender counted
+/// as the rows a `g` reaches below it.
+///
+/// # BUGS
+///
+/// A font whose `x` or `g` is missing reports a baseline of zero and a nonsense descender rather
+/// than refusing, because every candidate so far draws all 94 printable positions and a font that
+/// does not is already disqualified by the `printable_drawn` column.
+fn metrics(font: &Font) -> String {
+    let letters: Vec<u8> = (b'A'..=b'Z').chain(b'a'..=b'z').collect();
+    let extent = |byte: u8| -> Option<(usize, usize, usize, usize, usize)> {
+        let mut min_x = usize::MAX;
+        let mut max_x = 0;
+        let mut min_y = usize::MAX;
+        let mut max_y = 0;
+        let mut ink = 0;
+        for y in 0..font.height {
+            for x in 0..font.advance {
+                if font.ink(byte, x, y) {
+                    ink += 1;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        (ink > 0).then_some((min_x, max_x, min_y, max_y, ink))
+    };
+
+    let seen: Vec<_> = letters.iter().filter_map(|&b| extent(b)).collect();
+    let n = seen.len().max(1) as f64;
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / n;
+    let sigma = |v: &[f64]| {
+        let m = mean(v);
+        (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / n).sqrt()
+    };
+
+    let ink: Vec<f64> = seen.iter().map(|e| e.4 as f64).collect();
+    let left: Vec<f64> = seen.iter().map(|e| e.0 as f64).collect();
+    let width: Vec<f64> = seen.iter().map(|e| (e.1 - e.0 + 1) as f64).collect();
+
+    let cap = extent(b'H').map_or(0, |e| e.3 - e.2 + 1);
+    let x_ext = extent(b'x');
+    let x_height = x_ext.map_or(0, |e| e.3 - e.2 + 1);
+    let baseline = x_ext.map_or(0, |e| e.3);
+    let descender = extent(b'g').map_or(0, |e| e.3.saturating_sub(baseline));
+
+    format!(
+        "| `{}` | {:.1} | {:.2} | {:.2} | {} | {} | {} |",
+        font.name,
+        mean(&ink),
+        sigma(&left),
+        sigma(&width),
+        cap,
+        x_height,
+        descender,
+    )
+}
+
+/// Load one font, picking the reader by extension. A character-generator ROM is bytes rather than
+/// text, so it is read as bytes and everything else is read as UTF-8.
+fn load(path: &str, name: Option<String>, advance: Option<usize>) -> Font {
+    let name = name.unwrap_or_else(|| path.to_string());
+    if path.ends_with(".rom") || path.ends_with(".bin") {
+        let bytes = std::fs::read(path).unwrap_or_else(|e| {
+            eprintln!("specimen: {path}: {e}");
+            std::process::exit(1);
+        });
+        return parse_chargen(&bytes, &name, advance);
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("specimen: {path}: {e}");
+        std::process::exit(1);
+    });
+    let mut font = if path.ends_with(".art") {
+        parse_art(&text, &name)
+    } else if path.ends_with(".bdf") {
+        parse_bdf(&text, &name)
+    } else {
+        parse_hex(&text, &name)
+    };
+    if let Some(a) = advance {
+        font.advance = a;
+    }
+    font
+}
+
+/// The one-line summary a font is judged on before anyone looks at it: the cell, what the table
+/// costs, how much of ASCII is actually drawn, and the grid it gives on the display ladder's
+/// scanout, which is the number that decides whether a taller cell is affordable.
+fn summary(font: &Font) -> String {
+    let (cols, rows) = font.grid();
+    format!(
+        "{}x{} cell, {} B table, {}/94 printable drawn, {cols}x{rows} on {}x{}",
+        font.advance,
+        font.height,
+        font.table_bytes(),
+        font.printable_drawn(),
+        SCANOUT_W,
+        SCANOUT_H,
+    )
+}
+
+/// The scanout the grid is measured against, which is `gfx_proto::WIDTH` and `HEIGHT` on the
+/// display ladder today. Written here rather than depended on, because this example is a bench
+/// tool and a dependency on the protocol crate would make it part of the shipping graph.
+const SCANOUT_W: usize = 128;
+const SCANOUT_H: usize = 64;
+
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mut path: Option<String> = None;
-    let mut name: Option<String> = None;
+    let mut paths: Vec<String> = Vec::new();
+    let mut names: Vec<Option<String>> = Vec::new();
+    let mut advance: Option<usize> = None;
     let mut want_dots = false;
+    let mut want_metrics = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--font" => path = args.next(),
-            "--name" => name = args.next(),
+            "--font" => {
+                paths.push(args.next().unwrap_or_default());
+                names.push(None);
+            }
+            "--name" => {
+                // Names the most recent --font, so several pairs can be given on one line.
+                if let Some(slot) = names.last_mut() {
+                    *slot = args.next();
+                } else {
+                    let _ = args.next();
+                }
+            }
+            "--advance" => advance = args.next().and_then(|v| v.parse().ok()),
             "--dots" => want_dots = true,
+            "--metrics" => want_metrics = true,
             other => {
                 eprintln!("specimen: unknown argument {other:?}");
-                eprintln!("usage: specimen [--font FILE.hex|FILE.art] [--name NAME] [--dots]");
+                eprintln!(
+                    "usage: specimen [--font FILE.hex|.bdf|.art|.rom [--name NAME]]... \
+                     [--advance N] [--dots] [--metrics]"
+                );
                 std::process::exit(2);
             }
         }
     }
 
-    let font = match &path {
-        None => Font::shipped(),
-        Some(p) => {
-            let text = std::fs::read_to_string(p).unwrap_or_else(|e| {
-                eprintln!("specimen: {p}: {e}");
-                std::process::exit(1);
-            });
-            let name = name.clone().unwrap_or_else(|| p.clone());
-            if p.ends_with(".art") {
-                parse_art(&text, &name)
-            } else if p.ends_with(".bdf") {
-                parse_bdf(&text, &name)
-            } else {
-                parse_hex(&text, &name)
-            }
-        }
+    let fonts: Vec<Font> = if paths.is_empty() {
+        vec![Font::shipped()]
+    } else {
+        paths
+            .iter()
+            .zip(names)
+            .map(|(p, n)| load(p, n, advance))
+            .collect()
     };
 
-    println!("=== {} ===", font.name);
-    let (cols, rows) = font.grid();
-    println!(
-        "{}x{} cell, {} bytes of table for 128 glyphs, {} of the 94 printable positions drawn, \
-         {cols}x{rows} on a 128x64 scanout\n",
-        font.advance,
-        font.height,
-        font.table_bytes(),
-        font.printable_drawn(),
-    );
+    // The gutter carries the font's name on the first row of its block, so two fonts can be read
+    // adjacently without a heading between every pair of lines. Comparison is the whole point: a
+    // specimen in a section of its own is an inventory, not a comparison.
+    let gutter = fonts
+        .iter()
+        .map(|f| f.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        + 2;
+
+    for font in &fonts {
+        println!("=== {} ===\n{}", font.name, summary(font));
+    }
+    println!();
+
+    if want_metrics {
+        println!(
+            "| Font | Ink per letter | Left edge sigma | Width sigma | Cap | x-height | Descender |"
+        );
+        println!("|---|---|---|---|---|---|---|");
+        for font in &fonts {
+            println!("{}", metrics(font));
+        }
+        println!();
+    }
+
     for line in SAMPLE {
-        print!("{}", half_blocks(&font, line));
+        for font in &fonts {
+            let block = half_blocks(font, line);
+            for (i, row) in block.lines().enumerate() {
+                let label = if i == 0 { font.name.as_str() } else { "" };
+                println!("{label:<gutter$}{row}");
+            }
+        }
         println!();
     }
     if want_dots {
-        println!("{}", dots(&font, DETAIL));
+        for font in &fonts {
+            println!("--- {} ---", font.name);
+            println!("{}", dots(font, DETAIL));
+        }
     }
 }
