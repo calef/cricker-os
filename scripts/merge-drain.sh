@@ -97,6 +97,46 @@ queue() {
 			| sort_by(.number)' 2>/dev/null || echo '[]'
 }
 
+# A draft that has stopped moving is probably a finished lane that forgot to mark it ready.
+#
+# # Why this exists
+#
+# On 2026-08-19 PR #348's lane finished, reported, and left its pull request a draft. The drain
+# excludes drafts **by design** ("a draft is not asking to be merged"), so it sat unmergeable for
+# hours while every observer saw exactly what a healthy working lane looks like. It was found by
+# calef asking why two pull requests were drafts, not by anything in this system.
+#
+# **That is the recurring shape rather than a one-off**: a state whose silence is indistinguishable
+# from healthy operation. The same day, a watcher died and nothing said so while `main` was red, and
+# a CI gate went red on a check that could not block a merge. In all three the observer was missing,
+# not the signal.
+#
+# **Rung four is "tell lanes to mark ready", and that is what failed.** The mechanism has to be
+# something that notices, so this reports a draft whose branch has stopped receiving commits. A live
+# lane commits as it works, per AGENTS.md ("commit whenever a piece works and push whenever a commit
+# exists"); a finished one goes quiet. Quiet for longer than a full gate takes is the signal.
+#
+# It **reports and does not act**. Marking somebody else's draft ready would be a judgement about
+# whether their work is done, which is exactly the thing the draft is claiming. This says the words a
+# person needs and leaves the decision.
+#
+# The threshold is generous on purpose. `script/test` runs both ISAs and a slow leg is tens of
+# minutes, so anything tighter would fire on lanes that are working and teach everyone to ignore it.
+STALE_DRAFT_MINUTES=${STALE_DRAFT_MINUTES:-75}
+
+stale_drafts() {
+	gh pr list --repo "$REPO" --state open --json number,isDraft,title,commits 2>/dev/null |
+		jq -r --argjson mins "$STALE_DRAFT_MINUTES" '
+			(now - ($mins * 60)) as $cut
+			| .[]
+			| select(.isDraft == true)
+			| select((.commits | length) > 0)
+			| select((.commits[-1].committedDate | fromdateiso8601) < $cut)
+			| "merge-drain: STALE DRAFT. #\(.number) has not committed in over \($mins) minutes " +
+			  "(\(.title[0:60])). If its lane is finished: gh pr ready \(.number)"
+		' 2>/dev/null || true
+}
+
 # `Blocked-by: #N` in a pull request body: a SELF-RELEASING hold for a mechanical ordering
 # constraint, as opposed to `needs-architect`, which means a person must decide something.
 #
@@ -235,6 +275,7 @@ pass() {
 	done
 
 	echo "merge-drain: $armed armed, $stalled stalled, of $n unheld"
+	stale_drafts
 
 	# Nothing left to do on a pass where everything open is stalled: the remaining work needs a
 	# person, and looping only re-prints the same lines.
