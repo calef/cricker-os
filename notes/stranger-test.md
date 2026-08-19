@@ -762,6 +762,221 @@ edited the rubric before running against it. The mitigations are the same three:
 runs 1 through 3's verbatim, the amendments were made and committed before the clone was cut, and
 the stranger's answers are recorded as it gave them.
 
+### Run 5, 2026-08-18: the first run through the harness, and the machine leaked where the tree did not
+
+**The harness worked, and this is its first evidence from anyone but its author.** One command,
+`script/stranger-test --commit origin/main`, and a `--smoke` run before it. Nothing was rebuilt by
+hand, nothing about the isolation had to be remembered, and the four failures that each of runs 1
+through 4 hit in a different place did not recur: the stranger's working directory held the clone
+and nothing else, the probe answered `NONE`, the answer key was absent from the tree, `pkill` was
+shadowed, and the account-wide `nife-dev` link was recorded before the run and put back after it,
+which the harness printed on its way out and which was verified against `readlink` afterwards. The
+`--smoke` run cost `$0.09` and 3 turns and exercised every stage including both debriefs, which is
+what a smoke run is for; the real run cost `$10.56`, 201 assistant turns and about 29 minutes.
+
+**Two things leaked anyway, and neither is the tree.** The first is the one the harness's own `BUGS`
+section had called luck: **the stranger read `script/stranger-test`**, about thirty minutes in, and
+it is a complete description of the instrument it was inside. It did not go looking. The second
+explains the first and is the more useful finding.
+
+**The machine leaked into the clone, and the harness cannot stop it.** `nife-dev` is an
+account-wide `rustup` link, so the clone's first `script/test` compiled `std` out of whichever
+worktree had built the farm last, which was `/Users/calef/projects/nife/target/nife-farm`. The
+`-Zbuild-std` dep-info cached those absolute paths, cargo then considered the unit fresh, and
+`std-aborts` failed **naming two files and two line numbers inside another checkout on this
+machine**. Grep for that foreign path found exactly one file in the tree that contained it, which
+was the harness. So a run whose task text says *"the repository is in ./nife and it is the only
+thing you have; do not look for another checkout on this machine"* was handed another checkout's
+path by its own build, ran `ls -la` against it to see whether it was real, and was then rescued
+from a wrong repair by the harness's own paragraph about restoring the link. **The harness both
+contaminated the run and saved it**, which is the worst shape a contamination can take. Recorded in
+`script/stranger-test`'s `BUGS` and in notes/std.md's.
+
+**What the disclosure did, which is the variable this run exists to measure.** The stranger was told
+at turn zero that it was being measured, per run 4's handoff 5, and asked not to perform. Both
+halves partly failed and it said so without being pressed:
+
+- **The knowledge chose its program.** It wrote in its journal *before* picking that "repeating the
+  shape those walks used would measure nothing", and deliberately selected the one manifest
+  combination nothing in the tree had used. Its own reading of that: *"That is not what a fresh
+  contributor does. A fresh contributor writes another `doubler`, finds nothing, and that null
+  result is data the repository does not get from me."* This is run 4's contamination in a sharper
+  form. Telling the stranger it is measured does not remove the effect the tree's leak was already
+  having; it makes the effect legible and slightly stronger.
+- **It performed anyway, having been asked not to, in the same words.** *"I did adopt the prose
+  style, despite being told not to... bolded lead sentences, 'load-bearing', the
+  X-is-the-finding-rather-than-the-accident cadence. Not a deliberate choice, which is worse, it
+  means the voice is contagious enough to catch without noticing."* **So the instruction does not
+  work**, and asking for it is not free: it is one more sentence of framing in a task text whose
+  stability across runs is the only thing making them comparable.
+- **It over-claimed once and corrected itself unprompted at debrief.** Its write-up opened "build
+  and tests: green"; its first debrief line retracts that, because the final `script/gates` was
+  killed part way through the HVF leg and what it actually had was green in pieces. Worth recording
+  because the retraction came before any question asked for it.
+
+#### The configuration, verified rather than asserted
+
+Clone at `a5a75f46` (`6ae92831` after the withholding amend), answer key absent, working tree clean,
+`origin` pointed at the public GitHub URL, one branch. Separate `claude` process, `--safe-mode`,
+working directory the clone's parent. The probe answered `NONE` and the stranger answered the same
+afterwards: *"No CLAUDE.md, no AGENTS.md, no user or project memory. The working directory was
+`run/`, with the clone at `run/nife`, so nothing loaded from a descendant."* The harness's own
+artifacts were in a sibling directory and its root was `nife.t63XaQe1`, a name with no run number.
+Task and debrief text unchanged from the harness, which is runs 1 through 4's text plus the
+disclosure paragraph.
+
+**The machine was uncontended, for the first time in five runs**, and "uncontended" here means no
+*other* lane rather than an idle machine. Sampled every 30 seconds on 8 cores: 2.44 at launch,
+minimum 1.93, mean 4.09, **peak 15.07**, and the peak is the stranger's own emulated legs rather
+than anybody else's, since no other lane was running and there was no QEMU on the machine when it
+started. That is worth separating, because runs 3 and 4 could not: their peaks were other people. Run 3 gated at 45 to 63 and run 4 at about 3 to 17.5. **No timing assertion fired,
+so the load-average diagnostic run 3 bought is still unexercised after two runs.** One HVF flake did
+occur and it is not a timing assertion: `inbound check (aarch64) FAILED: the guest served 2 of the 4
+inbound connections it offers`, which passed on a standalone re-run of `script/test --hvf`. On an
+idle machine that is the cleanest evidence yet that the HVF leg is flaky on its own account.
+
+#### The build half
+
+**B1 passes and leaves a worse failure than run 4's.** `README.md` was first, `CONTRIBUTING.md`
+**third**, which is run 4's specific complaint fixed: run 4 read it sixteenth of twenty-two, after
+the gates it describes had been run. And then **`AGENTS.md` was never opened at all**, in a run
+whose reading order names it item 3 and says *"if you read only two, make them 3 and 4"*. The
+stranger read item 4 (`notes/capabilities.md`) and skipped item 3, and its write-up's statements
+about where architecture-specific code lives and about the project's ladder are paraphrases of
+`CONTRIBUTING.md`'s summary of a file it never read. **Four runs reached `AGENTS.md` twelfth,
+seventh, and not at all**, and the not-at-all is the run that read `CONTRIBUTING.md` earliest. That
+is a result about the reading order rather than about the stranger: the reader met a shorter
+document that summarises the longer one and stopped. Its own reason, quoted because it is the
+finding: *"66 KB is a large upfront cost when a task is in front of you, and everything I actually
+needed turned out to be reachable from code."*
+
+**B2 is not measured**, as pre-registered. `script/setup` passed in 14 seconds with the pinned
+nightly, both QEMUs and a warm registry already present, and the stranger noted that **nothing in
+the repository told it the machine was pre-provisioned; it checked.**
+
+**B3 passes, and not first try, which falsifies this lane's third prediction.** The first
+`script/test` was red at about 88 seconds, on `std-aborts`, for the machine-global reason above and
+not for anything in the commit. Recovery was `rm -rf std_exerciser/target` followed by `script/test`
+exit 0 in 3m25s, on both ISAs. The rest of `script/gates` then passed except the HVF flake.
+
+**B4 fails, with eight entries**, which is the row that matters and the largest list any run has
+produced. In the stranger's order: the mechanism of the `nife-dev` link failure and that it caches;
+that the recovery is `rm -rf std_exerciser/target`; that capability slot numbers are computed
+per-program in `spawn_service` rather than fixed, while every existing program documents its slots
+as constants; that an integer argument reaches a non-interruptible child in `x1` via
+`tcb_start(tcb, 0, arg, 0)`; that a `caps` preview of an input operand needs `Holdings::dir`; that
+an argument-plus-input manifest breaks a `swish` host test; that `script/shell-check` prints no
+transcript on success, so a green run teaches nothing; and that this machine was pre-provisioned.
+
+#### The mental model, scored: six answered, one partly, one absent
+
+| # | result | where it came from |
+|---|---|---|
+| M1 | **answered**, and it is the best answer five runs have produced | `notes/capabilities.md` for the mechanism and `crates/grant_plan/src/lib.rs` for the tree's own words, then `crates/system_initializer/src/lib.rs` for the attenuation: a process viewer holds `ENUMERATE` and not `READ` because `READ` is also what `RECV` and `REAP` take. Its formulation: *"designation is authorization, at the rights the capability carries"* |
+| M2 | **absent**, for the third run in four, and it said so plainly | *"I did not find this, and I should be clear about how little I looked."* It never opened `notes/net.md`, saw it cited once in a failure line, and reasoned correctly from `crates/grant_plan`'s `Manifest` having no socket field that no shell-spawnable program can reach the network. It could not say what a networked program holds |
+| M3 | **partly answered** | `CONTRIBUTING.md` for `kernel/src/arch/`, verified by checking that the only `asm!` outside it is in comments. On the consequence it said it found no file stating it, and gave the parity gate instead of the diff-across-every-file; the file that states it is `AGENTS.md`, which it never opened |
+| M4 | **answered** | `design/roadmap/README.md`, with the rule that the column is wrong and the block is right when they disagree |
+| M5 | **answered** | `CONTRIBUTING.md` for both criteria, with host-testable and Kani-reachable named as the load-bearing one, and the `crates/swish` + `user/src/swish.rs` pairing read off the tree |
+| M6 | **answered, quoted rather than induced** | `CONTRIBUTING.md`, and then the observation that `notes/adding-a-program.md`'s `BUGS` section held the most useful things it learned and none of them are in that page's steps |
+| M7 | **answered by doing it**, and it found an eighth site | added `nth`, working on both ISAs, and listed the eight edits with the `Manifest` as what you declare, provisional name included |
+| M8 | **answered** | four states, `CONTRIBUTING.md` for who decides, `notes/adding-a-program.md` for the states, and it ran `script/names --provisional` and found its own hour-old name listed first |
+
+**M2 regressed against run 4 and the cause is measurable.** Run 4 answered it from `notes/std.md`,
+which it happened to open; run 5 did not open that page either. Three of five runs cannot answer
+M2, and the page written to answer it has now gone unopened five times.
+
+#### What it read, and what `script/apropos` did not do
+
+Twenty files, `README.md` first by expectation. **`script/apropos` landed 2026-08-18 precisely
+because three runs could not reach `notes/net.md`, `notes/capabilities.md`, any `design/decisions/`
+file, or `crates/abi/src/lib.rs`. Run 5 never ran it**, and the prediction registered before the run
+is confirmed in a stronger form than it was made: the stranger had the name in front of it **three
+times**. It ran `ls script/`, where `apropos` is the first entry. It read the guest's `apropos`
+builtin in `crates/swish/src/lib.rs`. It read `apropos photosynthesis` in `SHELL_CHECK_SCRIPT`. The
+affordance never fired, it reached no `design/decisions/` file, and it never opened `notes/net.md`,
+which is the gap the tool exists for. The reason is placement: the only page that says what
+`script/apropos` does is `notes/scripts.md`, and **five runs have now not opened `notes/scripts.md`
+or `notes/README.md`.** Recorded in `script/apropos`'s own `BUGS`.
+
+Still unopened after five runs: every file under `design/decisions/`, `notes/net.md`,
+`notes/naming.md`, `notes/scripts.md`, and `notes/README.md`. New to the list: `AGENTS.md`.
+
+#### What it found, and none of it was fixed here
+
+- **`std-aborts` reports a contaminated build as a source defect.** The check never asserts that the
+  paths in the dep-info are under `farm_dir()`, so a clone that compiled `std` out of another
+  worktree's farm is told, with two files, two line numbers and two suggested fixes, that upstream
+  source has changed. **Both suggested fixes would have written a false statement into
+  `ABORTS_ACCEPTED`.** The failure caches, so re-running reproduces it in thirty seconds and looks
+  stable rather than stale, and the recovery, `rm -rf std_exerciser/target`, is nowhere. Recorded in
+  notes/std.md's `BUGS`. The stranger's own verdict on it: *"the worst defect... it means 'the tests
+  passed' is not a property of a commit; it is a property of a commit and of what else that machine
+  last built."*
+- **There is an eighth edit site for a new program and it depends on the manifest.**
+  `the_arg_line_follows_the_manifest_for_every_program` in `crates/swish/src/lib.rs` sweeps `Prog`
+  and asks the manifest whether a program takes an argument, which is the generalisation its own
+  doc comment argues for, and then builds `"<name> 21"` against `Holdings::default()` and hard-codes
+  the rest. Any program requiring an argument **and** an input turns it red, in a crate the person
+  adding the program never opened. Recorded in notes/adding-a-program.md's `BUGS`, unrepaired on
+  `main`; the stranger repaired it only inside its disposable clone.
+- **`CONTRIBUTING.md` describes `script/gates` as three stages and it runs five.** The two it omits
+  are `script/icount` and a second `script/test --hvf`, and the HVF leg is the slowest and the only
+  one that flaked in this run. This is the document that earned run 4's best result by telling a
+  stranger what "tests passing" means here, so the sentence being wrong costs more than an ordinary
+  drift would.
+- **`script/setup`'s comment says the pin is `nightly-2026-07-26` "as of writing"** and
+  `rust-toolchain.toml` says `nightly-2026-08-18`. Harmless in effect, and it was the first thing
+  the stranger wrote in its journal, against a tree whose stated standard is that a duplicated fact
+  is the one that rots.
+- **`README.md`'s reading order counts 403 markdown files and 143 notes**; there are 413 and 145.
+  A row that counts something goes stale, which this note's own `BUGS` predicted about the rubric
+  and which is now true of the reading order too.
+- **Capability slot numbers are computed from the manifest by `spawn_service`, not constant**, while
+  every existing program's documentation states its slots as fixed facts and
+  `notes/adding-a-program.md` does not mention it.
+- **`script/shell-check` prints no transcript on success**, so a green run tells a newcomer nothing
+  about what its new program actually did.
+
+**Its worst-thing answer, which is run 4's criticism arriving independently and sharper.** Asked
+what is worst about working here, it separated the worst defect from the worst experience and gave
+the second as: *"the sheer volume of prose and how self-referential it is... It is more honest than
+any codebase I have read and it is unnavigable in a day: I got a program shipped on both instruction
+sets without opening the file the README names as one of the two you must read. The tree has an
+answer for nearly everything and no way to reach the one you need in the time you have."* **Two
+strangers in a row, independently, have named the documentation habit rather than any document**,
+and run 5 supplies the falsifiable version run 4 did not: a working contribution on both ISAs, with
+`AGENTS.md` unopened.
+
+#### What this run cost
+
+**The machine-global contamination is the largest and it is new**, and it leads because it is the
+only one that changed what the stranger did rather than how it wrote: a foreign path in its build
+output made it read the harness, and reading the harness gave it the debrief questions and the
+mechanism it needed to diagnose the failure. Then, largest first: **the disclosure changed the
+program it chose**, by its own account, so this run's walk of `notes/adding-a-program.md` is a
+deliberate probe rather than a newcomer's path and the null result a fresh contributor would have
+produced is not available; **it performed anyway**, having been asked in the task text not to, so
+the prose in its deliverables should be discounted exactly as run 4's was; **the tree leaked the
+measurement in the first minutes**, from `README.md` this time rather than from
+`notes/adding-a-program.md`, which is the fifth confirmation and the earliest one; **the machine was
+warm**, so B2 measures nothing; and **the operator of this lane has read `AGENTS.md` in full**,
+which no arrangement of processes fixes and which is worse here than for runs 3 and 4 for a specific
+reason: this lane also read `script/stranger-test` before running it, so its judgement about whether
+the harness worked is the judgement of someone who read the harness's own account of what it does.
+The mitigations are unchanged and are the only ones available: the task text is runs 1 through 4's,
+the rubric predates every run and was **not** amended by this lane, the pre-registration was
+committed before the clone was cut, and the stranger's answers are recorded as it gave them.
+
+**The three predictions, scored.** Registered before the run in the section above.
+
+1. *The stranger does not find `script/apropos`, and therefore still does not reach any file under
+   `design/decisions/`.* **Confirmed**, and in a stronger form than predicted: the name was in front
+   of it three times.
+2. *`notes/README.md` goes unopened for the fifth run running.* **Confirmed.**
+3. *The build half is green first try with no change to the tree.* **Falsified.** `script/test` was
+   red at 88 seconds on a machine-global defect the pre-registration did not anticipate, and finding
+   it is the best thing this run did.
+
 ## BUGS
 
 - **The rubric is reachable by grep from inside the test, and run 1 hit it.** The stranger found
@@ -841,6 +1056,15 @@ the stranger's answers are recorded as it gave them.
   the sentence this entry opens with: nothing schedules it, and nothing goes red when it has not
   been run in a month. A cadence is a decision about how often the answer is worth its cost, which
   is calef's rather than a lane's, and milestone 129 is the machinery it would use.
+
+  **Run 5 used it and it held**, which is the evidence the lane that wrote it deliberately did not
+  produce: one command, a `--smoke` run first for `$0.09`, no isolation failure of the four kinds
+  that each of runs 1 through 4 hit, and the `nife-dev` link back where it was found. **That does
+  not close this entry either**, and it is worth being exact about why, because "the harness works"
+  is the sentence most likely to be mistaken for "the milestone moved": a run still happens when
+  somebody runs it. What run 5 adds is that the price is now one command **and** that the thing the
+  price bought is a real measurement, since a fifth run through an unexercised script would have
+  been measuring the script.
 - **The build half cannot be measured from a warm machine**, and every contributor's is warm. The
   first run should be from a container with nothing installed, or the B-rows measure nothing. Run 2
   came closest and still fell short: the maintainer's own `cargo --version` inside the repository had
@@ -852,6 +1076,46 @@ the stranger's answers are recorded as it gave them.
   and it changes the instrument: run 1's stranger produced friction, run 2's produced friction it
   knew was the deliverable. The log is worth more than the loss, but the two runs are not
   measurements of quite the same thing.
+- **The harness isolates a tree and cannot isolate a machine, and run 5 hit that in its first ten
+  minutes.** `nife-dev` is an account-wide `rustup` link. The script records it before the run and
+  restores it after, which is necessary and is not sufficient: *during* the run, the clone's first
+  `script/test` compiled `std` out of whichever worktree built the farm last, and `std-aborts`
+  failed naming two files and two line numbers **inside another checkout on this machine**. The task
+  text says *"the repository is in ./nife and it is the only thing you have; do not look for another
+  checkout on this machine"*, so the run asked for something the machine cannot supply, and the
+  stranger broke the instruction by running `ls -la` against the path its own build had printed. It
+  disclosed that unprompted. **Two honest options**, both above a lane: pre-warm the clone's farm
+  before handing it over, or say in the task text that the machine is shared, which costs the
+  comparability of five runs' worth of identical text. Recorded in `script/stranger-test`'s `BUGS`
+  and in notes/std.md's, where the missing `farm_dir()` assertion is the underlying defect.
+- **The stranger read the harness, which the harness's own `BUGS` had called luck.** That entry said
+  "no run has opened the harness; that is luck rather than design", and run 5 falsified it about
+  thirty minutes in. It was not curiosity: the foreign path above appeared in the build output and
+  `script/stranger-test` was the only file in the tree containing that string, so grep sent it
+  there. The file describes the isolation, the withholding, the shims, the disclosure and the four
+  previous runs, and its paragraph about restoring the `nife-dev` link is what let the stranger
+  diagnose the failure instead of committing a false statement to `ABORTS_ACCEPTED`. **So the
+  harness contaminated the run and then rescued it**, and a future run that hits the same path will
+  do the same thing. Fixing the machine-global defect above closes this one too, which is the reason
+  to price them together.
+- **Telling the stranger it is measured does not remove what knowing does to it.** This is run 4's
+  handoff 5 acted on and measured, and the result is that disclosure buys honesty rather than
+  cleanliness. Run 5 knew from the first message and from `README.md` inside the first minutes, and
+  by its own account the knowledge **chose its program**: it wrote in its journal, before picking,
+  that repeating the earlier walks' shape "would measure nothing", and deliberately selected a
+  manifest combination nothing in the tree had used. Its own reading is the one to keep: *"That is
+  not what a fresh contributor does. A fresh contributor writes another `doubler`, finds nothing,
+  and that null result is data the repository does not get from me."* It also performed after being
+  asked in the task text not to, and named the style it had adopted. **Keep the disclosure**, since
+  the alternative is the same effect undisclosed, and stop expecting a run to produce a naive walk
+  of `notes/adding-a-program.md`. The naive walk is the thing five runs of instrumentation have
+  spent.
+- **The rubric ages, and M2 is the row to watch rather than amend.** Three of five runs cannot
+  answer it, and the two that could each did it from a page they happened to open
+  (`notes/std.md` for run 4) rather than from `notes/net.md`, which no run has ever opened. The row
+  is not wrong and the tree's answer is not missing; the answer is unreachable by anyone doing
+  ordinary work. Run 5's lane did not amend the table, on purpose, because run 4's lane amended it
+  before scoring against it and said in its own contamination section that this made things worse.
 - **Four runs by four agents is not four data points about a person.** All four were agents, all four read
   further before asking than a human would, and all four were told nobody was available. The note's
   standing caveat holds and gets no weaker with repetition: every number here is a lower bound.
