@@ -29,8 +29,9 @@ const NET_TEST_UDP_TFTP: u64 = 4;
 const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// The one port the inbound gate is granted (milestone 107); the runners forward a host port to
 /// it. Both ISA legs use the same number and the same host port, because they run one after the
-/// other and never hold it at once.
-const NET_LISTEN_PORT: u16 = 7778;
+/// other and never hold it at once. From `socket_proto::fixture` since milestone 64: see the
+/// aarch64 twin for why the number has one definition.
+const NET_LISTEN_PORT: u16 = socket_proto::fixture::LISTEN_PORT;
 /// The fixed UDP ports the mDNS gate is granted (milestone 55): RFC 6762's 5353, which
 /// `mdns_responder` holds for the whole run, and its neighbour, which `socket_test_client` uses to
 /// prove that a granted port binds and is exclusive. See the aarch64 twin for why they are two.
@@ -667,8 +668,15 @@ fn std_exerciser_image() -> &'static [u8] {
     program("std_exerciser").expect("no std_exerciser program in the initrd archive")
 }
 
-/// The exact transcript `std_exerciser` prints when it is granted the network.
-const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
+/// The exact transcript `std_exerciser` prints when it is granted the network **and refused every
+/// listening port**. See the aarch64 twin for why `listen refused` is milestone 64's negative
+/// control and why it costs this boot nothing.
+const STD_NET_EXPECTED: &[u8] = b"std net on nife\nlisten refused\nudp ok\ntcp echo ok\n";
+
+/// The exact transcript the same binary prints when its stack **is** granted the listening port
+/// (milestone 64's inbound half). See the aarch64 twin for what each of the four lines claims.
+const STD_LISTEN_EXPECTED: &[u8] =
+    b"std net on nife\nlisten ok\ndenied refused\nin use refused\nserved 2\n";
 
 /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
 /// two): the riscv twin of the aarch64 std-net test. The `std_exerciser` std binary, given the
@@ -677,14 +685,39 @@ const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
 #[test_case]
 fn std_net_runs_over_the_socket_contract() {
-    let Some((report, net)) =
-        virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
-    else {
+    let Some((report, net)) = virtio_service::start_net_std(
+        net_stack_image(),
+        std_exerciser_image(),
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
 
     assert_std_transcript(report, STD_NET_EXPECTED, "std net");
+    net.release_or_fail("a net test's net_stack");
+}
+
+/// **A `std::net::TcpListener` serves a port it was granted, on the second ISA** (milestone 64's
+/// inbound half; the §19 parity twin of `tests::a_std_program_serves_a_granted_listening_port`,
+/// which carries the full reasoning).
+///
+/// The same `std_exerciser` binary, the same grant, the same host prober, and the same four-line
+/// transcript. The PAL is architecture-independent by construction, so what this leg actually
+/// guards is the two hand-written `svc`/`ecall` wrappers underneath it and the riscv SMP scatter
+/// that has broken this stack's timing twice.
+#[test_case]
+fn a_std_program_serves_a_granted_listening_port() {
+    let Some((report, net)) = virtio_service::start_net_std(
+        net_stack_image(),
+        std_exerciser_image(),
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+
+    assert_std_transcript(report, STD_LISTEN_EXPECTED, "std listen");
     net.release_or_fail("a net test's net_stack");
 }
 

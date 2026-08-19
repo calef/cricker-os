@@ -13,13 +13,47 @@
 //! semantics `std::net`'s default blocking API wants. The target is single-threaded, so a program
 //! can hold several sockets (up to `MAX_SOCKETS`) but can only ever have one operation in flight.
 //!
+//! ## The inbound half: `TcpListener` is a held authority, not a call that happens to work
+//!
+//! `bind` is `OP_LISTEN` and `accept` is `OP_ACCEPT` (milestone 64, the contract's half landed in
+//! milestone 107). The part worth understanding before reading the code is that **a listening port
+//! is a grant this program was given, or was not**, and nothing in the program decides which:
+//! `net_stack` is spawned with a **listen grant** (`netproto::listen_grant`), an inclusive port
+//! range, and refuses `LISTEN` outside it. `NO_LISTEN_GRANT` is the default, so a std program on
+//! a stack nobody granted ports to is refused **every** port. That is why `bind` has a
+//! `PermissionDenied` arm at all, and it is the one error here that a caller cannot fix by trying
+//! somewhere else: no other port helps, because the answer was about authority, not about the port.
+//!
+//! Three answers, three `ErrorKind`s, and the split is the contract's rather than a mapping
+//! invented here (`netproto`'s `LISTEN_*` vocabulary exists for exactly this reason):
+//!
+//! | contract | `std::io::ErrorKind` | what a caller should do |
+//! |---|---|---|
+//! | `LISTEN_GRANTED` | (success) | serve |
+//! | `LISTEN_DENIED` | `PermissionDenied` | ask whoever spawned you for the port; do not retry |
+//! | `LISTEN_IN_USE` | `AddrInUse` | pick another port |
+//!
+//! **A listener and a connection are two objects, and this PAL keeps them apart** because the
+//! contract does (notes/net.md, "A listener is not a connection"). A listener holds a socket id and
+//! **no shared frame at all**, since no bytes ever cross on it; `accept` allocates a *second* id,
+//! attaches that one's frame, and asks `OP_ACCEPT` to install the connection there. `net_stack`
+//! refuses an accept into the listener's own id, so the POSIX move of letting a listening descriptor
+//! become the connection in place is not expressible from here.
+//!
+//! The listener **re-arms inside `ACCEPT`**, so `for stream in listener.incoming()` works and serves
+//! connections one after another indefinitely. What it does not do is serve two at once: the target
+//! is single-threaded and the contract is one exchange per `CALL`, so a second peer arriving while
+//! this program is busy on an earlier connection gets a RST rather than a wait (the backlog is one
+//! connection deep). See the `BUGS` list below.
+//!
 //! ## What is honestly Unsupported, and why
-//! - **`TcpListener`.** The contract **does** have LISTEN and ACCEPT since milestone 107, and this
-//!   is now a gap in the PAL rather than in the contract: `bind` still returns `Unsupported`. What
-//!   it needs is small and mechanical (`bind` -> `OP_LISTEN` on a socket id this PAL allocates,
-//!   `accept` -> `OP_ACCEPT` into a second id with a frame attached), plus a **listen grant** on the
-//!   stack this program is spawned with, since a net server refuses every port it was not granted.
-//!   See notes/net.md, "The inbound half".
+//! - **An accepted connection's peer address.** `accept` must return a `SocketAddr` and the
+//!   contract's `OP_ACCEPT` reply carries no peer, so what comes back is `0.0.0.0:0` and
+//!   `peer_addr()` on an accepted stream reports the same. That is a placeholder and it is named
+//!   as one here rather than dressed up: a server that logs its peers logs zeros on nife.
+//!   Reporting the real peer means changing what two programs agree on (a second reply word, or the
+//!   frame's dead `dst` fields the way a UDP `RECV` already uses them), which is not a PAL
+//!   decision. See notes/net.md.
 //! - **Non-blocking mode and read/write timeouts.** The contract is blocking-only; there is no
 //!   poll verb. `set_nonblocking(true)` and `set_*_timeout(Some(..))` return `Unsupported`;
 //!   `set_nonblocking(false)` and the `None` timeouts (which mean "block") succeed.
@@ -549,56 +583,187 @@ impl fmt::Debug for TcpStream {
     }
 }
 
-// --- TcpListener: the contract has LISTEN/ACCEPT (milestone 107); this PAL does not bind them yet.
-// --- See the Unsupported list at the top for what binding them takes. (notes/net.md) ------------
+// --- TcpListener: the inbound half (milestone 64, on milestone 107's contract) ----------------
 
-pub struct TcpListener(!);
+/// A **listening port**, which is an authority this program was granted and not a call that
+/// happened to succeed. See this module's header for the three answers `bind` can get and what a
+/// caller should do about each.
+///
+/// It holds a socket id and nothing else: no shared frame is ever attached to a listener, because
+/// no bytes cross on it (DECISIONS §25's decision that the frame is the granted resource; a
+/// listener has nothing to grant). `port` is kept so `socket_addr` can answer without a contract
+/// round trip, which the contract has no verb for anyway.
+pub struct TcpListener {
+    id: u64,
+    port: u16,
+}
 
 impl TcpListener {
-    pub fn bind<A: ToSocketAddrs>(_: A) -> io::Result<TcpListener> {
-        unsupported()
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
+        let mut last = None;
+        for addr in addr.to_socket_addrs()? {
+            match TcpListener::bind_one(&addr) {
+                Ok(l) => return Ok(l),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            io::const_error!(io::ErrorKind::InvalidInput, "no addresses to bind to")
+        }))
     }
 
+    /// `OP_LISTEN` on a freshly claimed socket id.
+    ///
+    /// **The bound address is ignored and the port is not**, which is the honest reading of what
+    /// this stack can do: `net_stack` holds exactly one interface with one DHCP-assigned address,
+    /// so there is no second address a listener could be narrowed to and `0.0.0.0:P` is what every
+    /// bind here means. The port, by contrast, is the whole authority, so it is sent as asked and
+    /// refused as asked.
+    ///
+    /// **No frame is attached, deliberately.** `ensure_attached` is what `open` does for a socket
+    /// that carries bytes; a listener carries none, and `net_stack` records `va: 0` for it. The
+    /// frame arrives at `accept` time, on the *connection's* id.
+    fn bind_one(addr: &SocketAddr) -> io::Result<TcpListener> {
+        let (_ip, port) = v4(addr)?;
+        let id = alloc_id().ok_or_else(|| {
+            io::const_error!(io::ErrorKind::Other, "too many open sockets (contract limit)")
+        })?;
+        let (r0, _) = rt::call(STACK, req(OP_LISTEN, id), port as u64);
+        if is_syscall_err(r0) {
+            free_id(id);
+            return Err(io::Error::UNSUPPORTED_PLATFORM);
+        }
+        match r0 {
+            LISTEN_GRANTED => Ok(TcpListener { id, port }),
+            LISTEN_DENIED => {
+                free_id(id);
+                // The capability answer. Not `AddrInUse` and not a retry: this stack was never
+                // granted this port, and no other port will help unless it was granted too.
+                Err(io::const_error!(
+                    io::ErrorKind::PermissionDenied,
+                    "this program's net server was not granted that listening port"
+                ))
+            }
+            LISTEN_IN_USE => {
+                free_id(id);
+                Err(io::const_error!(
+                    io::ErrorKind::AddrInUse,
+                    "another socket already listens on that port"
+                ))
+            }
+            _ => {
+                free_id(id);
+                Err(io::const_error!(
+                    io::ErrorKind::Other,
+                    "the net server refused the listen"
+                ))
+            }
+        }
+    }
+
+    /// The address this listener is bound to: `0.0.0.0` and the port that was granted.
+    ///
+    /// The port half is a fact this PAL knows (it asked for it and was granted it); the address
+    /// half is not fabricated but *true*, in the same sense a POSIX bind to `INADDR_ANY` reports
+    /// it: the listener is not narrowed to any of the interface's addresses, because the contract
+    /// offers no way to narrow it. `TcpStream::socket_addr` stays `Unsupported` for the opposite
+    /// reason: there the local endpoint is an ephemeral port `net_stack` picked and never reported.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        self.0
+        Ok(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            self.port,
+        )))
     }
 
+    /// **`OP_ACCEPT`: block until a peer connects, and take the connection at a second socket id.**
+    ///
+    /// The second id is the point rather than an implementation detail. A listener and a connection
+    /// are two objects here, so `accept` claims a *new* id, attaches that id's shared frame (which
+    /// the listener never had), and asks `net_stack` to install the connection there. `net_stack`
+    /// refuses `target == listener`, so this PAL could not conflate them even if it tried.
+    ///
+    /// The listener re-arms inside the same call, before it returns, so accepting in a loop works
+    /// and a server does not go deaf after one connection.
+    ///
+    /// **The peer address is `0.0.0.0:0`**: the contract's reply carries no peer. Named in this
+    /// module's header rather than hidden, because a caller who logs it will log zeros.
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        self.0
+        let conn = alloc_id().ok_or_else(|| {
+            io::const_error!(io::ErrorKind::Other, "too many open sockets (contract limit)")
+        })?;
+        // The connection carries bytes, so it needs the frame the listener never had. Attaching it
+        // BEFORE the accept is the contract's requirement, not an ordering preference: `OP_ACCEPT`
+        // refuses a target with no frame, because it would have nowhere to deliver the first read.
+        if let Err(e) = ensure_attached(conn) {
+            free_id(conn);
+            return Err(e);
+        }
+        let (r0, _) = rt::call(STACK, req(OP_ACCEPT, self.id), conn);
+        if is_syscall_err(r0) {
+            free_id(conn);
+            return Err(io::Error::UNSUPPORTED_PLATFORM);
+        }
+        if r0 != REP_OK {
+            free_id(conn);
+            // Nobody connected inside the server's bounded wait, or the handshake was aborted. The
+            // listener is still armed either way, so this is a retryable "try again", not a fault.
+            return Err(io::const_error!(
+                io::ErrorKind::WouldBlock,
+                "no connection arrived before the net server's bounded wait expired"
+            ));
+        }
+        let peer = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+        Ok((TcpStream { id: conn, peer }, peer))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
-        self.0
+        // A second holder of one listening port is a second holder of the authority, and the
+        // contract has no verb that would let `net_stack` know about it. Refuse rather than mint.
+        unsupported()
     }
 
     pub fn set_ttl(&self, _: u32) -> io::Result<()> {
-        self.0
+        Ok(())
     }
 
     pub fn ttl(&self) -> io::Result<u32> {
-        self.0
+        Ok(64)
     }
 
-    pub fn set_only_v6(&self, _: bool) -> io::Result<()> {
-        self.0
+    pub fn set_only_v6(&self, only_v6: bool) -> io::Result<()> {
+        // net_stack is IPv4-only, so "v6 only" is the one setting that cannot be honoured and
+        // "v4 as well" is already true. Accepting `false` and refusing `true` says both.
+        if only_v6 { unsupported() } else { Ok(()) }
     }
 
     pub fn only_v6(&self) -> io::Result<bool> {
-        self.0
+        Ok(false)
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        self.0
+        Ok(None)
     }
 
-    pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-        self.0
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        if nonblocking { unsupported() } else { Ok(()) }
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        // `OP_CLOSE` on the listener id: `net_stack` drops the parked smoltcp socket and the port
+        // becomes bindable again. The grant is untouched, because the grant was never the
+        // listener's to hold.
+        abandon(self.id);
     }
 }
 
 impl fmt::Debug for TcpListener {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpListener")
+            .field("socket", &self.id)
+            .field("port", &self.port)
+            .finish()
     }
 }
 

@@ -122,10 +122,15 @@ const NET_TEST_UDP_TFTP: u64 = 4;
 #[cfg(target_arch = "aarch64")]
 const NET_TEST_TCP_ACCEPT: u64 = 5;
 /// The one port the inbound gate is granted (milestone 107). The runners forward a host port to
-/// exactly this one, and the client asks for 8080 as well to prove the grant refuses. Named here
-/// because the *spawn service* is what grants it, which is the point.
+/// exactly this one, and the client asks for `fixture::DENIED_PORT` as well to prove the grant
+/// refuses. Named here because the *spawn service* is what grants it, which is the point.
+///
+/// Taken from `socket_proto::fixture` rather than spelled again (milestone 64): three binaries and
+/// this test have to agree on the number, and a literal repeated per call site is the shape rule 7
+/// exists to retire. The runners' `hostfwd` spells it a second time because a shell script cannot
+/// read a Rust crate, and that drift is loud (the prober reports the guest served none).
 #[cfg(target_arch = "aarch64")]
-const NET_LISTEN_PORT: u16 = 7778;
+const NET_LISTEN_PORT: u16 = socket_proto::fixture::LISTEN_PORT;
 /// The fixed UDP ports the mDNS gate is granted (milestone 55), RFC 6762's 5353 and its
 /// neighbour. Named here for the same reason as the listen port: the spawn service grants them,
 /// and a program cannot ask for what it was not given.
@@ -1839,10 +1844,26 @@ fn std_exerciser_image() -> &'static [u8] {
     program("std_exerciser").expect("no std_exerciser program in the initrd archive")
 }
 
-/// The exact transcript `std_exerciser` prints when it is granted the network. Pinned so a drift in
-/// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
+/// The exact transcript `std_exerciser` prints when it is granted the network **and refused every
+/// listening port**. Pinned so a drift in the net PAL, the contract, or the demo is a loud diff
+/// rather than a mystery.
+///
+/// `listen refused` is milestone 64's negative control and it costs this boot nothing: the stack
+/// this program is spawned with carries `socket_proto::NO_LISTEN_GRANT`, so
+/// `std::net::TcpListener::bind` answers `PermissionDenied`, and the program says so on its way
+/// past rather than quietly running a smaller demo. A lane that broke the grant check open would
+/// turn this line into `listen ok` and fail here, in a transcript comparison, rather than passing
+/// with more authority than it was given.
 #[cfg(target_arch = "aarch64")]
-const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
+const STD_NET_EXPECTED: &[u8] = b"std net on nife\nlisten refused\nudp ok\ntcp echo ok\n";
+
+/// The exact transcript the same binary prints when its stack **is** granted the listening port
+/// (milestone 64's inbound half). Four lines, and each is a separate claim: the granted port binds,
+/// a port outside the grant is refused as a matter of authority, the granted port is exclusive, and
+/// the listener served `socket_proto::fixture::ROUNDS` connections one after another.
+#[cfg(target_arch = "aarch64")]
+const STD_LISTEN_EXPECTED: &[u8] =
+    b"std net on nife\nlisten ok\ndenied refused\nin use refused\nserved 2\n";
 
 /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `std_exerciser`
 /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
@@ -1858,14 +1879,57 @@ const STD_NET_EXPECTED: &[u8] = b"std net on nife\nudp ok\ntcp echo ok\n";
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn std_net_runs_over_the_socket_contract() {
-    let Some((report, net)) =
-        virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
-    else {
+    let Some((report, net)) = virtio_service::start_net_std(
+        net_stack_image(),
+        std_exerciser_image(),
+        socket_proto::NO_LISTEN_GRANT,
+    ) else {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
 
     assert_std_transcript(report, STD_NET_EXPECTED, "std net");
+    net.release_or_fail("a net test's net_stack");
+}
+
+/// **A `std::net::TcpListener` serves a port it was granted, and refuses one it was not**
+/// (milestone 64's inbound half, on milestone 107's contract).
+///
+/// The ordinary `std_exerciser` binary, spawned over a stack whose listen grant is exactly
+/// `NET_LISTEN_PORT`, binds that port through `std::net`, accepts connections a **host** process
+/// opens through QEMU's `hostfwd`, reads each request and composes an answer. The program names no
+/// capability and no socket id; it calls `bind`, `accept`, `read_exact` and `write_all`, which is
+/// what a Rust server is written out of. This is the difference between "a crate compiles" and "a
+/// server runs", and it is what milestone 55's Samba-shaped workload stands on.
+///
+/// **Two connections, and the second is the load-bearing one.** A listener that accepts once and
+/// goes deaf would pass a one-round gate and is precisely what a file server cannot use; the re-arm
+/// happens inside `ACCEPT` (notes/net.md) and nothing but a second `accept()` proves it.
+///
+/// **The refusals ride in this same spawn rather than in a test of their own**, which is the
+/// machine's call and not a preference: a net test spends minutes in `net_stack`'s userspace
+/// smoltcp poll, so a boot is the expensive unit. `denied refused` is
+/// `socket_proto::fixture::DENIED_PORT`, outside the grant this stack carries, answered
+/// `PermissionDenied`; `in use refused` is the granted port asked for twice, answered `AddrInUse`.
+/// The **whole-stack** refusal is the sibling test above, whose stack carries no grant at all.
+///
+/// The host's half is `xtask`'s inbound prober, which requires its own bytes back from the guest
+/// and fails the leg if nobody answered. The guest's half covers "the connection was served"; the
+/// host's covers "and what came back was the guest's own answer", which the guest cannot know.
+// RISC-V twin: `riscv_virtio_tests::a_std_program_serves_a_granted_listening_port`.
+#[cfg(target_arch = "aarch64")]
+#[test_case]
+fn a_std_program_serves_a_granted_listening_port() {
+    let Some((report, net)) = virtio_service::start_net_std(
+        net_stack_image(),
+        std_exerciser_image(),
+        socket_proto::listen_grant(NET_LISTEN_PORT, NET_LISTEN_PORT),
+    ) else {
+        crate::println!("    (no virtio-net device attached; skipping)");
+        return;
+    };
+
+    assert_std_transcript(report, STD_LISTEN_EXPECTED, "std listen");
     net.release_or_fail("a net test's net_stack");
 }
 

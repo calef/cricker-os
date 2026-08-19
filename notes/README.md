@@ -202,6 +202,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
   endpoint, time from the virtual counter, `panic!` faults, `thread::spawn` honestly `Unsupported`,
   and (phase two) `std::net` bound to net_stack's socket contract and `std::fs` bound to the FS service.
+  Since milestone 64 that includes the **inbound** half: `TcpListener` binds a port the program's
+  stack was *granted*, and the same binary prints `listen refused` on a stack that was granted none.
   What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
@@ -557,7 +559,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   where the device writes into driver memory, proved by the same address-bounding check. Then the
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
-  follows.
+  follows. The inbound half (milestone 107) is a listener that is not a connection and a port that
+  is a grant; milestone 64 put `std::net::TcpListener` on it, so an ordinary Rust program can serve.
 - [SMB: the network file service a Mac can mount](smb.md): milestone 54, **BUILT 2026-08-17** and the
   head of the customer path. The `smb_proto` wire crate (SMB 2.1, NTLMSSP under minimal SPNEGO, the
   per-connection state machine as host-testable pure logic), the `smb_server` adapter holding one

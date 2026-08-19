@@ -7,8 +7,13 @@ name = "fs_proto"
 version = "0.1.0"
 
 [[package]]
+name = "socket_proto"
+version = "0.1.0"
+
+[[package]]
 name = "std_exerciser"
 version = "0.1.0"
 dependencies = [
  "fs_proto",
+ "socket_proto",
 ]

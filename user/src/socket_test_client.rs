@@ -87,8 +87,12 @@ const DNS_TXID: u16 = 0x1234;
 /// `guestfwd` the outbound gate uses. `DENIED_PORT` is deliberately *outside* the listen grant the
 /// spawn service hands this stack, so asking for it proves the grant refuses rather than that
 /// nothing happened to bind.
-const LISTEN_PORT: u64 = 7778;
-const DENIED_PORT: u64 = 8080;
+///
+/// Both come from `socket_proto::fixture` since milestone 64, when `std_exerciser` became a second
+/// binary that has to agree with this one about which port is granted and which is not. Rule 7:
+/// what two binaries agree on is a crate.
+const LISTEN_PORT: u64 = socket_proto::fixture::LISTEN_PORT as u64;
+const DENIED_PORT: u64 = socket_proto::fixture::DENIED_PORT as u64;
 /// The listener's socket id and the accepted connection's. Two ids, because they are two objects:
 /// the listener never carries a byte and never gets a frame, and the connection is where the frame
 /// is. Keeping them apart is the contract, not a convenience.
@@ -96,9 +100,11 @@ const LISTEN_SID: u64 = 0;
 const CONN_SID: u64 = 1;
 /// What the host sends in and what the guest answers with. Different strings on purpose: an echo
 /// would pass even if the guest were somehow reflecting the host's own bytes, and the point of this
-/// gate is that the guest *composed* an answer to a connection it did not make.
-const IN_MSG: &[u8] = b"nife-in!";
-const OUT_MSG: &[u8] = b"nife-out!";
+/// gate is that the guest *composed* an answer to a connection it did not make. Shared with
+/// `std_exerciser`'s inbound half through `socket_proto::fixture`; `xtask`'s prober deliberately
+/// keeps its own literals, so the two sides of the exchange are written independently.
+const IN_MSG: &[u8] = socket_proto::fixture::IN_MSG;
+const OUT_MSG: &[u8] = socket_proto::fixture::OUT_MSG;
 
 /// The fixture the runners put in slirp's TFTP directory, and its exact contents. Both sides are
 /// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner-*.sh).
