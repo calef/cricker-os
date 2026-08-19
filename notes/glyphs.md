@@ -60,6 +60,138 @@ Two details the font's own tests pin, because both are invisible in review:
   with a dropped row would show up here as a collision or a hole and nowhere else until it was on a
   screen.
 
+### The options, with pictures (2026-08-19, lane `bench/font-options`)
+
+**First, a correction to the framing above.** The paragraph about Terminus and Spleen reads as
+though the font were a compromise forced by licensing. It is not: `font8x8` is public domain, which
+was verified for this survey by opening the upstream project rather than by recalling it. Its
+`README` says, of the header files this table came from:
+
+```text
+Author: Daniel Hepper <daniel@hepper.net>
+License: Public Domain
+```
+
+and the credits below that carry Marcel Sondaar's original header, which says the same thing and
+names IBM's public-domain VGA fonts as the source. **Nothing in this tree owes an obligation to
+anyone for the letters on the screen**, so a change of font would be a decision about how it looks.
+
+**And a reversal on top of that correction, which is calef's** (2026-08-19). The old rule refused
+any font with an attribution obligation, on the ground that a bitmap font is compiled into the image
+and its licence therefore travels with the artefact. The first half of that reasoning stands; the
+conclusion does not. He read OFL 1.1 and his verdict was that the obligation "actually doesn't look
+onerous", so **obliging licences are in scope and priced rather than refused.** That matters,
+because the public-domain corner of this field is small and the well-drawn fonts mostly live under
+the OFL.
+
+**The specimen sheet is how the aesthetic question gets answered.** The crate's design claim is that
+the expected picture is a pure function, which is what lets the terminal, the kernel test and the
+host-side scanout check agree about a letter. Spend the same property on the choice itself and a
+font stops being an argument:
+
+```text
+cargo run -p bitfont --example specimen                          # what ships
+cargo run -p bitfont --example specimen -- --dots                 # one character per pixel
+cargo run -p bitfont --example specimen -- --font ter-u16n.bdf --name terminus-16
+cargo run -p bitfont --example specimen -- --font bench/font-options/hand-drawn-8x8.art
+```
+
+It reads the three formats a bitmap font actually arrives in: `.hex` (GNU Unifont), `.bdf` (Adobe,
+which is what Terminus, Spleen and every X11 bitmap font ship as), and the `.art` `#`/`.` picture
+that is the only sane way to author one by hand. Every font gets the same sample text, chosen for
+where small fonts fail: `Il1|` and `O0` (the confusions that ruin a hex dump), `rn` against `m` (the
+one that makes prose *wrong* rather than ugly), the descenders `g q y p j`, and two lines of
+ordinary prose and ordinary code, because a font that looks good on a pangram and bad in a sentence
+is bad.
+
+**The candidates, what they cost, and what they oblige.** "Grid" is the decisive practical column:
+characters by rows on the display ladder's 128x64 scanout, which is 16x8 today.
+
+| Font | Cell | Table | Grid | Licence | Reserved name |
+|---|---|---|---|---|---|
+| `font8x8` (ships) | 8x8 | 1024 B | 16x8 | Public domain | none |
+| hand-drawn | 8x8 | 1024 B | 16x8 | ours | none |
+| `unscii-8` (+`-alt`, `-thin`, `-mcr`) | 8x8 | 1024 B | 16x8 | Public domain / CC0 | none |
+| `spleen-5x8` | 5x8 | 1024 B | **25x8** | BSD-2-Clause | none |
+| `terminus-12` | 6x12 | 1536 B | 21x5 | OFL-1.1 | **"Terminus Font"** |
+| `terminus-14` | 8x14 | 1792 B | 16x4 | OFL-1.1 | **"Terminus Font"** |
+| `gohufont-14` | 8x14 | 1792 B | 16x4 | WTFPL v2 | none |
+| `terminus-16` | 8x16 | 2048 B | 16x4 | OFL-1.1 | **"Terminus Font"** |
+| `spleen-8x16` | 8x16 | 2048 B | 16x4 | BSD-2-Clause | none |
+| `unscii-16` | 8x16 | 2048 B | 16x4 | Public domain / CC0 | none |
+
+Where each licence was read, since a claim from memory is a claim to mark as such: `font8x8`'s
+`README` at `github.com/dhepper/font8x8`; unscii's `README.md`, whose line 18 says "You can consider
+it Public Domain (or CC-0) except for the files derived from ... Unifont (unifont.hex, hex2bdf.pl,
+unscii-16-full.*) which fall under GPL", an exception that does not touch `unscii-8` or `unscii-16`;
+Terminus's own `OFL.TXT` inside `terminus-font-4.49.1.tar.gz`, which opens "Copyright (C) 2020
+Dimitar Toshkov Zhekov, with Reserved Font Name "Terminus Font""; Spleen's `LICENSE` at
+`github.com/fcambus/spleen`, two-clause BSD; and gohufont's `COPYING-LICENSE`, whose entire terms
+are "0. You just DO WHAT THE FUCK YOU WANT TO."
+
+**What an obligation would actually cost us**, in the order that matters:
+
+- **The Reserved Font Name is the expensive clause, and only Terminus has one.** Being picky about
+  fonts means eventually fixing a glyph, and under the OFL the moment a glyph changes the table is a
+  Modified Version, which may not carry the reserved name without written permission. So adopting
+  Terminus means either never touching it or renaming our copy. Spleen (BSD-2) and gohufont (WTFPL)
+  reserve nothing, and a redrawn glyph costs nothing beyond the notice.
+- **The OFL has no cure period.** Its own words are that the licence "becomes null and void" if a
+  condition is not met, so shipping the notice has to be a mechanism rather than an intention.
+- **Where the notice would live**, three places, because the obligation attaches to the image and
+  not to the source tree. The font's source and its `LICENSE` in `vendor/`, registered in
+  `vendor/README.md` the way the RedoxFS pin is. The identifier in `deny.toml`'s shared licence
+  policy, with the honest caveat that `script/supply-chain` checks the **cargo graph**, so a font
+  transcribed into `crates/bitfont/src/glyphs.rs` is on the register rather than on the gate. And a
+  page in milestone 40's documentation store, so a machine running nife carries the text it owes.
+
+**What is still excluded.** The Linux console's `lib/fonts/font_8x16.c` is the familiar IBM VGA
+shape, and its first line is `// SPDX-License-Identifier: GPL-2.0`; copyleft on a table compiled
+into every binary is a different question from attribution, and it is out. Fixedsys Excelsior is
+called public domain by unscii's `README`, but that is a third party's summary and
+`fixedsysexcelsior.com` does not resolve (checked 2026-08-19), so the claim cannot be read at its
+source. **Ambiguous is treated as obliged.**
+
+**What the shapes measure**, over the 52 letters, straight from the tables:
+
+| Font | Ink per letter | Left edge sigma | Width sigma | Cap | x-height | Descender |
+|---|---|---|---|---|---|---|
+| `font8x8` | 24.6 | 0.27 | 0.79 | 7 | 5 | 1 |
+| hand-drawn | 15.5 | 0.19 | 0.61 | 7 | 5 | 1 |
+| `unscii-8` | 23.2 | 0.44 | 0.61 | 7 | 5 | 1 |
+| `unscii-8-thin` | 14.4 | 0.27 | 0.77 | 7 | 5 | 1 |
+| `spleen-5x8` | 11.8 | 0.23 | 0.30 | 6 | 5 | 1 |
+| `terminus-12` | 15.6 | 0.34 | 0.52 | 8 | 6 | 2 |
+| `terminus-14` | 20.0 | 0.41 | 0.80 | 10 | 7 | 2 |
+| `gohufont-14` | 19.1 | 0.44 | 0.74 | 9 | 7 | 3 |
+| `terminus-16` | 20.1 | 0.41 | 0.80 | 10 | 7 | 3 |
+| `spleen-8x16` | 33.6 | 0.46 | 0.74 | 10 | 7 | 3 |
+| `unscii-16` | 34.6 | 0.38 | 0.52 | 11 | 7 | 3 |
+
+Ink per letter is weight, the two sigmas are consistency (which is what the eye reads as rhythm
+rather than as any one glyph), and the descender column is how many rows a `g` gets below the
+baseline an `x` sits on. **Descender depth is what separates the sizes**, and it is why every 8x8
+font here, ours included, has a cramped `g`: one row against three.
+
+**The cell size is a screen decision before it is a taste decision.** The scanout is 128x64, so an
+8x8 cell gives the 16x8 grid recorded under Honest limits, and any 8x14 or 8x16 font gives 16x4.
+Four rows of text is not a terminal. Two candidates dodge that entirely by being narrower rather
+than shorter: Terminus 6x12 gives 21x5, and Spleen 5x8 gives **25x8**, which is more columns than
+today at the same number of rows. A narrower cell costs nothing but `GLYPH_W`, which is a constant
+in `crates/bitfont` that three parties read.
+
+**Authoring our own is priced too**, because it was raised as an option and no existing sample can
+answer it. `bench/font-options/hand-drawn-8x8.art` is 95 printable glyphs drawn for this survey, in
+the `#`/`.` format the specimen tool reads, at exactly the cost of any other 8x8 font: 128 glyphs by
+8 rows is 1024 bytes, and 8x16 would be 2048. The drawing cost was one lane for 8x8; 8x16 would be
+more than twice that, because sixteen rows is where drawing skill stops being hidden by the grid.
+The honest assessment of the result is in the `BUGS` note below, and the short version is that it is
+consistent and plain rather than good.
+
+**None of these needs a loader, a rasteriser, a filesystem or an allocator**, which is the property
+that keeps them candidates at all. Anything that did would break the rendered picture as a pure
+function, and with it the three-party agreement that proves the text on the screen.
+
 ## The VT engine: sans-IO, and checked against the real line discipline
 
 `crates/video_terminal` keeps the grid: bytes in, a character grid out, plus the rectangle that changed. It holds
@@ -271,6 +403,28 @@ Stated plainly, because a demonstrator's caveats are part of the deliverable.
   recorded in `crates/pci` so that a machine carrying both would be a known problem rather than a
   surprise. We attach only a keyboard.
 - **No key repeat of our own.** The device's repeats are honoured; nothing here generates them.
+- **The hand-drawn candidate is competent, not good.** `bench/font-options/hand-drawn-8x8.art` is
+  consistent (the tightest left sidebearing in the survey) and light, and three glyphs are weak
+  enough to name where a reader meets them: `$` is mushy where the stem crosses the S, `&` reads as
+  a blob, and the shoulder of `r` sits a pixel clear of its stem so the arm looks detached. It is a
+  drawn candidate for comparison, not a proposal, and nothing in the tree uses it.
+- **The specimen tool clips wide glyphs rather than refusing them.** Both the `.hex` and `.bdf`
+  readers keep the leftmost byte of a row, so a 16-pixel-wide glyph is shown as its left half, which
+  looks like a clipped font instead of an error. The `.hex` height is taken as the commonest row
+  count among the letters, because `unscii-8.hex` stores `U+0000` with sixteen rows in an eight-row
+  font and the maximum is therefore a lie. The `.bdf` reader uses the bitmap and the bounding boxes
+  only: `SWIDTH`, `DWIDTH` and the property block are ignored, which is right for a fixed-pitch cell
+  and wrong for anything else. Half-block output is only faithful in a terminal that draws
+  `U+2580`/`U+2584` at full cell height; `--dots` has no such dependency and is the tie-breaker.
+- **A font narrower than the cell is drawn at its own advance, and that is a choice worth knowing.**
+  Spleen 5x8 and Terminus 6x12 are narrower than eight pixels, and drawing them on an eight-pixel
+  pitch makes them look loose in a way that is the tool's fault rather than the font's. The tool
+  takes the advance from the font's own bounding box. What it does **not** do is prove that
+  `crates/bitfont` would work at that width: `GLYPH_W` is a constant three parties read, and moving
+  it is a change to the crate rather than to a table.
+- **The 8x16 authoring option is priced but not drawn.** There is a hand-drawn 8x8 to look at and no
+  hand-drawn 8x16, so the "author our own at twice the height" row in the survey is an estimate
+  where the 8x8 row is a specimen.
 
 ## What adopting libghostty-vt would cost now
 
