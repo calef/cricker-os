@@ -1,6 +1,10 @@
 # 138. Close the read gap: a 4 KiB request must stop moving 128 KiB
 
-**Status: NOT-STARTED.** Minted 2026-08-18 by calef, on milestone 38's measurement: *"Against
+**Status: PARTIAL.** Step 1 of four is **built and measured** (2026-08-18): the record level is
+1, a 4 KiB read is **5.13x** faster and a 4 KiB write **3.01x**, and the per-request residual it
+leaves is **206 us on a read (72% of it) and 690 us on a write (87%)**. See
+notes/benchmarks.md and vendor/README.md divergence 5. Steps 2, 3 and 4 are not started.
+Minted 2026-08-18 by calef, on milestone 38's measurement: *"Against
 buffered Linux we are three orders of magnitude behind on reads. We need a milestone to optimize and
 close the gap."*
 
@@ -116,7 +120,7 @@ Four pieces, and the ordering is set by what each one unblocks rather than by si
 
 | | what | measured or modelled effect |
 |---|---|---|
-| **1** | **option 2**, the record level | 4 KiB read 2.7 -> 15.8 MiB/s. **Take it now**: no stored data exists, so the one-way door is a door onto an empty room, and the window closes at the first real backup |
+| **1** | **option 2**, the record level | **DONE 2026-08-18, measured**: 4 KiB read 2.68 -> **13.76 MiB/s**, write 1.63 -> **4.90**. The modelled 15.8 was level 0's figure; this shipped at level 1, which keeps lz4 and halves the space cost for 8.7% of the read speed. **And there is no one-way door after all**: the created level and the largest readable level are now separate constants, so nothing stored at any level 0 to 5 becomes unreadable and the next change cannot orphan this one's data |
 | **2** | **the metadata cache**, the five blocks | on its own worth 15%; with a small record it is **4.7x**. The two are multiplicative and neither is worth much alone |
 | **3** | **option 1**, multi-page transfer on the file contract | 64 KiB in one request: 75 MiB/s, and 98 with the cache. This is the customer path |
 | **4** | **the block contract**, one request per 4 KiB today | the ~100 MiB/s ceiling behind all three. Recorded in notes/fs-server.md's BUGS and not yet a milestone |
@@ -124,6 +128,54 @@ Four pieces, and the ordering is set by what each one unblocks rather than by si
 **Then re-measure and re-decide.** The numbers above are a model calibrated against the sweep (it
 reproduces the measured 837 us per 64 KiB as 832), not a prediction anybody should spend four
 milestones on without checking at each step.
+
+## Step 1, built and measured: the record is 8 KiB (2026-08-18)
+
+**5.13x on a 4 KiB read and 3.01x on a 4 KiB write**, measured on milestone 38's harness over six
+interleaved passes at levels 5, 1 and 0, on a machine quiet enough that the `fs_read` control varied
+0.6% across every level and no normalisation was needed. 1,458,124 ns to 283,974 on a sequential
+read; 2,399,611 to 796,930 on a sequential write. notes/benchmarks.md has the tables.
+
+**Level 1 rather than level 0, verified rather than inherited.** The sweep recommended it and this
+run checked the trade it named: level 0 reads 8.7% faster and gives up lz4 entirely, because RedoxFS
+compresses a record only when it is larger than one block, and it pays roughly twice the space
+overhead for that (+38% against +19% on text). Sequential writes are marginally *faster* at level 1.
+The 8.7% is not the compression; it is the second block at 39.1 us, which the two-term model predicts
+without knowing lz4 exists.
+
+**The one-way door this table said to walk through is not there any more, and that is the part worth
+reviewing.** The block priced step 1 as irreversible: lowering `RECORD_LEVEL` makes every record
+stored at a higher level answer `ENOENT`, which is free today only because nothing is stored. It is
+free *because* of the timing, and the timing is not a property anyone can hold on to. So the change
+splits the constant instead: `RECORD_LEVEL` is the level a new file is **created** at (now 1) and a
+new `RECORD_LEVEL_MAX` is the largest level this build can **read** (still upstream's 5), which is
+what the two `BlockTrait::empty` guards compare against. Nothing at any level from 0 to 5 becomes
+unreadable, a future change of the created level cannot orphan what this one wrote, and the guards
+now compare against a maximum, which is half of what a genuine per-file level would need. It cost one
+constant. See vendor/README.md divergence 5.
+
+**The residual, which is what this step was asked to report.** It did not shrink at all, and that is
+the finding: a read's fixed term is **205,698 ns**, unchanged, and it went from 14% of a request to
+**72%** of one. A write's is **690,085 ns** and **87%**. Of the read's 206 us, ~195 is step 2's five
+repeated block reads and ~13 us is the IPC round trip and the server's own work, which is the number
+this milestone's four steps never touch. **The write residual is the transaction** (allocate, rewrite
+the node, commit to the header ring, per 4 KiB request), and nothing on this list except step 3
+addresses it. After step 1 it is the largest unaddressed term in the whole measurement.
+
+**What step 2 is worth now, against measurement rather than the model.** A read is 283,974 ns; a
+cache that removed all five repeated block reads would take it to about **89,000 ns**, which is
+**3.2x again** and 16x against where milestone 138 started. The table below modelled 4.7x, and the
+difference is that the model was built on level 0's numbers while this shipped at level 1. The
+block's other claim survives intact and is now checked: the same cache *before* step 1 would have
+been worth 15%, exactly as predicted, so **the two are multiplicative and step 1 is what makes step 2
+worth building.**
+
+**Crash consistency was re-run at the new geometry**, because a safety claim measured at one record
+size is not automatically true at another. Same fault-point count, same properties, **0 silently
+wrong** at both levels; eleven lying-device cases move from "refused at a read" to "recovered", which
+is what a smaller record predicts. It also turned up a stale record: notes/fs-server.md's counts were
+milestone 37's and the workload has grown since, so the table there was wrong before this lane
+touched it. Corrected in place.
 
 ## The question underneath, which is worth more than any of the four
 
@@ -188,3 +240,19 @@ measurements rather than asserted, and this is the measurement that most weakens
 - **`Transaction::write_node` compares before writing**, so rewriting a block with identical contents
   costs a read and no write. A benchmark that sends one constant page repeatedly measures the
   comparison rather than the store.
+- **Step 1's 5.13x is a number about the contract as it is today, not a property of the store.** The
+  sweep already showed that once a request carries 64 KiB, every record level from 0 to 4 costs the
+  same, because the fixed term is per request and the block count is identical. So step 3 will
+  make step 1's ratio meaningless as a ratio, and re-measuring it then is not optional.
+- **The space cost of the 8 KiB record was not re-measured for step 1.** The +19% figure is the
+  sweep's, taken on text, which is the payload most favourable to lz4; a backup workload is the
+  incompressible case and would show only the pointer half. Nobody has measured that case.
+- **`RECORD_LEVEL_MAX` keeps old images readable and does not migrate them.** A file created by an
+  older build keeps its 128 KiB record forever: it reads correctly and it reads at the old price.
+  There is no rewrite path and no `fsck` that would make one, which is the right answer today
+  because no such image exists outside a test, and the wrong one the day somebody upgrades a
+  populated disk.
+- **The step-1 measurement and the crash re-run are both this lane's own**, on one machine, on one
+  afternoon. The throughput figures reproduce the earlier sweep's two-term fit to within 3% from a
+  different run on a different day, which is the strongest independent check available without a
+  second machine, and it is not a second machine.

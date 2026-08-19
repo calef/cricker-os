@@ -2326,18 +2326,28 @@ pub mod fixture {
         /// level 5 at the end. **It measures the same as the other two read phases, to within 3%.**
         /// The reason is one level down: `read_record` reads the block the pointer *stores*, and
         /// only then checks whether that is as large as the level asked for. A fully written record
-        /// is stored at level 5, so **every read of an ordinary file fetches all 128 KiB**, whatever
-        /// offset it asked for.
+        /// is stored at its node's record level, so **a read of an ordinary file fetches the whole
+        /// record**, whatever offset it asked for.
         ///
-        /// That is a stronger result than the one it replaced, and it is what makes the arithmetic
-        /// in notes/benchmarks.md close: a 4 KiB read is 32 block reads, flat.
+        /// That is a stronger result than the one it replaced, and it is what made the arithmetic in
+        /// notes/benchmarks.md close: at milestone 38's record level a 4 KiB read was 32 block
+        /// reads, flat. **Milestone 138 step 1 took the record level to 1**, so it is now two, and
+        /// the mechanism this phase measures is unchanged: the whole record still comes back.
         pub const RECORD_READ: u64 = 6;
 
-        /// RedoxFS's record size: `RECORD_LEVEL` 5, so 32 blocks of 4096. **This is the store's
-        /// number, not the protocol's**, and it is here only because [`RECORD_READ`] has to align
-        /// to it. If the vendored engine's `RECORD_LEVEL` ever changes, this phase silently stops
-        /// measuring what it claims to; nothing checks that, and it is the one soft spot in this
-        /// module.
+        /// **A record boundary**, which is the property [`RECORD_READ`] needs and the only one:
+        /// the phase reads at multiples of this, and it is meaningful exactly when every multiple
+        /// of it is also a multiple of the store's record size.
+        ///
+        /// 128 KiB satisfies that at every RedoxFS record level from 0 to 5, because each of those
+        /// sizes divides it. That is why the value did not move when milestone 138 took the record
+        /// level from 5 to 1: keeping it makes every figure this phase has ever produced comparable
+        /// with every other, which a value tracking the record size would have destroyed.
+        ///
+        /// **This is the store's number, not the protocol's**, and it used to say so and then add
+        /// that nothing checked it, calling itself "the one soft spot in this module". It is checked
+        /// now: `fs_server` sees both this crate and the vendored engine, and asserts at compile
+        /// time that this value is a whole number of records. See `fs_server/src/lib.rs`.
         pub const RECORD: u64 = 128 * 1024;
 
         /// **The cost of producing one page of payload**, with no filesystem in it at all.

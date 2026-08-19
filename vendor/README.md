@@ -66,6 +66,37 @@ and priced it is notes/redoxfs-audit.md).
      Ages like divergence 3 (re-applied forever, can conflict on a pin bump), and is the one most
      worth upstreaming: `patches/redoxfs-no-std-create-uuid.patch` is the submission, and it applies
      to the published 0.9.1 with zero fuzz. Approved by calef 2026-08-03.
+  5. `src/lib.rs`, `src/record.rs`, `src/htree.rs`, `src/node.rs`: **the record level is lowered to
+     1, and the constant is split in two.** Milestone 138 step 1, 2026-08-18. `RECORD_LEVEL` (the
+     level a new file is *created* at) goes from 5 to 1, so a record is 8 KiB rather than 128 KiB;
+     a new `RECORD_LEVEL_MAX`, still 5, is what the two `BlockTrait::empty` guards compare against
+     and what sizes `RECORD_SIZE` and the lz4 scratch buffer. `node.rs` gains a comment only.
+
+     **Why the value.** Every file request in this system carries at most one 4 KiB page, so a
+     128 KiB record fetched 32 blocks to serve one and rewrote all 32 to change one. Measured on
+     milestone 38's harness, six interleaved rounds on a quiet machine: a 4 KiB read goes from
+     1,458 us to 284 us (**5.1x**) and a 4 KiB write from 2,400 to 797 us (**3.0x**). Level 1
+     rather than 0 because RedoxFS compresses a record only when it is larger than one block:
+     level 0 gives up lz4 for 8.7% more read speed and roughly double the space overhead
+     (+38% against +19% on text). notes/benchmarks.md has the sweep and the two-term model.
+
+     **Why the split, which is the part that is not about speed.** `record_level` is a per-node
+     field in the on-disk format, so the level an image was written at is a property of that image
+     and not of the code reading it. Upstream needed one constant only because the created level
+     and the largest readable level were the same number by construction; lowering the first
+     without separating the second would make every record stored above it answer `ENOENT` on an
+     image that was perfectly good. The split costs one constant and makes the change reversible:
+     nothing at any level from 0 to 5 becomes unreadable, and the next change of `RECORD_LEVEL`
+     cannot orphan what this one wrote. It is also half of what a genuine per-file level needs,
+     since the guards already compare against a maximum.
+
+     **Ages like divergences 3 and 4** (re-applied forever, can conflict on a pin bump). The value
+     is ours and upstream has no reason to want it. **The split alone plausibly is upstreamable**
+     and there is no `patches/` entry for it yet: that directory is for patches written to be
+     submitted, and nobody has written this one or opened the merge request. Recorded here rather
+     than left implied, because a divergence with an upstreaming story and no submission is a thing
+     a reader should be told about rather than discover.
+
 - Everything else is byte-identical to the published package, including files we do not use
   (`Makefile`, `test.sh`, upstream CI configs) and `Cargo.lock`.
 - **Proved rather than asserted, since 2026-07-30:** `script/vendor-verify` fetches the published

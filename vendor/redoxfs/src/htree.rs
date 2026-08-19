@@ -5,7 +5,8 @@ use endian_num::Le;
 use syscall::error::{Error, Result, EEXIST, EIO};
 
 use crate::{
-    BlockLevel, BlockPtr, BlockRaw, BlockTrait, DirEntry, DirList, BLOCK_SIZE, RECORD_LEVEL,
+    BlockLevel, BlockPtr, BlockRaw, BlockTrait, DirEntry, DirList, BLOCK_SIZE,
+    RECORD_LEVEL_MAX,
 };
 
 pub const HTREE_IDX_ENTRIES: usize = BLOCK_SIZE as usize / mem::size_of::<HTreePtr<BlockRaw>>();
@@ -182,7 +183,9 @@ impl<T> HTreeNode<T> {
 
 unsafe impl<T> BlockTrait for HTreeNode<T> {
     fn empty(level: BlockLevel) -> Option<Self> {
-        if level.0 <= RECORD_LEVEL {
+        // nife pin divergence (milestone 138): the CEILING, not the creation default; same reason
+        // as `RecordRaw::empty` in record.rs.
+        if level.0 <= RECORD_LEVEL_MAX {
             Some(Self {
                 ptrs: [HTreePtr::default(); HTREE_IDX_ENTRIES],
                 padding: [0; HTREE_IDX_PADDING],
