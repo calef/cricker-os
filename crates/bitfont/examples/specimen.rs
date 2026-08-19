@@ -99,7 +99,6 @@ impl Font {
 /// block is kept, and only the 8-wide glyphs (see BUGS).
 fn parse_hex(text: &str, name: &str) -> Font {
     let mut by_code: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
-    let mut height = 0usize;
     for line in text.lines() {
         let Some((code, bits)) = line.split_once(':') else {
             continue;
@@ -124,8 +123,23 @@ fn parse_hex(text: &str, name: &str) -> Font {
             .map(|b| b.reverse_bits()) // .hex is MSB-left; this crate is LSB-left.
             .collect();
         let _ = wide;
-        height = height.max(rows.len());
         by_code.insert(code, rows);
+    }
+    // The height is the commonest row count among the letters, not the largest anywhere in the
+    // file. `unscii-8.hex` stores U+0000 as sixteen rows in an eight-row font, and taking the
+    // maximum turned every 8x8 specimen into an 8x16 one with the bottom half blank.
+    let mut tally: BTreeMap<usize, usize> = BTreeMap::new();
+    for (code, rows) in &by_code {
+        if (0x41..=0x7a).contains(code) {
+            *tally.entry(rows.len()).or_default() += 1;
+        }
+    }
+    let mut height = tally
+        .into_iter()
+        .max_by_key(|&(_, n)| n)
+        .map_or(8, |(h, _)| h);
+    if height == 0 {
+        height = 8;
     }
     let glyphs = (0..128)
         .map(|c| {

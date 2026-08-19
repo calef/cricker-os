@@ -60,6 +60,101 @@ Two details the font's own tests pin, because both are invisible in review:
   with a dropped row would show up here as a collision or a hole and nowhere else until it was on a
   screen.
 
+### The options, with pictures (2026-08-19, lane `bench/font-options`)
+
+**First, a correction to the framing above.** The paragraph about Terminus and Spleen reads as
+though the font were a compromise forced by licensing. It is not: `font8x8` is public domain, which
+was verified for this survey by opening the upstream project rather than by recalling it. Its
+`README` says, of the header files this table came from:
+
+```text
+Author: Daniel Hepper <daniel@hepper.net>
+License: Public Domain
+```
+
+and the credits below that carry Marcel Sondaar's original header, which says the same thing and
+names IBM's public-domain VGA fonts as the source. So **nothing in this tree owes an obligation to
+anyone for the letters on the screen.** Changing the font would be a decision about how it looks,
+not an escape from a licence, and any survey that argues otherwise is arguing from a false premise.
+
+**The specimen sheet is how the question is answered.** The crate's design claim is that the
+expected picture is a pure function, which is what lets the terminal, the kernel test and the
+host-side scanout check agree about a letter. Spend the same property on the choice itself and a
+font stops being an argument:
+
+```text
+cargo run -p bitfont --example specimen                        # what ships
+cargo run -p bitfont --example specimen -- --dots               # one character per pixel
+cargo run -p bitfont --example specimen \
+    --font bench/font-options/hand-drawn-8x8.art                # the drawn candidate
+cargo run -p bitfont --example specimen --font unscii-8.hex --name unscii-8
+```
+
+Every font gets the same sample text, chosen for where 8x8 fonts fail: `Il1|` and `O0` (the
+confusions that ruin a hex dump), `rn` against `m` (the one that makes prose *wrong* rather than
+ugly), the descenders `g q y p j`, and two lines of ordinary prose and ordinary code, because a font
+that looks good on a pangram and bad in a sentence is bad.
+
+**The candidates, and where each licence was read.** Only fonts with no attribution obligation are
+in scope, for the reason stated above: the table is compiled into the image, so its licence travels
+with the artefact.
+
+| Font | Cell | Table | Licence | Read in |
+|---|---|---|---|---|
+| `font8x8` (ships) | 8x8 | 1024 B | Public domain | `github.com/dhepper/font8x8`, `README` |
+| hand-drawn | 8x8 | 1024 B | none, ours | `bench/font-options/hand-drawn-8x8.art` |
+| `unscii-8` (+ `-alt`, `-thin`, `-mcr`, `-fantasy`) | 8x8 | 1024 B | Public domain / CC0 | `github.com/viznut/unscii`, `README.md` |
+| `unscii-8-tall` | 8x16 | 2048 B | Public domain / CC0 | same |
+| `unscii-16` | 8x16 | 2048 B | Public domain / CC0 | same |
+
+unscii's `README.md` states it in one line, and the exception it names does not touch these files:
+"You can consider it Public Domain (or CC-0) except for the files derived from or containing parts
+of Roman Czyborra's Unifont project (unifont.hex, hex2bdf.pl, unscii-16-full.*) which fall under
+GPL." `unscii-16.hex` is the drawn 8x16 and is not the `-full` variant, so it is outside that
+exception; `unscii-16-full` is not a candidate.
+
+**What was excluded, with the reason at the source.** Terminus (OFL-1.1) and Spleen (BSD-2-Clause)
+were already refused above and stay refused. The Linux console's `lib/fonts/font_8x16.c` is the IBM
+VGA shape everyone recognises, and its first line is `// SPDX-License-Identifier: GPL-2.0`, which
+settles it. Fixedsys Excelsior is described as public domain by unscii's own `README`, but that is a
+third party's summary and `fixedsysexcelsior.com` does not resolve (checked 2026-08-19), so the
+claim cannot be read at its source. **Ambiguous is treated as obliged**, and it is out.
+
+**What the shapes measure**, over the 52 letters, straight from the tables:
+
+| Font | Ink per letter | Left edge sigma | Width sigma | Cap | x-height | Descender |
+|---|---|---|---|---|---|---|
+| `font8x8` | 24.6 | 0.27 | 0.79 | 7 | 5 | 1 |
+| hand-drawn | 15.5 | 0.19 | 0.61 | 7 | 5 | 1 |
+| `unscii-8` | 23.2 | 0.44 | 0.61 | 7 | 5 | 1 |
+| `unscii-8-thin` | 14.4 | 0.27 | 0.77 | 7 | 5 | 1 |
+| `unscii-8-mcr` | 28.5 | 0.58 | 0.94 | 7 | 5 | 1 |
+| `unscii-8-tall` | 46.3 | 0.44 | 0.61 | 14 | 10 | 2 |
+| `unscii-16` | 34.6 | 0.38 | 0.52 | 11 | 7 | 3 |
+
+Ink per letter is weight, the two sigmas are consistency (which is what the eye reads as rhythm
+rather than as any one glyph), and the descender column is how many rows a `g` gets below the
+baseline an `x` sits on. That last column is the honest argument for 8x16 and it is not close: three
+rows of descender against one, and an x-height of seven against five.
+
+The price is two things, and the second is the one that decides it today. One extra kilobyte of
+`.rodata` in every binary that draws text, which is nothing. And **half the text rows on the same
+screen**: the scanout is 128x64, so an 8x8 cell gives the 16x8 grid recorded under Honest limits
+and an 8x16 cell gives 16x4. Four rows of text is not a terminal. Until the display ladder has a
+bigger scanout, 8x16 buys legibility with rows we do not have to spend, whichever 8x16 font it is,
+drawn or stretched.
+
+**Authoring our own is priced too**, because it was raised as an option and no existing sample can
+answer it. `bench/font-options/hand-drawn-8x8.art` is 95 printable glyphs drawn for this survey, in
+the `#`/`.` format the specimen tool reads, at exactly the cost of any other 8x8 font: 128 glyphs by
+8 rows is 1024 bytes, and 8x16 would be 2048. The drawing cost was one lane; the honest assessment
+of the result is in the lane's report and in the `BUGS` note below, and the short version is that it
+is competent and plain rather than good.
+
+**None of these needs a loader, a rasteriser, a filesystem or an allocator**, which is the property
+that keeps them candidates at all. Anything that did would break the rendered picture as a pure
+function, and with it the three-party agreement that proves the text on the screen.
+
 ## The VT engine: sans-IO, and checked against the real line discipline
 
 `crates/video_terminal` keeps the grid: bytes in, a character grid out, plus the rectangle that changed. It holds
@@ -271,6 +366,17 @@ Stated plainly, because a demonstrator's caveats are part of the deliverable.
   recorded in `crates/pci` so that a machine carrying both would be a known problem rather than a
   surprise. We attach only a keyboard.
 - **No key repeat of our own.** The device's repeats are honoured; nothing here generates them.
+- **The hand-drawn candidate is competent, not good.** `bench/font-options/hand-drawn-8x8.art` is
+  consistent (the tightest left sidebearing in the survey) and light, and three glyphs are weak
+  enough to name where a reader meets them: `$` is mushy where the stem crosses the S, `&` reads as
+  a blob, and the shoulder of `r` sits a pixel clear of its stem so the arm looks detached. It is a
+  drawn candidate for comparison, not a proposal, and nothing in the tree uses it.
+- **The specimen tool reads two formats and clips a third case.** `.hex` glyphs 16 pixels wide are
+  shown as their left half rather than rejected, which looks like a clipped font instead of an
+  error, and the height is taken as the commonest row count among the letters because
+  `unscii-8.hex` stores `U+0000` with sixteen rows in an eight-row font. Half-block output is only
+  faithful in a terminal that draws `U+2580`/`U+2584` at full cell height; `--dots` has no such
+  dependency and is the tie-breaker.
 
 ## What adopting libghostty-vt would cost now
 
