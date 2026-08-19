@@ -505,10 +505,6 @@ Two kinds bit us on 2026-07-30:
   another; the merged tree had 95. Both were counted honestly. Take such a number at merge, from the
   merged tree.
 
-**After any renumber, check citations by content, not by running the gate.** `script/decisions
---check` verifies that a cited `§N` resolves to *some* section, never that it resolves to the right
-one, so a well-formed wrong citation is invisible to it. This has already produced two of them.
-
 **Some shared state is global to the *machine*, not the repo, and `rustup toolchain link` is the one
 that has bitten.** The `nife-dev` toolchain the `std` farm needs is a symlink in
 `~/.rustup/toolchains`, so `xtask std-src` repoints a **user-account-wide** name at whichever
@@ -541,12 +537,7 @@ lane is blocked, commit and **push** its work before removing anything: a snapsh
 cannot be lost by a cleanup. The warning signs were noted hours earlier and not acted on, and then
 four more lanes were launched on top of them.
 
-**Delete a lane's branch when you merge it, and never use a branch as a filing cabinet.** Forty-seven
-branches accumulated in about two days of lane work and had to be pruned by hand on 2026-07-31; this
-recurs by default, because merging is what finishes a lane and deleting is a separate act nobody is
-prompted to take. So it belongs in the merge, not in a periodic cleanup.
-
-The rule that matters more than the tidiness: **an unmerged branch is either abandoned or it is
+**An unmerged branch is either abandoned or it is
 holding knowledge that is not on `main`, and the second case is a bug in where the knowledge lives.**
 `fix/redoxfs-write-loop` survived that prune because it carried an investigation's conclusion that
 `notes/fs-server.md` does not. **Nobody reads branches.** If a branch holds a finding worth keeping,
@@ -677,20 +668,14 @@ the requirements are known.
    If a constant, an opcode, a layout, or an error code is shared by more than one program, it goes
    in `crates/` and is depended on. `#[path = "x.rs"] mod x;` is not an option.
 
-   **Three reasons, and the second is the one that matters.**
+   **Two reasons**, and `script/lint` check 5 carries the third: it counts consumers
+   per `#[path]` target and fails at two.
 
    It removes a category that nothing enforces. A `#[path]` module is neither a program nor a crate,
    so a reader meeting `cseam::GRANT_VA` cannot tell what they are looking at, and `user/src/` held
    48 programs and 3 modules with nothing distinguishing them.
 
-   **A `#[path]` module inside a `no_std` binary is unreachable by host tests and by Kani.** This
-   project's entire method is pure logic in host-testable crates plus machine-checked proofs, and a
-   shared module opts out of both. `cseam` is the case that proves it: it holds the address-space
-   layout and constants **deliberately written twice**, once in Rust and once in `user/c/c_seam.c`,
-   with nothing checking that the two agree. A drift there shows up as a C component scribbling on
-   the wrong page, arbitrarily far from the edit.
-
-   And it makes location self-enforcing for free. Once shared definitions live in `crates/`,
+      And it makes location self-enforcing for free. Once shared definitions live in `crates/`,
    everything in `user/src/` is a program, with **no files moved** and no convention to remember.
 
    This was already the tree's practice for seven crates (`fs_proto`, `sink_proto`, `cred_proto`,
@@ -875,7 +860,9 @@ to squash silently staged **four other lanes' files as its own**, including a de
 only by reading `git status` before committing. Record the base SHA when the branch is cut and squash
 against that. The wider rule it belongs to: in a worktree, `origin/*` is not a fixed point.
 
-**Never squash across purposes, and never squash-merge a branch.** Milestone 96's lane put the
+**Never squash across purposes.** Squash-*merging* is already impossible:
+`allow_squash_merge` is `false` on this repository, so the platform refuses it. This clause stays a
+prohibition because nothing gates it. Milestone 96's lane put the
 loader unification in its own commit *ahead of* the migration precisely so that a boot failure could
 not be ambiguous between two changes, which is the whole reason that structure exists. A
 squash-merge would have destroyed it. The merge commit carries the pull request's title, so
