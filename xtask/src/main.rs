@@ -3282,7 +3282,7 @@ fn probe_smb(port: u16, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> 
         let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
         let _ = s.set_nodelay(true);
 
-        match smb_session(&mut s, &stop) {
+        match smb_session(&mut s, &stop, done) {
             Ok(()) => done += 1,
             Err(e) => {
                 last = e;
@@ -3495,6 +3495,7 @@ fn smb_authenticate_leg(
 fn smb_session(
     s: &mut std::net::TcpStream,
     stop: &std::sync::atomic::AtomicBool,
+    round: usize,
 ) -> Result<(), String> {
     use smb_proto::{H_SESSION_ID, H_STATUS, H_TREE_ID, client, r32, r64};
 
@@ -3592,6 +3593,14 @@ fn smb_session(
 
     smb_write_leg(s, stop, sid, tid)?;
 
+    // **The throughput leg** (milestone 55), off unless asked for: see [`smb_throughput_leg`] on
+    // why a measurement is not a gate, and `bench/smb-throughput.sh` for the sweep that reads it.
+    // First round only, because it is the round with a quiet machine behind it and because each
+    // run of it writes a megabyte into a 16 MiB copy-on-write image.
+    if round == 0 && std::env::var_os("NIFE_SMB_THROUGHPUT").is_some() {
+        smb_throughput_leg(s, stop, sid, tid)?;
+    }
+
     // Well past the write and subdirectory legs' ids. They are echoed and never validated (the
     // crate BUGS), so a collision would not fail; keeping them distinct is what makes a packet
     // capture readable.
@@ -3658,6 +3667,191 @@ fn smb_apple_leg(resp: &[u8], bitmap: u64) -> Result<(), String> {
             String::from_utf8_lossy(apple::MODEL)
         ));
     }
+    Ok(())
+}
+
+/// **How many bytes the throughput leg moves in each direction.** 1 MiB, the same figure
+/// `fs_proto::fixture::throughput::TOTAL` holds for the in-guest benchmark, so a MiB/s from this
+/// leg and a MiB/s from that phase are measuring the same amount of work through two different
+/// depths of the stack. Bounded by the fixture image (16 MiB) and by RedoxFS being copy-on-write,
+/// exactly as that constant's doc explains.
+const SMB_THROUGHPUT_BYTES: usize = 1024 * 1024;
+
+/// **The throughput leg** (milestone 55): move [`SMB_THROUGHPUT_BYTES`] through a mounted share, in
+/// each direction, and print what it cost.
+///
+/// # Why this is measured here and nowhere else
+///
+/// Milestone 138 step 3 grew the file contract's transfer from 4 KiB to 64 KiB and measured 8.02x
+/// on a sequential write. **That number was measured against `fs_proto`**, by a client that speaks
+/// the contract directly. The thing a customer runs does not: it is a Mac, and everything it asks
+/// for arrives through TCP, the socket contract, a reassembly buffer and an SMB2 state machine
+/// before any of it reaches an `fs::WRITE`. So the only honest way to say whether the speedup
+/// reached the customer path is to measure it *on* the customer path, which is what this is: a host
+/// process, over a real forwarded TCP connection, timing the same bytes a backup would send.
+///
+/// Each direction is issued in `smb_proto::MAX_TRANSACT`-sized messages, which is the largest the
+/// server negotiates (`MaxReadSize` and `MaxWriteSize`, both 64 KiB) and therefore the largest a
+/// real client will use. That is the ceiling this measurement is bounded by however large the file
+/// contract's transfer becomes, and it is the number to quote beside any speedup claimed here.
+///
+/// # Why it is not part of the gate
+///
+/// A gate says pass or fail and a timing is neither: the host is a laptop, the guest is an emulator
+/// with no cycle-accurate clock behind this path, and a threshold would fail on a busy afternoon
+/// and pass on a slow regression. So it runs only when `NIFE_SMB_THROUGHPUT` is set, and what makes
+/// it a record rather than a number somebody once saw is `bench/smb-throughput.sh`, which sweeps
+/// the contract's transfer size around it and prints a before against an after.
+///
+/// The correctness of what it moved is still checked, because a fast wrong answer is the failure
+/// mode a throughput test invites: the read-back is compared byte for byte against what was sent.
+/// It is the one leg that reads back its own write, which [`smb_write_leg`] refuses to do for good
+/// reasons; those reasons are about proving the filesystem is real, and that is already proven by
+/// the legs above. Here the read-back is guarding the measurement, not the store.
+fn smb_throughput_leg(
+    s: &mut std::net::TcpStream,
+    stop: &std::sync::atomic::AtomicBool,
+    sid: u64,
+    tid: u32,
+) -> Result<(), String> {
+    use smb_proto::{H_STATUS, client, r32};
+    let status = |resp: &[u8]| r32(resp, H_STATUS);
+
+    let unit = smb_proto::MAX_TRANSACT as usize;
+    // A cheap non-constant pattern, so a server that answered a read with zeroes or with a
+    // previous chunk would be caught by the compare below rather than flattered by it.
+    let payload: Vec<u8> = (0..SMB_THROUGHPUT_BYTES)
+        .map(|i| (i as u32).wrapping_mul(2_654_435_761) as u8)
+        .collect();
+
+    let name = b"throughput.bin";
+    let mut msg_id = 200u64;
+
+    // FILE_OVERWRITE_IF = 5, as the write leg uses: create, or replace what an earlier run left.
+    smb_send(s, &client::create_disposition(msg_id, sid, tid, name, 5))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!(
+            "throughput: create {}: status {:#x}",
+            String::from_utf8_lossy(name),
+            status(&resp)
+        ));
+    }
+    let fid = client::create_file_id(&resp);
+    msg_id += 1;
+
+    // The builders return a fixed-capacity `Msg` because `smb_proto` has no allocator, and a 64 KiB
+    // message does not fit one. `write_at_into` is the same builder writing into a buffer the
+    // caller sized, which is this one.
+    let mut req = vec![0u8; client::WRITE_OVERHEAD + unit];
+
+    let started = std::time::Instant::now();
+    let mut off = 0usize;
+    while off < payload.len() {
+        let n = unit.min(payload.len() - off);
+        let len = client::write_at_into(
+            &mut req,
+            msg_id,
+            sid,
+            tid,
+            &fid,
+            off as u64,
+            &payload[off..off + n],
+        );
+        smb_send(s, &req[..len])?;
+        let resp = smb_recv(s, stop)?;
+        if status(&resp) != smb_proto::STATUS_SUCCESS {
+            return Err(format!(
+                "throughput: write of {n} bytes at {off}: status {:#x} (STATUS_DISK_FULL here                  means the fixture image cannot hold {SMB_THROUGHPUT_BYTES} more bytes; RedoxFS is                  copy-on-write, so an overwrite costs space until the old blocks are freed)",
+                status(&resp)
+            ));
+        }
+        let took = client::write_count(&resp) as usize;
+        if took != n {
+            return Err(format!(
+                "throughput: write at {off} took {took} of {n} bytes"
+            ));
+        }
+        off += n;
+        msg_id += 1;
+    }
+    let write_elapsed = started.elapsed();
+
+    // FLUSH inside the timing would measure a different thing (durability, which the write leg
+    // already gates); outside it, this is what makes the read below come from the store rather
+    // than from anything the server is still holding.
+    smb_send(s, &client::flush(msg_id, sid, tid, &fid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("throughput: flush: status {:#x}", status(&resp)));
+    }
+    msg_id += 1;
+
+    let started = std::time::Instant::now();
+    let mut back = Vec::with_capacity(payload.len());
+    while back.len() < payload.len() {
+        let n = unit.min(payload.len() - back.len());
+        smb_send(
+            s,
+            &client::read(msg_id, sid, tid, &fid, back.len() as u64, n as u32),
+        )?;
+        let resp = smb_recv(s, stop)?;
+        if status(&resp) != smb_proto::STATUS_SUCCESS {
+            return Err(format!(
+                "throughput: read of {n} bytes at {}: status {:#x}",
+                back.len(),
+                status(&resp)
+            ));
+        }
+        let data = client::read_data(&resp);
+        if data.is_empty() {
+            return Err(format!(
+                "throughput: read at {} came back empty with {} bytes still to go",
+                back.len(),
+                payload.len() - back.len()
+            ));
+        }
+        back.extend_from_slice(data);
+        msg_id += 1;
+    }
+    let read_elapsed = started.elapsed();
+
+    if back != payload {
+        let at = back
+            .iter()
+            .zip(payload.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(payload.len().min(back.len()));
+        return Err(format!(
+            "throughput: the file came back wrong, first difference at byte {at} of {}",
+            payload.len()
+        ));
+    }
+
+    smb_send(s, &client::close(msg_id, sid, tid, &fid))?;
+    let resp = smb_recv(s, stop)?;
+    if status(&resp) != smb_proto::STATUS_SUCCESS {
+        return Err(format!("throughput: close: status {:#x}", status(&resp)));
+    }
+
+    // One line per direction, tagged so bench/smb-throughput.sh can grep them out of a test run
+    // whose stderr carries a great deal else. `unit` is on the line because it is the ceiling the
+    // numbers are bounded by, and a reader who has only the output should not have to look it up.
+    let mib = SMB_THROUGHPUT_BYTES as f64 / (1024.0 * 1024.0);
+    eprintln!(
+        "smb-throughput: write {:.2} MiB/s ({} bytes in {:.1} ms, {} per SMB2 message)",
+        mib / write_elapsed.as_secs_f64(),
+        SMB_THROUGHPUT_BYTES,
+        write_elapsed.as_secs_f64() * 1000.0,
+        unit
+    );
+    eprintln!(
+        "smb-throughput: read {:.2} MiB/s ({} bytes in {:.1} ms, {} per SMB2 message)",
+        mib / read_elapsed.as_secs_f64(),
+        SMB_THROUGHPUT_BYTES,
+        read_elapsed.as_secs_f64() * 1000.0,
+        unit
+    );
     Ok(())
 }
 

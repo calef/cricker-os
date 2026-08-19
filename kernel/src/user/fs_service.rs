@@ -102,7 +102,12 @@ fn file_channel() -> u64 {
 /// [`FILE_PAGES`] because a client is entitled to map less: a client that only ever moves one page
 /// needs one page, and `fs_proto::fs::TRANSFER_PAGES` says so. The FS server is the one party that
 /// must map all of it.
-fn map_channel(maps: &mut [Mapping], va: u64, phys: u64, pages: usize) -> usize {
+///
+/// Visible to the rest of `user` because the SMB adapter is wired somewhere else entirely
+/// (`virtio_service`, since it is a client of the net stack rather than of this module) and shares
+/// the same channel with the same FS server. Two spellings of "map every page of it" is exactly the
+/// drift the foot gun at `fs_proto::fs::TRANSFER_PAGES` punishes, so there is one.
+pub(super) fn map_channel(maps: &mut [Mapping], va: u64, phys: u64, pages: usize) -> usize {
     for (i, m) in maps.iter_mut().take(pages).enumerate() {
         *m = Mapping {
             va: va + i as u64 * FRAME_SIZE,
