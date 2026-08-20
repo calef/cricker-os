@@ -1271,39 +1271,56 @@ for dir in "$(dirname "$0")"/../crates/*proto; do
     esac
 done
 
-# 4. Branch prefixes from a fixed set, which is what retires the `feat/` versus `feature/` duplicate
-#    the survey found. Current branch only, because that is the one a developer can still rename; a
-#    detached HEAD (every CI pull_request run, since actions/checkout builds the merge commit) has no
-#    branch to judge and is skipped rather than guessed at.
+# 4. **The one branch prefix that carries a mechanism, guarded against near-misses.**
+#
+#    This was a fixed allowlist of eleven prefixes until 2026-08-17, and calef retired it after
+#    asking what the taxonomy was for. The answer, checked rather than argued: **nothing consumes
+#    it except this check.** A grep across `script/`, `scripts/`, `.github/workflows/` and `xtask/`
+#    for any other reader of a branch prefix returns only false positives (`bench/baseline-*.txt`
+#    is a directory, `$prefix/bin` is a shell variable). Only `milestone/N-` is read by anything,
+#    and 4b below is what reads it.
+#
+#    **Every observed failure of the allowlist was a false rejection of legitimate work**, four
+#    times: `roadmap/` (the repository's SECOND commonest prefix, refused while ~35 merges already
+#    on main used it), `gh-readonly-queue/*` (failed every group build's clippy job, so the queue
+#    evicted and rebuilt forever), `dependabot/*`, and `claude/*` (a harness names its own branches
+#    and a lane cannot rename them from inside). Each was fixed by widening the list after
+#    something broke. That is the signature §61 used to drop three lints and milestone 78 used on
+#    three assertions: a check that only ever rejects valid work is measuring the wrong thing.
+#
+#    **What survives, and why it is the branch name rather than a label.** 4b needs to know which
+#    milestone a lane claims, and it runs LOCALLY and OFFLINE: the branch comes from
+#    `symbolic-ref`, with no network and no GitHub context. A label cannot carry this. It would
+#    put a `gh` call and an authenticated network round trip inside a file-only gate, and it would
+#    not exist yet, because a lane runs this before `gh pr create`. The status-accuracy sweep
+#    decided the same question the same way on 2026-08-16, refusing `git ls-remote` for the
+#    `IN-PROGRESS` check because "the remote needs network in a file-only gate". A branch name is
+#    also **fixed when the lane is cut**, where a label is editable at any time; for a check whose
+#    job is "you claimed 126, so move 126's block", the claim has to be the immutable half.
+#
+#    So the taxonomy moves to notes/naming.md as a convention, and the only thing still refused is
+#    a name that LOOKS like a milestone claim and would therefore skip 4b in silence. That is the
+#    one real hole the allowlist was plugging: `milestone-126-pgrep`, with a hyphen, does not match
+#    4b's `milestone/*` and would sail past the check that exists to catch a status that never
+#    moved.
+#
+#    A detached HEAD (every CI pull_request run, since actions/checkout builds the merge commit)
+#    has no branch to judge and is skipped rather than guessed at, as before.
 branch="$(git -C "$(dirname "$0")/.." symbolic-ref --quiet --short HEAD || true)"
 case "$branch" in
-    # No branch (detached HEAD), or the trunk.
-    ""|main) ;;
-    # The tooling's own worktree branches, which no person types.
-    worktree-agent-*) ;;
-    # The merge queue's synthetic branches (gh-readonly-queue/main/pr-N-<sha>), which GitHub names
-    # and nobody can rename. Found 2026-08-15, the day the queue was enabled: this check failed
-    # every group build's clippy job and the queue evicted and rebuilt forever, which is exactly
-    # the hung-queue symptom milestone 120's ordering warned about, from a direction nobody
-    # predicted. A gate that can be wrong about the tree (§77) can be wrong about the robot too.
-    gh-readonly-queue/*) ;;
-    # Machine-generated and not ours to name.
-    dependabot/*) ;;
-    # The list §77 measured against the tree on 2026-08-16. `roadmap/`, `decisions/`, `toolchain/`
-    # and `ci/` were added because each was already established (roadmap/ was the repository's
-    # SECOND commonest prefix while this check rejected it, and the check would have refused about
-    # 35 merges already on main). `audit/` and `finalize/` stay as declared intent though neither
-    # has ever been used; they cost a word each and dropping a permitted name is how a lane's
-    # branch gets refused for having read an older file.
-    milestone/*|fix/*|bench/*|audit/*|integration/*|finalize/*|feature/*) ;;
-    roadmap/*|decisions/*|toolchain/*|ci/*) ;;
-    *)
-        echo "lint: branch '$branch' has no recognised prefix." >&2
-        echo "Use milestone/, roadmap/, decisions/, fix/, feature/, integration/, toolchain/," >&2
-        echo "ci/, bench/, audit/ or finalize/ (§77)." >&2
-        echo "Not feat/: one spelling, and feature/ is the older one (notes/naming.md)." >&2
+    # Correctly spelled milestone claims, and everything that claims no milestone at all. The
+    # second group is deliberately unbounded: a prefix nothing reads is a convention, not a gate.
+    milestone/[0-9]*-*) ;;
+    # A near-miss on the one prefix with a mechanism behind it. Refused because it is INVISIBLE
+    # otherwise: 4b would not match it, so the block-must-move check would silently not run, and
+    # the failure would look like a lane that was simply never asked.
+    milestone/*|milestone-*|milestones/*|Milestone*)
+        echo "lint: branch '$branch' looks like a milestone claim but does not parse." >&2
+        echo "Spell it milestone/<N>-<slug>, so the roadmap-block check below can read it." >&2
+        echo "A near-miss is refused because it would skip that check in silence (§77, §90)." >&2
         exit 1
         ;;
+    *) ;;
 esac
 
 # 4b. **A `milestone/N-*` branch must touch that milestone's roadmap file** (§90, 2026-08-16).

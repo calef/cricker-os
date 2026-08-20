@@ -16,7 +16,11 @@
 /// on the framebuffer contract (a VT engine that knew about a scanout would be the wrong shape).
 /// `user/src/display_terminal.rs` and the kernel wiring both assert the two agree at **compile time**, so a
 /// screen that changed size is a build error rather than a terminal quietly missing its last column.
-pub const COLS: u32 = 16;
+///
+/// **Eighteen, and the division has a remainder**: 128 / 7 is 18 with two pixels left over, which
+/// the terminal paints as background once and no cell ever owns. It was 16 while the font was 8
+/// wide.
+pub const COLS: u32 = 18;
 /// The rows of a terminal that owns the whole scanout. See [`COLS`].
 pub const ROWS: u32 = 8;
 

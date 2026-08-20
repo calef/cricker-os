@@ -1,4 +1,4 @@
-//! **An 8x8 bitmap font, and the arithmetic that turns a character into pixels** (milestone 29,
+//! **A 7x8 bitmap font, and the arithmetic that turns a character into pixels** (milestone 29,
 //! the display ladder's text).
 //!
 //! Rung one put pixels on a screen and rung two multiplexed the screen; neither could show a letter.
@@ -34,17 +34,20 @@
 //! assert_eq!(
 //!     art,
 //!     [
-//!         "#######.", // the top bar runs the full width
-//!         ".##...#.", // the stem is on the LEFT, with a serif at the right end
-//!         ".##.#...",
-//!         ".####...", // the middle bar is short and left-hand
-//!         ".##.#...",
-//!         ".##.....",
-//!         "####....", // the foot serif widens the base
-//!         "........",
+//!         ".#####.", // the top bar runs the full five ink columns
+//!         ".#.....", // the stem is on the LEFT
+//!         ".#.....",
+//!         ".####..", // the middle bar is one column short, which is what makes it an F
+//!         ".#.....",
+//!         ".#.....",
+//!         ".#.....",
+//!         ".......", // row 7 is the descender row, and F has none
 //!     ],
 //! );
 //! ```
+//!
+//! The first and last columns are blank in **every** glyph, which is the Kaypro's geometry rather
+//! than an accident of this letter: five ink columns with a one-pixel gutter each side.
 //!
 //! Drawing into a framebuffer is [`cell_pixel`] and nothing else. Three independent parties call it
 //! for three different reasons, which is why it is a function rather than a method on a canvas: the
@@ -66,7 +69,7 @@
 //! }
 //!
 //! // And the grid arithmetic a fixed-pitch font buys: a pixel's cell is a division.
-//! let (px, py) = (col * GLYPH_W + 2, row * GLYPH_H + 1);
+//! let (px, py) = (col * GLYPH_W + 1, row * GLYPH_H + 1); // column 1 is the F's stem
 //! assert_eq!((px / GLYPH_W, py / GLYPH_H), (col, row));
 //! assert_eq!(cell_pixel(b'F', px % GLYPH_W, py % GLYPH_H, WHITE, BLACK), WHITE);
 //! ```
@@ -77,7 +80,7 @@
 //! ```
 //! use bitfont::{ink, glyph, MISSING};
 //!
-//! assert!(!ink(b'F', 8, 0)); // past the cell
+//! assert!(!ink(b'F', 7, 0)); // past the cell
 //! assert!(!ink(b'F', 0, 99));
 //!
 //! // Everything from 0x80 up is outside basic latin, so it draws the missing-glyph box. A reader
@@ -107,11 +110,18 @@ pub mod glyphs;
 
 /// A glyph cell's width in pixels.
 ///
-/// The font is a **fixed-pitch** 8x8, which is what lets a terminal grid be `x / GLYPH_W` and
-/// nothing more. Two glyphs (`*` and `_`) use all eight columns; the rest leave the eighth blank,
-/// which is where the inter-character gap comes from. So the advance is 8 and there is no tracking
-/// to add.
-pub const GLYPH_W: u32 = 8;
+/// The font is a **fixed-pitch** 7x8, which is what lets a terminal grid be `x / GLYPH_W` and
+/// nothing more.
+///
+/// Seven, not eight, and the reason is the Kaypro II's video board: it shifted out a zero, five
+/// bits of character generator, and a zero, so the cell is five ink columns with a one-pixel gutter
+/// on each side. Every glyph here keeps that gutter (asserted below), which is where the
+/// inter-character gap comes from, so the advance is 7 and there is no tracking to add.
+///
+/// The narrower cell is also what makes the terminal usable: 128 / 7 is **18 columns** where 128 / 8
+/// was 16. The scanout is not a whole multiple of 7, so the two rightmost pixels of a full-width
+/// surface are outside the grid and stay background; see `user/src/display_terminal.rs`.
+pub const GLYPH_W: u32 = 7;
 
 /// A glyph cell's height in pixels. Eight rows, of which the last carries only the descenders
 /// (`g j p q y , ;`) and the underscore, so consecutive text rows do not collide.
@@ -123,11 +133,11 @@ pub const GLYPH_H: u32 = 8;
 /// It exists so that [`glyph`] is *total*. A font that returned `None`, or blank, for an unmapped
 /// byte would make a mojibake bug look like a spacing bug, and the whole point of drawing something
 /// visible is that a wrong byte in the grid shows up as a wrong picture rather than as nothing.
-pub static MISSING: [u8; 8] = [0x7e, 0x42, 0x42, 0x42, 0x42, 0x42, 0x7e, 0x00];
+pub static MISSING: [u8; 8] = [0x3e, 0x22, 0x22, 0x22, 0x22, 0x22, 0x3e, 0x00];
 
 /// **The rows of the glyph for `byte`**, top row first, bit 0 the leftmost pixel.
 ///
-/// Bytes `0x00..=0x7f` come from the public-domain table in [`glyphs`]; the control codes in there
+/// Bytes `0x00..=0x7f` come from the drawn table in [`glyphs`]; the control codes in there
 /// are blank, which is correct because a terminal never puts a control code in a cell (the VT engine
 /// consumes them). Everything from `0x80` up draws [`MISSING`].
 ///
@@ -186,14 +196,14 @@ mod tests {
         assert_eq!(
             art,
             [
-                "#######.", // the top bar runs the full width
-                ".##...#.", // and the stem is on the LEFT, with a serif at the right end
-                ".##.#...", //
-                ".####...", // the middle bar is short and left-hand
-                ".##.#...", //
-                ".##.....", //
-                "####....", // the foot serif widens the base
-                "........", //
+                ".#####.", // the top bar runs the full five ink columns
+                ".#.....", // and the stem is on the LEFT
+                ".#.....", //
+                ".####..", // the middle bar is one column short, which is what makes it an F
+                ".#.....", //
+                ".#.....", //
+                ".#.....", //
+                ".......", // row 7 is the descender row, and F has none
             ],
             "the font is mirrored, or the rows are upside down",
         );
@@ -242,7 +252,7 @@ mod tests {
         // Hollow: a filled box would be a solid block, which is a legitimate thing a terminal draws.
         assert!(!ink(0x80, 3, 3), "the missing glyph should be hollow");
         assert!(ink(0x80, 1, 1), "the missing glyph should have a left edge");
-        assert!(ink(0x80, 6, 1), "and a right edge");
+        assert!(ink(0x80, 5, 1), "and a right edge");
     }
 
     /// Control codes are blank. The VT engine consumes them, so one reaching a cell is a bug; if it
@@ -271,9 +281,10 @@ mod tests {
                 lit += u32::from(got == FG);
             }
         }
+        let cell = GLYPH_W * GLYPH_H;
         assert!(
-            (8..56).contains(&lit),
-            "'A' lit {lit} of 64 pixels, which is a blank or a solid block",
+            (8..cell - 8).contains(&lit),
+            "'A' lit {lit} of {cell} pixels, which is a blank or a solid block",
         );
         assert_eq!(cell_pixel(b'A', GLYPH_W, 0, FG, BG), BG, "outside the cell");
         assert_eq!(cell_pixel(b'A', 0, GLYPH_H, FG, BG), BG);
@@ -284,15 +295,64 @@ mod tests {
         );
     }
 
-    /// **Adjacent characters do not touch**, except for the two glyphs that deliberately span the
-    /// whole cell. Without a gap, `ll` and `H` become hard to tell apart at 8x8, and the failure
-    /// looks like a rendering bug rather than a font choice, so the exceptions are named here.
+    /// **The gutter columns are clear in every glyph**, which is the Kaypro's geometry and is what
+    /// separates one character from the next.
+    ///
+    /// Its board shifted out a zero, five bits, and a zero; the ROM could not have inked column 0
+    /// or column 6 if it wanted to. Here nothing enforces it but this test, so a glyph drawn one
+    /// column too wide would run into its neighbour and read as a rendering bug rather than as a
+    /// font that broke its own rule.
     #[test]
-    fn only_two_glyphs_use_the_eighth_column() {
-        let spanning: Vec<char> = (0x20..=0x7eu8)
-            .filter(|&b| (0..GLYPH_H).any(|y| ink(b, GLYPH_W - 1, y)))
+    fn every_glyph_keeps_the_gutter_columns_clear() {
+        let spilling: Vec<char> = (0x20..=0x7eu8)
+            .chain(core::iter::once(0x80))
+            .filter(|&b| (0..GLYPH_H).any(|y| ink(b, 0, y) || ink(b, GLYPH_W - 1, y)))
             .map(|b| b as char)
             .collect();
-        assert_eq!(spanning, ['*', '_']);
+        assert_eq!(
+            spilling,
+            [],
+            "these glyphs ink the gutter, so they touch their neighbours",
+        );
+        // And the five that remain are really used: a font that had quietly become four columns
+        // wide would pass the check above.
+        assert!(
+            (0x20..=0x7eu8).any(|b| (0..GLYPH_H).any(|y| ink(b, GLYPH_W - 2, y))),
+            "no glyph uses the fifth ink column",
+        );
+    }
+
+    /// **The five ink columns really are five**, and the baseline really is row 6.
+    ///
+    /// Consistency is what makes a bitmap font read as words rather than as letters, and the two
+    /// things a drawn font drifts on are where a letter starts and where it sits. Both are checked
+    /// against the whole alphabet rather than against a sample.
+    #[test]
+    fn the_letters_share_a_baseline_and_a_left_edge() {
+        for byte in (b'a'..=b'z').chain(b'A'..=b'Z') {
+            let left = (0..GLYPH_W).find(|&x| (0..GLYPH_H).any(|y| ink(byte, x, y)));
+            // Column 1 for a letter with a body, column 2 for the narrow ones (`i j l t f`),
+            // which are centred in the cell the way a fixed-pitch font centres them. Anything
+            // further right is a letter that has drifted.
+            assert!(
+                matches!(left, Some(1 | 2)),
+                "{:?} starts at {left:?}, not in the first two ink columns",
+                byte as char,
+            );
+            assert!(
+                (0..GLYPH_W).any(|x| ink(byte, x, 6)),
+                "{:?} has nothing on the baseline (row 6)",
+                byte as char,
+            );
+        }
+        // Exactly the glyphs that belong below the baseline, and each by one row. More would be a
+        // drawing slip; fewer would be a `g` that sits on the baseline like an `o`. `_` is the
+        // underscore, which *is* row 7, and `|` is deliberately full height so it cannot be read
+        // as an `I` or an `l`.
+        let descending: Vec<char> = (0x21..=0x7eu8)
+            .filter(|&b| (0..GLYPH_W).any(|x| ink(b, x, GLYPH_H - 1)))
+            .map(|b| b as char)
+            .collect();
+        assert_eq!(descending, [',', ';', '_', 'g', 'j', 'p', 'q', 'y', '|']);
     }
 }

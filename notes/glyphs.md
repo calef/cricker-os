@@ -23,42 +23,79 @@ driver). This is the prose half.
 
 Everything above the surface is text; everything below it is rung one's contract, unchanged.
 
-## The font: public domain, and that is why this one
+## The font: ours, drawn in the Kaypro II's style
 
-`crates/bitfont` is an 8x8 monochrome bitmap font and a pure function from `(byte, x, y)` to a
+`crates/bitfont` is a 7x8 monochrome bitmap font and a pure function from `(byte, x, y)` to a
 colour.
 
-**The source is `font8x8` by Daniel Hepper**, which is **public domain**, derived from Marcel
-Sondaar's `font8x8.h`, also public domain, which traces back to IBM's public-domain VGA fonts.
-Upstream is <https://github.com/dhepper/font8x8>; the U+0000..U+007F block is transcribed into
-`crates/bitfont/src/glyphs.rs` by a script with no bits changed, and the provenance is in that file's
-header.
+**It is an original drawing**, made for this tree in `crates/bitfont/kaypro-style-7x8.art`. Nobody
+holds a licence over it and no obligation travels with it. It replaced `font8x8` (public domain, by
+Daniel Hepper, from Marcel Sondaar's `font8x8.h`, from IBM's public-domain VGA fonts) on 2026-08-20,
+after a poll calef ran was won by the Kaypro II's character generator.
 
-Public domain drove the choice, and the reason is worth stating: **a bitmap font is compiled into the
-image**, so its licence travels with the artefact rather than with a build-time tool. Terminus
-(OFL-1.1) and Spleen (BSD-2-Clause) are both good fonts with compatible licences, and either would
-have attached an attribution obligation to every binary that draws text. This one attaches none.
+**The style is the Kaypro II's and the bits are not**, which is a distinction the law makes and this
+tree relies on. A *typeface as typeface* is listed by 37 CFR 202.1(e) among the things not subject
+to copyright, along with "mere variations of typographic ornamentation, lettering or coloring", so
+the look of a font is free to reproduce. A particular file of bitmaps is somebody's work. The ROM is
+excluded on exactly that second ground, and the case is set out under [The Kaypro II character ROM,
+found, rendered, and excluded](#the-kaypro-ii-character-rom-found-rendered-and-excluded) below: the
+dumps in circulation state no licence at all, `ivanizag/kaypro-disassembly` has no `LICENSE` file,
+and this file's standing rule is that ambiguous is treated as obliged. **So the ROM is not in this
+repository, was not traced, and is not needed**: it was used the way a person uses a reference,
+which is by looking at the shapes and drawing your own.
 
-**Why a bitmap font at all**, rather than something scalable: a TrueType rasteriser (or `cosmic-text`
-above it) wants an allocator, floating point, hinting, and a font file to load from a filesystem.
-Every one of those is a dependency a `no_std`, allocation-free userspace component would have to
-acquire before it could draw the letter A. A bitmap font needs none: the glyphs are a `static` in
-`.rodata` and drawing one is a bit test.
+A reader who wants to check that claim can: the `.art` file is the drawing, every glyph is a picture
+of `#` and `.`, and `crates/bitfont/src/glyphs.rs` is that file transcribed with a test
+(`the_art_file_and_this_table_agree`) that parses it back and fails if the two ever drift.
 
-It buys something else, and that is the real argument. Because rendering is a pure function, **the
-expected picture is a value that more than one party can compute**. That is what makes the text on
-the screen provable rather than plausible (below). Rung three will want the scalable path; this rung
-would not have been checkable with it.
+**Why the licence question is worth this much care**: a bitmap font is compiled into the kernel
+image and into every binary that draws text, so its licence is a licence on the *artefact* rather
+than on a build-time tool. That was the reason `font8x8` was chosen and it is the reason this one is
+drawn rather than downloaded.
 
-Two details the font's own tests pin, because both are invisible in review:
+### The geometry, which is the machine's and is why the terminal got wider
 
-- **Bit 0 is the leftmost pixel**, which is the opposite of the convention most bitmap fonts use. A
-  mirrored alphabet is nearly undetectable by eye (half the letters are symmetric enough), so the
-  test spells out the shape of `F` as ASCII art. It earned its keep on the first run: it was written
-  against an *invented* picture of `F` and the real font refused it.
-- **No two printable glyphs are identical**, and every printable byte has one. A table transcribed
-  with a dropped row would show up here as a collision or a hole and nowhere else until it was on a
-  screen.
+Seven columns, of which the **middle five carry ink** and the outer two are gutter. That is not a
+stylistic choice; it is what the Kaypro's video board did in hardware, shifting out a zero, five ROM
+bits and a zero (MAME's `kaypro_v.cpp`). Eight rows: 0 to 6 are the body with the baseline at row 6,
+and row 7 is the one-row descender. Caps and digits fill rows 0 to 6, x-height letters rows 2 to 6.
+
+**That geometry is most of the argument for the font.** 128 / 7 is **18 columns** where 128 / 8 was
+16, on the same 128x64 scanout, at the same 1024-byte table. Milestone 29's other candidate,
+`gohufont-14`, has better letterforms and gives four rows of text, and four rows is not a terminal.
+No larger scanout is reachable today (a `Frame` names one page and the display driver has nine
+cspace slots left), so a narrower cell is the only lever there is.
+
+The division has a remainder, and it is handled rather than avoided: 18 cells of 7 is 126, so two
+pixels on the right of a full-width surface belong to no cell. `Vt::pixel` already answered for
+them (a cell outside the grid is a blank on the default background), and `display_terminal` paints
+its whole surface on its first frame so that something actually writes them. Nothing else needed to
+change, and no surface has to be a whole number of cells any more.
+
+### What was done better than the ROM, and what the grid would not allow
+
+The brief was a font in the Kaypro's style, not a forgery, so where the machine is weak for reasons
+the grid does not force, this is not.
+
+- **One baseline for every glyph.** `g p q y` sit on row 6 like `o` and descend into row 7. The
+  usual 8-row compromise, which the earlier hand-drawn candidate took and named, is to raise the
+  descender bowls a row so the tail gets two; that leaves `p` visibly shorter than `o`. Here the
+  tails are one row and the bowls are not raised.
+- **`Il1|` are four different shapes**, deliberately: `I` has serifs at both ends, `l` has a flag at
+  the top left and a tail at the bottom right, `1` has a flag and a flat foot, and `|` is the only
+  glyph that runs the full eight rows.
+- **A slashed zero**, which the ROM also has and which is the reason a terminal font is usable in a
+  hex dump.
+
+And what is kept because it is the grid rather than the drawing:
+
+- **`M` and `W` are near mirrors.** Five columns leaves one way to draw each, so they differ only in
+  which end the middle spike sits at. That is the Kaypro's own failing and it is not fixable at this
+  width.
+- **The descender is one row.** Eight rows with a seven-row cap height leaves exactly one, so `g`
+  has a hook rather than a tail.
+- **The underscore does not join.** `_` is five ink columns with a gutter each side, so a run of
+  them is dashed rather than continuous. The ROM had the same property for the same reason.
 
 ### The options, with pictures (2026-08-19, lane `bench/font-options`)
 
@@ -94,6 +131,7 @@ cargo run -p bitfont --example specimen                          # what ships
 cargo run -p bitfont --example specimen -- --dots                 # one character per pixel
 cargo run -p bitfont --example specimen -- --font ter-u16n.bdf --name terminus-16
 cargo run -p bitfont --example specimen -- --font bench/font-options/hand-drawn-8x8.art
+cargo run -p bitfont --example specimen -- --font crates/bitfont/kaypro-style-7x8.art
 ```
 
 It reads the three formats a bitmap font actually arrives in: `.hex` (GNU Unifont), `.bdf` (Adobe,
@@ -109,7 +147,8 @@ characters by rows on the display ladder's 128x64 scanout, which is 16x8 today.
 
 | Font | Cell | Table | Grid | Licence | Reserved name |
 |---|---|---|---|---|---|
-| `font8x8` (ships) | 8x8 | 1024 B | 16x8 | Public domain | none |
+| **kaypro-style (ships)** | **7x8** | **1024 B** | **18x8** | **ours** | none |
+| `font8x8` (shipped until 2026-08-20) | 8x8 | 1024 B | 16x8 | Public domain | none |
 | hand-drawn | 8x8 | 1024 B | 16x8 | ours | none |
 | `unscii-8` (+`-alt`, `-thin`, `-mcr`) | 8x8 | 1024 B | 16x8 | Public domain / CC0 | none |
 | `spleen-5x8` | 5x8 | 1024 B | **25x8** | BSD-2-Clause | none |
@@ -157,6 +196,7 @@ source. **Ambiguous is treated as obliged.**
 
 | Font | Ink per letter | Left edge sigma | Width sigma | Cap | x-height | Descender |
 |---|---|---|---|---|---|---|
+| **kaypro-style (ships)** | **13.7** | **0.23** | **0.54** | 7 | 5 | 1 |
 | `font8x8` | 24.6 | 0.27 | 0.79 | 7 | 5 | 1 |
 | hand-drawn | 15.5 | 0.19 | 0.61 | 7 | 5 | 1 |
 | `unscii-8` | 23.2 | 0.44 | 0.61 | 7 | 5 | 1 |
@@ -169,6 +209,14 @@ source. **Ambiguous is treated as obliged.**
 | `terminus-16` | 20.1 | 0.41 | 0.80 | 10 | 7 | 3 |
 | `spleen-8x16` | 33.6 | 0.46 | 0.74 | 10 | 7 | 3 |
 | `unscii-16` | 34.6 | 0.38 | 0.52 | 11 | 7 | 3 |
+
+**The drawn font measures like the machine it is drawn after**, which is the check on whether the
+style survived the drawing: 13.7 ink per letter against the ROM's 13.6, a left-edge sigma of 0.23
+against 0.27, and a width sigma of 0.54 against 0.48. Lighter than everything here but Spleen and
+`unscii-8-thin`, and more evenly fitted than everything but Spleen. The one number that moved the
+wrong way is the width sigma, and the reason is deliberate: `Il1|` were given four different widths
+so they cannot be confused, where a font that padded them all to the grid would score better and
+read worse.
 
 Ink per letter is weight, the two sigmas are consistency (which is what the eye reads as rhythm
 rather than as any one glyph), and the descender column is how many rows a `g` gets below the
@@ -254,7 +302,10 @@ account for.
    machine, as above.
 
 **Ambiguous is treated as obliged**, which is this section's existing rule, so **the ROM is not in
-this repository and the font is not a candidate.** What is committed is the reader and the recipe:
+this repository and the font is not a candidate.** What *is* a candidate, and what now ships, is an
+original drawing in its style: answer 1 above says the look is not the protected part, and answer 2
+says the file is. See [The font](#the-font-ours-drawn-in-the-kaypro-iis-style) at the top of this
+page. What is committed is the reader and the recipe:
 the specimen tool grew a `.rom` format, and the two commands below reproduce everything above from a
 file you fetch yourself. That is MAME's own posture, which is to ship the hash and not the bits.
 
@@ -286,6 +337,14 @@ than a hook, and an `M` and `W` that cannot be confused. (The two draw `a` the s
 not one of the differences, and an earlier draft of this paragraph said it was.) Its higher sigmas are the good kind of
 variation, letters given their own width rather than padded to a grid, which reads as typographic
 where the Kaypro reads as gridded.
+
+**And the survey's verdict was overruled, on purpose and by the right person** (2026-08-20). calef
+ran a poll, the Kaypro's font won it, and the tree now ships a drawing in its style. The paragraph
+above stands as written rather than being quietly softened: the letterforms below are genuinely
+better than what ships, and a reader deciding whether to change the font again should have the
+argument against the current one in front of them. What the poll settled is a question of taste that
+measurement was never going to answer, and the screen argument in the next paragraph is the reason
+the taste and the engineering agree here.
 
 **The one place the Kaypro wins is the screen, and it wins decisively**: 18x8 against 16x4 on the
 128x64 scanout, more columns than the shipped `font8x8` and twice the rows of anything 14 tall. The
@@ -374,7 +433,8 @@ Three decisions inside it worth reading:
   the *next* printable does the wrap. Without it, a line that exactly fills the width scrolls the
   screen before anything asked it to, and a `CR` arriving right after the last character finds the
   cursor a row too low. That is the difference between a grid and a terminal.
-- **Bold is bright.** A bold weight needs a second font and at 8x8 a bold face is a smudge. Every
+- **Bold is bright.** A bold weight needs a second font and in a five-column cell a bold face is a
+  smudge. Every
   terminal since the DEC VT has answered SGR 1 by brightening, which is why the palette has eight
   bright entries.
 - **The cursor is part of the picture**, drawn by inverting its cell rather than overlaid. That keeps
@@ -550,8 +610,18 @@ Stated plainly, because a demonstrator's caveats are part of the deliverable.
   discipline's echo through `OP_WRITE`, which needs no new protocol at all, because `line_editor`'s echo
   is exactly a byte stream this engine parses. That is not a hope: the `video_terminal` crate proves it on the
   host by running both.
-- **A 16x8 grid.** The scanout is 128x64 and the font is 8x8. That is what the display ladder's
-  current screen affords; the engine's maximum is 32x16 and both are constants.
+- **An 18x8 grid, with two pixels left over.** The scanout is 128x64 and the font is 7x8, so 18
+  cells of 7 use 126 of the 128 columns. The strip is painted background once, on the terminal's
+  first frame, and no cell ever owns it. That is what the display ladder's current screen affords;
+  the engine's maximum is 32x16 and both are constants.
+- **The font's own weak glyphs, named where a reader meets them.** `M` and `W` are near vertical
+  mirrors, because five ink columns leaves one way to draw each; `&` is the busiest glyph in the set
+  and reads as a knot at a glance; `%` fills its corners heavily enough to look bolder than its
+  neighbours; and `_` does not join across cells, so a rule drawn out of underscores is dashed. The
+  first and the last are the grid rather than the drawing (see above); the middle two are the
+  drawing and could be improved by someone with a better eye.
+- **No box-drawing, no block glyphs, no line-drawing set.** The font covers printable ASCII and
+  nothing else, so a program that wants a frame draws it out of `-` `|` `+`.
 - **No reflow on resize**, because nothing resizes. The roadmap named reflow; a fixed scene has
   nothing to reflow to.
 - **The keymap is a US layout's main block.** No keypad, no function keys, no arrow keys, no compose,
@@ -631,6 +701,7 @@ property this increment was asked to keep and did.
 
 | piece | file |
 |---|---|
+| the font as pictures, which is what to edit | `crates/bitfont/kaypro-style-7x8.art` |
 | the font and its provenance | `crates/bitfont/src/lib.rs`, `crates/bitfont/src/glyphs.rs` |
 | the VT engine | `crates/video_terminal/src/lib.rs` |
 | the keymap | `crates/video_terminal/src/keymap.rs` |

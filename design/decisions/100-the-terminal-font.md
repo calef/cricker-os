@@ -1,10 +1,54 @@
-# 100. The terminal font is gohufont-14
+# 100. The terminal font
 
-**Status: DECIDED.** calef, 2026-08-19, after looking at fifteen candidates rendered on the same
-sample text: *"gohufont-14 it is."*
+**Status: AMENDED.** (2026-08-20: the answer changed and most of the reasoning did not, which is
+what this token is for.) **The font is now an original 7x8 drawing in the Kaypro II's style**, not
+gohufont-14. calef ran a poll and the Kaypro's look won.
 
-**What it replaces.** `font8x8`, which has shipped since milestone 29 and was chosen for its licence
+**What it replaces.** `font8x8`, which had shipped since milestone 29 and was chosen for its licence
 rather than its looks.
+
+## The amendment, 2026-08-20
+
+**Three things happened between the first decision and this one, and only the poll is a matter of
+taste.**
+
+**1. The poll.** calef: *"I did a small poll and Kaypro II won, so lets switch to Kaypro II."* The
+survey below had already rendered the Kaypro's ROM beside every candidate and judged it the loser on
+letterforms; a poll of people looking at it disagreed, and on a question that is entirely about how
+something looks, that is the better instrument. **The aesthetic verdict below is left standing rather
+than rewritten**, because a reader deciding to change the font again should meet the argument against
+the current one.
+
+**2. The ROM still cannot ship, and did not.** `ivanizag/kaypro-disassembly` has **no `LICENSE` file
+at all**, which is all-rights-reserved by default rather than permissive, and a bitmap font is
+compiled into the kernel image and into every binary that draws text. That exclusion is unchanged
+from the survey below, and it is the same rule that excluded Fixedsys Excelsior on a weaker
+objection: **ambiguity is an obligation risk, and ambiguous means excluded.**
+
+**So what shipped is an original drawing in that style.** Typeface-as-typeface is not copyrightable
+subject matter (37 CFR 202.1(e), read at Cornell LII): the *look* is not protected, the specific
+bitmap file is somebody's work. The drawing is `bench/font-options/kaypro-style-7x8.art` (provisional
+name), and it is the authoring source with a test parsing it back against `glyphs.rs`, so the picture
+a reviewer reads and the bits a terminal draws cannot drift.
+
+**It measures like the ROM**, which is the check on whether the style survived the drawing: 13.7 ink
+pixels per letter against 13.6, left-edge sigma 0.23 against 0.27. It is deliberately better in three
+places the grid does not force: one shared baseline so `g p q y` descend rather than having their
+bowls raised, `Il1|` as four distinct widths, and a slashed zero. It keeps what the grid does force,
+including `M` and `W` as near-mirrors.
+
+**3. And it dodged a fork, which is why it could ship at all.** gohufont-14 is 8x14, so on the
+128x64 scanout it gives **16x4** characters, which is not a terminal. Growing the scanout ran into
+the capability model rather than memory: `Object::Frame` names one page, a cspace has sixteen slots,
+the display driver's DMA region holds nine, so the ceiling was **9 frames** against the 469 an
+800x600 surface needs. That fork was answered separately and expensively (§102, a `Frame` names a
+run). **The Kaypro's 7x8 cell needs none of it**: it gives **18x8** on the scanout we already have,
+which is more screen than `font8x8`'s 16x8 rather than less.
+
+**What is unchanged from the original decision**: every refusal below and its reason, the licence
+analysis, and the finding that `font8x8` was the weakest thing in the survey and was what shipped.
+**What is superseded**: the choice of gohufont-14, and the sentence below saying this decision does
+not change what a user sees. It does now, and in the right direction.
 
 ## Why this one
 
@@ -54,6 +98,11 @@ draws text**, so its licence is a licence on the artefact rather than on a build
 
 ## What this costs, stated plainly
 
+***Overtaken by the amendment.** The grid is 18x8, not 16x4, because the font that shipped is 7x8
+rather than 8x14. The paragraph below is kept because its reasoning about the scanout is still true
+and is what sent the tree into §102; the arithmetic in it applies to gohufont-14, which did not
+ship.*
+
 **gohufont-14 is 8x14, and the scanout is 128x64, so the text grid becomes 16x4.** Four rows. That is
 not a terminal, and notes/glyphs.md says so in its own words.
 
@@ -65,6 +114,11 @@ stride bug, a transposition and an x/y swap are all size or content mismatches r
 to stay small; the cost of growing it is in the pixel-for-pixel test harness rather than the driver.
 
 ## The obligations, and where they land
+
+***Overtaken by the amendment, and in the same direction.** What shipped is an original drawing, so
+there is no third party and no licence at all. The `vendor/README.md` entry is not owed, because the
+tree carries no bits it did not write for this. The paragraph below describes gohufont-14's WTFPL
+position, which stands if the font is ever revisited.*
 
 There are none to satisfy. Recorded anyway, because a reader will reasonably ask:
 
@@ -80,6 +134,13 @@ prompt. That is a taste question rather than a legal one, and it is calef's.
 
 ## BUGS
 
+- **The choice was settled by a poll, and the survey disagreed with it.** The rendered comparison
+  judged the Kaypro's letterforms the loser and said so in measured terms. A poll of people looking
+  at the thing overruled that, on a question that is entirely about how something looks. Both are in
+  the record on purpose; a reader should be able to see that the tree's own instrument lost.
+- **The shipped font is an original drawing and inherits none of the survey's measurements.** Its own
+  numbers are in notes/glyphs.md, and two glyphs are recorded there as weak: `&` reads as a knot and
+  `%` looks bolder than its neighbours.
 - **The comparison is against fifteen candidates, not against every bitmap font.** The survey
   excluded proprietary faces without rendering them, and the best-drawn fonts of the 1980s are
   proprietary: the original Macintosh bitmaps, Monaco among them, were drawn by a designer Apple
