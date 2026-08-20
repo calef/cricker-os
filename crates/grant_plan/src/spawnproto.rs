@@ -111,7 +111,7 @@ pub struct Wiring {
     pub diagnostics: bool,
     /// **A directory grant follows as two data messages** ([`GRANT_WORDS`]), and init is to build a
     /// `fs_subtree_caretaker` for it before it builds the child. The only entry here that announces
-    /// data instead of a capability; see [`DIR_BIT`].
+    /// data instead of a capability; see `DIR_BIT`.
     pub dir: bool,
 }
 

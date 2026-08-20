@@ -14,12 +14,12 @@
 //!
 //! The same binary runs in two wirings, chosen by `arg0`, and neither of them holds a device:
 //!
-//! - [`MODE_DISPLAY`](video_terminal::status::MODE_DISPLAY): it holds rung one's **display endpoint** and the
+//! - [`MODE_DISPLAY`]: it holds rung one's **display endpoint** and the
 //!   scanout frames, exactly the authority `painter` had, and shows text on the whole screen. This
 //!   is the wiring that answers "did the framebuffer contract need to change for text?" The answer
 //!   is no: it draws pixels and calls `FLUSH` with a damage rectangle, which is what the contract
 //!   already said a client does.
-//! - [`MODE_WINDOW`](video_terminal::status::MODE_WINDOW): it holds rung two's **doorbell** and one window's
+//! - [`MODE_WINDOW`]: it holds rung two's **doorbell** and one window's
 //!   control page and surface, exactly the authority `window` had, and shows text in a window
 //!   among mutually distrusting neighbours.
 //!

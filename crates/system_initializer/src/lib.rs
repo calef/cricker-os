@@ -134,7 +134,7 @@
 //!   traps, which is `kernel::trust::require`'s decision one link down.
 //! - **`terminal_sink_caretaker`.** Already optional: a boot without an adapter comes up and a
 //!   declared second stream finds an empty slot. A refused adapter costs that same feature.
-//! - **The spawnable programs.** Left out of the table [`spawn_service`] indexes, so the prompt
+//! - **The spawnable programs.** Left out of the table `spawn_service` indexes, so the prompt
 //!   answers "could not spawn" for them and everything else still works. Halting a running machine
 //!   because `wc` changed would turn a build defect into an unbootable system, and it buys nothing:
 //!   the guarantee is that nothing unvouched-for runs, and not spawning it is that guarantee.
@@ -234,7 +234,7 @@ pub struct BootEndowment {
     /// (DECISIONS §43).
     ///
     /// **The shell holds a narrowed view of this same frame** (milestone 86), mapped at
-    /// [`SH_CLOCK_VA`], which is what `time <command>` measures with. There is deliberately no
+    /// `SH_CLOCK_VA`, which is what `time <command>` measures with. There is deliberately no
     /// second field for it: the shell's clock is not a separate kernel grant but this one handed on,
     /// so a field would ask each board to state the same slot number twice with nothing checking
     /// that the two agree. `READ` and no `GRANT` there too, so the shell can read the wall clock and

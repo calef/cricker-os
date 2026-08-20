@@ -27,7 +27,7 @@
 //!
 //! # Where `malloc` comes from
 //!
-//! Milestone 27's untyped-backed [`UntypedHeap`](user_rt::heap::UntypedHeap), wired to slot 1: the
+//! Milestone 27's untyped-backed [`UntypedHeap`], wired to slot 1: the
 //! region this instance was built in. So the C heap is the process's own budget, a C leak exhausts
 //! this instance and touches no other process's memory, and the single `Untyped::DESTROY` that reaps
 //! the corpse reclaims the heap along with everything else.

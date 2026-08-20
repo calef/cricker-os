@@ -303,7 +303,7 @@ impl<D: Disk> Server<D> {
     /// like a working one, which is the exact failure mode §27 records.
     ///
     /// Resolved under the bound directory like every other name, so this cannot create outside the
-    /// granted subtree, and [`check_component`] rejects a path rather than walking one.
+    /// granted subtree, and `check_component` rejects a path rather than walking one.
     pub fn create_file(&mut self, name: &str) -> Result<u32> {
         self.create_file_at(fs_proto::fs::ROOT as u32, name)
     }
@@ -711,7 +711,7 @@ impl<D: Disk> Server<D> {
     /// crate does not modify vendored code to add one. A method here called `sync` would be the
     /// exact kind of claim-beyond-the-mechanism milestone 55 exists to remove.
     ///
-    /// [`node_at`](Self::node_at) with [`dir::WRITE`], so it takes a handle of **either kind** the
+    /// `node_at` with [`dir::WRITE`], so it takes a handle of **either kind** the
     /// way `STATFS` does (the answer is about the storage, not about the node), and refuses with
     /// [`dir::EROFS`] the way every mutating verb does. The rights argument is in
     /// `fs_proto::fs::SYNC`'s own documentation: a sync is an action on the device rather than a

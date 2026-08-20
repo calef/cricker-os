@@ -1855,7 +1855,7 @@ pub fn plan_against_with(
 ///
 /// `> report.txt` and `< report.txt` designate a file the same way an operand does: the leading
 /// path is walked against where the shell stands **now**, once, and the result is a value. So this
-/// is [`designate`] with the pattern case taken out, because [`line::split`] has already refused a
+/// is `designate` with the pattern case taken out, because [`line::split`] has already refused a
 /// pattern here.
 ///
 /// `writable` comes from the operator rather than from a manifest, and that is the one place this

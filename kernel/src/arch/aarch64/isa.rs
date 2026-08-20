@@ -123,7 +123,7 @@ pub fn get() -> Isa {
 
 /// **What a `CPU_ON` call needs**: the conduit to make it on and the function id to make it with,
 /// or `None` when this machine stated neither well enough to try. Read by
-/// [`super::psci_cpu_on`](super::psci_cpu_on) on every core it starts.
+/// [`super::psci_cpu_on`] on every core it starts.
 pub fn psci() -> Option<(Conduit, u32)> {
     let conduit = match PSCI_CONDUIT.load(Ordering::Relaxed) {
         PSCI_HVC => Conduit::Hvc,

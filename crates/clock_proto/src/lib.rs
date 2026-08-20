@@ -429,7 +429,7 @@ pub mod propose {
     }
 
     /// `CALL(req(PROPOSE), proposed_unix_nanos)`. Ask the service to move the wall clock to
-    /// `proposed_unix_nanos`. Reply `r0` is one of the [`status`](super::status) codes and `r1` is
+    /// `proposed_unix_nanos`. Reply `r0` is one of the `status` codes and `r1` is
     /// the wall-clock nanoseconds in force afterwards (0 when the state is unknown), so a proposer
     /// learns what happened without needing a read mapping.
     pub const PROPOSE: u64 = 1;
@@ -523,7 +523,7 @@ pub mod policy {
     }
 
     /// **The decision.** `current_state` and `current_nanos` are what the clock believes now;
-    /// `proposed_nanos` is what the proposer asked for. The answer is one of [`status`](super::status)'s codes.
+    /// `proposed_nanos` is what the proposer asked for. The answer is one of [`status`]'s codes.
     ///
     /// The bootstrap case is the interesting one: when the clock is [`state::UNKNOWN`] there is
     /// nothing to step *from*, so a plausible proposal is accepted outright. That is not a hole,
