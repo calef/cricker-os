@@ -36,7 +36,8 @@ The four options are set out in full in section 6 below with their measured pric
 **A and D are the same decision at different granularity**, which is the useful way to see them: both
 make one capability name more than one page, and they differ in whether the size is arbitrary
 (`pages: u64`) or a power-of-two order the hardware already understands. That is exactly the split
-between Fuchsia's VMOs and seL4's frame sizes, and between an arbitrary run and an L4 flexpage.
+between Barrelfish's frame capability and seL4's frame sizes, and the survey in section 3 is mostly
+about what each side of it costs.
 
 ---
 
@@ -69,8 +70,10 @@ that fact away.
 ## 3. The prior art, read rather than recalled
 
 Four systems were offered from memory when this fork was raised, and marked as recalled. This lane
-opened the sources. **Three survived; the first did not, and the word it got wrong is the
-load-bearing one.** Everything quoted below was retrieved from the URL beside it.
+opened the sources. **One survived intact, one with a qualification, and two of the four framings are
+wrong**: the flexpage's verb, and Mach's paternity of the VMO. Five more systems were read because a
+recalled list is not a survey, and one of them has already built option A. Everything quoted below
+was retrieved from the source named beside it.
 
 ### L4 flexpages: the geometry is right and "names" is wrong
 
@@ -178,6 +181,186 @@ Note also what seL4 does *not* do, because section 5's overlap argument depends 
 cannot also be a small frame. That is what keeps its frame capabilities equal-or-disjoint, and it is
 the invariant we would be putting at risk.
 
+### Fuchsia VMOs: correct, and the qualification is where the size lives
+
+The claim was that one handle names an arbitrarily-sized memory object and page granularity is not
+in the capability model. **Correct.** From Zircon's own syscall definitions
+(`zircon/vdso/vmo.fidl`, read at `fuchsia.googlesource.com`):
+
+> `zx_vmo_create()` creates a new, zero-filled, [virtual memory object] (VMO), which represents a
+> container of zero to *size* bytes of memory managed by the operating system. [...] The size of the
+> VMO will be rounded up to the next system page size boundary [...] One handle is returned on
+> success, representing an object with the requested size.
+
+**The qualification, and it is the one that matters here: the size is not in the capability either.**
+The handle is opaque; the extent is kernel state, reached by `zx_vmo_get_size()`. That is the
+**object-identity** shape, and it has a consequence this fork should weigh: **delegating a subrange
+costs a second kernel object.** `zx_vmo_create_child` with `ZX_VMO_CHILD_SLICE` takes an arbitrary
+page-aligned `(offset, size)` and mints a new handle with a parent/child relationship the kernel
+tracks. Attenuating a *mapping* is free (`zx_vmar_map` takes `(vmo_offset, len)`); attenuating the
+*object* is not.
+
+And the framebuffer case is spelled out, privileged: `zx_vmo_create_physical(resource, paddr, size,
+out)` turns a `(paddr, size)` run into one handle and requires an MMIO resource, while
+`zx_vmo_create_contiguous` requires a Bus Transaction Initiator handle. **Contiguity is a driver
+privilege there, not a property of ordinary memory**, which is the same division this tree already
+makes between `Frame` and `DeviceFrame`.
+
+### Mach memory objects: partly, and the paternity is folklore
+
+Two halves, and both need correcting.
+
+**A Mach memory object is a port right, so it is a capability, but it carries no size.** The extent
+is a parameter of the mapping call, not a property of the object. GNU Mach's reference manual, §5.5
+(`gnu.org/software/hurd/gnumach-doc/Mapping-Memory-Objects.html`):
+
+> *memory_object* is the port that represents the memory object: used by user tasks in `vm_map`
+> [...] Within a memory object, *offset* specifies an offset in bytes.
+
+with `size` a separate argument of `vm_map`. And a memory object is **backing store served by a
+userspace pager**, not a run of physical pages: *"A memory manager is a server task that responds to
+specific messages from the kernel in order to handle memory management functions for the kernel."*
+So it answers "how do I name backing store" rather than "how do I name 469 physical pages", and it is
+*further* from this fork than a VMO is. The thing in Mach that resembles a VMO is the kernel-internal
+`vm_object`, which is not a port and therefore not a capability at all; conflating the two is the
+specific error available here.
+
+**And the ancestry claim is not documented.** Fuchsia's own record of where Zircon came from
+(`docs/concepts/kernel/zx_and_lk.md`) says:
+
+> Zircon was born as a branch of LK and even now many inner constructs are based on LK while the
+> layers above are new.
+
+Neither the VMO page nor the ancestry page mentions Mach, and this lane found no Fuchsia primary
+source claiming it. **Do not write that VMOs descend from Mach memory objects.** The defensible
+sentence is that they occupy the same design slot, convergently.
+
+### What the four did not include, and one of them is this fork's exact shape
+
+Five more systems were read because a maintainer's list is not a survey. Three change the picture.
+
+#### Barrelfish: `(base, bytes)` in the capability, and the honest price
+
+**This is option A, built, documented to the bit layout, and shipped.** Barrelfish Technical Note
+013, *Capability Management*, rev 3.0, §3.2.8 (`barrelfish.org/publications/TN-013-CapabilityManagement.pdf`):
+
+> A frame capability refers to a page-aligned region of physical memory with a size that is a
+> multiple of 4096 bytes. A frame capability may be mapped into a domain's virtual address space
+> (by copying it to a VNode).
+
+```
+datatype frame cap "Frame capability" {
+   base   64 "Physical base address of mappable region";
+   bytes  64 "Size of the region";
+};
+```
+
+**And it makes a split this tree should copy or refuse deliberately.** §3.2.4:
+
+> A RAM capability refers to a naturally-aligned power-of-two-sized region of kernel-accessible
+> memory.
+
+So the **allocation** type keeps the power-of-two, naturally-aligned discipline that makes an
+allocator and a derivation tree tractable, and only the **mappable** type relaxes to
+page-aligned-multiple-of-4096. That is precisely the seam this tree has between `untyped` (which is
+where the no-double-free proof lives) and `Frame` (which is what gets mapped). It says option A can
+be taken **without touching `crates/regions`' arithmetic at all**, which is the same conclusion
+D-narrow reached by a different route.
+
+**The price Barrelfish pays, and it is the one to price here.** Arbitrary overlapping ranges need a
+mapping database to make revoke work, and TN-013 records that its insert *"is logarithmic time in the
+size of the mapping database"*. This tree's `revoke` is a flat table keyed on an exact physical
+address. Option A does not merely change a key; it changes a lookup from equality to containment,
+and containment over overlapping ranges is a different data structure.
+
+Worth knowing for a different reason: Barrelfish's L1 CNodes are resizable to 2^24 slots. **It did
+not solve this by growing the cspace**; it grew the cspace for unrelated reasons and solved this by
+putting the run in the capability.
+
+#### KeyKOS: the same sixteen slots, answered with a tree
+
+The coincidence is worth the citation on its own. From the KeyKOS architecture notes
+(`cap-lore.com/Agorics/Library/KeyKos/Architecture/Pages.Nodes.html`):
+
+> A page holds 4096 bytes of data and a node has sixteen slots.
+
+and from the *KeyKOS Nanokernel Architecture* paper (§4):
+
+> A segment is a collection of pages or other segments. [...] Nodes are the glue that holds segments
+> together. KeyKOS implements segments as a tree of nodes with pages as the leaves of the tree.
+
+**A system with this tree's exact slot count met this exact problem and answered it with a tree
+rather than by widening the slot.** A segment's size is a power of sixteen, and sub-segments are
+page-granular, so attenuation is finer than the size quantum. EROS narrowed the same idea by putting
+the **height of the tree in the capability itself** (*"Node capabilities encode the height of the
+tree that they name"*, SOSP'99 §3.1), which is the first design on this list to put extent metadata
+in the capability word.
+
+This is a fifth option, and this lane is not proposing it: a tree of capabilities is a much larger
+change than any of the four, and this tree has no node object. It is here because it is the answer a
+sixteen-slot system actually gave.
+
+#### Coyotos: the documented failure mode of the power-of-two family
+
+Coyotos replaced EROS's nodes with GPTs (also sixteen slots) and made the size explicit as `l2v`:
+*"Each slot of the GPT names a subspace of size 2^l2v bytes."* **And it names, precisely, what a
+power-of-two answer costs at delegation time.** From the Coyotos Microkernel Specification v0.6+,
+§4.3:
+
+> the invoker may wish to transmit a 2^11 page (2^23 byte) subspace, but the subspace may currently
+> be dominated by a GPT having l2v=21. That is: there is no single slot in the GPT that directly
+> holds a capability of the desired span. [...] When such a send is attempted, the invoker will
+> receive a `SplitFault` exception.
+
+with the whole scheme conditioned on the region being *"naturally aligned"*. **Read against this
+fork: 475 pages can never be one Coyotos capability, and it could never be one L4 fpage either.** The
+power-of-two family (fpages, KeyKOS segments, EROS heights, Coyotos `l2v`) buys a compact encoding
+and pays in expressiveness, and option D is a member of that family. That is not an argument against
+D, because D rounds *up* into a 2 MiB page and wastes 37 pages rather than failing; it is the reason
+D's waste is structural rather than incidental.
+
+*Provenance caveat: `coyotos.org` returns HTTP 522, so this was read from a third-party cache
+(`hydra-www.ietfng.org/capbib/cache/shapiro:coyotosspec.html`) and not diffed against the canonical
+copy.*
+
+#### Genode, and one encoding note
+
+**Genode's dataspace is L4Re's answer generalised** (Genode Foundations 24.05, §3.4.1):
+
+> A dataspace is an RPC object that resides in core and represents a contiguous physical
+> address-space region with an arbitrary size.
+
+One capability, arbitrary size, **physically contiguous by definition**, with the size retrieved by
+invoking `size()` rather than read out of the capability. Partial delegation is at the region map:
+a holder *"has the option to attach a mere window of the dataspace"*. Same object-identity shape as
+Fuchsia, arrived at independently.
+
+And one encoding note, from CHERI Concentrate (IEEE ToC 2019), because it is the only system here
+that measured what an explicit run costs. CHERI's 256-bit format stored base, length and address as
+three independent 64-bit fields and was **abandoned for size**; its predecessor's power-of-two
+segments were rejected because *"this power-of-two alignment restriction prevents precise enforcement
+of irregular object sizes"* and padding *"results in severe memory fragmentation"*. The compromise
+the paper credits (Low-fat) stores a run as base-block, top-block and a block-size exponent, which
+read with the page as the block is: **store a page count, not a byte length.** If option A wins and
+capability width ever matters, that is the shape to reach for.
+
+### What the survey settles
+
+**Two shapes exist and they are not a spectrum.**
+
+- **Object identity** (Fuchsia VMO, Genode dataspace, L4Re dataspace, Mach memory object, and this
+  tree's own `Untyped`): the capability is an opaque name, the extent is kernel state. Delegating a
+  subrange costs a new kernel object.
+- **The run in the capability** (Barrelfish frame cap): `(base, bytes)` with no rounding. Delegating
+  a subrange is a retype at an offset. Pays for it in a mapping database with containment lookups.
+- **The power-of-two family** (L4 fpages, KeyKOS, EROS, Coyotos, seL4's frame sizes) is a third
+  thing rather than a middle: a region that is not naturally aligned and power-of-two sized is not
+  expressible as one capability at all.
+
+Option A is the second shape or the first; option D is the third. **The tree already has a worked
+example of the first** (`Untyped`), which is the cheapest fact in this whole section and the one that
+should probably decide the encoding once the shape is chosen.
+
 ---
 
 ## 4. Is the premise true?
@@ -194,6 +377,15 @@ Two premises were checked before anything was priced, and both hold.
 **The ceiling.** `cap::CSPACE_SLOTS = 16`, `abi::fault::FAULT_EP_SLOT = 15`, and
 `DRIVER_SLOT_DMA = 5`, so the driver's region may hold at most ten slots and `DMA_FRAMES` is
 `1 + SURFACE_FRAMES`. Nine surface frames is the ceiling, 36,864 bytes, exactly as reported.
+
+**And the obvious workaround does not work, which is worth writing down before somebody proposes
+it.** The driver is not what is scarce. It maps the surface only to read pixels back
+(`user/src/display.rs`, `surface_pixel`); the device is handed a *physical* address it already has
+in `a1`, so a driver that gave up its readback could hold **one** DMA frame instead of ten. That
+moves the ceiling to the painting client, whose cspace starts its surface at slot 3
+(`CLIENT_SLOT_SURFACE`) and so holds at most **twelve** frames: 49,152 bytes, a 128x96 surface, and
+**a 16x6 text grid.** Rearranging slots buys two rows. **The binding limit is sixteen slots against
+a run of hundreds, and no allocation of them among the parties changes the order of magnitude.**
 
 ---
 
@@ -374,6 +566,18 @@ loop inside the kernel. `frame::REVOKE` and `revoke::record_mapping` key on a ru
 revocation database's key, and the overlap invariant above. No paging change at all: a run of 4 KiB
 pages is 475 ordinary leaf mappings, so `crates/paging` and its 18 harnesses are untouched.
 
+**The price the prior art names and this lane would otherwise have missed**: `revoke` currently looks
+a mapping up by **equality** on a physical address, and runs turn that into **containment**, over
+ranges that may overlap. Barrelfish, which built exactly this capability, pays for it with a mapping
+database whose insert is *"logarithmic time in the size of the mapping database"*. That is the real
+cost of option A, and it is not in the syscall.
+
+**And the prior art also names the mitigation.** Barrelfish keeps its *allocation* type
+(RAM) naturally-aligned and power-of-two and relaxes only its *mappable* type (Frame) to a
+page-multiple run. This tree has the same seam: `untyped` is where the no-double-free proof lives and
+`Frame` is what gets mapped. Option A can therefore leave `crates/regions` alone, which is the same
+place D-narrow lands from the other direction.
+
 **What it forecloses.** Nothing structurally; it is the most general answer. It is also the one that
 cannot be walked back, because "a Frame is a page" is a sentence in a dozen files and in the head of
 anyone who has read them.
@@ -414,7 +618,13 @@ a measurable win for a framebuffer that is written by a compositor every frame a
 Nothing else in the tree gets that today, and `script/bench` could measure it.
 
 **What it forecloses.** It commits the tree to power-of-two sizes as the way memory scales, which is
-seL4's answer and L4's. It does not foreclose A: a run of large frames is still a run.
+seL4's answer, L4's, KeyKOS's, EROS's and Coyotos's. That family's cost is documented rather than
+speculative: Coyotos raises a `SplitFault` when a region is not naturally aligned and power-of-two
+sized, because such a region **is not expressible as one capability at all**. D is the gentler member
+of the family, because it rounds up and wastes rather than failing, but the 37 wasted pages are
+structural and not an artefact of this surface's dimensions.
+
+It does not foreclose A: a run of large frames is still a run.
 
 ---
 
