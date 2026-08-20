@@ -158,7 +158,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 97 | PROPOSED | [Six gates run on every pull request and none of them can stop one](97-advisory-checks.md) |
 | 98 | PROPOSED | [`OPENDIR` cannot be asked to attenuate, so a held directory probes for its own rights](98-opendir-cannot-attenuate.md) |
 | 99 | DECIDED | [Where Apple's metadata lands: stream or sidecar](99-apple-metadata-at-rest.md) |
-| 100 | DECIDED | [The terminal font is gohufont-14](100-the-terminal-font.md) |
+| 100 | AMENDED | [The terminal font](100-the-terminal-font.md) |
 | 101 | DECIDED | [Notification objects: async multiplexing without wait-any](101-notification-objects.md) |
 | 102 | DECIDED | [A Frame names a run of pages](102-frame-names-a-run.md) |
 | 103 | SUPERSEDED BY 102 | [What a `Frame` names](103-what-a-frame-names.md) |
