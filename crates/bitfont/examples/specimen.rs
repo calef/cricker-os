@@ -77,7 +77,7 @@ impl Font {
     /// The font compiled into the crate, which is what ships today.
     fn shipped() -> Self {
         Font {
-            name: "font8x8 (shipped)".into(),
+            name: "kaypro-style (shipped)".into(),
             height: bitfont::GLYPH_H as usize,
             advance: bitfont::GLYPH_W as usize,
             glyphs: (0..128u8).map(|b| bitfont::glyph(b).to_vec()).collect(),
@@ -283,10 +283,15 @@ fn parse_bdf(text: &str, name: &str) -> Font {
 /// The `.art` format: `@ 41` (a hex code point) followed by that many rows of `#` (ink) and
 /// anything else (paper). Blank lines and `;` comments are ignored. This is the format for a font
 /// somebody draws, because hexadecimal is not a medium a person can see a letter in.
+///
+/// **The advance is the width of the widest picture row**, not a constant, because the shipped font
+/// is 7 columns and the earlier hand-drawn candidate is 8. Taking it from the file means a drawn
+/// font is shown at its own pitch, which is the same rule the `.bdf` reader already follows.
 fn parse_art(text: &str, name: &str) -> Font {
     let mut by_code: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
     let mut current: Option<usize> = None;
     let mut height = 0usize;
+    let mut advance = 0usize;
     for line in text.lines() {
         let line = line.trim_end();
         if line.trim_start().starts_with(';') || line.trim().is_empty() {
@@ -302,16 +307,18 @@ fn parse_art(text: &str, name: &str) -> Font {
         }
         let Some(code) = current else { continue };
         let mut row = 0u8;
+        let mut wide = 0usize;
         for (x, ch) in line.chars().take(8).enumerate() {
+            wide = x + 1;
             if ch == '#' {
                 row |= 1 << x;
             }
         }
+        advance = advance.max(wide);
         let rows = by_code.entry(code).or_default();
         rows.push(row);
         height = height.max(rows.len());
     }
-    let advance = 8;
     let glyphs = (0..128)
         .map(|c| {
             let mut rows = by_code.remove(&c).unwrap_or_default();
