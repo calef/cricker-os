@@ -1,6 +1,21 @@
-# 101. What a `Frame` names
+# 103. What a `Frame` names
 
-**Status: PROPOSED.** The number is **provisional**: this lane cut its branch from `main` at
+**Status: SUPERSEDED BY 102.** Kept because the survey outlives the decision.
+
+**The fork this was researching was answered while it was being researched.** calef chose option 1
+on 2026-08-20 (§102, a `Frame` names a run), which is the same answer L4 reached and which this
+survey found Barrelfish had already built. So nothing here is waiting on anybody.
+
+**It is kept, and renumbered from a provisional 101 to 103**, because the four recalled claims it
+checked are the reason a reader should trust §102 rather than merely obey it: two of the four
+framings a maintainer offered from memory turned out to be wrong, and finding that out is what
+separates a decision from a guess. The pricing in section 3 is also the closest thing this tree has
+to a cost model for the syscall surface, and §102 does not restate it.
+
+**This section was salvaged from a lane the account's spend limit killed mid-run**, with 214 lines
+uncommitted in its worktree. What follows is the lane's own text, unedited.
+
+The number is **provisional**: this lane cut its branch from `main` at
 `22da81ae`, where §100 is the highest section, and the integrator mints the real one at merge.
 
 **The fork.** `Object::Frame(pa)` names exactly one 4 KiB page and occupies one of sixteen cspace

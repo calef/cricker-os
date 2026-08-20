@@ -161,6 +161,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 100 | DECIDED | [The terminal font is gohufont-14](100-the-terminal-font.md) |
 | 101 | DECIDED | [Notification objects: async multiplexing without wait-any](101-notification-objects.md) |
 | 102 | DECIDED | [A Frame names a run of pages](102-frame-names-a-run.md) |
+| 103 | SUPERSEDED BY 102 | [What a `Frame` names](103-what-a-frame-names.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design
