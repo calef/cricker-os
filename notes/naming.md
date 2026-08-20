@@ -611,7 +611,27 @@ idea. One spelling, and `feature/` is the older one:
 `audit/` (reading rather than writing), `integration/` (joining lanes), `finalize/` (landing them).
 Plus `main`, and the tooling's own `worktree-agent-*`, which no person types.
 
-Checked, for the current branch only, and skipped on a detached HEAD.
+**This is a convention and not a gate, since 2026-08-18.** It was an enforced allowlist, and calef
+asked what the taxonomy was for. The answer, checked rather than argued: **nothing consumes it except
+the check itself.** A grep across `script/`, `scripts/`, `.github/workflows/` and `xtask/` for any
+other reader of a branch prefix returns only false positives. Only `milestone/N-` is read by
+anything, and `script/lint`'s milestone-branch-touches-its-block check is what reads it.
+
+**Every observed failure of the allowlist was a false rejection of legitimate work**, four times:
+`roadmap/` (the repository's *second* commonest prefix, refused while about thirty-five merges using
+it were already on `main`), `gh-readonly-queue/*` (which failed every group build's clippy job, so the
+queue evicted and rebuilt forever), `dependabot/*`, and `claude/*` (a harness names its own branches
+and a lane cannot rename them from inside). Each was fixed by widening the list after something broke.
+That is the signature §61 used to drop three lints and milestone 78 used on three assertions: **a
+check that only ever rejects valid work is measuring the wrong thing.**
+
+What survives as a gate is the one prefix that carries a mechanism, and it survives as a branch name
+rather than a label for a specific reason: the check that reads it runs **locally and offline**, from
+`symbolic-ref`, with no network and no GitHub context. A label cannot be read without an
+authenticated round trip, and would not exist yet anyway, because a lane runs `script/lint` before it
+runs `gh pr create`. A branch name is also **fixed when the lane is cut**, where a label is editable
+at any time, and for a check whose job is "you claimed 126, so move 126's block" the claim has to be
+the immutable half.
 
 ## What is checked, and what cannot be
 

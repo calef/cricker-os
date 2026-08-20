@@ -514,8 +514,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   enumeration and screenshots as read-only mappings rather than verbs, focus as a capability, and the
   wait-any primitive whose absence shaped the whole design.
 - [Glyphs, the VT engine, and input](glyphs.md): milestone 29's remaining increment: the piece that
-  makes the framebuffer readable. A public-domain 8x8 bitmap font (and why the licence drove the
-  choice, since a font is compiled into the image), a sans-IO VT engine checked against the *real*
+  makes the framebuffer readable. An original 7x8 bitmap font drawn in the Kaypro II's style (and
+  why the ROM itself is excluded on licence while its look is not protected, which matters because a
+  font is compiled into the image), a sans-IO VT engine checked against the *real*
   line discipline's echo rather than a list of escape sequences, and a display terminal that is a
   client at **both** display seams with exactly `painter`'s and `window`'s authority, which is how
   "neither contract needed changing to carry text" became a spawn literal instead of a claim. Also:

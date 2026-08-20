@@ -22,7 +22,7 @@ answered on purpose.
    spaces and from the host by comparing QEMU's `screendump` against the pattern definition.
 
    **Its deferred half is built too** (2026-07-30, DECISIONS §37, notes/glyphs.md): a public-domain
-   8x8 bitmap font, a sans-IO VT engine, a display terminal, and a virtio keyboard. The deferral's
+   7x8 bitmap font, a sans-IO VT engine, a display terminal, and a virtio keyboard. The deferral's
    premise held exactly as written: the contract carries pixels, not text, so the terminal arrived as
    another client and **neither `gfx_proto` nor `display` changed a line**, which the same binary then
    demonstrated a second time by being a compositor client with `window`'s authority. The VT engine's
