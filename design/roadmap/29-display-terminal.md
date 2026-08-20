@@ -31,7 +31,7 @@ the IOMMU is the barrier) is proved by an attacker test. DECISIONS §29,
 notes/framebuffer-contract.md.
 
 **Increment two built (2026-07-30, both ISAs): glyphs, the grid, and a real keyboard.** DECISIONS
-§37, notes/glyphs.md. A public-domain 8x8 bitmap font (`crates/bitfont`; the licence drove the choice,
+§37, notes/glyphs.md. An original 7x8 bitmap font drawn in the Kaypro II's style (`crates/bitfont`; the ROM is excluded on licence and the look is not protected,
 because a font is compiled into the image), a **sans-IO VT engine** (`crates/video_terminal`) checked against the
 *real* line discipline's echo stream rather than a written-down list of escape sequences, a display
 terminal (`user/src/display_terminal.rs`) that is a client at **both** display seams with exactly `painter`'s and

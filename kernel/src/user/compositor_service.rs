@@ -393,12 +393,13 @@ impl Wiring {
             i < self.focusable,
             "a display terminal must be focusable: its input endpoint is the endpoint it serves",
         );
-        // The window must be a whole number of character cells, for the reason the scanout must
-        // be: a strip the terminal never paints shows whatever the frame held.
+        // The window must hold at least one character cell. It need not be a whole number of
+        // them, for the reason the scanout is not: the font is 7 wide and no window here is a
+        // multiple of 7, so each leaves a strip on the right that its terminal paints as
+        // background on the first frame rather than leaving as whatever the frame held.
         assert!(
-            SCENE[i].w.is_multiple_of(bitfont::GLYPH_W)
-                && SCENE[i].h.is_multiple_of(bitfont::GLYPH_H),
-            "window {i} is not a whole number of character cells",
+            SCENE[i].w >= bitfont::GLYPH_W && SCENE[i].h >= bitfont::GLYPH_H,
+            "window {i} is too small for one character cell",
         );
 
         let out = crate::memory::alloc()

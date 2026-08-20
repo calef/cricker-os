@@ -273,12 +273,14 @@ pub fn start_terminal(
     driver_image: &'static [u8],
     term_image: &'static [u8],
 ) -> Option<TerminalWiring> {
-    // A scanout that is not a whole number of character cells would leave a strip the terminal
-    // never paints. A build error, not a runtime surprise.
+    // A scanout with no room for a character has nothing to show. It does **not** have to be a
+    // whole number of them: 128 is not a multiple of the font's 7-pixel cell, so the ordinary case
+    // leaves a two-pixel strip on the right that the terminal paints as background on its first
+    // frame (see `user/src/display_terminal.rs`) and that `Vt::pixel` answers for, which is what
+    // keeps the picture a total function of the state.
     const _: () = assert!(
-        gfx_proto::WIDTH.is_multiple_of(bitfont::GLYPH_W)
-            && gfx_proto::HEIGHT.is_multiple_of(bitfont::GLYPH_H),
-        "the scanout is not a whole number of character cells",
+        gfx_proto::WIDTH >= bitfont::GLYPH_W && gfx_proto::HEIGHT >= bitfont::GLYPH_H,
+        "the scanout is too small for one character cell",
     );
     // And the script's geometry is the scanout's, checked here rather than trusted, because the
     // script is what three independent parties predict the picture from.
