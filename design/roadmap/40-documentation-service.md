@@ -102,7 +102,7 @@ ladder that anybody would actually use.
 2. ~~**There is no font rendering yet.**~~ **There is now** (milestone 29, 2026-07-30): a bitmap
    font, a VT engine, and a display terminal that is a compositor client. A *graphical* documentation
    browser is therefore unblocked in principle, though the honest limits still argue for the terminal
-   first: a 16x8 grid, no scrollback, and no UTF-8 (notes/glyphs.md).
+   first: an 18x8 grid, no scrollback, and no UTF-8 (notes/glyphs.md).
 
 ## Reuse: take the parser, write the renderer
 

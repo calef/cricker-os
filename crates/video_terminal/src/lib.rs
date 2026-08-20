@@ -208,7 +208,8 @@ pub const DEFAULT_BG: u8 = 0;
 /// the background index (0..8), bit 7 the reverse flag.
 ///
 /// **Bold is bright, and that is a decision rather than a shortcut.** A bold weight needs a second
-/// font, and at 8x8 a bold face is a smudge; every terminal from the DEC VT onward has answered SGR
+/// font, and in a five-column cell a bold face is a smudge; every terminal from the DEC VT onward
+/// has answered SGR
 /// 1 by brightening instead, which is why the palette has eight bright entries. Recorded in
 /// notes/glyphs.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
