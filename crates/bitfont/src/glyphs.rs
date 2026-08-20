@@ -6,7 +6,8 @@
 //! **They are ours.** This is an original drawing in the style of the Kaypro II's character
 //! generator, not that ROM and not any other font's table. It was drawn glyph by glyph in
 //! `crates/bitfont/kaypro-style-7x8.art`, which is the authoring source and the thing to edit;
-//! the rows below are that file, transcribed. [`the_art_file_and_this_table_agree`] parses the
+//! the rows below are that file, transcribed. `the_art_file_and_this_table_agree` (in this
+//! file) parses the
 //! `.art` back and fails if the two ever drift, so the picture a reviewer reads and the bits a
 //! terminal draws cannot disagree.
 //!
