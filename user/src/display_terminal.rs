@@ -148,20 +148,22 @@ fn die(code: u64) -> ! {
     user_rt::exit();
 }
 
-/// **Paint the damaged cells into the surface**, and return that rectangle in pixels.
+/// **Paint a rectangle of the surface** from the engine's picture.
 ///
 /// `stride` is the surface's bytes per row, which differs between the two wirings (the scanout's in
 /// [`MODE_DISPLAY`], the window's in [`MODE_WINDOW`]) and is therefore *read* rather than assumed.
-/// Only the damaged rectangle is touched: everything outside it is already correct, and repainting
-/// it would make the damage rectangle a decoration rather than a saving.
-fn paint(damage: video_terminal::CellRect, stride: u32) -> (u32, u32, u32, u32) {
-    let (x0, y0, w, h) = damage.to_pixels();
+/// Ordinarily only the damaged rectangle is passed: everything outside it is already correct, and
+/// repainting it would make the damage rectangle a decoration rather than a saving. The exception
+/// is the first frame, which paints the whole surface; see [`Wiring::present`].
+fn paint(x0: u32, y0: u32, w: u32, h: u32, stride: u32) -> (u32, u32, u32, u32) {
     let t = term();
     for y in y0..y0 + h {
         for x in x0..x0 + w {
             let at = SURFACE_VA + (y * stride) as u64 + (x * 4) as u64;
-            // SAFETY: inside the surface frames the kernel mapped read/write. The rectangle came
-            // from the engine, whose grid is the geometry this surface was sized for.
+            // SAFETY: inside the surface frames the kernel mapped read/write. The rectangle is
+            // either the engine's damage or the whole surface this process asked the geometry of,
+            // and `Vt::pixel` is defined outside its own grid (it is the default background), which
+            // is what makes the second case safe as well as correct.
             unsafe { core::ptr::write_volatile(at as *mut u32, t.pixel(x, y)) };
         }
     }
@@ -177,6 +179,13 @@ struct Wiring {
     /// second update before the compositor's next scan does not lose the first.
     pending: Option<video_terminal::CellRect>,
     seq: u32,
+    /// The surface's size in pixels, which is **not** always a whole number of character cells.
+    /// 128 is not a multiple of 7, so a full-scanout terminal owns 18 columns and leaves two
+    /// pixels on the right that no cell covers. See [`Wiring::present`].
+    surface: (u32, u32),
+    /// Has the whole surface been painted once? Until it has, the strip outside the grid holds
+    /// whatever the frames held at boot.
+    painted_all: bool,
 }
 
 impl Wiring {
@@ -193,7 +202,21 @@ impl Wiring {
         let Some(damage) = term().take_damage() else {
             return;
         };
-        let (x, y, w, h) = paint(damage, self.stride);
+        // **The first frame paints the whole surface, not just the grid.**
+        //
+        // A 7-pixel cell does not divide a 128-pixel scanout, so a full-width terminal is 18
+        // columns of 7 and two pixels wide of nothing. `Vt::pixel` answers for those two (a cell
+        // outside the grid is a blank on the default background, which is what makes the picture a
+        // total function), but no cell ever *damages* them, so without this they would keep
+        // whatever the frame held at boot: a strip of noise beside the text that looks like a
+        // rendering bug for a day. The grid can never write there afterwards, so once is enough.
+        let (x, y, w, h) = if self.painted_all {
+            let (x, y, w, h) = damage.to_pixels();
+            paint(x, y, w, h, self.stride)
+        } else {
+            self.painted_all = true;
+            paint(0, 0, self.surface.0, self.surface.1, self.stride)
+        };
 
         // The pixels must be visible to whoever reads them next: another address space, and through
         // it a device. A release fence is the portable way to say so (`dmb ish` on aarch64, `fence`
@@ -229,7 +252,13 @@ impl Wiring {
             None => damage,
         };
         self.pending = Some(d);
-        let (x, y, w, h) = d.to_pixels();
+        // The rectangle published is the one painted, which on the first frame is the whole
+        // surface rather than the grid, for the reason above.
+        let (x, y, w, h) = if self.seq == 0 {
+            (x, y, w, h)
+        } else {
+            d.to_pixels()
+        };
         wr32(CTL_VA + ctl::DAMAGE_X, x);
         wr32(CTL_VA + ctl::DAMAGE_Y, y);
         wr32(CTL_VA + ctl::DAMAGE_W, w);
@@ -310,14 +339,12 @@ pub extern "C" fn _start(mode: u64, _arg1: u64, _arg2: u64) -> ! {
         _ => die(E_MODE),
     };
 
-    // A surface that is not a whole number of cells would leave a strip this terminal never paints,
-    // and a strip of whatever the frames held at boot is exactly the kind of thing that looks like a
-    // rendering bug for a day. Refuse instead.
-    if w == 0
-        || h == 0
-        || !w.is_multiple_of(bitfont::GLYPH_W)
-        || !h.is_multiple_of(bitfont::GLYPH_H)
-    {
+    // A surface too small for one character has nothing to show and is refused. It does **not**
+    // have to be a whole number of cells: the font is 7 wide and the scanout is 128, so the normal
+    // case now has a two-pixel strip on the right that no cell covers. `present` paints it once
+    // with the background the engine says is there, which is why a partial cell is a defined
+    // picture rather than a strip of whatever the frames held at boot.
+    if w < bitfont::GLYPH_W || h < bitfont::GLYPH_H {
         die(E_GEOMETRY);
     }
     let (cols, rows) = (w / bitfont::GLYPH_W, h / bitfont::GLYPH_H);
@@ -331,6 +358,8 @@ pub extern "C" fn _start(mode: u64, _arg1: u64, _arg2: u64) -> ! {
         stride,
         pending: None,
         seq: 0,
+        surface: (w, h),
+        painted_all: false,
     };
     // The blank grid is a *defined* picture (spaces on the default background), so presenting it
     // before anyone has written a byte means the screen a spawner sees is black rather than whatever

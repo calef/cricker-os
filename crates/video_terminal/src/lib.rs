@@ -939,34 +939,50 @@ mod tests {
         };
         assert_eq!(big.union(inside), big);
         assert_eq!(inside.union(big), big);
-        // Eight-pixel glyphs, so a rect at (1, 2) starts at (8, 16) and is 32 by 24.
-        assert_eq!(big.to_pixels(), (8, 16, 32, 24));
+        // Cells are 7 by 8, so a rect at (1, 2) starts at (7, 16) and is 28 by 24. The two axes
+        // differ on purpose: a single constant used for both would pass whatever it was.
+        assert_eq!(big.to_pixels(), (7, 16, 28, 24));
     }
 
     /// The grid's size in cells and in pixels, as numbers rather than as the expression that
-    /// computes them. 6 by 3 because 6*8, 6+8 and 6/8 are three different answers.
+    /// computes them. 6 by 3 because 6*7, 6+7 and 6/7 are three different answers.
     #[test]
     fn the_grid_reports_its_size_in_cells_and_in_pixels() {
         let t = Vt::new(6, 3);
         assert_eq!((t.cols(), t.rows()), (6, 3));
-        assert_eq!(t.width(), 48);
+        assert_eq!(t.width(), 42);
         assert_eq!(t.height(), 24);
     }
 
     /// **The pixel is a pure function of the grid**, so it can be pinned exactly. `L` at cell
-    /// (1, 1) in green: its top row is ink in the leftmost four columns and paper in the fifth,
-    /// and its second row is paper at the left edge. Those three pixels separate every way the
-    /// cell-versus-glyph coordinate split can go wrong (a mixed-up divide and remainder agree at
-    /// cell (0, 0), which is where every other pixel assertion sits).
+    /// (1, 1) in green, which starts at pixel (7, 8) because the cell is 7 by 8: its stem is the
+    /// second column of the cell (the first is the font's gutter), its top row holds nothing else,
+    /// and its foot reaches the last ink column on the baseline. Those four pixels separate every
+    /// way the cell-versus-glyph coordinate split can go wrong (a mixed-up divide and remainder
+    /// agree at cell (0, 0), which is where every other pixel assertion sits), and the two axes
+    /// use different divisors so a single constant cannot satisfy both.
     #[test]
     fn a_pixel_names_its_cell_and_its_place_inside_the_glyph() {
         let mut t = vt(4, 3);
         t.set_cursor_visible(false);
         t.feed(b"\x1b[2;2H\x1b[32mL");
         let (green, black) = (PALETTE[2], PALETTE[0]);
-        assert_eq!(t.pixel(8, 8), green, "the glyph's own (0, 0) is ink");
-        assert_eq!(t.pixel(9, 8), green);
-        assert_eq!(t.pixel(12, 8), black, "and its fifth column is not");
+        assert_eq!(
+            t.pixel(7, 8),
+            black,
+            "the cell's first column is the font's gutter"
+        );
+        assert_eq!(t.pixel(8, 8), green, "the stem is the column after it");
+        assert_eq!(
+            t.pixel(12, 8),
+            black,
+            "and the L's top row is stem and nothing else"
+        );
+        assert_eq!(
+            t.pixel(12, 14),
+            green,
+            "its foot reaches the last ink column on the baseline"
+        );
     }
 
     /// A column past the last one is off the grid, not the next row's first cell. The rows of the
@@ -1338,7 +1354,7 @@ mod tests {
             (0, 0, 8, 4),
             "two far-apart changes cost the box that contains both",
         );
-        assert_eq!(d.to_pixels(), (0, 0, 64, 32));
+        assert_eq!(d.to_pixels(), (0, 0, 56, 32));
     }
 
     /// `ESC c` is a reset and not an erase: it clears in the *default* rendition and homes the
