@@ -21,7 +21,7 @@ ask; it is the ask, at the point it is licensed.
 
 **And it does not reserve its own name**, which is the property §100 was bitten by. The DejaVu
 licence is Bitstream Vera plus public-domain changes, reserving "Bitstream", "Vera",
-"Tavmjong Bah" and "Arev" — **not "DejaVu"**. Source Code Pro reserves "Source" and would have
+"Tavmjong Bah" and "Arev", **not "DejaVu"**. Source Code Pro reserves "Source" and would have
 inherited §100's objection whole; JetBrains Mono declares no reserved name either but is not
 Menlo's ancestor. So a glyph can be fixed later without a rename, which §100 records as a live cost
 for this project rather than a formality.
