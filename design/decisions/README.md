@@ -161,6 +161,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 100 | AMENDED | [The terminal font](100-the-terminal-font.md) |
 | 101 | DECIDED | [Notification objects: async multiplexing without wait-any](101-notification-objects.md) |
 | 102 | DECIDED | [A Frame names a run of pages](102-frame-names-a-run.md) |
+| 104 | DECIDED | [The rich-text font is DejaVu Sans Mono, and the palette is Solarized](104-the-font-and-the-palette.md) |
 | 103 | SUPERSEDED BY 102 | [What a `Frame` names](103-what-a-frame-names.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
