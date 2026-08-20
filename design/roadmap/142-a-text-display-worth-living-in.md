@@ -33,69 +33,6 @@ proportional layout, and **a monospace terminal needs none of those.** Take the 
 own terms first, and rung three's remaining work is the toolkit rather than the toolkit plus the
 text.
 
-## The finding that makes the expensive axis cheap
-
-notes/glyphs.md refuses scalable type in one sentence, and it is the sentence to answer:
-
-> a TrueType rasteriser (or `cosmic-text` above it) wants an allocator, floating point, hinting,
-> and a font file to load from a filesystem.
->
-> -- notes/glyphs.md
-
-Every clause was true when it was written, on 2026-07-30. **Three of the four are no longer true,
-and the fourth dissolves on inspection.**
-
-- **An allocator exists.** Milestone 27 built one: `crates/user_heap` is the algorithm and
-  `user_rt::heap` grows it out of the process's own untyped. A userspace component that wants
-  `alloc` has had it since 2026-07-28.
-- **A font file has somewhere to come from, twice over.** `std::fs` binds to the FS service, so a
-  component holding a directory capability can open one. It could equally be a `static` in
-  `.rodata`, which is exactly how `crates/bitfont` ships its table today, keeping the property
-  that made that choice good: the licence travels with the artefact rather than with a build-time
-  tool.
-- **Floating point is not forbidden, it is soft, and the distinction is measurable.** Both
-  userspace targets are soft-float by construction (`targets/aarch64-unknown-nife.json` carries
-  `"abi": "softfloat"` and `-neon`; `targets/riscv64-unknown-nife.json` is `rv64imac` with
-  `lp64`). `f32` arithmetic compiles and runs through `compiler_builtins`; it is slow and there is
-  no SIMD under it. So the question a rasteriser raises is throughput on a 1280x720 surface, which
-  this tree settles by measuring rather than by arguing.
-- **Hinting is the one real objection at 11 points, and the answer is resolution rather than a
-  hinting engine.** Hinting exists to make an outline land on a coarse pixel grid, and it is a
-  large amount of machinery: the TrueType instruction set is a stack language with its own
-  interpreter. macOS has always preferred fidelity to the outline over grid-fitting, and the
-  industry moved that way as displays got denser. **Our scanout is a number we choose**, so
-  choosing twice the density is strictly cheaper than writing or vendoring a hinting engine, and
-  it is the trade every dense display already made.
-
-**And then the load-bearing observation, which retires the rasteriser from the running system
-entirely.** A terminal is a fixed grid of fixed-width cells, so **every glyph lands on an integer
-cell boundary.** There is no subpixel positioning to do, no kerning, no shaping, and no arbitrary
-size. The set of pictures the terminal can ever draw is therefore finite and small: the printable
-repertoire, times the number of faces, at one size.
-
-So **rasterise at build time on the host and ship a coverage table**, exactly as `bitfont` ships a
-bit table. The runtime keeps a pure function from `(character, face, x, y)` to a coverage byte,
-with no rasteriser, no outline parser, no float, no allocator and no font file in it at all. What
-changes against today is that the table holds 8-bit coverage instead of 1 bit, and is measured in
-hundreds of kilobytes instead of a kilobyte.
-
-The arithmetic, using the cell measured from Menlo below (14x26 pixels at 2x, so 364 bytes a
-glyph at one byte of coverage per pixel):
-
-| Repertoire | Faces | Table |
-|---|---|---|
-| 95 printable ASCII | 1 | 34 KB |
-| 95 printable ASCII | 4 (regular, bold, italic, bold-italic) | 135 KB |
-| Latin-1 plus box drawing, ~350 | 4 | 498 KB |
-
-That is a `.rodata` cost, not a heap cost, and every row of it is smaller than the surface it draws
-into, which is 3.5 MB.
-
-**What the atlas forecloses, stated rather than discovered:** arbitrary sizes, zoom, proportional
-type, and font fallback. For a terminal each of those is a non-requirement by definition. For rung
-three every one of them is a requirement, so **the atlas answers this milestone and does not
-answer rung three**, and a lane must not read this block as retiring `cosmic-text`.
-
 ## What "would use it outside a GUI" actually requires
 
 calef named colour, type and rich text. The axis he did not name is the one that decides whether
