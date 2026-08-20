@@ -28,6 +28,15 @@ answered on purpose.
    demonstrated a second time by being a compositor client with `window`'s authority. The VT engine's
    language is still an open choice, and notes/glyphs.md now prices libghostty-vt against a built
    Rust engine rather than against an estimate.
+
+   **Its font increment is blocked, and the blocker is not graphical** (2026-08-19).
+   `design/decisions/100-the-terminal-font.md` chose gohufont-14 at 8x14, which on this rung's
+   128x64 scanout is a 16x4 grid rather than a terminal, so the surface has to grow with it. It
+   cannot: a `Frame` capability names one page and occupies one of sixteen cspace slots, the driver
+   holds nine already, and the ceiling is nine frames of surface against the 469 that 800x600 needs.
+   That is `notes/frames.md`'s recorded fork arriving with a bill attached, and it has to be
+   answered before this rung's text gets any better. The pixel-for-pixel verification, the VT
+   engine, the terminal and the keyboard are all unaffected and all still built.
 2. **Rung two: a compositor component (milestone 33). Built**, both ISAs: `compositor` multiplexing one
    screen among three mutually distrusting clients, each holding a capability to its own surface;
    software composition honouring a damage rectangle; input routed by capability using the terminal

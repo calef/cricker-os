@@ -175,12 +175,25 @@ rather than as any one glyph), and the descender column is how many rows a `g` g
 baseline an `x` sits on. **Descender depth is what separates the sizes**, and it is why every 8x8
 font here, ours included, has a cramped `g`: one row against three.
 
-**The cell size is a screen decision before it is a taste decision.** The scanout is 128x64, so an
+**The cell size is a screen decision before it is a taste decision, and the screen turned out not
+to be free to move.** The scanout is 128x64, so an
 8x8 cell gives the 16x8 grid recorded under Honest limits, and any 8x14 or 8x16 font gives 16x4.
 Four rows of text is not a terminal. Two candidates dodge that entirely by being narrower rather
 than shorter: Terminus 6x12 gives 21x5, and Spleen 5x8 gives **25x8**, which is more columns than
 today at the same number of rows. A narrower cell costs nothing but `GLYPH_W`, which is a constant
 in `crates/bitfont` that three parties read.
+
+**Growing the scanout is blocked, and it is blocked on the capability model rather than on memory**
+(measured 2026-08-19, when a lane tried to build the chosen font onto a terminal-sized surface). A
+`Frame` capability names exactly one page and each one occupies a cspace slot, the cspace has
+sixteen slots, and the virtio-gpu driver's DMA region already uses nine of them. The hard ceiling is
+`SURFACE_FRAMES <= 9`, which is 36,864 bytes: every non-square shape inside it (128x72, 144x64,
+192x48) gives five text rows or fewer at 8x14, so **there is no scanout reachable today on which
+gohufont-14 is a terminal.** 800x600, which is 100x42 characters and the size calef picked, needs
+469 frames. The build fails rather than the boot, because `display_service::DRIVER_SLOT_DMA` carries
+a `const` assertion for exactly this. The fork, its three priced options and the sizing arithmetic
+that goes with it are in notes/frames.md's `BUGS`; until it is answered, gohufont-14 is the right
+font for a screen this tree cannot yet make.
 
 **Authoring our own is priced too**, because it was raised as an option and no existing sample can
 answer it. `bench/font-options/hand-drawn-8x8.art` is 95 printable glyphs drawn for this survey, in

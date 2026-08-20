@@ -347,6 +347,71 @@ and the difference is accounted rather than shrugged at:
   somewhere else). Growing `CSPACE_SLOTS` is a one-number change paid in TCB size, and is the other
   half of the same question.
 
+  **The fork stopped being hypothetical on 2026-08-19, and here is what it costs measured rather
+  than asserted.** Milestone 29's terminal-sized scanout (the terminal-font decision chose gohufont-14, which is 8x14, so
+  the 128x64 surface gives a 16x4 grid that is not a terminal) needs 800x600 to reach 100x42
+  characters. The lane that tried it got the assertion above, at 640x480, before it got anything
+  else:
+
+  ```
+  error[E0080]: evaluation panicked: the display driver's DMA region no longer fits its cspace
+  beside the fault slot: a Frame names one page and this region is a run of them
+    --> kernel/src/user/display_service.rs:50:15
+  ```
+
+  **The ceiling is nine frames, and it is the cspace rather than the memory.** The driver's DMA
+  region starts at slot 5 and must end below the fault slot at 15, so `SURFACE_FRAMES <= 9`: at most
+  36,864 bytes, or 9,216 pixels. Every non-square shape that fits (128x72, 144x64, 192x48) gives
+  five text rows or fewer at 8x14. 800x600 needs **469 frames**, which no sixteen-slot cspace can
+  hold under any arrangement of the other slots, and the same is true of every size a person would
+  call a terminal. The other budgets on the path are all comfortable by comparison, which is the
+  part that surprises: 469 frames is under one percent of the free pool, the mapping records are two
+  pages against `AS_OVERHEAD`'s sixteen of slack, and `MAP_BUDGET_PAGES`'s eight pages still cover
+  the page tables (see below). **Nothing else on this path is short. Only the slots are.**
+
+  Three ways out, priced:
+
+  1. **A `Frame` that names a run.** `Object::Frame(u64)` carries a page count, `frame::MAP` maps
+     the run, `frame::REVOKE` unmaps it. Measured surface: **4 sites match on `Object::Frame`** and
+     21 construct one through `cap::frame_cap`. It is the option this tree's own reasoning points
+     at, because the run is already one range in physics, one range in the address space and one
+     range in the IOMMU domain, and it collapses 469 capabilities, 469 syscalls and 469 mapping
+     records into one of each. It is also a change to the meaning of a syscall method, which is a
+     boundary rather than a habit (`AGENTS.md`, DECISIONS §10 and §16).
+  2. **Grow `CSPACE_SLOTS`.** One number in `kernel/src/cap.rs` and its twin in `crates/abi`, paid
+     in TCB size: `Option<Cap<Object>>` is 24 bytes, so 512 slots is 12 KiB of cspace per thread
+     against today's 384 bytes, and `MAX_THREADS` is 128. It also moves `abi::fault::FAULT_EP_SLOT`,
+     which is defined as `CSPACE_SLOTS - 1` and which every supervised program agrees on. It leaves
+     469 `MAP` calls and 469 mapping records in place, so it buys the pixels without buying any of
+     the elegance.
+  3. **Map the run into the client's space without giving it capabilities**, which `aspace::MAP_INTO`
+     already does: the spawner holds the `Aspace`, maps each frame into it, and deletes its own cap
+     between iterations, so one slot serves the whole run and the client holds none. This needs **no
+     model change and no new method**, and unlike the `Spawn::maps` mechanism it replaced, every
+     mapping it makes is recorded and therefore revocable (§13, §67). Its cost is 469 kernel-side
+     map operations at spawn and a client that cannot delegate or revoke its own surface, which is
+     authority it has no use for. This is the cheapest correct option and the one to reach for if
+     the answer to 1 is "not yet".
+
+  **Two sizing facts the same investigation established, because they will be the next questions.**
+  The page-table budget survives 800x600: one L3 covers 512 pages and 469 fits, so
+  `MAP_BUDGET_PAGES`'s eight pages still hold, but **only because `SURFACE_VA` is 0x60_0000 and
+  therefore 2 MiB-aligned**; the comment justifying that constant says "every mapping here lands
+  inside one 2 MiB window" and that sentence is load-bearing. 1024x768 is 768 pages and does not
+  fit one L3, which makes 800x600 the last size the current budget justifies. And the userspace VA
+  map does **not** survive it: `display_terminal` puts `OUT_VA` at 0x68_0000, only 128 pages above
+  `SURFACE_VA`, so a 469-page surface would run straight through it and through `CTL_VA` at
+  0x69_0000. Both have to move above 0x80_0000, which puts them in a second 2 MiB window and costs a
+  second L3, still inside the eight-page budget.
+
+  **One more arithmetic trap in the chosen size.** 800 x 600 x 4 is 1,920,000 bytes, which is
+  **468.75 pages**, so the surface does not fill whole frames and `gfx_proto`'s build-time assertion
+  that it must (`SURFACE_BYTES.is_multiple_of(4096)`) fails. With an 800-pixel width the height must
+  be a multiple of 32 for the surface to be a whole number of frames; 608 is the nearest, giving 475
+  frames exactly and a 100x43 grid. The alternative is to grant `div_ceil` frames and let the last
+  one be three quarters used, which means relaxing an assertion that exists so a client is never
+  handed a partial page.
+
 - **Not everything migrated.** The console is deliberately last (a bootstrap that needs a capability
   service to print cannot report its own failure, so it is its own decision with its own argument),
   and the compositor path is not in this milestone at all: `display_terminal` therefore maps its own
