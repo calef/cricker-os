@@ -228,6 +228,79 @@ mod tests {
         }
     }
 
+    /// **Every row of the table is read, which is what the coverage floor is actually asking for.**
+    ///
+    /// `the_art_file_and_this_table_agree` compares all 128 glyphs, but it reads them through a
+    /// loop over a parsed picture, so a line-coverage tool sees the parser execute and the 128
+    /// literal rows never "run". That is the shape of every generated-data file and the reason
+    /// `script/coverage`'s exemption list exists; this file does not belong on that list, because
+    /// its own comment says the list is for things that **physically cannot run**, never for things
+    /// that are merely untested.
+    ///
+    /// So this asserts properties of the whole table rather than exempting it. Each is cheap and
+    /// each would have caught a real transcription accident:
+    ///
+    /// - **No printable character is blank.** A row of zeroes where a letter should be is the
+    ///   commonest way a hand-transcribed table goes wrong, and it is invisible until somebody
+    ///   types that character.
+    /// - **Space is blank**, which is the same assertion from the other side.
+    /// - **Nothing sets a bit outside the seven drawn columns.** The cell is 7 wide with a
+    ///   one-pixel gutter each side, so bit 7 must be clear in every row of every glyph; a stray
+    ///   bit there would smear into the neighbouring cell.
+    /// - **No two printable glyphs are identical.** Two characters that draw the same picture is a
+    ///   copy-paste that a reader cannot see and a specimen sheet barely shows.
+    #[test]
+    fn every_glyph_in_the_table_is_read_and_plausible() {
+        assert_eq!(BASIC[0x20], [0; 8], "space must be blank");
+
+        for (byte, rows) in BASIC.iter().enumerate().take(0x7F).skip(0x21) {
+            assert_ne!(
+                *rows, [0; 8],
+                "{byte:#04x} ({:?}) is blank in the table",
+                byte as u8 as char
+            );
+            for (row, bits) in rows.iter().enumerate() {
+                assert_eq!(
+                    bits & !0x7F,
+                    0,
+                    "{byte:#04x} row {row} sets a bit outside the seven drawn columns"
+                );
+            }
+        }
+
+        for (a, ra) in BASIC.iter().enumerate().take(0x7F).skip(0x21) {
+            for (b, rb) in BASIC.iter().enumerate().take(0x7F).skip(a + 1) {
+                assert_ne!(
+                    ra, rb,
+                    "{a:#04x} ({:?}) and {b:#04x} ({:?}) draw the same glyph",
+                    a as u8 as char, b as u8 as char
+                );
+            }
+        }
+    }
+
+    /// **The failure diagnostic is exercised, because a message nobody has seen is one nobody can
+    /// trust.**
+    ///
+    /// `side_by_side` runs only when a glyph differs, so on a green tree it never executes and the
+    /// coverage floor counts it against this file. That is worth fixing rather than exempting: this
+    /// helper is what a person reads at 2am when the table and the picture disagree, and a
+    /// transposed loop or a reversed bit test in it would send them looking at the wrong glyph.
+    /// This feeds it a known difference and checks the picture it draws.
+    #[test]
+    fn the_failure_diagnostic_draws_both_shapes() {
+        let art = [0b000_0001u8, 0, 0, 0, 0, 0, 0, 0];
+        let table = [0b100_0000u8, 0, 0, 0, 0, 0, 0, 0];
+        let out = side_by_side(&art, &table);
+        let first = out.lines().nth(1).expect("a first picture row");
+
+        // Bit 0 is the leftmost drawn column and bit 6 the rightmost, so these two differ at
+        // opposite ends: the assertion fails if the bit test is ever reversed.
+        assert_eq!(first, "#......  ......#  ", "got {first:?} from\n{out}");
+        assert_eq!(out.lines().count(), 9, "a header and eight rows:\n{out}");
+        assert!(out.starts_with("  art     table\n"), "no header in\n{out}");
+    }
+
     /// The two shapes as pictures, because a diff of sixteen hex bytes says nothing.
     fn side_by_side(art: &[u8; 8], table: &[u8; 8]) -> String {
         let mut out = String::from("  art     table\n");
