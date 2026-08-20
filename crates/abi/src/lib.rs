@@ -378,7 +378,7 @@ pub mod aspace {
 /// dropped at every delegation; the comment on that constant carries the warning.
 ///
 /// These three lines of documentation spent from milestone 19a until the 2026-08-17 documentation
-/// sweep attached to [`objtype`](self::objtype) instead, because 19a inserted that module directly
+/// sweep attached to [`objtype`] instead, because 19a inserted that module directly
 /// beneath them. The visible cost was on the other side: `objtype`'s rustdoc opened by telling a
 /// reader it was the rights bits, and the module that holds them had no documentation at all. It
 /// is the module the sweep's own trigger moved, since [`ENUMERATE`](self::rights::ENUMERATE)

@@ -213,6 +213,20 @@
  #[repr(C, packed)]
  pub struct NodeLevelData {
      /// The first 128 blocks of this file.
+--- a/src/transaction.rs
++++ b/src/transaction.rs
+@@ -417,9 +417,9 @@
+             };
+             let comp_len = record.data()[0] as usize | ((record.data()[1] as usize) << 8);
+             let total_len = comp_len + 2;
+-            if let Err(err) = lz4_flex::decompress_into(&record.data()[2..total_len], &mut decomp) {
++            if let Err(_err) = lz4_flex::decompress_into(&record.data()[2..total_len], &mut decomp) {
+                 #[cfg(feature = "log")]
+-                log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", err);
++                log::error!("READ_RECORD: FAILED TO DECOMPRESS: {:?}", _err);
+                 return Err(Error::new(EIO));
+             }
+             record = BlockData::new(BlockAddr::null(BlockMeta::new(decomp_level)), decomp);
 --- a/src/record.rs
 +++ b/src/record.rs
 @@ -1,14 +1,19 @@

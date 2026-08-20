@@ -91,7 +91,7 @@ const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 
 /// `e_machine` for the two architectures nife runs on. Any one build uses exactly one of
-/// these as [`EXPECTED_MACHINE`] and compiles the other's branch out, so from that build's point of
+/// these as `EXPECTED_MACHINE` and compiles the other's branch out, so from that build's point of
 /// view the other constant is unused; we keep both named because the crate documents both machines
 /// it knows, and the tests check rejection of the non-native one.
 #[cfg_attr(target_arch = "riscv64", allow(dead_code))]
@@ -110,7 +110,7 @@ const EXPECTED_MACHINE: u16 = EM_RISCV;
 #[cfg(not(target_arch = "riscv64"))]
 const EXPECTED_MACHINE: u16 = EM_AARCH64;
 
-/// [`EXPECTED_MACHINE`], exported. A test that forges an ELF header has to write *some* machine
+/// `EXPECTED_MACHINE`, exported. A test that forges an ELF header has to write *some* machine
 /// number, and writing the native one is what lets the forgery get past the machine check and reach
 /// the property actually under test (a bad load address, a writable-executable segment). Naming it
 /// here rather than repeating 183/243 behind a `cfg` at each such test keeps one definition of

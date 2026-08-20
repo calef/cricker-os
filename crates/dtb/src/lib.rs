@@ -8,7 +8,7 @@
 //!
 //! The FDT format predates the little-endian consensus and never changed. Every
 //! integer in the blob is stored big-endian, on a machine that is little-endian. So
-//! every read goes through [`be32`] or [`be64`], and forgetting one gives you a
+//! every read goes through `be32` or `be64`, and forgetting one gives you a
 //! plausible-looking number that is wrong by a factor of 16 million.
 //!
 //! # Why this is a separate crate

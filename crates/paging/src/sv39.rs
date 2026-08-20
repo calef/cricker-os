@@ -11,7 +11,7 @@
 //! A Sv39 PTE is flatter than an aarch64 descriptor: the permission bits (R/W/X/U/G) are one bit
 //! each, and an entry is a *leaf* when any of R/W/X is set and a *pointer* when none are. Bits 9:8
 //! are RSW, reserved for the OS; we use one to carry the "device memory" flag, which base Sv39 (no
-//! Svpbmt) has no architectural PTE bit for. [`Sv39`] implements [`PageFormat`](crate::PageFormat) by
+//! Svpbmt) has no architectural PTE bit for. [`Sv39`] implements [`PageFormat`] by
 //! translating the crate's portable [`Flags`] to and from these bits.
 
 use crate::{

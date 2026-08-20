@@ -9,7 +9,7 @@
 //! ```
 //!
 //! The descriptor format is compact and full of traps. The constants below carry the ones that
-//! actually bite. [`Aarch64`] implements [`PageFormat`](crate::PageFormat) by translating the
+//! actually bite. [`Aarch64`] implements [`PageFormat`] by translating the
 //! crate's portable [`Flags`] to and from these bits.
 
 use crate::{
