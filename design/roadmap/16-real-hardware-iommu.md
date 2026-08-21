@@ -13,8 +13,8 @@ remains of 16a is engineering, not hardware, and each piece is lane-sized: the o
 exit (the `sifive_test` device does not exist on silicon; the note proposes a UART pass/fail
 marker), the DTB-driven UART IRQ for the driver demo (the 10-versus-32 BUGS entry), and the
 real-cycle benches, which ride milestone 74's SBI PMU half. Carrying 16b's IOMMU driver to silicon
-still waits for a board that ships the ratified spec, recorded below, and that alone stays a
-hardware fact nobody can schedule.
+is now milestone 143, split out 2026-08-20, because it waits on a board that ships the ratified
+RISC-V IOMMU spec and no such board exists today.
 
 **In brief.** **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it
 
@@ -55,8 +55,8 @@ v1.0.1), boot bring-up (SMMU from the device tree, RISC-V IOMMU enumerated as a 
 `iommu_platform=on` enablement with the confinement test as the loud-on-bypass guard, and the disk
 and both attacker suites passing behind the IOMMU on both boards (aarch64 118 kernel tests, riscv
 60). Both emulations behaved to spec, no QEMU-vs-ours bug surfaced. Shadow ring kept as defence in
-depth. Remaining under 16: **16a** (first silicon on a RISC-V board) is still the hardware step;
-16b's riscv driver carries over when a board ships the ratified spec.
+defence in depth. Remaining under 16: **16a** (first silicon on a RISC-V board) is still the hardware step;
+16b's riscv driver carries over when a board ships the ratified spec, which is milestone 143.
 
 **Why.** This is where the discussion's strongest pro-microkernel argument finally becomes true
 for us. Today driver isolation is real only because of the shadow descriptor ring we wrote
