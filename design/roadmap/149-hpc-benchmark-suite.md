@@ -100,6 +100,21 @@ benchmarks (syscall, IPC, context switch) provide, and it is evidence an HPC aud
 reaches for first, per every source this note's own research turned up (HPCC, NPB, and STREAM are
 the three suites cited across every HPC benchmarking survey found).
 
+**A concrete published baseline already exists for the board on calef's bench**, which makes this
+milestone cheaper to run honestly than it otherwise would be: Brown, "RISC-V for High Performance
+Computing" (CUG '25, ACM 3757348.3757367), Table 2, reports single-core NPB Class B performance
+(the geometric mean of all five kernels and three pseudo-applications, in Mop/s) for six RISC-V
+platform side by side — the **VisionFive V2's JH7110 scores 121.62 Mop/s**, about 25.7% of a single
+SG2042 core's throughput. This number comes from the official NPB *Fortran* reference (not NPB-Rust),
+run under GCC 13.2 on Fedora, and therefore is not directly comparable to a Rust port on the same
+hardware under nife (language, compiler, OS kernel, and problem class all differ in ways that
+matter). What it does buy is a **sanity boundary**: a Rust port on the same board running at
+~120 Mop/s or above is consistent with the published hardware limit; running at, say, 12 Mop/s would
+be a finding worth explaining. The paper also provides the same comparison for a single SG2042 core
+(472.97 Mop/s), the Banana Pi F3 / SpacemiT K1 (146.83 Mop/s), and others, which means a reader who
+lands on this milestone's eventual benchmark table can place it against the published RISC-V/HPC
+literature without visiting a second source.
+
 ## What this does not decide
 
 - **Whether NPB's parallel variants ever land on nife.** They are gated on milestone 64's
