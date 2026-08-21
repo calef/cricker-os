@@ -9,6 +9,12 @@
 use isa::plic::PlicContexts;
 
 const JH7110: &[u8] = include_bytes!("fixtures/jh7110.dtb");
+/// The board's ACTUAL U-Boot control DTB PLIC node (bench, 2026-08-21), trimmed. Its
+/// `compatible` is "riscv,plic0" only, not "sifive,plic-1.0.0": neither `JH7110` above nor
+/// `jh7110-vendor.dtb` had this right, both having modeled the PLIC section on the mainline
+/// dtsi rather than measuring the real firmware tree. See the fixture's own header for the full
+/// story and notes/visionfive2.md's BUGS section.
+const VISIONFIVE2_UBOOT: &[u8] = include_bytes!("fixtures/visionfive2-uboot-control.dtb");
 /// The suite's own machine, single-hart, shared with the `dtb` crate's fixtures.
 const QEMU_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv64-virt.dtb");
 /// The same machine at `-smp 4`, which is what `script/test` boots; dumped with
@@ -62,12 +68,39 @@ fn qemu_virt_contexts_match_the_old_formula() {
     assert_eq!(four.len(), 4);
 }
 
-/// A tree with no PLIC (the aarch64 fixture) is an empty map, not an error: the caller falls back
-/// to its formula and the machine boots as before.
+/// A machine without a PLIC (the aarch64 fixture) is an empty map, not an error: the caller falls
+/// back to its formula and the machine boots as before.
 #[test]
 fn a_machine_without_a_plic_is_an_empty_map() {
     const AARCH64: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-aarch64-virt-smp4.dtb");
     let ctx = PlicContexts::from_device_tree(&tree(AARCH64)).expect("no PLIC is not an error");
     assert!(ctx.is_empty());
     assert_eq!(ctx.s_context(0), None);
+}
+
+/// **The board's real control DTB names its PLIC `riscv,plic0`, not `sifive,plic-1.0.0`.** Found
+/// at the bench 2026-08-21: `PlicContexts::from_device_tree` returned an empty map
+/// (`ctx.len() == 0`) against a live capture of the VisionFive 2's own U-Boot control DTB, even
+/// though `jh7110_s_contexts_are_2h_not_2h_plus_1` above passes against a hand-written fixture
+/// that models the same board. The difference was the compatible string the fixture assumed
+/// versus the one the real firmware tree carries; this test holds the real one so it cannot
+/// regress silently again. The S-context answer is unchanged: hart h's context is still 2h.
+#[test]
+fn visionfive2_uboot_control_dtb_is_read_despite_the_older_compatible_string() {
+    let ctx =
+        PlicContexts::from_device_tree(&tree(VISIONFIVE2_UBOOT)).expect("the PLIC wiring parses");
+
+    assert_eq!(
+        ctx.s_context(0),
+        None,
+        "the S7 has no S-mode and no S context; a formula would have invented context 1"
+    );
+    for hart in 1..=4 {
+        assert_eq!(
+            ctx.s_context(hart),
+            Some(2 * hart),
+            "hart {hart}'s S context on the board's real control DTB"
+        );
+    }
+    assert_eq!(ctx.len(), 4);
 }

@@ -1,0 +1,137 @@
+/dts-v1/;
+
+/*
+ * The VisionFive 2's ACTUAL U-Boot control DTB PLIC node, as captured at the bench
+ * (2026-08-21): `fdt addr ${fdtcontroladdr}` then a raw dump saved to the microSD card and read
+ * back on the host with `dtc -I dtb -O dts`. This corrects `jh7110-vendor.dts`'s PLIC section,
+ * which was "not measured, modeled" on the mainline dtsi's binding string and phandle numbers.
+ *
+ * The measured disagreement, and the reason this fixture exists:
+ *
+ *   - the node's `compatible` is "riscv,plic0" ONLY. Neither "sifive,plic-1.0.0" nor
+ *     "starfive,jh7110-plic" appears at all. QEMU virt's PLIC lists "sifive,plic-1.0.0" first
+ *     (crates/dtb/tests/fixtures/qemu-riscv64-virt.dts), so a reader that only tries that string
+ *     works on QEMU and finds nothing here: `PlicContexts::from_device_tree` returned an empty
+ *     map against the real tree (ctx.len() == 0), which is what sent someone to the bench with a
+ *     serial cable in the first place.
+ *   - the node is named `plic@c000000`, matching QEMU's spelling, not the mainline dtsi's
+ *     `interrupt-controller@c000000` that both other JH7110 fixtures assumed.
+ *   - phandles are small integers assigned by U-Boot's own dtc pass (3-7 for the five
+ *     interrupt-controller nodes), not the 0x10-0x14 range `jh7110.dts` and `jh7110-vendor.dts`
+ *     both picked; the interrupts-extended layout is unaffected because this crate reads
+ *     phandles structurally, never by value.
+ *   - the S-context formula the layout implies is unchanged from the other two fixtures: hart 0
+ *     (the S7, phandle 3) gets only a machine context (irq 11); harts 1-4 (phandles 4-7) each get
+ *     a machine context then a supervisor context (irq 11 then 9), so hart h's S context is 2h.
+ *     The formula was never wrong; only the compatible-string match that finds the node was.
+ *
+ * Trimmed to the PLIC node and just enough of /cpus to give it hart ids and intc phandles to
+ * resolve against; the full capture is 42011 bytes and carries dozens of unrelated device nodes
+ * (display, mailbox, DSP, USB) that read_device_tree never touches.
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "starfive,jh7110";
+	model = "StarFive VisionFive V2";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <4000000>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			status = "okay";
+
+			interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				phandle = <0x03>;
+			};
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			reg = <1>;
+			status = "okay";
+
+			interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				phandle = <0x04>;
+			};
+		};
+
+		cpu@2 {
+			device_type = "cpu";
+			reg = <2>;
+			status = "okay";
+
+			interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				phandle = <0x05>;
+			};
+		};
+
+		cpu@3 {
+			device_type = "cpu";
+			reg = <3>;
+			status = "okay";
+
+			interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				phandle = <0x06>;
+			};
+		};
+
+		cpu@4 {
+			device_type = "cpu";
+			reg = <4>;
+			status = "okay";
+
+			interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible = "riscv,cpu-intc";
+				interrupt-controller;
+				phandle = <0x07>;
+			};
+		};
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x1 0x0>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		plic: plic@c000000 {
+			compatible = "riscv,plic0";
+			reg = <0x00 0xc000000 0x00 0x4000000>;
+			reg-names = "control";
+			interrupts-extended = <0x03 0x0b
+						0x04 0x0b 0x04 0x09
+						0x05 0x0b 0x05 0x09
+						0x06 0x0b 0x06 0x09
+						0x07 0x0b 0x07 0x09>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			riscv,max-priority = <7>;
+			riscv,ndev = <0x88>;
+			phandle = <0x02>;
+		};
+	};
+};
