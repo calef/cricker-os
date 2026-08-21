@@ -34,6 +34,7 @@ IMG="$OUT/nife-vf2.img"
 # gate working, aimed at our own build script. QEMU never hit it because xtask orders these
 # correctly; this script did not.
 cargo xtask initrd-riscv
+mkdir -p "$OUT/extlinux"
 cp target/initrd-riscv.img "$OUT/nife-initrd.img"
 
 cargo build -p kernel --release --target "$TARGET"
