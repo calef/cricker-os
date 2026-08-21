@@ -574,19 +574,30 @@ mod tests {
     /// The allocator logic is tested exhaustively on the host (`cargo test -p frames`,
     /// 14 tests, no emulator). What *only* the real machine can tell us is whether we
     /// pointed it at the right memory, so that's all this checks.
+    ///
+    /// This used to assert an exact `256 * 1024 * 1024`, QEMU's runner-supplied `-m 256M`. Wrong
+    /// as a general claim: the VisionFive 2's device tree describes 4 GiB (`reg = <0x0 0x40000000
+    /// 0x1 0x0>`, bench 2026-08-21), regardless of what the board's own 8 GiB of physical DRAM
+    /// U-Boot's banner claims, so an exact QEMU literal was never going to survive a second
+    /// machine. The invariant this test actually owes is that the parse produced something real:
+    /// nonzero, and not some implausibly tiny remnant of a misparsed `reg` (a wrong cell width or
+    /// endianness reads back as a handful of bytes, not gigabytes).
     #[test_case]
     fn memory_map_came_from_the_device_tree() {
         use frames::FRAME_SIZE;
 
         let s = crate::memory::stats().expect("allocator not initialized");
 
-        // The runners pass -m 256M (raised from QEMU's 128 MiB default on 2026-08-15 alongside
-        // the 24 KiB thread stacks; scripts/qemu-runner-aarch64.sh records why). If this reads
-        // zero, or something absurd, we have misparsed `reg` (which is big-endian, and whose
-        // cell width is declared by the *parent* node, both of which are easy to get wrong); if
-        // it reads 128 MiB again, a runner lost its -m flag.
+        // If this reads zero, or something absurd, we have misparsed `reg` (which is big-endian,
+        // and whose cell width is declared by the *parent* node, both of which are easy to get
+        // wrong). 16 MiB is well below every machine this kernel has run on (QEMU's 256 MiB
+        // runner default, the VisionFive 2's 4 GiB tree) and well above what a cell-width or
+        // endianness bug would produce.
         let total_bytes = s.total as u64 * FRAME_SIZE;
-        assert_eq!(total_bytes, 256 * 1024 * 1024, "unexpected RAM size");
+        assert!(
+            total_bytes >= 16 * 1024 * 1024,
+            "unexpectedly small RAM size: {total_bytes} bytes; likely a misparsed reg property"
+        );
 
         // Some memory must already be spoken for: at minimum the kernel image, the
         // bitmap, and the device tree. A zero here means we reserved nothing, which

@@ -238,6 +238,15 @@ mod tests {
     /// **Discovery ran, and it found a machine that can run us.** The requirement check is what
     /// `init` would have panicked on, so reaching this test at all is half the assertion; the
     /// other half is that the record is populated rather than defaulted.
+    ///
+    /// This used to assert `described == harts`, named "QEMU virt describes every hart it has":
+    /// true on the machine every merge boots, wrong as a general claim. The VisionFive 2 has 5
+    /// `cpu@` nodes and `described == 4` by design (bench, 2026-08-21): the disabled S7 monitor
+    /// core is exactly the hart [`Isa::described`]'s own doc comment says is excluded, "not
+    /// counting disabled harts". A heterogeneous machine failing this assertion was never a
+    /// discovery bug; it was the field doing what it says. The invariant this test actually owes
+    /// is the weaker one: at least one hart described itself, which is what makes `common`
+    /// meaningful at all.
     #[test_case]
     fn the_machine_described_itself() {
         let cpu = get();
@@ -246,9 +255,15 @@ mod tests {
             cpu.harts >= 1,
             "a machine with no CPU node is not running this"
         );
-        assert_eq!(
-            cpu.described, cpu.harts,
-            "QEMU virt describes every hart it has"
+        assert!(
+            cpu.described >= 1,
+            "described=0 means common is meaningless and the tree simply did not say"
+        );
+        assert!(
+            cpu.described <= cpu.harts,
+            "described ({}) cannot exceed the hart count ({}) it is drawn from",
+            cpu.described,
+            cpu.harts
         );
         assert_eq!(cpu.base, isa::riscv64::Base::Rv64);
         assert!(!cpu.missing_requirements().any());
@@ -293,10 +308,25 @@ mod tests {
     /// The record's copy is written by `mmu::init` after the probe, so a reordering of the boot
     /// that moved discovery after paging (or the probe before it) would leave a zero here while
     /// every other test still passed.
+    ///
+    /// This used to assert `>= 8`, which was wrong: RISC-V's `satp.ASID` is WARL and the
+    /// architecture mandates no minimum width (unlike aarch64, which guarantees at least 8 bits).
+    /// The VisionFive 2's U74 hardwires the field to zero (bench, 2026-08-21: the boot summary
+    /// reads `satp.ASID 0 bits measured`), which the probe's own doc comment already named as a
+    /// live possibility, not a hypothetical. Zero implemented bits is not a bug here: it is
+    /// exactly the case `mmu::asid_tagging_is_trusted` exists to detect and defend against, by
+    /// keeping the unconditional `sfence.vma` flush a narrow machine still needs. The invariant
+    /// this test actually owes is that the trust flag agrees with the measurement, on any width.
     #[test_case]
     fn the_asid_probe_reached_the_record() {
-        assert_eq!(get().asid_bits as usize, super::super::mmu::asid_bits());
-        assert!(get().asid_bits >= 8, "crates/asid assumes at least 8");
+        let bits = get().asid_bits as usize;
+        assert_eq!(bits, super::super::mmu::asid_bits());
+        assert_eq!(
+            super::super::mmu::asid_tagging_is_trusted(),
+            bits >= super::super::mmu::ASID_BITS_NEEDED as usize,
+            "asid_bits={bits}: the trust flag must agree with whether that width holds every \
+             tag crates/asid can hand out",
+        );
     }
 
     /// **The firmware answered, and implements all four extensions the kernel calls.**

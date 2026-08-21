@@ -345,7 +345,11 @@ pub fn asid_bits() -> usize {
 /// How many `satp.ASID` bits the allocator's numbers need: enough to hold `asid::ASIDS - 1`, the
 /// largest tag `crates/asid` can hand out. Derived rather than written as `8`, so that raising
 /// `ASIDS` moves the gate with it instead of leaving a constant behind that used to be right.
-const ASID_BITS_NEEDED: u32 = (asid::ASIDS as u64 - 1).ilog2() + 1;
+///
+/// `pub(crate)` rather than private: `arch::riscv64::isa`'s own record test checks that
+/// [`asid_tagging_is_trusted`] agrees with this threshold on whatever width the bench measures,
+/// not just on the QEMU width, so it needs the same number `init` gates on.
+pub(crate) const ASID_BITS_NEEDED: u32 = (asid::ASIDS as u64 - 1).ilog2() + 1;
 
 /// **Whether two live address spaces are guaranteed to be distinguishable in this hart's TLB.**
 ///
@@ -968,19 +972,41 @@ mod tests {
     //! `translate` walks the live kernel root, so these inspect the tables the hardware is
     //! **actually walking**, not a copy of what we intended.
 
-    /// **The hardware must implement at least 8 `satp.ASID` bits, because `crates/asid` assumes it.****
+    /// **A physical address certainly outside every RAM region this machine described**, for
+    /// tests that need a spare page to map and unmap without colliding with the direct map.
     ///
-    /// Not a curiosity test. `asid::ASIDS` is 256 and its header justifies that as "below even the
-    /// smallest hardware ASID space (8-bit, 256)": true of aarch64, which mandates 8 bits, and
-    /// **not guaranteed by RISC-V at all**, which permits zero. With zero implemented bits every
-    /// address space carries ASID 0 in hardware and their TLB entries alias, which is one process
-    /// reading another's memory.
+    /// Two tests here used to hardcode `0x1_0000_0000` / `0x1_0100_0000` as "not RAM on QEMU
+    /// virt", true when written and false on the VisionFive 2 (bench, 2026-08-21): 8 GiB of RAM
+    /// starting at `0x4000_0000` reaches past `0x2_4000_0000`, so both addresses land inside the
+    /// direct map and the very first `map_page` in each test failed with `AlreadyMapped` before
+    /// the test's own logic ever ran. Reading the machine's own RAM regions and picking one gap
+    /// above the top of the highest region is the fix that works on any machine's memory map,
+    /// not just a wider guess.
+    fn a_physical_address_outside_every_ram_region() -> u64 {
+        let top = crate::memory::ram_regions()
+            .map(|(start, size)| start + size)
+            .max()
+            .expect("a booted kernel has at least one RAM region");
+        // One gigabyte clear of the top: page-aligned by construction (RAM regions are), and far
+        // enough that a region reported with generous rounding still leaves room.
+        top + (1 << 30)
+    }
+
+    /// **The trust flag agrees with the measured width, whatever that width is.**
     ///
-    /// This passes on QEMU. It exists for the board: if a real core implements fewer than 8 bits
-    /// this fails loudly at boot, rather than the ASID allocator quietly handing out numbers the
-    /// hardware cannot tell apart. Today the unconditional `sfence.vma` in `write_satp` masks the
-    /// whole problem by discarding the TLB on every switch, which is exactly why removing that
-    /// flush has to be gated on this number.
+    /// This used to assert `bits >= 8` outright, named for `crates/asid`'s own justification:
+    /// "below even the smallest hardware ASID space (8-bit, 256)", true of aarch64 (which
+    /// mandates 8 bits) and **not guaranteed by RISC-V at all**, which permits zero. The
+    /// VisionFive 2's U74 measures exactly zero implemented bits (bench, 2026-08-21: the boot
+    /// summary reads `satp.ASID 0 bits measured`), which is not a hypothetical this test can
+    /// treat as unreachable; it is the live case [`asid_tagging_is_trusted`] exists to handle.
+    ///
+    /// With `bits < ASID_BITS_NEEDED`, every address space would carry ASID 0 in hardware and
+    /// their TLB entries would alias, which is one process reading another's memory, EXCEPT that
+    /// [`asid_tagging_is_trusted`] being `false` keeps the unconditional `sfence.vma` in
+    /// [`write_satp`] doing the flush a narrow machine still needs. So the invariant this test
+    /// owes is not "the hardware is wide enough": it is "the kernel correctly knows whether the
+    /// hardware is wide enough", which is checkable on any width, including zero.
     #[test_case]
     fn the_hardware_has_at_least_the_asid_bits_the_allocator_assumes() {
         let bits = super::asid_bits();
@@ -988,10 +1014,13 @@ mod tests {
             bits <= super::SATP_ASID_WIDTH as usize,
             "satp.ASID reported {bits} implemented bits, wider than the architectural 16",
         );
-        assert!(
-            bits >= 8,
-            "satp.ASID implements {bits} bits; asid::ASIDS is {} and needs 8. \
-             Address spaces would alias in the TLB. The flush in write_satp is what is saving us.",
+        assert_eq!(
+            super::asid_tagging_is_trusted(),
+            bits >= super::ASID_BITS_NEEDED as usize,
+            "satp.ASID implements {bits} bits, asid::ASIDS needs {}: the trust flag must agree \
+             with whether this width holds every tag the allocator can hand out. If it does not, \
+             either the flush stays where it should have been dropped, or address spaces would \
+             alias in the TLB with no flush catching it.",
             asid::ASIDS,
         );
     }
@@ -1256,10 +1285,10 @@ mod tests {
         const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
         const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
 
-        // A high-half address well clear of everything the kernel maps: physical 4 GiB is not RAM on
-        // QEMU's `virt` (RAM starts at 0x8000_0000 and the runner asks for far less than 2 GiB), and
-        // it is above every device window. Sv39's high half is 256 GiB, so it is a nameable address.
-        let test_va = mmu::phys_to_virt(0x1_0000_0000);
+        // A high-half address well clear of everything the kernel maps: outside every RAM region
+        // this machine described, and above every device window on both QEMU virt and the
+        // VisionFive 2. Sv39's high half is 256 GiB, so it is a nameable address.
+        let test_va = mmu::phys_to_virt(a_physical_address_outside_every_ram_region());
         assert_eq!(
             mmu::translate(test_va),
             None,
@@ -1313,7 +1342,7 @@ mod tests {
 
         use crate::arch::mmu;
 
-        let va = mmu::phys_to_virt(0x1_0100_0000);
+        let va = mmu::phys_to_virt(a_physical_address_outside_every_ram_region());
         let f = crate::memory::alloc().unwrap();
 
         mmu::map_page(va, f.addr(), Flags::kernel_data()).unwrap();

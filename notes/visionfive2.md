@@ -738,3 +738,66 @@ Everything cited from "mainline" (Linux dtsi, U-Boot doc and source) describes c
 the flash on the board runs StarFive's vendor fork of unknown vintage. The relocation logic was
 verified in the vendor branch too, the environment defaults were not, which is why they sit on the
 bench list.
+
+**Boot 15+ (2026-08-21): the on-board test-suite exit landed, and the `#[test_case]` suite ran on
+silicon for the first time, immediately finding six real hardware bugs no QEMU boot could have
+caught.** The UART pass/fail marker and SBI SRST shutdown (this milestone's own remaining item,
+"the test suite where semihosting allows") worked exactly as designed: every failure below printed
+`NIFE-TEST-EXIT: FAIL 1` and drove SBI SRST, which OpenSBI accepted and attempted (the board's PMIC
+I2C read then failed completing the power-off, a firmware fact, not a kernel one). Six board boots,
+each fixing the failure the previous one found:
+
+1. **`PlicContexts::from_device_tree` read zero contexts against the board's real control DTB.**
+   The kernel's own `compatible = "sifive,plic-1.0.0"` match found nothing: the VisionFive 2's
+   U-Boot-supplied tree (captured at the bench via `fdt addr`/`save mmc`, read with `dtc`) names
+   its PLIC `compatible = "riscv,plic0"` only, the older generic RISC-V PLIC binding, not the
+   SiFive-specific string either JH7110 fixture in `crates/isa/tests/fixtures/` had assumed.
+   Fixed by trying both strings; a new host fixture
+   (`crates/isa/tests/fixtures/visionfive2-uboot-control.dtb`, trimmed from the real 42 KB
+   capture) holds the real board's tree so this cannot regress silently. The S-context formula
+   itself (hart h's context is 2h on this board) was already correct; only the node-finding step
+   was wrong.
+2. **Two `#[test_case]`s asserted `satp.ASID bits >= 8`**, in `kernel/src/arch/riscv64/isa.rs` and
+   `kernel/src/arch/riscv64/mmu.rs`. The U74 measures **zero** implemented bits
+   (`satp.ASID 0 bits measured` in every boot summary since), which RISC-V's WARL `satp.ASID`
+   field permits and the kernel's own `asid_tagging_is_trusted` mechanism (milestone 58) already
+   defends against by keeping the `sfence.vma` flush on a narrow machine. Both tests asserted the
+   wrong invariant (a floor on the width) instead of the right one (the trust flag agrees with
+   whatever the width actually is); fixed to check the latter, which holds on any width including
+   zero.
+3. **A test asserted `Isa::described == Isa::harts`**, named "QEMU virt describes every hart it
+   has." `described` excludes disabled harts by its own doc comment, and the JH7110's S7 is
+   exactly that hart: 5 `cpu@` nodes, `described == 4` by design. Fixed to the invariant that
+   actually holds on a heterogeneous machine: `described` is nonzero and no larger than `harts`.
+4. **Two MMU tests hardcoded `0x1_0000_0000` / `0x1_0100_0000` as "not RAM on QEMU virt."** True
+   when written; false on a board with 8 GiB of DRAM starting at `0x4000_0000`, where both
+   addresses land inside the direct map and the test's own first `map_page` call failed with
+   `AlreadyMapped` before either test's logic ran. Fixed with a shared helper that computes an
+   address past the top of every RAM region the device tree actually describes, so it is correct
+   on any machine's memory map rather than a wider guess.
+5. **A test asserted RAM totalled exactly `256 * 1024 * 1024`**, QEMU's runner-supplied `-m 256M`.
+   The board's tree states 4 GiB (`reg = <0x0 0x40000000 0x1 0x0>`, distinct from the 8 GiB the
+   U-Boot banner claims for the physical DRAM, a fact not yet chased further). Fixed to a
+   plausibility floor (16 MiB) instead of an exact QEMU literal.
+
+**Then the suite hit a different kind of wall, correctly: `nvme.rs`'s end-to-end test expects a
+synthetic NVMe controller `xtask` always attaches under QEMU (`NIFE_NVME`), and the board's manual
+U-Boot boot attaches nothing.** Its own comment already says why this is not a bug: "the test flow
+always attaches a controller... absence is a lost QEMU flag, not a machine without a disk." A
+`grep` across `kernel/src/` for the same shape (`.expect("no virtio-... device", ...)`) found at
+least six more tests with the identical assumption, spanning RNG (`credential_tests.rs`,
+`disk_tests.rs`, `ntp_tests.rs`, `std_service.rs`), GPU (`display_tests.rs`), and the disk surveyor
+programs, all correct on QEMU, all unreachable on bare silicon, because `scripts/qemu-runner-riscv64.sh`
+wires roughly forty `NIFE_*`-gated synthetic devices the manual boot path has no equivalent for.
+
+**This is the honest stopping point for "run the test suite on silicon" as currently scoped.** The
+`#[test_case]` suite's design point is a QEMU machine loaded with synthetic fixtures, not a bare
+board; making it skip gracefully when a fixture is missing is a real mechanism to design (what
+does "this test needs hardware the current boot doesn't have" mean, and how does a test declare
+it), not a bench fix. Recorded here rather than chased further tonight; a milestone or decision for
+whoever picks this up next should scope that mechanism rather than patch the seventh `expect()`.
+
+See design/roadmap/144-sandbox-screendump-gap.md for the separate, still-open finding that the
+*development sandbox*'s QEMU legs cannot reach the scanout/network referees at all (unrelated to
+this board's fixture gap; that one is about the host-side monitor connection, not about the guest
+having no device).

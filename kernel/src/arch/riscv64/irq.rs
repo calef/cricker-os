@@ -173,13 +173,16 @@ pub fn send_reschedule(target_cpu: usize) {
 mod tests {
     use super::*;
 
-    /// **The context table was filled from the machine's own tree, and on this machine it equals
-    /// the formula it replaced.** A fresh parse of the live DTB must agree with what
-    /// `init_contexts` recorded for every online hart, which proves the boot-path read end to end;
-    /// and on QEMU `virt` (the machine every merge boots) the recorded contexts must be the
-    /// `2*hart + 1` the old formula produced, which is the whole regression claim: same machine,
-    /// same numbers, different provenance. The JH7110's different answer is witnessed on the host
-    /// (`crates/isa/tests/riscv64_plic_contexts.rs`), where that tree exists.
+    /// **The context table was filled from the machine's own tree, and it agrees with itself.**
+    /// A fresh parse of the live DTB must agree with what `init_contexts` recorded for every
+    /// online hart, which proves the boot-path read end to end. It must also agree with the
+    /// tree's own answer, not a formula: the QEMU `virt` machine every merge boots follows
+    /// `2*hart + 1`, but the VisionFive 2's real U-Boot control DTB does not (bench, 2026-08-21:
+    /// hart h's S context there is `2h`, because the disabled S7 contributes only a machine
+    /// context). Both machines are witnessed on the host
+    /// (`crates/isa/tests/riscv64_plic_contexts.rs`), which is where the formula-specific
+    /// assertion belongs; this test only checks that the live table matches a fresh parse of the
+    /// live tree, on whichever machine is actually running it.
     #[test_case]
     fn the_context_table_is_the_machines_own_and_matches_the_formula_here() {
         let ptr = crate::DTB.load(core::sync::atomic::Ordering::Relaxed);
@@ -189,9 +192,7 @@ mod tests {
                 .expect("device tree is unreadable");
         let ctx = isa::plic::PlicContexts::from_device_tree(&dt).expect("the PLIC wiring parses");
 
-        // The online set, so the loop's claim ("every online hart") is the loop's shape. On QEMU
-        // virt the set is contiguous from zero and this is the same harts as `0..count`; the 2h+1
-        // assertion below is about this machine only either way.
+        // The online set, so the loop's claim ("every online hart") is the loop's shape.
         for hart in crate::smp::online_cpus() {
             let parsed = ctx
                 .s_context(hart)
@@ -200,12 +201,6 @@ mod tests {
                 parsed,
                 s_context_of(hart),
                 "hart {hart}: the live table does not hold the tree's answer",
-            );
-            assert_eq!(
-                parsed,
-                2 * hart + 1,
-                "hart {hart}: QEMU virt should follow the 2h+1 layout; if this machine changed, \
-                 the formula fallback in s_context_of is now wrong somewhere",
             );
         }
     }

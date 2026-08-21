@@ -22,9 +22,13 @@
 //!    `interrupt-controller` node (`riscv,cpu-intc`) gives the phandle those entries use. The two
 //!    lists align by tree order: each intc is nested inside its `cpu@` node, so the *i*-th
 //!    `riscv,cpu-intc` in the tree belongs to the *i*-th `cpu@` node.
-//! 2. The PLIC node, found by its binding (`sifive,plic-1.0.0`) rather than its label, because the
-//!    label differs between the machines this has to work on: QEMU spells it `plic@c000000`, the
-//!    JH7110 `interrupt-controller@c000000`.
+//! 2. The PLIC node, found by its binding (`sifive,plic-1.0.0` or `riscv,plic0`, tried in that
+//!    order) rather than its label, because the label differs between the machines this has to
+//!    work on: QEMU spells it `plic@c000000`, the JH7110 `interrupt-controller@c000000`. The two
+//!    binding strings matter too: QEMU virt's PLIC node lists both, but the VisionFive 2's actual
+//!    U-Boot-supplied control DTB lists only `riscv,plic0` (bench, 2026-08-21), the older, generic
+//!    RISC-V PLIC binding that predates `sifive,plic-1.0.0` in the Linux kernel's own binding
+//!    history. A tree naming only one of the two is not malformed; it is the older spelling.
 //!
 //! # BUGS
 //!
@@ -94,10 +98,19 @@ impl PlicContexts {
     pub fn from_device_tree(dt: &Dtb<'_>) -> Result<PlicContexts, Error> {
         let mut out = PlicContexts::default();
 
-        let Some(entries) =
-            dt.node_prop_compatible(b"sifive,plic-1.0.0", b"interrupts-extended")?
-        else {
-            return Ok(out);
+        // Two strings, because real trees do not agree on which one they carry. QEMU virt's PLIC
+        // lists both, in this order, so matching the first alone happened to work there; the
+        // VisionFive 2's actual U-Boot-supplied control DTB lists only "riscv,plic0" (bench,
+        // 2026-08-21: PlicContexts::from_device_tree found no node at all against the board's
+        // real tree, and dumping it showed why). "riscv,plic0" is the older, generic RISC-V PLIC
+        // binding and predates "sifive,plic-1.0.0" in the Linux kernel's own binding history; a
+        // tree naming only one of the two is not malformed, it is just the older spelling.
+        let entries = match dt.node_prop_compatible(b"sifive,plic-1.0.0", b"interrupts-extended")? {
+            Some(entries) => entries,
+            None => match dt.node_prop_compatible(b"riscv,plic0", b"interrupts-extended")? {
+                Some(entries) => entries,
+                None => return Ok(out),
+            },
         };
 
         // Walk 1: hart ids, and the phandle of each hart's own interrupt controller. The
