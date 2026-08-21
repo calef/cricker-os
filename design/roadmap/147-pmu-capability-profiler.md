@@ -20,6 +20,22 @@ counter-based side channels between co-scheduled tenants are the reason `perf_ev
 exists at all, and its own defence is coarse — disable unprivileged profiling everywhere, which is
 why HPC centers frequently run it at `-1` in practice for exactly the tools this milestone answers.
 
+**Independent confirmation this is a real, named gap rather than a nife-specific concern**: Brown,
+"RISC-V for High Performance Computing" (CUG '25, ACM 3757348.3757367), a survey grounded in
+EPCC's own RISC-V ecosystem lab, names immature performance-profiling tooling as one of a handful
+of high-priority action items for the whole RISC-V/HPC community: *"the lack of mature RISC-V
+profiling tooling is a significant weakness for HPC... there are no mainstream performance tools
+that support RISC-V, which is due to a mixture of the software side by the tool developers but also
+the hardware events that are made available by RISC-V CPUs."* That second clause matters for scope
+here: the paper's own read is that the gap is not purely a software/OS-integration problem the way
+this milestone frames it (ambient perf interface versus capability), but partly a hardware one —
+some RISC-V silicon may simply not expose the event set (cache misses, branch mispredicts, and so
+on) a profiling session would want to name. Milestone 74's own ISA-discovery pattern (`Isa`,
+built at boot, probing what is actually present rather than assuming a fixed event catalogue) is
+the right shape to inherit for this: **a counter-set capability should be able to name only the
+events the running silicon actually reports**, discovered rather than assumed, and a probe that
+asks for an unsupported event should refuse cleanly rather than silently reading zero.
+
 **nife can make a stronger claim than "disabled by default": a profiling session can hold a
 capability that names exactly one confined subtree and no other**, so a job's own profiler can read
 its own counters and provably cannot reach a neighbor's, without a global sysctl standing in for the

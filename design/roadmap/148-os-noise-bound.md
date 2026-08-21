@@ -26,6 +26,17 @@ that can ever preempt a running thread, and bound each one's worst-case cost**, 
 132's fastpath-footprint gate already turned "the IPC path is fast" from a benchmark into an
 enumerated, gated call-graph walk.
 
+**Context, not evidence**: Brown, "RISC-V for High Performance Computing" (CUG '25, ACM
+3757348.3757367) is the source calef read that raised the HPC-differentiation question behind both
+this milestone and 147. It does not measure OS noise (its performance-tooling gap is about hardware
+counters and profilers, milestone 147's territory, not about scheduler/interrupt jitter), so it is
+cited here only for the board it happens to already report real numbers on: **the VisionFive V2's
+JH7110, the same board calef has wired to his bench for milestone 16a**, appears in the paper's
+Table 2 (NPB Class B, Mop/s) alongside the SG2042, VisionFive V1, SiFive U740 and others. That table
+is a useful sanity check for §149's NPB comparison, not for this milestone's noise claim —
+the paper is silent on OS noise entirely, which is worth stating plainly so this milestone's
+citation of it does not overclaim support it does not offer.
+
 ## Two phases, and the first needs no decision
 
 ### Phase A — measure, and compare (buildable today)
