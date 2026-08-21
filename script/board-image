@@ -36,7 +36,7 @@ IMG="$OUT/nife-vf2.img"
 cargo xtask initrd-riscv
 cp target/initrd-riscv.img "$OUT/nife-initrd.img"
 
-cargo build -p kernel --release --target "$TARGET"
+cargo build -p kernel --release --target "$TARGET" --features board
 
 # llvm-objcopy from the pinned toolchain's llvm-tools component, found the same way xtask finds it
 # (rustc --print sysroot). The Homebrew/system objcopy is deliberately not a fallback: a silent
