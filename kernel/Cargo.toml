@@ -133,6 +133,11 @@ tock-registers = "0.10"
 measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 
 [features]
+# The board build (milestone 16a): the kernel targets the VisionFive 2 (JH7110) rather than
+# QEMU's `virt` machine. A property of the target, not the build mode: the board has no
+# sifive_test finisher, so the test exit prints a UART marker and calls SBI SRST shutdown
+# instead of storing to a nonexistent MMIO word. See notes/visionfive2.md.
+board = []
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.
 bench = []
 # The instruction-count instrument (milestone 78): boot under `-icount shift=0,sleep=off`, where

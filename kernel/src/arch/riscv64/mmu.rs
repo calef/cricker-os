@@ -435,8 +435,11 @@ where
     }
 
     // 7. The `sifive_test` finisher (0x10_0000), device memory: the MMIO word the test harness writes
-    // to exit QEMU (arch::semihosting::exit). One page. Harmless to map in every build; only the test
-    // build ever writes it. The boot tour halts with `wfi` and never touches it.
+    // to exit QEMU (arch::semihosting::exit). One page. Only QEMU `virt` has this device; the
+    // VisionFive 2 has nothing at 0x10_0000, so mapping it there is a mapping to a nonexistent
+    // address. Under the `board` feature the finisher exit is replaced by a UART marker + SBI SRST,
+    // and this page is not mapped. The boot tour halts with `wfi` and never touches it in any build.
+    #[cfg(not(feature = "board"))]
     direct_map(m, 0x10_0000, 0x10_1000, Flags::device())?;
 
     // 8. The virtio-mmio transport window (milestone 9 / parity C), device memory. The kernel probes
