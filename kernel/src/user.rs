@@ -2311,7 +2311,7 @@ mod dir_capability_tests;
 mod shell_navigation_tests;
 
 /// **`rm` as a program, and a recursive removal bounded by the capability it was handed**
-/// (milestone 47's `rm -r`; notes/rm-recursion.md).
+/// (milestone 47's `rm -r`; notes/rm.md).
 ///
 /// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.

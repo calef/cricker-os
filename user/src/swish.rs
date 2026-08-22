@@ -498,6 +498,40 @@ impl Nav {
         })
     }
 
+    /// **`touch`**: create an empty file if the name is not there, and do nothing if it already
+    /// is. Same shape as `mkdir`, one right narrower: `fs::CREATE` mints a name and this builtin
+    /// gives the handle straight back, exactly as `mkdir` gives its directory handle back, because
+    /// touching a file is not opening it.
+    ///
+    /// **Only the "create if absent" half of Unix's `touch`.** Updating the modification time of a
+    /// name that already exists (bare `touch` on an existing file, and `touch -t`) is not built:
+    /// `fs_proto` carries no verb for it, and design/roadmap/47-navigation-and-naming.md leaves
+    /// open whether "set to now" is the write right already held or a separate authority (`-t`'s
+    /// ability to *lie about history*, which is a sharper question for anything reasoning from
+    /// mtime, backups included). Building the create half first and deferring the mtime half is
+    /// the same split `rm`/`RMDIR` and `ln`'s two halves already made in this milestone. See
+    /// notes/touch.md.
+    fn touch(&mut self, token: &[u8]) -> Say {
+        self.act(token, |nav, handle, name| {
+            let r = nav.name_call(fs::CREATE, handle, name, 0);
+            if r >= 0 {
+                nav.close(r as u64);
+                return Say::Nothing;
+            }
+            let errno = -r as i32;
+            // `CREATE` is create, not create-or-open (DECISIONS §27): an existing name answers
+            // `EEXIST` and touches nothing, which is exactly the outcome this half of `touch`
+            // wants for a name that is already there. Not in `fs_proto::dir`'s named list, for
+            // `user/src/rm.rs::ENOENT`'s reason: this contract answers it from one rung only, so
+            // there is nothing else in this program that would collide with a local name for it.
+            const EEXIST: i32 = 17;
+            if errno == EEXIST {
+                return Say::Nothing;
+            }
+            Say::Failed(errno)
+        })
+    }
+
     /// The shape `mkdir` has, and the witness's removals share: resolve everything but the last
     /// component, act on that component in the directory it named, and give back whatever the
     /// resolution opened.
@@ -1089,7 +1123,7 @@ const TIMING_DONE: &[u8] = b"== timings done\n";
 fn interactive(rights: u64) -> ! {
     print(b"\nnife capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], time <command>, xargs <command>,\n");
-    print(b"          cd, pwd, ls, mkdir, apropos <word>, rm, wc, doc, <prog> [--mem N] [arg]\n");
+    print(b"          cd, pwd, ls, mkdir, touch, apropos <word>, rm, wc, doc, <prog> [--mem N] [arg]\n");
     print(b"          and the operators  >  >>  <  |\n");
     print(b"          'quote a whole word'   and   ;  &&  ||   with  echo $?  for the status\n");
 
@@ -1134,6 +1168,7 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
         Command::Cd(path) => Some(nav.cd(path)),
         Command::Ls(path) => Some(nav.ls(path, each)),
         Command::Mkdir(path) => Some(nav.mkdir(path)),
+        Command::Touch(path) => Some(nav.touch(path)),
         _ => None,
     }
 }
@@ -1378,7 +1413,7 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
         Command::Apropos(term) => say(apropos(nav, term)),
         Command::Run(spec) => run(nav, cmd, spec),
         // Handled above, by the one implementation the witness also runs.
-        Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) => {}
+        Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) | Command::Touch(_) => {}
     }
 }
 
@@ -3038,6 +3073,13 @@ fn navigate(spec: u64) -> ! {
         }
     }
 
+    // 11a. **`touch`, the two-fold contract.** First on a name that is not there: the create half.
+    //      Then, once it holds a body, a second `touch` on the same name: the no-op half. A
+    //      `touch` that truncated what it found would satisfy the first check and fail this one,
+    //      which is why the two are chained rather than asked as one question.
+    let touched = run_name(tree::NAV_TOUCH, run);
+    touch_twice(&mut nav, &touched, &mut cmd, &mut v);
+
     // 11. And neither removal can reach out of the root, for the reason `cd` cannot: `..` is a pop
     //     of a stack that has nothing above the root in it, so nothing is ever sent. The name is
     //     refused where it is parsed, which is why this goes through the path resolver rather than
@@ -3218,9 +3260,9 @@ fn opened_token(nav: &mut Nav, token: &[u8]) -> Option<u64> {
     if r < 0 { None } else { Some(r as u64) }
 }
 
-/// `CREATE` a name where we stand. There is no `touch` builtin, so this is the one thing the
-/// witness does that the prompt cannot: the milestone's builtins do not include a way to make a
-/// file, and inventing one to test the others would be the wrong trade.
+/// `CREATE` a name where we stand, keeping the handle. `touch` (below) does the same call and
+/// closes it straight back; this one is for the steps that need to write through what they made,
+/// which `touch`'s contract has no reason to expose.
 fn created(nav: &Nav, name: &[u8]) -> Option<u64> {
     let r = nav.name_call(fs::CREATE, nav.here(), name, 0);
     if r < 0 { None } else { Some(r as u64) }
@@ -3232,6 +3274,53 @@ fn created(nav: &Nav, name: &[u8]) -> Option<u64> {
 fn open_dir(nav: &Nav, name: &[u8]) -> Option<u64> {
     let r = nav.name_call(fs::OPENDIR, nav.here(), name, nav.rights);
     if r < 0 { None } else { Some(r as u64) }
+}
+
+/// **`touch`'s two-fold contract, run and checked in one place.** First on a name that is not
+/// there: the create half. Then, once it holds a body, a second `touch` on the same name: the
+/// no-op half. A `touch` that truncated what it found would satisfy the first check and fail this
+/// one, which is why the two are chained with early returns rather than nested as one question.
+fn touch_twice(nav: &mut Nav, touched: &([u8; 16], usize), cmd: &mut [u8; 32], v: &mut u64) {
+    use fs_proto::fixture::{navscape as nb, tree};
+
+    let Some(Say::Nothing) = run_line(nav, line(cmd, b"touch ", touched)) else {
+        return;
+    };
+    let Some(h) = opened(nav, name_of(touched)) else {
+        return;
+    };
+    *v |= nb::TOUCH_CREATED;
+    put_page(tree::NAV_TOUCH_BODY);
+    let w = call(
+        DIR,
+        fs::req(fs::WRITE, h, tree::NAV_TOUCH_BODY.len() as u64),
+        0,
+    )
+    .0 as i64;
+    nav.close(h);
+    if w != tree::NAV_TOUCH_BODY.len() as i64 {
+        return;
+    }
+    let Some(Say::Nothing) = run_line(nav, line(cmd, b"touch ", touched)) else {
+        return;
+    };
+    let Some(h2) = opened(nav, name_of(touched)) else {
+        return;
+    };
+    let n = call(
+        DIR,
+        fs::req(fs::READ, h2, tree::NAV_TOUCH_BODY.len() as u64),
+        0,
+    )
+    .0 as i64;
+    if n == tree::NAV_TOUCH_BODY.len() as i64 {
+        let mut buf = [0u8; 64];
+        get_page(n as usize, &mut buf);
+        if &buf[..n as usize] == tree::NAV_TOUCH_BODY {
+            *v |= nb::TOUCH_PRESERVED;
+        }
+    }
+    nav.close(h2);
 }
 
 /// Send one removal (`UNLINK` or `RMDIR`) for a name where we stand, and say whether it worked.

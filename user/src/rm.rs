@@ -1,4 +1,4 @@
-//! **`rm`: remove a name, and with `-r` the tree under it** (milestone 47, notes/rm-recursion.md).
+//! **`rm`: remove a name, and with `-r` the tree under it** (milestone 47, notes/rm.md).
 //!
 //! A **program, not a shell builtin**, and that is Unix's shape rather than a divergence from it.
 //! `cd`, `pwd` and `ls` are builtins here because the shell is rebinding a capability it already

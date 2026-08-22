@@ -840,6 +840,16 @@ pub enum Command<'a> {
     /// `mkdir <path>`: make a directory and, in the same verb, obtain a capability to it
     /// (`fs_proto::fs::MKDIR` is descend-with-creation). Needs `CREATE` **and** `DESCEND`.
     Mkdir(&'a [u8]),
+    /// `touch <path>`: create an empty file if the name is not there; a no-op if it already is.
+    /// **A builtin, in [`Mkdir`](Command::Mkdir)'s category rather than [`Prog::Rm`]'s**: it takes
+    /// no more than the directory this shell already holds (`CREATE`, the same right `mkdir`
+    /// needs), so there is nothing to attenuate and nothing gained by confining it to a program.
+    /// `mkdir` is the model: `fs_proto::fs::CREATE` already mints a name, and this is the same
+    /// call with the handle it returns closed rather than kept. See notes/touch.md for what this
+    /// does **not** do: it does not update a modification time, `-t` included, because whether
+    /// "set to now" is the write right or a separate authority is design/roadmap
+    /// /47-navigation-and-naming.md's open question, not a decided one.
+    Touch(&'a [u8]),
     /// `apropos <term>`: **name the installed pages that mention a word** (milestone 40 phase 2).
     /// The operand is one word, folded the way the host builder folded the text it indexed.
     ///
@@ -1445,6 +1455,7 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         b"pwd" => Command::Pwd,
         b"ls" => Command::Ls(trim(rest)),
         b"mkdir" => Command::Mkdir(trim(rest)),
+        b"touch" => Command::Touch(trim(rest)),
         // **Search the documentation store** (milestone 40 phase 2). A builtin for exactly
         // [`Command::Ls`]'s reason, stated there: a search *is* an enumeration, and a searching
         // program would have to be handed the store's directory in order to read every shard in it.
@@ -2369,6 +2380,12 @@ mod tests {
         assert_eq!(parse(b"ls"), Command::Ls(b""));
         assert_eq!(parse(b"ls  sub "), Command::Ls(b"sub"));
         assert_eq!(parse(b"mkdir logs"), Command::Mkdir(b"logs"));
+        assert_eq!(parse(b"touch logs"), Command::Touch(b"logs"));
+        assert_eq!(
+            parse(b"touch"),
+            Command::Touch(b""),
+            "bare `touch` needs a name"
+        );
         assert_eq!(
             parse(b"apropos capability"),
             Command::Apropos(b"capability")
@@ -2397,6 +2414,7 @@ mod tests {
             b"pwd",
             b"ls",
             b"mkdir",
+            b"touch",
         ] {
             assert!(
                 Prog::from_name(reserved).is_none(),

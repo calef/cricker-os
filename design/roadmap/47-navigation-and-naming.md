@@ -13,9 +13,23 @@ discharged rather than merely aged.
 
 **Absolute paths were built 2026-08-18** (`milestone/47-namespace`), the first piece of the namespace
 half and the one the other three lean on: **`/` is the root of your own namespace**, Plan 9's answer,
-in the shell and in the `std` PAL together so that one fork was answered once. What remains genuinely
-unbuilt is completion, environment, `PATH`, `bind`, and the sections further down this block that the
-old sentence never listed (`ln` and `touch`).
+in the shell and in the `std` PAL together so that one fork was answered once.
+
+**`RMDIR` and `rm -r` were also already built**, found 2026-08-22 by the same kind of status check
+that caught the `IN-PROGRESS` token above: the code (`user/src/rm.rs`, `fs_proto::fs::RMDIR`), the
+decision (`DECISIONS §49`) and the concept note (notes/rm.md) all say `Built 2026-07-31`, but this
+roadmap block never got the matching annotation, so the "rmdir and rm -r" section below read as
+still-undecided years after the design it describes shipped. Recorded here rather than left for the
+next reader to rediscover in the git log.
+
+**`touch`'s create half was built 2026-08-22**: `touch <name>` makes an empty file if the name is
+not there and does nothing if it is, using `fs_proto::fs::CREATE` (already built for milestone 31
+phase 2) through the same shell-builtin shape `mkdir` already has. The mtime half (bumping an
+existing name's time, and `-t`'s ability to set an arbitrary one) is not built; see the `touch`
+section below and notes/touch.md for why that half needs a decision this one does not.
+
+What remains genuinely unbuilt is completion, environment, `PATH`, `bind`, and `ln` (both its
+hard-link and symlink halves; symlinks-as-stored-paths were superseded by `bind`, DECISIONS §50).
 
 64's second pass (2026-08-18) reports that **nothing in this milestone was ever waiting on 64**, and
 hands over the sized demand this block asked for: named customers at ranks 16, 18 and 27 plus
@@ -58,8 +72,9 @@ name one directory entry outside the set and gets `ENOENT`. Witnessed from the h
 which has said "Built 2026-07-31" the whole time, and the sections below at "Built 2026-07-31: the
 matcher, then the grant", which contradicted the sentence from inside this same file.
 
-**Still to do**: completion, environment, and `PATH`. (Absolute paths came out of this list on
-2026-08-18; see the Status block.) Completion is refused by design at the layer
+**Still to do**: completion, environment, `PATH`, `bind`, and `ln`. (Absolute paths came out of this
+list on 2026-08-18, `rmdir`/`rm -r` were already built and are now annotated as such, and `touch`'s
+create half came out on 2026-08-22; see the Status block.) Completion is refused by design at the layer
 below and deferred to the application (`crates/line_editor/src/lib.rs:32`), environment has no PAL and
 no shell support, and `PATH` needs `Prog` to stop being a closed enum, which this block calls half the
 mechanism. The `std` PAL's `rename`, `unlink` and `rmdir` **were** bindings rather than missing verbs,
@@ -144,7 +159,14 @@ capability reaches, structurally. A shell rooted at a subtree cannot recursively
 because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
 not a check that could be wrong: there is nothing to name.
 
-## `rmdir` and `rm -r`: Unix already made the safe choice (decided 2026-07-31)
+## `rmdir` and `rm -r`: Unix already made the safe choice (decided and built 2026-07-31)
+
+### Built 2026-07-31, and the annotation added 2026-08-22. See DECISIONS §49 and notes/rm.md.
+
+The code, the decision and the concept note have all said "Built" since the day this section was
+written; this roadmap block did not, and that gap outlived the design it describes by three weeks.
+The section below is kept as written, because the reasoning is the reasoning that shipped; treat it
+as history rather than as an open question.
 
 `mkdir` shipped in §48 with no way to remove what it makes: `rm` answers `EISDIR` and there is no
 `RMDIR`. The lane declined to add one, on the grounds that "a verb that removes whatever it finds is
@@ -358,11 +380,24 @@ Decide it explicitly rather than letting the path parser decide by accident.
 
 ## `touch`, and the reason file times were refused has expired
 
-Not built, and it splits the way `mv` and `rm` did. **Creating an empty file if absent** is
-expressible today (`fs_proto::fs::CREATE`, milestone 31 phase 2, and §49's `DirSpec` already shapes
-"a program granted the directory a name lives in"). **Updating the modification time** is not, and the
-reason is narrow: the `std` PAL records that "the server keeps an mtime **but the contract does not
-carry one**". RedoxFS tracks it; `fs_proto` does not expose it.
+### The create half was built 2026-08-22. See notes/touch.md.
+
+It splits the way `mv` and `rm` did, and the split held: **creating an empty file if absent** needed
+nothing this milestone had not already built (`fs_proto::fs::CREATE`, milestone 31 phase 2). This
+section originally expected that half to reach for §49's `DirSpec`, the same program grant `rm`
+takes, on the reasoning that it is "a program granted the directory a name lives in". Building it
+found a cheaper answer: `touch` needs no more than `CREATE` on the directory the shell already
+holds, which is `mkdir`'s right and not a new grant, so it shipped as a **builtin** in `mkdir`'s
+category rather than a program in `rm`'s. `rm` needed a program because `-r` is a destructive
+recursive walk that should not run with the shell's whole endowment; `touch` recurses over nothing
+and destroys nothing, so the reason that moved `rm` out of the builtin set does not apply here.
+
+**Updating the modification time** of a name that is already there is still not built, and the open
+decision this section names below (is "set to now" the write right already held, or a separate
+authority) is exactly what stopped it, not effort: the create half took an afternoon once the
+decision to split it was made. The reason it was expressible at all: the `std` PAL records that "the
+server keeps an mtime **but the contract does not carry one**". RedoxFS tracks it; `fs_proto` does
+not expose it.
 
 **The justification for that has gone stale.** `notes/std.md` refused file times partly because "there
 is no wall clock to interpret it against anyway": true when written, and false since milestone 51
