@@ -33,7 +33,7 @@ counters and profilers, milestone 147's territory, not about scheduler/interrupt
 cited here only for the board it happens to already report real numbers on: **the VisionFive V2's
 JH7110, the same board calef has wired to his bench for milestone 16a**, appears in the paper's
 Table 2 (NPB Class B, Mop/s) alongside the SG2042, VisionFive V1, SiFive U740 and others. That table
-is a useful sanity check for §149's NPB comparison, not for this milestone's noise claim —
+is a useful sanity check for milestone 149's NPB comparison, not for this milestone's noise claim —
 the paper is silent on OS noise entirely, which is worth stating plainly so this milestone's
 citation of it does not overclaim support it does not offer.
 
@@ -104,7 +104,7 @@ get from Cray, Intel, or Linaro's tools, because those tools profile a kernel no
 ## What this does not decide
 
 - **Multi-node noise amplification.** Petrini's finding is about noise compounding across a
-  barrier-synchronized job at scale; nife has no cluster story yet (§54's SMB and §146's NFS are
+  barrier-synchronized job at scale; nife has no cluster story yet (milestone 54's SMB and milestone 146's NFS are
   single-node file service, not job scheduling), so this milestone is single-node evidence for a
   claim that would need a cluster to demonstrate fully. Recorded as the natural follow-on once nife
   runs on more than one board at a time.
@@ -118,7 +118,7 @@ get from Cray, Intel, or Linaro's tools, because those tools profile a kernel no
   and a matched Linux boot on the same board (not yet arranged), the same "controlled comparison"
   gap milestone 140's ext2 stratum names for its own benchmark.
 - **Phase B's enumeration is a claim about today's kernel and will rot the moment a new interrupt
-  source is added without updating it.** This is the same defect class §125's counted-claims ratchet
+  source is added without updating it.** This is the same defect class milestone 125's counted-claims ratchet
   exists to catch elsewhere in the tree; Phase B should ship its own version of that check (a
   registered list of preemption sources the build fails to compile against if one exists that the
   list does not name) rather than a one-time document, or it becomes exactly the kind of prose claim
