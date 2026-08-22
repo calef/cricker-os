@@ -3314,11 +3314,15 @@ mod tests {
 
     /// The interrupt `an_interrupt_becomes_a_message` raises.
     #[cfg(target_arch = "aarch64")]
-    const DELIVERY_IRQ: u32 = 1; // an SGI: software-triggerable, no hardware behind it
+    fn delivery_irq() -> u32 {
+        1 // an SGI: software-triggerable, no hardware behind it
+    }
     /// The interrupt `an_interrupt_that_arrives_before_the_wait_is_not_lost` raises. A different SGI
-    /// from `DELIVERY_IRQ` so the two tests cannot see each other's routes.
+    /// from `delivery_irq` so the two tests cannot see each other's routes.
     #[cfg(target_arch = "aarch64")]
-    const PENDING_IRQ: u32 = 2;
+    fn pending_irq() -> u32 {
+        2
+    }
 
     /// The NS16550's PLIC source on QEMU `virt`. A board constant, hardcoded identically on
     /// main.rs's boot-tour and shell paths; another board would give its UART a different number,
