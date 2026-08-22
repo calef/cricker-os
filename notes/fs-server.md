@@ -71,12 +71,14 @@ RedoxFS reads a lot at open: it scans a 256-entry header ring for crash consiste
 (`redoxfs::HEADER_RING`), so a mount is hundreds of block reads before it serves anything. Two
 choices keep that inside the test's watchdog:
 
-1. **A whole filesystem block per virtio request.** The block server's DMA region is two contiguous
-   pages: page 0 for the rings, request header and status, page 1 for the 4096-byte data buffer,
-   which IS the page shared with the FS server. So one request moves an eight-sector block and the
-   device DMAs it straight into the FS server's page, with no per-sector loop and no copy. The
-   milestone-9 driver roles still transfer one 512-byte sector at a time; this role does not. This
-   is what keeps the mount's read count in the low hundreds rather than thousands.
+1. **A whole filesystem block per virtio request, and since milestone 138 step 4, up to sixteen of
+   them in one.** The block server's DMA region is `1 + blk::TRANSFER_BLOCKS` contiguous pages:
+   page 0 for the rings, request header and status, and the rest for the data buffer, which IS the
+   region shared with the FS server (one page, one block, through step 3; sixteen pages, up to
+   sixteen blocks, since). So one request moves one or more whole blocks and the device DMAs them
+   straight into the FS server's region as a single descriptor, with no per-sector loop and no copy.
+   The milestone-9 driver roles still transfer one 512-byte sector at a time; this role does not.
+   This is what keeps the mount's read count in the low hundreds rather than thousands.
 2. **Wait on the completion interrupt, the milestone-9 discipline** (`complete_blk`,
    `crates/virtio`). The kernel turns the device's completion IRQ into a message on the block
    server's `Irq` endpoint; the server WAITs for it, quiets the device, ACKs the line, and lets
@@ -719,13 +721,37 @@ None of this is the isolation. `relay_rtt` prices one confined intermediary at a
 three orders of magnitude below a read, and 46.2 us per block is the same as Linux gets on the same
 virtio device at the same tier (notes/benchmarks.md has that comparison).
 
-**There is no cache anywhere in this path, and the throughput numbers are how we finally proved
-it.** `fs_server`'s `IpcDisk` is a bare `Disk` with no `DiskCache` wrapped around it, so a re-read
-goes back to the device. That had been stated and never demonstrated; milestone 38 demonstrated it
+**There was no cache anywhere in this path, and the throughput numbers are how we finally proved
+it.** `fs_server`'s `IpcDisk` was a bare `Disk` with no `DiskCache` wrapped around it, so a re-read
+went back to the device. That had been stated and never demonstrated; milestone 38 demonstrated it
 by measuring sequential, random and record-aligned reads of the same file and getting the same
 per-request cost to within 3% (1.51, 1.48 and 1.48 ms). A path with a cache or a readahead cannot do
 that. It also finally retired a comment in `fs_test_client` that had claimed `fs_read` was a warm
 measurement.
+
+**Superseded 2026-08-19 (milestone 138 step 2).** `IpcDisk` is now wrapped in `CachedDisk`
+(`fs_server::CachedDisk`, `fs_server/src/lib.rs`), a small direct-mapped write-through cache of
+single-block reads: 64 slots, ~257 KiB. It answers exactly the repetition milestone 38 found and
+this section names above, `Transaction::read_tree_and_addr`'s five-block tree walk, from memory
+when the walk resolves the same node it last resolved. It does **not** cache a record body (any
+`Disk::read_at` wider than one block bypasses it entirely, still batched instead per step 4), and it
+never serves stale bytes: a write updates or invalidates the relevant slot only after the inner disk
+confirms the write landed, and RedoxFS's copy-on-write allocator means a live address's content can
+only ever change through that same write path (`fs_server::CachedDisk`'s own doc argues the
+invariant in full; six host tests, including a stale-read regression, check it in milliseconds with
+no emulator).
+
+**What this means for the "no cache" claim above, stated exactly rather than softened.** It was true
+of the build milestone 38 measured and it is not true of the build this tree ships today. A repeated
+`fs_read` (`motd`, stored inline in its node, so its entire content rides on the tree walk with no
+separate record read at all) now answers from the cache after the first request in a session, which
+is the case a cold-vs-warm distinction was previously impossible to make: **210,490 ns median to
+9,474, 22.2x**, eight interleaved rounds at each point (`sh bench/cache-slots-sweep.sh 8 1 64`;
+`bench/cache-slots-sweep.sh` is the instrument that isolates it, and its own doc explains why
+capacity 1 is "approximately off" rather than a true zero). Sequential, random and record-aligned
+reads of a **different** file, or the first access of any file in a fresh session, still pay the uncached cost this section
+describes, and every earlier number in this file and in notes/benchmarks.md was taken against the
+uncached build and is a fact about that build, not a fact this section now retracts.
 
 ### The transfer unit: one page until milestone 138 step 3, sixteen since
 
@@ -780,19 +806,19 @@ loop rather than a signature change. The block server's DMA region was already w
   charged once per request, so it went from 690 us per 4 KiB to **43**.
   notes/benchmarks.md has both before-and-afters, the two-term model fitted twice from two different
   variables, and the residual.
-- **The block contract has the one-page limit the file contract used to have, and it is now the
-  binding constraint rather than the wall behind one.** `IpcDisk::read_at` chunks every record into
-  one `fs_proto::blk` request per 4 KiB block, so a 64 KiB read is 16 device round trips rather than
-  one 64 KiB transfer. The measured marginal cost is ~36 to 39 us per block (notes/benchmarks.md,
-  fitted twice from two different sweeps), which puts a ceiling of about 100 MiB/s on this stack
-  whatever the record level is and whatever the file contract carries. Linux moves 64 KiB through
-  one virtio request for ~67 us at the same tier, and that is where the rest of the gap lives.
-  **This entry's own promotion trigger has fired** (§71: a limitation becomes a plan when something
-  above it is blocked by it). It was recorded rather than milestoned because "nothing above it is
-  close enough to the ceiling to be blocked by it yet"; after milestone 138 step 3 a sequential read
-  measures **80.30 MiB/s against that ~100 MiB/s ceiling**, and the read path's cost is 74% block
-  trips. It is milestone 138's **step 4** in that block's table, which is where the intent now
-  lives; this entry is the fact it is measured against.
+- **Closed 2026-08-19 (milestone 138 step 4).** This entry recorded that the block contract had the
+  one-page limit the file contract used to have, and had become the binding constraint rather than
+  the wall behind one: `IpcDisk::read_at` chunked every record into one `fs_proto::blk` request per
+  4 KiB block, so a 64 KiB read was 16 device round trips rather than one. `blk::TRANSFER_BLOCKS`
+  (16, mirroring `fs::TRANSFER_PAGES`) and batched `IpcDisk` calls close it: a `Disk::read_at`/
+  `write_at` call now moves up to 16 contiguous blocks in one blk `CALL` and one virtio descriptor.
+  Measured **1.16x to 1.55x** across the throughput phases (notes/benchmarks.md), well below the
+  naive 16x, because RedoxFS's own per-record tree walk (five unbatchable single-block reads) and
+  an 8 KiB record (step 1, two blocks) together bound what one call can batch to a fraction of a
+  64 KiB request. The write-through of what remains, mostly that tree walk, is milestone 138's
+  **step 2**, `fs_server::CachedDisk`, also built. The crash injector keeps its own one-block-per-
+  `CALL` path unconditionally (a batched virtio request cannot be torn mid-batch the way the
+  injector needs), so this closure does not touch the property milestone 37 checks.
 - **A write whose bytes match what is already there is not a write.** `Transaction::write_node`
   compares before it does anything, so rewriting a block with identical contents costs a read and
   no write at all. That is a sensible store optimisation and a trap for anyone measuring: a
