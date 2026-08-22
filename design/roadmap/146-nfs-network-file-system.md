@@ -14,7 +14,7 @@ sequencing decision, not a dependency.
 
 - **Phase A, the server**: an NFS adapter, like `smb_server` but for NFSv3 over UDP/TCP. A Mac's
   built-in `mount_nfs` or a Linux `mount -t nfs` against this board's IP would traverse the
-  share's directory tree, read files, write them, and report free space — all through the same
+  share's directory tree, read files, write them, and report free space, all through the same
   `fs_proto` seam the SMB adapter uses. The credential story is simpler than NTLMv2 (AUTH_SYS by
   default, with the option of Kerberos if the LAN demands it), and it is weaker: a uid/gid pair
   is a claim the server chooses to trust rather than a proof.
@@ -52,7 +52,7 @@ rule already priced. Each new adapter adds the wire format only.
 
 ## What each phase owns, and what stops being nife's problem
 
-### Phase A — the NFS server adapter
+### Phase A: the NFS server adapter
 
 - `crates/nfs_proto`: ONC RPC / XDR framing, portmapper / rpcbind registration, `MOUNTPROC3_MNT`
   and `MOUNTPROC3_EXPORT`, `NFSPROC3_GETATTR`, `READ`, `WRITE`, `FSSTAT` (→ `STATFS`),
@@ -68,7 +68,7 @@ rule already priced. Each new adapter adds the wire format only.
   `FATTR3_SPACE_AVAIL` and `FATTR3_SPACE_FREE` from it. Milestone 54 discovered the same was true
   for SMB, which is how the op 18 decision was made.
 
-### Phase B — the NFS client
+### Phase B: the NFS client
 
 - The client is the inverse adapter: an NFS `CLNT` handle toward a remote server, speaking `fs_proto`
   on the *server* side. A local process opens the endpoint, gets back an `fs_proto` handle that
