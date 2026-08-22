@@ -3,11 +3,14 @@
 //! The sans-IO core is [`fs_server::Server`]; this file is only the two IO edges it needs and the
 //! runtime a dedicated binary carries. Below it, the [`IpcDisk`] turns the RedoxFS `Disk` trait into
 //! a **blk-IPC client**: a `read_at`/`write_at`/`size` is one or more `CALL`s to the block server,
-//! up to `blk::TRANSFER_BLOCKS` contiguous filesystem blocks per call (milestone 138 step 4). Above
-//! it, [`serve`] turns file-service requests from clients into `Server` calls and answers through
-//! the one-shot Reply the kernel mints. The allocator is the untyped-backed heap, so every byte
-//! RedoxFS allocates is paid from this process's own budget, which is the whole reason phase 2
-//! waited on milestone 27's `GlobalAlloc`.
+//! up to `blk::TRANSFER_BLOCKS` contiguous filesystem blocks per call (milestone 138 step 4).
+//! `IpcDisk` is itself wrapped in [`fs_server::CachedDisk`] (step 2), which answers a repeated
+//! single-block read (the tree spine `Transaction::read_tree_and_addr` walks fresh on every
+//! `Server::read`/`write`/...) from memory instead of a second round trip. Above both, [`serve`]
+//! turns file-service requests from clients into `Server` calls and answers through the one-shot
+//! Reply the kernel mints. The allocator is the untyped-backed heap, so every byte RedoxFS
+//! allocates is paid from this process's own budget, which is the whole reason phase 2 waited on
+//! milestone 27's `GlobalAlloc`.
 //!
 //! # Capability contract (notes/fs-server.md, notes/abi.md §4)
 //! - **slot 0**: an untyped budget, the heap's (RedoxFS is alloc-heavy; nothing runs without it).
@@ -29,7 +32,7 @@
 extern crate alloc;
 
 use fs_proto::{blk, fs, op, reply_err, xattr};
-use fs_server::Server;
+use fs_server::{CachedDisk, Server};
 use redoxfs::Disk;
 use syscall::error::{EINVAL, EIO, Error, Result};
 use user_rt::{call, invoke, recv_cap, send};
@@ -62,6 +65,18 @@ const BLOCK: usize = blk::BLOCK_SIZE;
 /// tree structures; a few MiB is comfortable for the small images phase 2 serves. The untyped the
 /// kernel grants is the real ceiling.
 const HEAP_MAX: u64 = 8 * 1024 * 1024;
+
+/// **How many single blocks [`fs_server::CachedDisk`] holds** (milestone 138 step 2). One open
+/// file's tree spine is five blocks (notes/fs-server.md, "the same five blocks every time"); 64
+/// gives more than twelve times that so several open handles stay hot at once without thrashing
+/// each other out, at `64 * (8 + BLOCK) = 262,656` bytes, about 257 KiB.
+///
+/// **One constant for every FS server this build starts**, including milestone 37's two crash-test
+/// instances, whose heap budget is a fraction of [`HEAP_MAX`] (`CRASH_BUDGET_PAGES` in
+/// `kernel/src/user/fs_service.rs`, 2 MiB). 257 KiB is comfortable there too, next to RedoxFS's own
+/// measured high-water of a few hundred KiB, so there is no second number to keep in sync with a
+/// budget this file cannot see.
+const CACHE_SLOTS: usize = 64;
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
@@ -226,12 +241,18 @@ impl IpcDisk {
 impl Disk for IpcDisk {
     unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
         // **Batch whole blocks, up to blk::TRANSFER_BLOCKS per CALL** (milestone 138 step 4). Every
-        // request pays a fixed per-CALL term (the IPC round trip, the block server's own work, and
-        // before step 2 shipped a cache, five repeated metadata reads); fewer CALLs is the whole
-        // optimization, and it costs nothing else because the device already moves the whole batch
-        // in one virtio descriptor. RedoxFS reads whole blocks (and multi-block records), always
-        // block-aligned, but a short final chunk (a compressed record) is still possible and is
-        // still read as one whole block with only the requested bytes copied out.
+        // request pays a fixed per-CALL term (the IPC round trip and the block server's own work),
+        // and fewer CALLs for the same payload is the whole optimization; it costs nothing else
+        // because the device already moves the whole batch in one virtio descriptor. RedoxFS reads
+        // whole blocks (and multi-block records), always block-aligned, but a short final chunk (a
+        // compressed record) is still possible and is still read as one whole block with only the
+        // requested bytes copied out.
+        //
+        // **This does not touch the five repeated tree-spine reads**: `Transaction::read_tree_and_addr`
+        // issues them as five separate single-block `read_at` calls from different points in the
+        // walk, not one call this loop could batch. [`CachedDisk`] (milestone 138 step 2, below
+        // this `Disk` impl) is what removes them, by answering a repeat from memory before this
+        // method is ever reached.
         let mut off = 0usize;
         let mut b = block;
         while off < buffer.len() {
@@ -353,7 +374,7 @@ fn reply(reply_slot: u64, r0: i64) {
 /// The serve loop. Blocks on the file-service endpoint, dispatches one request, replies, repeats.
 /// This is the **only** place a RedoxFS error becomes a wire value ([`reply_err`]); everything
 /// below it speaks `syscall::error::Result`.
-fn serve(server: &mut Server<IpcDisk>) -> ! {
+fn serve(server: &mut Server<CachedDisk<IpcDisk>>) -> ! {
     loop {
         // RECV_CAP delivers (first word, the Reply cap's slot, second word). The Reply names the
         // caller; endpoint-only naming means we never learn who they are, only how to answer.
@@ -560,7 +581,9 @@ pub extern "C" fn _start(crash_at_write: u64, crash_after_blocks: u64, crash_tea
 
     // Open the image over blk IPC and bind to its root. A bad image (or a block server that never
     // answers correctly) faults here, which the kernel reports; the server never creates.
-    let mut server = match Server::open(IpcDisk) {
+    // CachedDisk wraps IpcDisk to hold the tree spine's single-block reads in memory (milestone 138
+    // step 2); the CALLs themselves are unchanged, batched where step 4 already batches them.
+    let mut server = match Server::open(CachedDisk::new(IpcDisk, CACHE_SLOTS)) {
         Ok(s) => s,
         Err(_) => panic!(), // not a RedoxFS image, or the disk misbehaved: die legibly.
     };

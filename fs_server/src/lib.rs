@@ -1077,6 +1077,160 @@ impl<T: BlockIo> Disk for BlockDisk<T> {
     }
 }
 
+/// **A direct-mapped, write-through cache of single-block reads** (milestone 138 step 2). Every
+/// slot holds at most one `(block number, block bytes)` pair, chosen by `block % capacity`; a
+/// collision simply evicts, which is safe because a miss just falls through to the disk.
+///
+/// **Why this and not an LRU.** An LRU would hit more often at the same slot count, at the cost of
+/// bookkeeping (a recency list, a pointer to update on every hit) this cache does not need to be
+/// correct: [`BlockCache::get`] and [`BlockCache::insert`] are each one array index and one
+/// comparison. The working set this cache exists for is small and stable rather than large and
+/// shifting: one open file's tree spine is five blocks, so a capacity a few times that comfortably
+/// holds it without needing to rank which block is "least recently used", and the fewer-moving-parts
+/// option wins when it costs nothing to reach.
+struct BlockCache {
+    slots: Vec<Option<(u64, [u8; BLOCK])>>,
+}
+
+impl BlockCache {
+    /// `capacity` slots, empty. `capacity` must be at least 1; the caller picks it against a
+    /// process's own heap budget, which this type has no way to see.
+    fn new(capacity: usize) -> Self {
+        let mut slots = Vec::with_capacity(capacity);
+        slots.resize(capacity, None);
+        Self { slots }
+    }
+
+    fn slot(&self, block: u64) -> usize {
+        (block as usize) % self.slots.len()
+    }
+
+    /// The cached bytes for `block`, or `None` on a miss (never cached, or evicted by a collision).
+    fn get(&self, block: u64) -> Option<&[u8; BLOCK]> {
+        match &self.slots[self.slot(block)] {
+            Some((b, data)) if *b == block => Some(data),
+            _ => None,
+        }
+    }
+
+    /// Record `block`'s current bytes, replacing whatever the slot held (its own entry to refresh,
+    /// or a different block's to evict). `data` must be exactly [`BLOCK`] bytes.
+    fn insert(&mut self, block: u64, data: &[u8]) {
+        let i = self.slot(block);
+        let mut arr = [0u8; BLOCK];
+        arr.copy_from_slice(data);
+        self.slots[i] = Some((block, arr));
+    }
+
+    /// Drop `block`'s entry if it is the one occupying its slot. A no-op if the slot holds a
+    /// different block (already evicted) or nothing.
+    fn invalidate(&mut self, block: u64) {
+        let i = self.slot(block);
+        if matches!(&self.slots[i], Some((b, _)) if *b == block) {
+            self.slots[i] = None;
+        }
+    }
+}
+
+/// **A [`Disk`] wrapping another, caching single-block reads** (milestone 138 step 2). Built to
+/// close the residual steps 1, 3 and 4 all left standing: `Transaction::read_tree_and_addr`'s
+/// four-level tree walk plus the target node, five single-block reads issued fresh on every
+/// `Server::read`/`write`/`fstat`/... call even when the last call resolved the very same node
+/// (notes/fs-server.md, "the same five blocks every time"). Nothing below [`CachedDisk`] changed to
+/// make this true; it was always true of `Transaction::read_tree`, and steps 1, 3 and 4 all left it
+/// alone because none of them touch how a node is found, only what is done once it is.
+///
+/// # Why single blocks only, and why write-through rather than read-through-and-forget
+///
+/// **Only a `buffer.len() == BLOCK` read consults the cache.** A record body ([`BlockDisk`] and the
+/// EL0 binary's `IpcDisk` both call `Disk::read_at`/`write_at` with a multi-block buffer for one) is
+/// already the batched call step 4 built, and caching a whole record would spend far more of this
+/// process's small heap budget for far less repetition: a record is read once per access, not five
+/// times per access the way the tree spine is. Bypassing the cache for anything wider than one
+/// block keeps the memory this type owns proportional to the metadata working set it targets, not
+/// to the data moving through it.
+///
+/// **A write updates the cache rather than only invalidating it**, once the write to the inner disk
+/// has actually succeeded (never before: caching bytes a write has not been confirmed to have
+/// landed would make the cache lie about a write that failed partway). A short final chunk (the
+/// same case [`BlockDisk`]'s doc names) still touches one whole block on the platter through a
+/// read-modify-write below this type, and this type was not given the merged result, so it
+/// invalidates that block's slot instead of caching a guess.
+///
+/// # What makes it safe against RedoxFS's copy-on-write allocator
+///
+/// RedoxFS never rewrites a live block in place: a change always lands at a **freshly allocated**
+/// address and the old one is only deallocated, never immediately reused, until a later allocation
+/// claims it (`Transaction::allocate`/`deallocate`). So a cache entry for an address can only ever
+/// go stale by that same address being **written**, and this type's [`Disk::write_at`] is the only
+/// path a write reaches the platter through; there is no way for the bytes at a cached address to
+/// change without this type observing it and updating or invalidating the entry in the same call.
+/// This is the property that makes a bare write-through cache correct here without a generation
+/// counter or a fencing scheme: one process, one `Disk` impl, every write funnelled through it.
+pub struct CachedDisk<D> {
+    inner: D,
+    cache: BlockCache,
+}
+
+impl<D> CachedDisk<D> {
+    /// Wrap `inner`, caching up to `capacity` distinct single-block reads. `capacity` is the
+    /// caller's call, against its own heap budget: milestone 37's crash-test FS servers run a
+    /// fraction of the ordinary heap and must pick a smaller number than the ordinary server does.
+    pub fn new(inner: D, capacity: usize) -> Self {
+        Self {
+            inner,
+            cache: BlockCache::new(capacity),
+        }
+    }
+}
+
+impl<D: Disk> Disk for CachedDisk<D> {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        if buffer.len() == BLOCK {
+            if let Some(cached) = self.cache.get(block) {
+                buffer.copy_from_slice(cached);
+                return Ok(BLOCK);
+            }
+            // SAFETY: forwarded from this method's own caller, on a buffer of the same shape.
+            let n = unsafe { self.inner.read_at(block, buffer)? };
+            if n == BLOCK {
+                self.cache.insert(block, buffer);
+            }
+            return Ok(n);
+        }
+        // A record body or larger: already batched by step 4, and not this cache's target. See the
+        // type's own doc for why caching it would cost more than it is worth.
+        unsafe { self.inner.read_at(block, buffer) }
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        // SAFETY: forwarded from this method's own caller, on a buffer of the same shape.
+        let n = unsafe { self.inner.write_at(block, buffer)? };
+        // Only the bytes the inner disk confirmed writing are cached; a short count from a
+        // hypothetical partial write must not be papered over with an entry that claims more
+        // landed than did.
+        let mut off = 0;
+        let mut b = block;
+        while off < n {
+            let chunk = (n - off).min(BLOCK);
+            if chunk == BLOCK {
+                self.cache.insert(b, &buffer[off..off + BLOCK]);
+            } else {
+                // A short final chunk: the whole-block bytes that actually landed are a merge
+                // (read-modify-write) this type never saw, so it cannot vouch for a cached copy.
+                self.cache.invalidate(b);
+            }
+            off += chunk;
+            b += 1;
+        }
+        Ok(n)
+    }
+
+    fn size(&mut self) -> Result<u64> {
+        self.inner.size()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use redoxfs::DiskMemory;
@@ -3259,5 +3413,191 @@ mod tests {
             "an emptied blob left its file behind"
         );
         assert!(attr_names(&mut srv, h).is_empty());
+    }
+
+    /// **[`CachedDisk`] tests (milestone 138 step 2).** A [`Disk`] over a `Vec<u8>` that counts every
+    /// `read_at`/`write_at` call it receives, so a test can assert "the cache answered this one"
+    /// rather than merely "the answer was right", which every other disk fake here already checks by
+    /// construction.
+    struct CountingDisk {
+        image: Vec<u8>,
+        reads: usize,
+        writes: usize,
+    }
+
+    impl CountingDisk {
+        fn new(mib: usize) -> Self {
+            Self {
+                image: vec![0u8; mib * 1024 * 1024],
+                reads: 0,
+                writes: 0,
+            }
+        }
+    }
+
+    impl Disk for CountingDisk {
+        unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+            self.reads += 1;
+            let off = block as usize * BLOCK;
+            buffer.copy_from_slice(&self.image[off..off + buffer.len()]);
+            Ok(buffer.len())
+        }
+
+        unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+            self.writes += 1;
+            let off = block as usize * BLOCK;
+            self.image[off..off + buffer.len()].copy_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn size(&mut self) -> Result<u64> {
+            Ok(self.image.len() as u64)
+        }
+    }
+
+    /// A repeat read of the same block is answered from the cache: the inner disk sees it once.
+    #[test]
+    fn a_repeated_single_block_read_hits_the_cache() {
+        let mut disk = CachedDisk::new(CountingDisk::new(1), 8);
+        let mut buf = [0u8; BLOCK];
+        for _ in 0..5 {
+            unsafe { disk.read_at(3, &mut buf) }.unwrap();
+        }
+        assert_eq!(
+            disk.inner.reads, 1,
+            "four of the five reads should have hit"
+        );
+    }
+
+    /// **The property the whole type exists for**: a write to a cached block is never served stale
+    /// afterwards. This is the regression test a caching bug would fail without ever touching the
+    /// device layer, which is the point of building it host-side.
+    #[test]
+    fn a_write_through_the_cache_is_read_back_fresh() {
+        let mut disk = CachedDisk::new(CountingDisk::new(1), 8);
+        let mut buf = [0u8; BLOCK];
+        unsafe { disk.read_at(3, &mut buf) }.unwrap(); // populate the cache
+        assert_eq!(buf, [0u8; BLOCK]);
+
+        let new_bytes = [7u8; BLOCK];
+        unsafe { disk.write_at(3, &new_bytes) }.unwrap();
+
+        let mut buf2 = [0u8; BLOCK];
+        unsafe { disk.read_at(3, &mut buf2) }.unwrap();
+        assert_eq!(buf2, new_bytes, "a stale cache entry would fail this");
+        // And the read that mattered was answered from the cache, not the disk: the write updated
+        // the entry rather than merely invalidating it.
+        assert_eq!(
+            disk.inner.reads, 1,
+            "only the first, cold read should have reached the disk"
+        );
+    }
+
+    /// A write shorter than a block invalidates rather than caching a guess, because this type never
+    /// sees the read-modify-write merge that lands underneath it.
+    #[test]
+    fn a_short_write_invalidates_rather_than_caching_a_guess() {
+        let mut disk = CachedDisk::new(CountingDisk::new(1), 8);
+        let mut buf = [0u8; BLOCK];
+        unsafe { disk.read_at(3, &mut buf) }.unwrap(); // populate the cache
+        // A short write: the inner disk's contract is to report exactly what it wrote, and a real
+        // Disk::write_at that read-modify-writes still reports the full chunk length it was asked
+        // for (see BlockDisk::write_at), so simulate the case a Disk implementation reporting a
+        // genuinely short count would produce, e.g. a write cut off by the device.
+        struct ShortWrite(CountingDisk);
+        impl Disk for ShortWrite {
+            unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+                unsafe { self.0.read_at(block, buffer) }
+            }
+            unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+                unsafe { self.0.write_at(block, &buffer[..BLOCK / 2]) }
+            }
+            fn size(&mut self) -> Result<u64> {
+                self.0.size()
+            }
+        }
+        let mut disk = CachedDisk::new(ShortWrite(CountingDisk::new(1)), 8);
+        unsafe { disk.read_at(3, &mut buf) }.unwrap();
+        let new_bytes = [7u8; BLOCK];
+        unsafe { disk.write_at(3, &new_bytes) }.unwrap();
+        // The entry must be gone: a subsequent read has to reach the disk again rather than answer
+        // from a cache that only ever saw half the new bytes.
+        let reads_before = disk.inner.0.reads;
+        let mut buf2 = [0u8; BLOCK];
+        unsafe { disk.read_at(3, &mut buf2) }.unwrap();
+        assert_eq!(
+            disk.inner.0.reads,
+            reads_before + 1,
+            "a short write must invalidate, not cache a partial guess"
+        );
+    }
+
+    /// A collision (two block numbers sharing one slot) evicts rather than corrupting: the newer
+    /// block reads back correctly and the older one, now a miss, still reads back correctly too
+    /// (from the inner disk, since the cache no longer has it).
+    #[test]
+    fn a_slot_collision_evicts_rather_than_corrupts() {
+        let mut disk = CachedDisk::new(CountingDisk::new(1), 4); // capacity 4: blocks 0 and 4 collide
+        let mut a = [0u8; BLOCK];
+        let mut b = [0u8; BLOCK];
+        unsafe { disk.write_at(0, &[1u8; BLOCK]) }.unwrap();
+        unsafe { disk.write_at(4, &[2u8; BLOCK]) }.unwrap(); // evicts block 0's entry
+        unsafe { disk.read_at(0, &mut a) }.unwrap(); // a miss now: must come from the disk, not block 4's cached bytes
+        unsafe { disk.read_at(4, &mut b) }.unwrap();
+        assert_eq!(
+            a, [1u8; BLOCK],
+            "block 0 must read its own bytes, not block 4's"
+        );
+        assert_eq!(b, [2u8; BLOCK]);
+    }
+
+    /// A multi-block read (a record body) bypasses the cache entirely: it always reaches the disk,
+    /// and it never populates or consults an entry, so it cannot collide with the single-block
+    /// working set the cache exists for.
+    #[test]
+    fn a_multi_block_read_bypasses_the_cache() {
+        let mut disk = CachedDisk::new(CountingDisk::new(1), 8);
+        let mut buf = [0u8; BLOCK * 2];
+        for _ in 0..3 {
+            unsafe { disk.read_at(0, &mut buf) }.unwrap();
+        }
+        assert_eq!(
+            disk.inner.reads, 3,
+            "every multi-block read must reach the disk; none of them should have been a cache hit"
+        );
+    }
+
+    /// [`CachedDisk`] over a real image behaves exactly as the uncached path does: same bytes back,
+    /// through the ordinary `Server` API rather than through `Disk` directly.
+    #[test]
+    fn cached_disk_reads_the_same_bytes_as_uncached() {
+        let mut fs = FileSystem::create(BlockDisk(VecIo(vec![0u8; 16 * 1024 * 1024])), None, 0, 0)
+            .expect("mkfs through BlockDisk");
+        fs.tx(|tx| {
+            let ptr = tx
+                .create_node(TreePtr::root(), "f", Node::MODE_FILE | 0o644, 0, 0)?
+                .ptr();
+            tx.write_node(ptr, 0, b"cached-disk-content", 0, 0)?;
+            Ok(())
+        })
+        .expect("populate");
+        let image = fs.disk.0.0;
+
+        let mut plain = Server::open(BlockDisk(VecIo(image.clone()))).expect("open, uncached");
+        let mut cached =
+            Server::open(CachedDisk::new(BlockDisk(VecIo(image)), 8)).expect("open, cached");
+
+        let mut buf_a = [0u8; 32];
+        let mut buf_b = [0u8; 32];
+        let ha = plain.open_file("f").unwrap();
+        let hb = cached.open_file("f").unwrap();
+        // Read twice through the cached path, so a caching bug would have a chance to show up.
+        for _ in 0..2 {
+            let na = plain.read(ha, 0, &mut buf_a).unwrap();
+            let nb = cached.read(hb, 0, &mut buf_b).unwrap();
+            assert_eq!(na, nb);
+            assert_eq!(buf_a[..na], buf_b[..nb]);
+        }
+        assert_eq!(&buf_a[..19], b"cached-disk-content");
     }
 }
