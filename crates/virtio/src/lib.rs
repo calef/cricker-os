@@ -163,7 +163,7 @@ fn barrier() {
     // SAFETY: as above; a fence only constrains ordering.
     #[cfg(target_arch = "riscv64")]
     unsafe {
-        core::arch::asm!("fence", options(nostack, preserves_flags))
+        core::arch::asm!("fence", options(nostack, preserves_flags));
     };
 }
 
