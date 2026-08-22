@@ -77,6 +77,53 @@ static TEST_BUDGET: AtomicU64 = AtomicU64::new(0);
 static TEST_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static TEST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// **A test's fixture is not there, on this machine, and that is not this test's fault.**
+///
+/// Milestone 145: the on-board test-suite exit (milestone 16a) ran the `#[test_case]` suite on
+/// the VisionFive 2 for the first time, and found roughly thirty tests that correctly expect a
+/// synthetic device only `xtask`'s QEMU runners attach (virtio-rng, virtio-gpu, an NVMe
+/// controller, ...). None of them was wrong; none of them had ever needed to run anywhere else.
+/// `Testable::run` had no way to record a third outcome besides pass (return) and fail (panic),
+/// so a test with no fixture had exactly one honest option: crash the whole suite, which is what
+/// `nvme.rs`'s end-to-end test did.
+///
+/// The boot tour already has the shape this borrows: `main.rs` prints "skipped (no 'outlaw'
+/// program in the initrd)" instead of asserting a fixture that may not be there. `skip!()` is
+/// the same move inside a `#[test_case]`: call it where the old code called `.expect(...)`, and
+/// it prints the same message a passing test would have, tagged `skipped` instead of `ok`, then
+/// returns from the calling function. The macro (not a function) is what makes the early return
+/// reach the test: a function can only return `()` and hand back control, not unwind its caller.
+pub(crate) static SKIP_REASON: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+pub(crate) static SKIP_REASON_LEN: AtomicUsize = AtomicUsize::new(0);
+/// How many tests this run has skipped, for the final line. Read once, at the end; never
+/// compared against anything today, which is milestone 145's own open question (a run that
+/// skips more over time is a fact worth someone eventually gating on, not silently absorbing).
+static SKIPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// **Skip the current test**, because the fixture it needs is not attached to this boot.
+///
+/// `reason` should name the missing thing the way the old `.expect(...)` message did ("no
+/// virtio-rng device on the mmio bus"), because that string is now the only record of why the
+/// test did not run. Must be called from directly inside a `#[test_case]` function (it returns
+/// from its caller); calling it from a nested helper returns out of the helper instead, which
+/// is a bug at the call site, not in the macro.
+#[cfg(test)]
+#[allow(unused_macros)]
+macro_rules! skip {
+    ($reason:expr) => {{
+        let reason: &'static str = $reason;
+        $crate::testing::SKIP_REASON.store(
+            reason.as_ptr() as *mut u8,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        $crate::testing::SKIP_REASON_LEN.store(reason.len(), core::sync::atomic::Ordering::Relaxed);
+        return;
+    }};
+}
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use skip;
+
 // ---------------------------------------------------------------------------------------------
 // The frame ledger.
 //
@@ -502,6 +549,34 @@ impl<T: Fn()> Testable for T {
         // Disarm: between tests there is no budget to exceed, and the next test arms its own.
         TEST_START.store(0, Ordering::Relaxed);
 
+        // A test that called skip!() left a reason here instead of returning normally. Report it
+        // and stop: the frame-ledger charge and the stack-intact check below still apply (a
+        // skipped test can still smash the stack on its way out), but there is no "ok" to print.
+        let skip_ptr = SKIP_REASON.swap(core::ptr::null_mut(), Ordering::Relaxed);
+        if !skip_ptr.is_null() {
+            let len = SKIP_REASON_LEN.swap(0, Ordering::Relaxed);
+            // SAFETY: skip!() only ever stores the pointer and length of a &'static str it holds
+            // for the duration of the call, and the swap above is the only reader, so this runs
+            // at most once per store.
+            let reason = unsafe {
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(skip_ptr, len))
+            };
+            SKIPPED.fetch_add(1, Ordering::Relaxed);
+
+            let elapsed =
+                crate::arch::timer::now().saturating_sub(start) / crate::arch::timer::frequency();
+            if elapsed >= SLOW_REPORT_SECS {
+                print!("[{elapsed} s] ");
+            }
+            assert!(
+                crate::stack::intact(),
+                "this test smashed the stack (headroom: {})",
+                crate::stack::headroom()
+            );
+            println!("skipped: {reason}");
+            return;
+        }
+
         // Report what a test actually cost, if it cost anything worth knowing. The ceiling already
         // needs a start time, so this is free, and it closes a real gap: a SLOW_TESTS budget is a
         // human declaration of expected cost, and until now there was no way to learn the cost except
@@ -586,7 +661,19 @@ pub fn runner(tests: &[&dyn Testable]) {
     report_frame_ledger();
 
     println!();
-    println!("test result: ok. {} passed", tests.len());
+    // "passed" counts only the tests that actually ran to an "ok"; a skipped test (skip!(), no
+    // fixture on this boot) is not a pass, and rolling it into either bucket silently would hide
+    // exactly the fact milestone 145 exists to keep visible. A board run says "244 passed, 31
+    // skipped" rather than a bare 275 that looks identical to QEMU's full count.
+    let skipped = SKIPPED.load(Ordering::Relaxed);
+    if skipped > 0 {
+        println!(
+            "test result: ok. {} passed, {skipped} skipped",
+            tests.len() - skipped
+        );
+    } else {
+        println!("test result: ok. {} passed", tests.len());
+    }
 
     semihosting::exit(semihosting::EXIT_SUCCESS)
 }
