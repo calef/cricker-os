@@ -9,9 +9,10 @@ on the roadmap runs anything on a schedule.
 the temptation was there. Every ingredient existed as predicted: §43's clock authority and
 `clock_proto`, the spawn machinery and program manifests (milestone 31's grant expressions), and
 supervision (§40) for what happens when a scheduled child dies. No new syscall surface was needed.
-The remaining pieces that need nobody are the `--mem` grant and the per-entry image (the archive
-endowment was narrowed to the plan on 2026-08-18); only a **runtime** registration protocol is
-calef's, and a gate reading `DECISION` would say the milestone is blocked when most of it is not.
+The archive endowment was narrowed to the plan on 2026-08-18 and the `--mem` grant was backed on
+2026-08-22; the one piece that still needs nobody is the per-entry image. Only a **runtime**
+registration protocol is calef's, and a gate reading `DECISION` would say the milestone is blocked
+when most of it is not.
 
 What the build did find is that the *absence* of a syscall shapes the whole program: see "The
 finding" below.
@@ -96,24 +97,41 @@ timetable: the archive it holds carries exactly the 1 program its plan names   <
 timetable: the archive it holds carries 57 programs, 56 of them beyond its plan <- before
 ```
 
+## Built: a backable `--mem` grant, 2026-08-22
+
+`Held::mem_pages` was zero, so an entry naming a memory grant was refused although the process held
+a budget. `timetable::SHIPPED_HELD.mem_pages` is now 4, and `timetable.conf`'s
+`at-boot budgeter --mem 4` is planned, backed, and fires; `user/src/timetable.rs`'s `fire_with_grant`
+and `collect_grant` are the mechanism, and its `BUGS` records the cost.
+
+**This block's own sketch for backing it was wrong, and stayed corrected rather than reopened.** It
+said to split the grant out of the *instance's own region* so a single `DESTROY` reclaims both.
+`regions::destroy_outcome` answers `Refused` for any region with a live child, and
+`sched::reap_supervised` passes that back, so a corpse whose region carries a grant cannot be
+collected through `reap` at all until the grant is destroyed first, by its own separate capability.
+
+The nesting survives the correction for the reason already found: **a refused reap is the only thing
+that pairs a death with a grant.** A supervisor learns a tid and nothing else, because nothing hands
+a builder its child's tid (`build_child` returns a TCB capability and `abi::tcb` reads none out).
+What was left was a decision rather than wiring, and it was made here rather than deferred again:
+**at most one `--mem` instance may be outstanding at a time.** `_start` drains everything already
+running, fires the grant-bearing instance alone, and blocks until it dies and its grant is destroyed
+before anything else in the document fires again, which is what makes the next death on the
+supervision endpoint unambiguous without needing a tid at all. The price is paid by every *other*
+entry, not by `--mem` ones: nothing else can fire while that wait is blocked, so an interval entry
+due during it runs late rather than on schedule (never dropped: `next_after`'s ordinary
+skip-not-catch-up rule covers a wait that outlasts more than one period, the same as any other
+stall). The shipped document does not exercise that cost (`at-boot budgeter --mem 4` fires before
+the first `every 150ms` tick can even become due); a document whose `--mem` entry shared the clock
+with a fast interval would.
+
+A generation counter or a slot table could track more than one outstanding grant; nothing here needs
+its child's tid for any other reason, so building that now would be speculative machinery for a
+milestone whose document schedules exactly one such entry. Serialising to one was the small answer
+and is the one taken.
+
 ## Still to build
 
-- **A `--mem` grant a scheduled entry can actually be backed with.** `Held::mem_pages` is zero today,
-  so an entry naming one is refused although the process holds a budget.
-
-  **This block's own sketch for backing it is wrong and is corrected here** (2026-08-18, found by
-  reading the kernel rather than by failing). It said to split the grant out of the *instance's own
-  region* so a single `DESTROY` reclaims both. `regions::destroy_outcome` answers `Refused` for any
-  region with a live child, and `sched::reap_supervised` passes that back, so a corpse whose region
-  carries a grant cannot be collected at all until the grant is destroyed first.
-
-  The nesting survives the correction for a better reason: **a refused reap is the only thing that
-  pairs a death with a grant.** A supervisor learns a tid and nothing else, because nothing hands a
-  builder its child's tid (`build_child` returns a TCB capability and `abi::tcb` reads none out). So
-  what is left is a decision rather than wiring: how many `--mem` instances may be outstanding at
-  once, since the refusal identifies one. Serialising them is the small answer.
-  `crates/timetable` supports the planning and refusal already, and its host tests cover both. Needs
-  nobody.
 - **One image per entry rather than one archive per timetable.** The narrowing above is to the plan's
   *union*, so a document admitting three programs leaves each instance's loader able to name the
   other two's images. `user/src/spawner.rs` has the narrow shape (one image, and "build me program X"
@@ -170,3 +188,9 @@ entries, and persistence of the entry table across reboot are each their own lat
   `user/src/mdns_responder.rs` records and has the same fix (a `FileSpec` grant plus an `fs_proto`
   open-and-read at startup, milestone 131). It is load-bearing here in a way it is not there, because
   where the document lives is also what answers "who may register".
+
+- **At most one `--mem` instance may be outstanding at a time**, recorded in full in
+  `user/src/timetable.rs`'s own `BUGS`. The scheduler is fully blocked, unable to fire anything else
+  in the document, for as long as that one instance takes to die and its grant to be reclaimed. A
+  document whose `--mem` entry competes with a fast interval for the clock pays that cost as a late
+  fire rather than a dropped one; the shipped document does not exercise it.

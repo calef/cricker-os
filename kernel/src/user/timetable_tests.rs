@@ -50,11 +50,28 @@ const ARMED: &str = "timetable: armed";
 ///
 /// **What keeps the list honest is a host test rather than a comment.**
 /// `timetable::tests::the_archive_a_timetable_holds_is_measured_against_what_it_will_build` registers
-/// the same `user/timetable.conf` against the same `Held::default()` and asserts the plan is exactly
-/// this set, by name. Editing the document without editing this list fails that test in
+/// the same `user/timetable.conf` against the same `timetable::SHIPPED_HELD` and asserts the plan is
+/// exactly this set, by name. Editing the document without editing this list fails that test in
 /// milliseconds, on the host, with no emulator. The program itself then audits what it was handed
 /// and prints the answer, and the assertions below read it, so a wrong list fails twice.
-const PLANNED_PROGRAMS: [&str; 1] = ["worker"];
+///
+/// `budgeter` joined `worker` on 2026-08-22, when milestone 129's `--mem` grant was backed:
+/// `timetable.conf`'s `at-boot budgeter --mem 4` is admitted because `SHIPPED_HELD.mem_pages` (4,
+/// mirrored below as [`MEM_GRANT_PAGES`]) covers it.
+const PLANNED_PROGRAMS: [&str; 2] = ["worker", "budgeter"];
+
+/// **What `at-boot budgeter --mem 4` grants, mirrored from `user/timetable.conf` and
+/// `timetable::SHIPPED_HELD.mem_pages`.** A written constant rather than a computed one for the
+/// same reason [`PLANNED_PROGRAMS`] is: this test does not depend on the `timetable` crate at all
+/// (`script/stack-frame-check` is why, see that constant's own doc), so nothing here can read the
+/// real value back. What keeps it honest is the same host test that keeps `PLANNED_PROGRAMS`
+/// honest: it parses the same document against the same `SHIPPED_HELD` and would go red first if
+/// the two drifted apart.
+///
+/// Used as a range rather than an exact literal below: how many of the 4 pages `budgeter` actually
+/// manages to map is page-table overhead, which is page-table-implementation detail this milestone
+/// makes no claim about and which is free to differ between aarch64 and riscv64.
+const MEM_GRANT_PAGES: u64 = 4;
 
 /// **Room for the archive this spawn site builds**, which is not the initrd.
 ///
@@ -221,10 +238,12 @@ fn line(ep: EpId, buf: &mut [u8; 256]) -> Option<usize> {
 ///
 /// Upstream cron has one answer to a crontab line: it runs. The shipped document exercises four:
 ///
-/// - `worker 7` and `worker 3` are **planned, backed and fired**, and their answers come back on the
-///   endpoint the plan said they would hold.
-/// - `budgeter` and `wc` are refused by **the prompt's own check**, unchanged: the same lines typed
-///   at a shell get the same sentences, because it is literally the same function.
+/// - `worker 7`, `worker 3`, and `budgeter --mem 4` are **planned, backed and fired**, and their
+///   answers come back on the endpoint the plan said they would hold. The last of the three is
+///   milestone 129's `--mem` grant made real: this timetable holds `timetable::SHIPPED_HELD.mem_pages`
+///   pages it may split off, and `budgeter` maps some of them and reports how many.
+/// - `budgeter` with no `--mem` and `wc` are refused by **the prompt's own check**, unchanged: the
+///   same lines typed at a shell get the same sentences, because it is literally the same function.
 /// - `date` and `ps` are refused because **this timetable holds nothing to back them**. Those two
 ///   are the ones Unix cannot refuse: there a clock and a process listing are ambient, so the lines
 ///   run and the question of whether they should have is one nothing asks.
@@ -246,6 +265,7 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
     // half the claim: the timetable is blocked on these sends until this loop takes them, so
     // nothing can have fired before the plan was complete.
     let mut saw_worker_grant = false;
+    let mut saw_budgeter_grant = false;
     let mut saw_nothing_else = false;
     let mut saw_exact_archive = false;
     let mut saw_wide_archive = false;
@@ -264,10 +284,14 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
             break;
         }
         saw_worker_grant |= s.contains("grants worker exactly:");
-        // **The endowment, audited by the process that holds it.** `worker` is the only program the
-        // shipped document admits, so a correctly narrowed archive carries exactly one.
+        // The backed `--mem` grant, printed the same way: the plan names the program and, on the
+        // next line, the page count split from this timetable's own budget (`write_grant`).
+        saw_budgeter_grant |= s.contains("grants budgeter exactly:");
+        // **The endowment, audited by the process that holds it.** `worker` and `budgeter` are the
+        // only programs the shipped document admits, so a correctly narrowed archive carries
+        // exactly two.
         saw_exact_archive |=
-            s == "timetable: the archive it holds carries exactly the 1 program its plan names";
+            s == "timetable: the archive it holds carries exactly the 2 programs its plan names";
         saw_wide_archive |= s.starts_with("timetable: the archive it holds carries ")
             && s.ends_with("of them beyond its plan");
         saw_nothing_else |=
@@ -288,6 +312,10 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
         "the plan did not say what a scheduled worker would hold",
     );
     assert!(
+        saw_budgeter_grant,
+        "the plan did not say what the backed `--mem` grant would hold",
+    );
+    assert!(
         saw_clock_refusal,
         "a scheduled `date` must be refused for want of a clock, and said so. On Unix this entry \
          runs, because there the clock is ambient; here it is a capability this process was not \
@@ -303,7 +331,7 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
     );
     // **The negative control for the endowment**, which is milestone 129's second stratum. Before
     // it, this spawn site handed the timetable the whole initrd and the program said so: an archive
-    // reaching every program in the tree behind a plan that names one. After it, the spawn site
+    // reaching every program in the tree behind a plan that names two. After it, the spawn site
     // builds a sub-archive from `Registry::programs` and the program can no longer reach `date`,
     // `ps`, `swish` or anything else it will never run. Asserting both directions is what makes
     // this a control rather than a spelling check: a spawn site that quietly went back to the
@@ -321,28 +349,39 @@ fn a_scheduled_entry_holds_what_the_plan_said_and_a_refused_one_never_runs() {
 
     // ---- what actually fired ----
     //
-    // `worker` squares its argument, so the shipped document's two admitted entries answer 49
-    // (`worker 7`) and 9 (`worker 3`). **This is the negative control**: every refused entry in the
-    // document is a program that would have written something else here (`date` and `wc` write
-    // `sink_proto` bytes, `budgeter` writes a page count), so a document whose refusals had leaked
-    // would fail on the value rather than on a count.
+    // `worker` squares its argument, so the shipped document's interval and at-boot entries answer
+    // 49 (`worker 7`) and 9 (`worker 3`); `budgeter --mem 4` answers however many of its four pages
+    // it actually managed to map, which is at least one and at most four (page-table overhead is
+    // free to differ between aarch64 and riscv64, so the exact count is not this milestone's claim;
+    // `MEM_GRANT_PAGES` bounds it rather than pinning it). **This is the negative control**: every
+    // refused entry in the document is a program that would have written something else here (`date`
+    // and `wc` write `sink_proto` bytes), so a document whose refusals had leaked would fail on the
+    // value rather than on a count.
     let mut nines = 0;
     let mut forty_nines = 0;
+    let mut budgeter_reports = 0;
     for _ in 0..FIRES {
         let answer = crate::sched::ipc_recv(reports)[0];
         match answer {
             9 => nines += 1,
             49 => forty_nines += 1,
+            n if (1..=MEM_GRANT_PAGES).contains(&n) => budgeter_reports += 1,
             other => panic!(
-                "a scheduled child reported {other}; only `worker 3` and `worker 7` were admitted, \
-                 so this is an entry that fired after being refused",
+                "a scheduled child reported {other}; only `worker 3`, `worker 7` and \
+                 `budgeter --mem 4` were admitted, so this is an entry that fired after being \
+                 refused",
             ),
         }
     }
     assert_eq!(nines, 1, "`at-boot worker 3` must fire exactly once");
     assert_eq!(
+        budgeter_reports, 1,
+        "`at-boot budgeter --mem 4` must fire exactly once, backed by the grant this timetable \
+         holds",
+    );
+    assert_eq!(
         forty_nines,
-        FIRES - 1,
+        FIRES - 2,
         "the rest must be the repeating `worker 7` heartbeat",
     );
 

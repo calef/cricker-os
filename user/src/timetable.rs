@@ -14,8 +14,9 @@
 //! # What it holds, and that is the whole list
 //!
 //! - slot 0: the output endpoint (WRITE). Where the plan and the summary go, as `sink_proto` bytes.
-//! - slot 1: an untyped budget (WRITE). What every instance is made of, and what pays for the
-//!   loader's own scratch mappings.
+//! - slot 1: an untyped budget (WRITE). What every instance is made of, what pays for the loader's
+//!   own scratch mappings, and what a `--mem` entry's grant is carved from (nested inside that
+//!   instance's own region rather than split from this budget directly; see `fire` and `BUGS`).
 //! - slot 2: the child report endpoint (WRITE|GRANT), handed to each instance as its slot 0.
 //! - slot 3: the supervision endpoint (READ|GRANT), placed in each instance's reserved fault slot
 //!   so every scheduled child is born supervised (DECISIONS §26), and invoked with
@@ -33,9 +34,12 @@
 //! abort whose faulting address was the stack pointer, which is what a stack overflow looks like
 //! from the kernel side and reads like a wild pointer if you have not seen it before.
 //!
-//! **And nothing else.** No clock page, no directory, no console, no network, no device. That list
-//! is not modesty: it is why a scheduled `date` in `timetable.conf` is refused at registration
-//! rather than run, and why the refusal names the timetable rather than the line.
+//! **And nothing else beyond that budget.** No clock page, no directory, no console, no network, no
+//! device. That list is not modesty: it is why a scheduled `date` in `timetable.conf` is refused at
+//! registration rather than run, and why the refusal names the timetable rather than the line.
+//! `timetable::SHIPPED_HELD` is the one fact that has widened since milestone 129's first stratum:
+//! this process now holds enough budget to back a `--mem` grant up to `SHIPPED_HELD.mem_pages`
+//! pages for a single entry, and `timetable.conf`'s `at-boot budgeter --mem 4` line is the proof.
 //!
 //! # The archive is narrowed to the plan, and this process says so
 //!
@@ -93,24 +97,38 @@
 //!   leaves an instance of one able to reach the other two's images. Closing that needs a
 //!   capability per entry rather than one per timetable, which is a shape this tree does not have.
 //!
-//! - **`--mem` entries are refused**, and the mechanism the roadmap sketched for backing one does
-//!   not work. `Held::mem_pages` is zero, so an entry naming a memory grant is `Unbacked::Memory`
-//!   even though this process holds a budget.
+//! - **`--mem` entries are backed, and run one at a time, alone.** The roadmap's first sketch said
+//!   to split the grant out of the instance's own region "so a single `DESTROY` still reclaims
+//!   both", and that is wrong on its own terms: `regions::destroy_outcome` returns `Refused` for
+//!   any region with a live child, Kani proves it, and `sched::reap_supervised` hands that refusal
+//!   straight back, so a corpse whose region carries a nested grant can never be collected through
+//!   `reap` until the grant is destroyed first, by its own separate capability.
 //!
-//!   The sketch said to split the grant out of the instance's own region "so a single `DESTROY`
-//!   still reclaims both". **The kernel refuses exactly that**: `regions::destroy_outcome` returns
-//!   `Refused` for any region with a live child, Kani proves it, and `sched::reap_supervised` hands
-//!   that refusal straight back, so a corpse whose region carries a split grant can never be
-//!   collected until the grant is destroyed first.
-//!
-//!   What the nesting *does* buy is the only correlation available, which is why it is still the
-//!   right shape: a refused reap names the instance that carried a grant. Nothing here can pair a
-//!   death with a grant otherwise, because a builder is never told its child's tid
+//!   The nesting survives the correction for a better reason: it is the only thing that can ever
+//!   pair a death with a grant, because a builder is never told its child's tid
 //!   (`supervision_proto::build_child` hands back a TCB capability, and `abi::tcb` has no method
-//!   that reads one out), so the only fact a supervisor has about a death is the tid the kernel
-//!   stamped on it. What remains is therefore a decision rather than wiring: **how many `--mem`
-//!   instances may be outstanding at once**, since the refusal only identifies one. `crates/timetable`
-//!   already plans and refuses memory grants against `Held::mem_pages`, and its host tests cover it.
+//!   that reads one out), so the only fact this process has about a death is the tid the kernel
+//!   stamped on it. `fire_with_grant` keeps the split untyped's own capability rather than
+//!   `cap_delete`-ing it the way it does the region and the TCB, so `collect_grant` can destroy it
+//!   later, by name.
+//!
+//!   **What decides *how many* `--mem` instances may be outstanding at once is that correlation,
+//!   and the answer taken here is one.** A generation counter or a slot table could track more, but
+//!   nothing here needs its child's tid for any other reason, so paying for one would be
+//!   speculative machinery for a milestone whose document schedules exactly one such entry. With
+//!   one, the pairing needs no bookkeeping at all: `_start` drains everything already outstanding,
+//!   fires the grant-bearing instance alone, and blocks in `collect_grant` until it dies and its
+//!   grant is reclaimed before returning to the loop. Nothing else in the document can be firing
+//!   while that wait is blocked, which is what makes the next death on `DEATHS` unambiguous.
+//!
+//!   **The cost is real and is paid by every other entry, not by `--mem` ones.** While a grant is
+//!   outstanding this process is blocked in one syscall and cannot poll the clock at all, so an
+//!   interval entry due during that window is not skipped, it simply runs late once the loop
+//!   resumes; several periods elapsing during a slow instance still produce one fire on resumption
+//!   (`next_after`'s ordinary skip-not-catch-up rule, not a special case for this path).
+//!   `timetable.conf`'s `at-boot budgeter --mem 4` fires before the first `every 150ms` tick can
+//!   even become due, so this cost is not exercised by the cross-ISA test; a document whose
+//!   `--mem` entry shares the clock with a fast interval would pay it.
 //!
 //! - **Nothing is persistent.** Entries live in a document compiled into this binary, and both die
 //!   with the boot. Milestone 129's block records this and points at whatever milestone gives
@@ -124,7 +142,7 @@
 #![no_std]
 #![no_main]
 
-use timetable::{Held, Registry};
+use timetable::Registry;
 use user_rt::{cap_delete, exit, monotonic_nanos, reap, recv_fault, send, yield_now};
 
 /// The document. Compiled in; see `BUGS`.
@@ -187,10 +205,12 @@ pub extern "C" fn _start(fires_wanted: u64, initrd_len: u64, _a2: u64) -> ! {
     };
 
     // **What this process holds, stated once, in the vocabulary registration checks against.**
-    // Every field is false or zero and every one of them is a fact a reader can check against the
-    // slot list in this module's header. Widening the timetable is an edit here and a visible
-    // change in the printed plan, which is the property worth having.
-    let held = Held::default();
+    // Every field but `mem_pages` is false, and every one of them is a fact a reader can check
+    // against the slot list in this module's header. `timetable::SHIPPED_HELD` is the one number
+    // that has widened since milestone 129's first stratum, and this crate's own host test uses the
+    // same constant so the two cannot drift apart. Widening it further is an edit here and a
+    // visible change in the printed plan, which is the property worth having.
+    let held = timetable::SHIPPED_HELD;
 
     let mut reg = Registry::register(&doc, held);
 
@@ -271,6 +291,26 @@ pub extern "C" fn _start(fires_wanted: u64, initrd_len: u64, _a2: u64) -> ! {
             let Some(e) = reg.rows()[i].endowment() else {
                 continue;
             };
+
+            if e.mem_pages > 0 {
+                // **Exclusive.** See `BUGS`: a `--mem` grant is nested inside its own instance's
+                // region, and the only signal that ties a death to a grant is a refused reap, which
+                // is unambiguous only when nothing else is outstanding to blame it on. So drain
+                // whatever is already running, fire this one alone, and wait for it to die and its
+                // grant to be reclaimed before anything else in this document fires again.
+                while outstanding > 0 {
+                    collect(&mut exits, &mut faults);
+                    outstanding -= 1;
+                }
+                let Some(mem_slot) = fire_with_grant(elf, e.arg, e.mem_pages) else {
+                    say(b"timetable: the budget cannot back one instance\n");
+                    done(E_BUDGET)
+                };
+                fired += 1;
+                collect_grant(&mut exits, &mut faults, mem_slot);
+                continue;
+            }
+
             // Fire. If the budget cannot back another instance, block until a corpse comes back and
             // its region with it, then try once more. A second failure is a budget too small for
             // even one instance, which is a wiring error rather than congestion.
@@ -351,6 +391,85 @@ fn fire(elf: &elf::Elf, arg: u64) -> bool {
     cap_delete(tcb);
     cap_delete(region);
     true
+}
+
+/// **Build and start a `--mem`-backed instance**, the exclusive sibling of [`fire`].
+///
+/// The grant is carved out of the instance's own region rather than out of [`BUDGET`] directly
+/// (`BUGS` says why: it is the only thing that ever pairs a death with a grant), so the region is
+/// sized `INSTANCE_PAGES + mem_pages` and the grant is a second split off *that*, leaving
+/// `INSTANCE_PAGES` for the instance's own address space, frames, stack and TCB exactly as before.
+///
+/// Returns the grant's own capability, still held, on success. **This is deliberately not deleted
+/// the way [`fire`] deletes `region`**: it is the caller's only way to reclaim the grant later, and
+/// the caller is [`collect_grant`], called next and only next by this program's one call site.
+fn fire_with_grant(elf: &elf::Elf, arg: u64, mem_pages: u64) -> Option<u64> {
+    let Ok(region) = supervision_proto::untyped_split(BUDGET, INSTANCE_PAGES + mem_pages) else {
+        return None;
+    };
+    let Ok(mem_slot) = supervision_proto::untyped_split(region, mem_pages) else {
+        supervision_proto::untyped_destroy(region);
+        return None;
+    };
+    let Ok(tcb) = supervision_proto::build_child(
+        BUDGET,
+        region,
+        elf,
+        &supervision_proto::ChildEndowment {
+            // Slot 0: the report endpoint, as every instance gets. Slot 1: the grant, narrowed to
+            // WRITE so the child may spend it and not lend it (the same narrowing
+            // `system_initializer` gives a shell's `--mem` delegation).
+            caps: &[
+                (CHILD_REPORT, abi::rights::WRITE),
+                (mem_slot, abi::rights::WRITE),
+            ],
+            fault: Some(DEATHS),
+            ..supervision_proto::ChildEndowment::new()
+        },
+    ) else {
+        // `untyped_destroy(region)` is owner authority over the whole region, not the supervised
+        // reap `collect_grant` uses later: it reclaims `mem_slot` along with everything else here,
+        // because nothing has been handed to a child yet for anyone else to still be holding.
+        supervision_proto::untyped_destroy(region);
+        return None;
+    };
+    if !supervision_proto::tcb_start(tcb, 0, arg, 0) {
+        cap_delete(tcb);
+        supervision_proto::untyped_destroy(region);
+        return None;
+    }
+    cap_delete(tcb);
+    cap_delete(region);
+    Some(mem_slot)
+}
+
+/// **Wait for the one instance [`fire_with_grant`] just started, and reclaim its grant.**
+///
+/// Callable only while that instance is the sole thing outstanding, which the one call site in
+/// `_start` guarantees by draining everything else first and firing nothing else until this
+/// returns. That is what makes the correlation sound: the next death on [`DEATHS`] cannot be
+/// anyone else's, so `mem_slot` is destroyed unconditionally rather than guessed at from a refused
+/// reap. Once it is gone, the corpse's region has no live resident left and an ordinary [`reap`]
+/// reclaims the rest, the same as [`collect`].
+fn collect_grant(exits: &mut u64, faults: &mut u64, mem_slot: u64) {
+    let (event, tid, _pc, _addr, _rsvd) = recv_fault(DEATHS);
+    if event == abi::fault::EVENT_EXIT {
+        *exits += 1;
+    } else {
+        *faults += 1;
+    }
+    // The grant is a live resident of the corpse's own region (`regions::destroy_outcome` refuses
+    // a region with one), so it has to go before `reap` can succeed at all; nothing here needs to
+    // try `reap` first and fail to learn that, because this call is only ever made about the one
+    // instance that was built with a nested grant.
+    supervision_proto::untyped_destroy(mem_slot);
+    for _ in 0..REAP_ATTEMPTS {
+        if reap(DEATHS, tid) == 0 {
+            return;
+        }
+        yield_now();
+    }
+    user_rt::trap()
 }
 
 /// **Block until one child dies, then collect it**, counting whether it finished or crashed.
