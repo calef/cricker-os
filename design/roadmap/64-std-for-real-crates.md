@@ -235,7 +235,15 @@ and "a server runs".
   the measurement makes the case for deciding it rather than building it: all four of the crates
   behind that rank (`rayon`, `crossbeam-channel`, `tokio`, `ignore`) already compile and link, so
   nothing is blocked on the code and everything is blocked on the answer. A PAL that guessed would
-  ship the decision as an implementation detail.
+  ship the decision as an implementation detail. **The fork is written up in full in
+  notes/thread-spawn-fork.md** (pull request #394, 2026-08-22): `Tcb::CONFIGURE` consumes the
+  `Aspace` capability it binds and the `Thread` struct owns it outright, so no two TCBs can share
+  one address space today, which is what a `std` thread actually needs. The two real shapes a fix
+  could take (a kernel-level shared VSpace, which is seL4's own answer and the lineage
+  `objtype::ASPACE` already cites, versus sibling processes kept aliased by replicated frame
+  mappings) and their measured costs are there; the second one's apparent cheapness (no syscall
+  touched) does not survive contact with what a growing heap needs from an allocator. Milestone
+  149's Rayon-parallel NPB-Rust variants are the concrete thing waiting on this being decided.
 - **`env` is a table nobody seeds.** The environment backend added in the second pass is honest and
   it is also a stub in one direction: a program can set its own variables and cannot be *given* one,
   because there is no endowment to carry it. That is milestone 47's namespace, and until it lands
