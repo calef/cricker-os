@@ -214,14 +214,24 @@ separate, later kernel milestone. Nothing here depends on it landing first; §10
 **Phase 3, the graphical viewer**, waits on the display ladder (milestone 29's font rendering,
 milestone 33's compositor) regardless of how this fork resolves.
 
-## Recommendation
+## Recommendation, and the correction to this note's own question 6
 
-**No recommendation is offered, per the fork framework's own limit**: this is a syscall-adjacent,
-two-programs-must-agree wire decision, which the *move fast on what can be undone* tenet puts on the
-expensive side, and CLAUDE.md's fork guidance is explicit that a fork of this shape gets options with
-costs, not a picked winner. What this note adds beyond the three files above is that the costs are
-now measured rather than asserted (question 5) and one cost nobody had named yet is on the table
-(the caretaker-hop interleaving race). See the PR body for the specific, answerable ask.
+**No recommendation was offered here originally**, on the reasoning that this is a syscall-adjacent,
+two-programs-must-agree wire decision on the expensive side of *move fast on what can be undone*.
+**That framing was checked against the code during the decision discussion and did not hold.**
+`SINK_BIT`'s own contract (`crates/grant_plan/src/spawnproto.rs`) already makes the child's output
+slot opaque to the program: "the shell delegates an endpoint and init puts it where the result
+endpoint would have gone, so the child writes to a pipe or a file sink without knowing which."
+Nothing about what a program declares changes; no manifest is touched, because the primary output
+slot isn't something a program opts into. The actual work is shell-and-init default-routing logic
+(when `sink == false`, delegate a `terminal_sink_caretaker` capability instead of the shell's own
+read endpoint), the same shape init already uses for a `DIR_BIT` grant. That is cheaper than §67
+itself, which had a real manifest-declaration axis this fork does not.
+
+**Decided 2026-08-22 (DECISIONS §106): take it.** See that decision for the full record. This note's
+contribution stands: the fault-endpoint reuse (question 4) and the caretaker-hop race (question 5)
+are real findings, carried forward as the concrete spec for the build. Milestone 151 (notification
+objects) is minted to track the race's fix, per §106's condition for taking this fork.
 
 ## BUGS
 

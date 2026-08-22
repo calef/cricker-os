@@ -295,7 +295,10 @@ waking it from whichever child's endpoint delivers first. That is now possible b
 1. **Now**: take the `terminal_sink_caretaker` narrowing (milestone 40, no kernel change).
 2. **Notification object**: new `objtype`, four methods, the binding mechanism, Kani proof. This is
    a kernel milestone - one lane, estimated from the existing `Endpoint` and `signal()` work at the
-   same scale as 19a (which added `RETYPE_OBJ` and the endpoint object).
+   same scale as 19a (which added `RETYPE_OBJ` and the endpoint object). **Minted as milestone 151**
+   (2026-08-22), forced by a concrete bug rather than scheduled speculatively: §106's
+   `terminal_sink_caretaker` narrowing can race its own completion signal, and this is that fix's
+   tracked home.
 3. **Retrofit**: the shell binds a notification to its TCB and replaces the "wait for exit" hack
    with a proper multiplexed wait. The compositor can take per-client endpoints. The network stack
    can stop yield-spinning.
