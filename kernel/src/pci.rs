@@ -468,8 +468,14 @@ mod tests {
     /// test in arch/riscv64/irq.rs, for the same §43 reason.
     #[test_case]
     fn the_discovered_pci_windows_are_the_machines_own_and_match_the_old_constants() {
-        let (ecam, mem32) = crate::memory::pci_regions()
-            .expect("QEMU virt describes a pci-host-ecam-generic bridge");
+        let Some((ecam, mem32)) = crate::memory::pci_regions() else {
+            // The JH7110 has no generic-ECAM node at all (comment above); milestone 145 gives
+            // this the same treatment as nvme.rs rather than a panic the doc comment already
+            // predicted.
+            crate::testing::skip!(
+                "no pci-host-ecam-generic bridge in the device tree (expected on the JH7110)"
+            );
+        };
 
         let ptr = crate::DTB.load(core::sync::atomic::Ordering::Relaxed);
         // SAFETY: the pointer firmware handed us, already parsed several times on this boot.

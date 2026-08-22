@@ -40,10 +40,9 @@ fn clock() -> clock_service::Wiring {
 
 /// The entropy service's request endpoint: the client's whole authority over randomness, and it
 /// names no device. `ensure` wires the service once per boot; whichever test asks first pays.
-fn entropy() -> crate::sched::EpId {
+fn entropy() -> Option<crate::sched::EpId> {
     let image = program("entropy").expect("no entropy program in the initrd archive");
-    let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)
-        .expect("no virtio-rng device on the mmio bus: is NIFE_RNG missing from the test leg?");
+    let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)?;
     if let Some(report) = w.wait_for_ready() {
         assert_eq!(
             report[0],
@@ -52,7 +51,7 @@ fn entropy() -> crate::sched::EpId {
             report[0],
         );
     }
-    w.request
+    Some(w.request)
 }
 
 /// Where the client is told to send. Nothing listens there; the test server is behind the
@@ -73,7 +72,7 @@ fn exchange(
         ntp_image(),
         server.stack,
         clock.propose,
-        Some(entropy()),
+        entropy(),
         SERVER_IP,
         SERVER_PORT,
     );
@@ -294,7 +293,7 @@ fn an_ntp_client_holds_no_writable_clock_page() {
         ntp_image(),
         stack,
         clock.propose,
-        Some(entropy()),
+        entropy(),
         clock_service::CLOCK_VA,
     );
 
