@@ -14,6 +14,8 @@ use crate::println;
 
 pub mod context;
 pub mod exceptions;
+#[cfg(feature = "fastpath_pad")]
+mod fastpath_pad;
 pub mod interrupts;
 pub mod iommu;
 pub mod irq;
@@ -25,6 +27,9 @@ pub mod timer;
 // The saved thread context and how a new one is faked (the Rust half of context.s). Re-exported
 // flat so `crate::arch::{Context, switch_to}` names them regardless of architecture.
 pub use context::{Context, switch_to};
+// E3's padding sled (milestone 134); see kernel/src/fastpath_pad.rs.
+#[cfg(feature = "fastpath_pad")]
+pub use fastpath_pad::fastpath_pad_body;
 
 // The arm64 Image header. `_start` lands at byte 0 of the image, which is where QEMU
 // begins executing. It does nothing but branch to `_boot`.

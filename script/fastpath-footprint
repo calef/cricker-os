@@ -28,6 +28,11 @@
 #   script/fastpath-footprint            # measure both ISAs and check against the baselines
 #   script/fastpath-footprint --save     # re-record the baselines (a statement that a change is intended)
 #   script/fastpath-footprint --arch aarch64
+#   script/fastpath-footprint --features fastpath_pad  # E3 (milestone 134): build with an extra
+#                                         # kernel feature (comma-separated for more than one) and
+#                                         # measure THAT binary. Never implies --save: a padded
+#                                         # build's numbers are an experiment's reading, not a new
+#                                         # baseline, so they print and are never checked or written.
 #
 # Name: unrecorded, and provisional like everything a lane mints. `fastpath` is the field's own word
 # for the thing being measured: it is what seL4 calls its hand-written common-case IPC path, so a
@@ -47,14 +52,26 @@ cd "$(dirname "$0")/.."
 
 save=""
 arches="aarch64 riscv64"
+features=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --save) save=1 ;;
         --arch) shift; arches="$1" ;;
+        --features) shift; features="$1" ;;
         *) echo "script/fastpath-footprint: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+# **`--features` never gates and never saves.** A padded build's footprint is an experiment's
+# reading (E3, design/roadmap/134-the-measurements-that-decide.md), not a candidate baseline: it is
+# expected to fail a 5% tolerance built for the un-padded kernel, and checking it would just print
+# the failure the experiment is deliberately causing. `--save` with `--features` would silently
+# replace the real baseline with an experimental one, which is the mistake this refuses outright.
+if [ -n "$features" ] && [ -n "$save" ]; then
+    echo "script/fastpath-footprint: --save with --features would overwrite the baseline with an experimental build; not doing that" >&2
+    exit 2
+fi
 
 tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | cut -d' ' -f2)/bin"
 if [ ! -x "$tools/llvm-objdump" ]; then
@@ -74,14 +91,20 @@ for arch in $arches; do
     # **The RELEASE binary, and that is the whole point.** A debug kernel's `.text` is about twice
     # the size (notes/benchmarks.md measured 348 KiB against 168 KiB on aarch64), so a debug
     # footprint would be measuring the absence of the optimizer rather than the shape of the path.
-    echo "==> $arch: building the release kernel"
-    cargo build -p kernel --release --target "$target" >/dev/null
+    if [ -n "$features" ]; then
+        echo "==> $arch: building the release kernel (--features $features)"
+        cargo build -p kernel --release --target "$target" --features "$features" >/dev/null
+    else
+        echo "==> $arch: building the release kernel"
+        cargo build -p kernel --release --target "$target" >/dev/null
+    fi
 
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
     "$tools/llvm-objdump" -d --no-show-raw-insn "target/$target/release/kernel" > "$tmp/dis.txt"
 
-    ARCH="$arch" DIS="$tmp/dis.txt" BASE="bench/fastpath-$arch.txt" SAVE="$save" python3 - <<'PYEOF' || status=1
+    ARCH="$arch" DIS="$tmp/dis.txt" BASE="bench/fastpath-$arch.txt" SAVE="$save" \
+        NOCHECK="$features" python3 - <<'PYEOF' || status=1
 import os, re, sys, collections
 
 arch, dis_path, base_path, save = os.environ["ARCH"], os.environ["DIS"], os.environ["BASE"], os.environ["SAVE"]
@@ -169,6 +192,28 @@ print(f"    ipc_fastpath  {closure_total:6d} bytes over {len(seen)} symbols")
 print(f"    syscall_entry {entry_total:6d} bytes over {len(entry_syms)} symbols (flat, no closure)")
 print(f"    total         {total:6d} bytes ({total/1024:.2f} KiB), an upper bound")
 
+nocheck = os.environ.get("NOCHECK", "")
+if nocheck:
+    # E3 (milestone 134): a padded build reports and never gates, and it reads against the real
+    # baseline for a human rather than pretending it has none. The comparison is informational
+    # only; `sys.exit(0)` regardless of the ratio, because failing here would just be
+    # `fastpath-footprint`'s own 5% tripwire firing on a build that was deliberately made to trip
+    # it, which tells nobody anything they did not already know from asking for `--features`.
+    if os.path.exists(base_path):
+        want = {}
+        for line in open(base_path):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                k, v = line.split()
+                want[k] = int(v)
+        for key, got in (("ipc_fastpath", closure_total), ("syscall_entry", entry_total)):
+            ref = want.get(key)
+            if ref:
+                print(f"    {key}: {got/ref:.2f}x the un-padded baseline ({ref} -> {got})")
+    else:
+        print(f"    (no baseline at {base_path} to compare against)")
+    sys.exit(0)
+
 if save:
     with open(base_path, "w") as f:
         f.write(
@@ -219,5 +264,6 @@ PYEOF
     trap - EXIT
 done
 
-[ "$status" = 0 ] && [ -z "$save" ] && echo "fastpath-footprint: within bound on every ISA checked"
+[ "$status" = 0 ] && [ -z "$save" ] && [ -z "$features" ] && echo "fastpath-footprint: within bound on every ISA checked"
+[ "$status" = 0 ] && [ -n "$features" ] && echo "fastpath-footprint: measured (--features $features; not checked against the baseline)"
 exit "$status"

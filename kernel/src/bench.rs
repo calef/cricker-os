@@ -71,6 +71,10 @@ pub fn run() -> ! {
     null_syscall_el0();
     ctx_switch_el0();
     ipc_rtt_el0();
+    #[cfg(target_arch = "aarch64")]
+    ipc_thread_scaling();
+    #[cfg(target_arch = "aarch64")]
+    app_displacement();
     sink_throughput();
     map_el0();
     spawn_el0();
@@ -548,6 +552,285 @@ fn ipc_rtt_el0() {
     // send and recv, which is the whole point (comparable to lmbench). The gap between them is roughly
     // the trap cost of the four svcs per round trip.
     println!("bench: ipc_rtt_el0 {ticks} {iters}");
+}
+
+// --- Milestone 134, tier A: E1 (thread scaling), E4 (application displacement) ---
+//
+// design/roadmap/134-the-measurements-that-decide.md. Both decide DECISIONS §96 (process kernel
+// or event kernel) from a different angle: E1 asks whether the KERNEL's own IPC path gets cache-
+// cold as more threads cycle through it; E4 asks what an IPC-heavy kernel costs an unrelated
+// APPLICATION's working set, which is Liedtke's actual claim and the one no kernel-side number can
+// see. Both need a real cache (no TCG models one) and one hart (so everything contends for the
+// SAME core's cache, the effect under test); see `real_single_hart_or_skip`.
+//
+// aarch64-only. Not a parity gap in the DECISIONS §19 sense (nothing here is a kernel capability):
+// it is that this tree has no riscv64 accelerator with a real cache, the same reason `fs_read` and
+// `smp_throughput` above are `--real`-only and, in practice, aarch64-only. See this milestone's
+// BUGS for the honest statement and notes/riscv-port.md for the general shape of the gap.
+
+/// QEMU's `virt` machine fixes `CNTFRQ_EL0` at 62.5 MHz under TCG, with or without `-icount`
+/// (measured on this tree's pinned QEMU: `cargo xtask bench` and `cargo xtask bench --check` both
+/// read it back from the printed `ns/iter` column); a real core reports its own frequency (24 MHz
+/// measured on the Apple Silicon dev machine under HVF). Nothing else distinguishes the two
+/// accelerators inside the guest: `NIFE_ACCEL` is a host-side environment variable for the QEMU
+/// launch, never passed into the boot (see xtask's `bench` and `scripts/qemu-runner-aarch64.sh`).
+#[cfg(target_arch = "aarch64")]
+const TCG_VIRT_CNTFRQ_HZ: u64 = 62_500_000;
+
+/// Shared precondition for E1 and E4: a real core (so there is a cache to model at all) and a
+/// single hart (so every thread contends for the SAME core's cache, which is the effect under
+/// test; spreading pairs across cores would dilute it, the opposite reason `smp_throughput`
+/// requires more than one). Prints why and returns `false` when either does not hold, the same
+/// self-skip shape every `--real`-only bench in this file already uses.
+#[cfg(target_arch = "aarch64")]
+fn real_single_hart_or_skip(name: &str) -> bool {
+    let cores = crate::smp::online_count();
+    if cores != 1 {
+        println!(
+            "bench: {name} skipped (needs a single hart to isolate one core's cache; this boot has {cores})"
+        );
+        return false;
+    }
+    let freq = crate::arch::timer::frequency();
+    if freq == TCG_VIRT_CNTFRQ_HZ {
+        println!(
+            "bench: {name} skipped (TCG detected via cntfrq={freq} Hz; icount models no cache, \
+             see design/roadmap/134-the-measurements-that-decide.md)"
+        );
+        return false;
+    }
+    true
+}
+
+/// Pair counts for [`ipc_thread_scaling`] (E1): 1 to `SCALE_MAX_PAIRS` pairs, doubling.
+///
+/// **The roadmap's own words say "N from 2 to 128"; this sweeps up to 2*`SCALE_MAX_PAIRS` = 96
+/// threads, not 128.** `sched::MAX_THREADS` is 128 for the WHOLE system (DECISIONS §96), so 128
+/// *pairs* (256 threads) cannot exist at all, and even 64 pairs (128 threads) would leave no
+/// headroom for the bench boot's own thread. Read "N" as the roadmap's own prediction text does,
+/// "distinct threads cycling through IPC" rather than pairs ("somewhere between 16 and 32
+/// threads"): 96 threads is 3x past the predicted knee with comfortable headroom below the cap.
+#[cfg(target_arch = "aarch64")]
+const SCALE_MAX_PAIRS: usize = 48;
+#[cfg(target_arch = "aarch64")]
+const SCALE_PAIRS: &[usize] = &[1, 2, 4, 8, 16, 32, SCALE_MAX_PAIRS];
+
+/// **E1: IPC round-trip latency against thread count.** Kernel stacks are `STACK_SLOT_SPAN`
+/// (28 KiB) apart, so each IPC that switches to a *different* thread touches a different stack; if
+/// enough distinct threads cycle through the kernel, those stacks stop fitting in L1d and the
+/// round trip goes cache-cold. The prediction: a knee somewhere in the low tens of threads,
+/// against the smallest L1d this project targets (the `SiFive` U74's 32 KB).
+///
+/// Reuses [`tp_batch`]/[`tp_best`] (`smp_throughput`'s own machinery) at each pair count in
+/// [`SCALE_PAIRS`]: N independent client/server pairs, released together behind a barrier, timed
+/// wall-clock to completion, minimum of [`TP_REPEAT`] batches kept. That already IS "N pairs in
+/// rotation": pinned to one hart (`real_single_hart_or_skip`), the scheduler round-robins the
+/// ready pairs, so returning to a given pair's stack means other stacks were touched in between,
+/// more of them as N grows. A flat line across the sweep says the process-kernel penalty is
+/// invisible on this machine's cache; a knee reproduces Warton's effect on this kernel and gives
+/// its magnitude.
+#[cfg(target_arch = "aarch64")]
+fn ipc_thread_scaling() {
+    if !real_single_hart_or_skip("ipc_thread_scaling") {
+        return;
+    }
+
+    let mut req = [0u64; SCALE_MAX_PAIRS];
+    let mut reply = [0u64; SCALE_MAX_PAIRS];
+    for i in 0..SCALE_MAX_PAIRS {
+        req[i] = sched::create_endpoint();
+        reply[i] = sched::create_endpoint();
+    }
+    let done = sched::create_endpoint();
+
+    for &pairs in SCALE_PAIRS {
+        let ticks = tp_best(&req[..pairs], &reply[..pairs], done, pairs);
+        let threads = pairs * 2;
+        println!(
+            "bench: ipc_scale_{threads} {ticks} {}",
+            pairs as u64 * TP_RTT
+        );
+    }
+}
+
+/// Working-set sizes for [`app_displacement`] (E4), in KiB: below, at, and above a typical L1d
+/// (32 KB) and into L2 territory, so the sweep can show whether displacement tracks a specific
+/// cache level rather than growing uniformly.
+#[cfg(target_arch = "aarch64")]
+const APPDISP_WORKINGSET_KIB: &[usize] = &[4, 16, 32, 64, 128];
+/// Bytes per working-set word; the workload reads and writes `u64`s.
+#[cfg(target_arch = "aarch64")]
+const APPDISP_WORD_BYTES: usize = 8;
+/// The largest working set above, in words: the static scratch buffer's size.
+#[cfg(target_arch = "aarch64")]
+const APPDISP_MAX_WORDS: usize = 128 * 1024 / APPDISP_WORD_BYTES;
+/// Roughly this many word-touches per measurement, regardless of working-set size, so every point
+/// in the sweep takes about the same wall time: `passes = TARGET / words`.
+#[cfg(target_arch = "aarch64")]
+const APPDISP_TARGET_TOUCHES: u64 = 8_000_000;
+/// Background IPC pairs during the "with traffic" batch: 16 threads, a realistic concurrent load
+/// (comfortably inside [`SCALE_PAIRS`]'s own sweep, so its curve says what this load costs the
+/// kernel's own IPC path; this bench asks what the same load costs an unrelated application).
+#[cfg(target_arch = "aarch64")]
+const APPDISP_IPC_PAIRS: usize = 8;
+
+/// Interior-mutable scratch the workload reads and writes. One `Racy<T>` per benchmark file:
+/// `sched.rs`'s corruption canary (`canary_gate::arm`) defines the same idiom for the same reason,
+/// a scratch region one thread at a time uses, serialized by the caller rather than by a lock that
+/// would then be part of the very cost this benchmark measures the absence of.
+#[cfg(target_arch = "aarch64")]
+struct Racy<T>(core::cell::UnsafeCell<T>);
+// SAFETY: access is serialized by `appdisp_batch`: the workload thread is the only one ever handed
+// a reference into this buffer, and one batch's workload always finishes (and its reference drops)
+// before the next batch's does (see `appdisp_batch`'s reap-to-baseline wait, which runs after
+// `appdisp_workload` returns).
+#[cfg(target_arch = "aarch64")]
+unsafe impl<T> Sync for Racy<T> {}
+
+#[cfg(target_arch = "aarch64")]
+static APPDISP_BUFFER: Racy<[u64; APPDISP_MAX_WORDS]> =
+    Racy(core::cell::UnsafeCell::new([0; APPDISP_MAX_WORDS]));
+
+#[cfg(target_arch = "aarch64")]
+static APPDISP_STOP: AtomicBool = AtomicBool::new(false);
+
+/// One background IPC pair for the "with traffic" batch: a server that echoes until the sentinel,
+/// and a client that sends-then-receives until [`APPDISP_STOP`], then releases the server. Same
+/// sentinel idiom as [`ipc_rtt`], parameterized on a stop flag instead of an iteration count
+/// because this pair must outlive an unknown number of the workload's passes.
+#[cfg(target_arch = "aarch64")]
+fn appdisp_background_pair(rq: sched::EpId, rp: sched::EpId) {
+    sched::spawn(move || {
+        loop {
+            let m = sched::ipc_recv(rq);
+            if m[0] == u64::MAX {
+                break;
+            }
+            sched::ipc_send(rp, [m[0], 0, 0]);
+        }
+    })
+    .expect("bench: no appdisp background server");
+    sched::spawn(move || {
+        while !APPDISP_STOP.load(Ordering::Relaxed) {
+            sched::ipc_send(rq, [1, 0, 0]);
+            sched::ipc_recv(rp);
+        }
+        sched::ipc_send(rq, [u64::MAX, 0, 0]);
+    })
+    .expect("bench: no appdisp background client");
+}
+
+/// **The application**: read-modify-write `words` entries of [`APPDISP_BUFFER`], `passes` times,
+/// self-timed. Yields every so often (about 64 times over the whole run, regardless of `passes`)
+/// so a cooperative scheduler interleaves it with any background IPC pairs: without a voluntary
+/// yield, a compute-only thread that never traps could run to completion before anything else
+/// gets to, which would make "concurrent" IPC traffic not actually concurrent. The same yields run
+/// in the solo condition too, so the two conditions differ only in whether anything else is ready
+/// to run, not in the workload's own control flow.
+#[inline(never)]
+#[cfg(target_arch = "aarch64")]
+fn appdisp_workload(words: usize, passes: u64) -> u64 {
+    // SAFETY: the caller (`appdisp_batch`) guarantees this thread is the only one with a reference
+    // into the buffer for the duration of this call; see `Racy`'s doc.
+    let whole: &mut [u64; APPDISP_MAX_WORDS] = unsafe { &mut *APPDISP_BUFFER.0.get() };
+    let buf = &mut whole[..words];
+    let yield_every = (passes / 64).max(1);
+    let mut sum: u64 = 0;
+    let t0 = crate::arch::timer::now();
+    for p in 0..passes {
+        for (i, word) in buf.iter_mut().enumerate() {
+            sum = sum.wrapping_add(*word).wrapping_add(i as u64);
+            *word = sum;
+        }
+        if p % yield_every == 0 {
+            sched::yield_now();
+        }
+    }
+    let ticks = crate::arch::timer::now() - t0;
+    core::hint::black_box(sum);
+    ticks
+}
+
+/// One measurement: as many background IPC pairs as `req`/`reply` have slots for (zero for the
+/// solo condition), running for exactly as long as [`appdisp_workload`] takes, then released.
+/// Returns the workload's own ticks, which is the number E4 cares about: what the APPLICATION's
+/// throughput did, not what the kernel's did.
+#[cfg(target_arch = "aarch64")]
+fn appdisp_batch(words: usize, passes: u64, req: &[sched::EpId], reply: &[sched::EpId]) -> u64 {
+    APPDISP_STOP.store(false, Ordering::SeqCst);
+    let base = sched::thread_count();
+    for i in 0..req.len() {
+        appdisp_background_pair(req[i], reply[i]);
+    }
+    // Let the background pairs reach their first blocking RECV before the clock starts, so their
+    // cold-start cost lands outside the timed window, same reason every other batch here warms up.
+    for _ in 0..8 {
+        sched::yield_now();
+    }
+    let ticks = appdisp_workload(words, passes);
+    APPDISP_STOP.store(true, Ordering::SeqCst);
+    while sched::thread_count() > base {
+        sched::yield_now();
+    }
+    ticks
+}
+
+/// Batches per measurement point; the minimum ticks is kept. Same methodology as [`tp_best`] and
+/// the same reason ([`tp_best`]'s doc, `smp_throughput`'s methodology note), turned up from
+/// [`TP_REPEAT`]'s 4 to 5: a first unrepeated run of this bench showed swings of 2 to 3x between
+/// nominally identical conditions (a host-scheduling artifact of a batch running for a much longer
+/// window than a ping-pong pipeline does, so it has more chances to catch a host preemption), which
+/// is exactly the least-contended-sample problem `tp_best` exists to solve, just louder here.
+#[cfg(target_arch = "aarch64")]
+const APPDISP_REPEAT: usize = 5;
+
+/// Minimum ticks over [`APPDISP_REPEAT`] batches: the least host-contended sample.
+#[cfg(target_arch = "aarch64")]
+fn appdisp_best(words: usize, passes: u64, req: &[sched::EpId], reply: &[sched::EpId]) -> u64 {
+    let mut best = u64::MAX;
+    for _ in 0..APPDISP_REPEAT {
+        best = best.min(appdisp_batch(words, passes, req, reply));
+    }
+    best
+}
+
+/// **E4: application working-set displacement, the Liedtke measurement proper.** Everything else
+/// in this file measures the KERNEL's cost; this measures the cost the kernel imposes on an
+/// APPLICATION after the syscall returns, which is what Liedtke's argument was actually about and
+/// which no kernel-side benchmark can see by construction.
+///
+/// The "application" is [`appdisp_workload`]: a tunable working set it reads and writes
+/// repeatedly, timed alone and then timed again with [`APPDISP_IPC_PAIRS`] background IPC pairs
+/// running concurrently on the same core. The throughput lost between the two conditions, swept
+/// over [`APPDISP_WORKINGSET_KIB`], is the number: how much an IPC-heavy kernel costs an unrelated
+/// application's cache, not how much it costs the kernel's own IPC path.
+#[cfg(target_arch = "aarch64")]
+fn app_displacement() {
+    if !real_single_hart_or_skip("app_displacement") {
+        return;
+    }
+
+    let mut req = [0u64; APPDISP_IPC_PAIRS];
+    let mut reply = [0u64; APPDISP_IPC_PAIRS];
+    for i in 0..APPDISP_IPC_PAIRS {
+        req[i] = sched::create_endpoint();
+        reply[i] = sched::create_endpoint();
+    }
+
+    for &kib in APPDISP_WORKINGSET_KIB {
+        let words = kib * 1024 / APPDISP_WORD_BYTES;
+        let passes = (APPDISP_TARGET_TOUCHES / words as u64).max(1);
+        let solo = appdisp_best(words, passes, &[], &[]);
+        let with_ipc = appdisp_best(words, passes, &req, &reply);
+        println!("bench: appdisp_{kib}k_solo {solo} {passes}");
+        println!("bench: appdisp_{kib}k_ipc {with_ipc} {passes}");
+        let lost_pct = if solo > 0 {
+            ((with_ipc as i64 - solo as i64) * 100) / solo as i64
+        } else {
+            0
+        };
+        println!("bench-probe: appdisp_{kib}k_throughput_lost_pct {lost_pct}");
+    }
 }
 
 /// **`a | b` throughput, measured from EL0** (milestone 50, notes/pipes.md).

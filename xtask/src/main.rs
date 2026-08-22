@@ -7162,6 +7162,23 @@ fn bench() -> bool {
         return false;
     }
 
+    // E3 (milestone 134, design/roadmap/134-the-measurements-that-decide.md): build with an extra
+    // kernel feature alongside `bench`, so the padded-fastpath experiment can be measured with the
+    // same harness as everything else rather than a one-off. `--real`-only for the same reason
+    // `--release` is: there is no cache under TCG for a footprint change to perturb, so a gated
+    // run with this set would just measure instruction-count noise and call it a finding.
+    let extra_features = flag_value("--extra-features");
+    if extra_features.is_some() && !real {
+        eprintln!(
+            "bench: --extra-features only makes sense with --real (no cache under TCG for it to move)"
+        );
+        return false;
+    }
+    let features = match &extra_features {
+        Some(f) => format!("bench,{f}"),
+        None => "bench".to_string(),
+    };
+
     // The second architecture. RISC-V has its own path (its own kernel target, runner, and initrd,
     // no disk, no HVF); everything else -- the icount instrument, the parsing, the table, the
     // baseline gate -- is shared through run_bench. See bench_riscv.
@@ -7189,7 +7206,7 @@ fn bench() -> bool {
             "-p",
             "kernel",
             "--features",
-            "bench",
+            &features,
             "--target",
             TARGET,
         ])

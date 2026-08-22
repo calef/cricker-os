@@ -98,6 +98,57 @@ row pretending to be one.
 | filesystem throughput, milestone 38's four phases | 2026-08-18 | `script/bench --real --smp`, with a RedoxFS disk attached |
 | primitives against Linux and macOS on the same host | **no date recorded** | `bench/host/run_linux.sh`, then `script/bench --real` |
 | `unsafe {}` blocks inside `kernel/src/arch/` | every run | `script/lint`, which prints it and asserts nothing |
+| E1: IPC round trip against thread count | 2026-08-22 | `cargo xtask bench --real` (`ipc_scale_*` rows, aarch64 only) |
+| E2: thread census on the customer path | 2026-08-22 | `cargo xtask test`, the "E2 thread census" line in `a_host_process_connects_to_the_guest_and_is_answered` (both ISAs) |
+| E3: IPC fastpath footprint doubled, and the latency it costs | 2026-08-22 | `script/fastpath-footprint --features fastpath_pad` (both ISAs); `cargo xtask bench --real --extra-features fastpath_pad` against `cargo xtask bench --real` (aarch64 only) |
+| E4: application working-set displacement under IPC traffic | 2026-08-22 | `cargo xtask bench --real` (`appdisp_*` rows, aarch64 only) |
+
+**E1 through E4, taken 2026-08-22 (milestone 134's Tier A lane).** All four ran on the dev Mac
+under HVF; none of the four needed silicon, which is what the block promised, but three of them
+(E1, E3's latency half, E4) need a *real cache* to say anything, and this tree's only accelerator
+with one is HVF, so they self-skip under TCG (both the default icount instrument and every riscv64
+run, which has no HVF equivalent) rather than print a number that would be fiction. E3's static
+footprint measurement is not in that boat: it is `objdump`-based and runs on both ISAs with no
+QEMU at all.
+
+- **E2 (cheapest, taken first, and it is close to decisive).** The naive reading of
+  `sched::thread_count()` inside the SMB/FS gate test read 95 (aarch64) and 82 (riscv64), and both
+  numbers were wrong for what E2 asks: the full kernel test suite runs 279 `#[test_case]`s in ONE
+  continuous boot, so an absolute count taken partway through includes whatever earlier tests left
+  allocated. The delta against a baseline taken at the top of the SAME test (before it wires
+  anything) is the number that isolates the topology's own cost, and it is **4 new threads on both
+  ISAs**: `net_stack`, the echo client, the SMB adapter, the mDNS responder. The FS service (block
+  server + FS server) and the credential service add nothing to the delta because they are already
+  running, latched from earlier tests in the same boot and reused rather than re-spawned, which is
+  itself informative: a from-scratch boot would add roughly three more (a generous estimate is 7 to
+  8 total). Either number is deep in single digits, nowhere near E1's knee (below). **§96 is moot
+  for this workload as currently shaped**, which is the finding E2 was raised to check for before
+  spending on E1 at all.
+- **E1.** `ipc_scale_N` (N = threads, 2 to 96, via `tp_batch`/`tp_best` pinned to one hart) is flat
+  at roughly 1,270 to 1,310 ns/iter from 2 through 16 threads across three repeated runs, then
+  rises, reproducibly, to roughly 1,360 to 1,420 ns/iter (8 to 11%) by 64 to 96 threads. The knee
+  starts where the prediction said it would (the low tens) and the magnitude is small because the
+  dev Mac's L1d is far larger than the 32 KB `SiFive` U74 the prediction was built against: a
+  reproducible cost at 96 threads on a large-cache machine is the "positive result is conclusive"
+  case the block's own BUGS names, and it argues for taking this to a small-cache board rather than
+  against the mechanism. Read against E2: the customer path (4 to 8 threads) sits inside the flat
+  region, well below where any cost appears on this machine.
+- **E3.** The static half: padding roughly doubles `ipc_fastpath` on both ISAs (aarch64 5,792 to
+  11,628 bytes, 2.01x; riscv64 5,088 to 10,152 bytes, 2.00x), confirming the padding mechanism does
+  what it claims before asking whether it costs anything. The latency half, aarch64 only: `ipc_rtt`
+  and `ipc_rtt_el0` move by 2 to 3% between the padded and un-padded builds, which is inside the
+  run-to-run noise both builds show independently (repeated `--real` runs of the SAME binary vary
+  by a similar amount). **No effect, on this machine**, which the block's own BUGS calls the weak
+  direction: the dev Mac's L1i comfortably holds 11.2 KiB, so a negative result here proves little
+  and wants the same small-cache board E1 does.
+- **E4.** With a 5-repeat minimum (the first unrepeated run swung 2 to 3x between nominally
+  identical conditions, a real methodological finding in its own right: this workload's batches run
+  long enough to catch host preemption the way `smp_throughput`'s shorter ones do not), throughput
+  lost to 8 concurrent IPC pairs (16 threads) is 0 to 3% across working sets from 4 to 128 KiB, over
+  two repeated runs. **No effect, on this machine**, and it is not in tension with E1: 16 threads of
+  background traffic sits inside E1's own flat region, below where E1 itself found any cost on this
+  hardware. A stronger follow-up would push the background thread count toward or past E1's knee
+  (32 to 96) rather than reading this as the last word on E4.
 
 **The filesystem row is the one on the customer path**, and it is the clearest case in the register
 for why `dated` is a finding rather than a filing. Milestone 55 is a Time Machine target the
@@ -124,16 +175,18 @@ with a consumer gets a relation; a number with only a reader gets printed.**
 
 ## Owed
 
-Twelve measures are defined and cannot be taken here: four that need an experiment nobody has built
-(E1 through E4, all runnable on the dev machine today) and eight that need the cycle counters of
-milestone 74, the authority question of milestone 75, or silicon with a real PMU.
+Eight measures (M5 through M12, "Tier B") are defined and cannot be taken here: all eight need the
+cycle counters of milestone 74, the authority question of milestone 75, or silicon with a real PMU.
+E1 through E4 ("Tier A") no longer belong in this section: all four ran 2026-08-22 and are `dated`
+rows above.
 
 They are **not duplicated into this table**, because they already have a home that carries each
 one's instrument, its prediction, and what its outcome settles:
-design/roadmap/134-the-measurements-that-decide.md. Two open kernel decisions are waiting on them,
-and the block's own correction is worth knowing before anyone reaches for hardware: §95 and §96 both
-recommend waiting for the TX1, and **both over-gated**, because the experiments that produce a
-verdict need no silicon.
+design/roadmap/134-the-measurements-that-decide.md. Two open kernel decisions were waiting on the
+Tier A half of them, and the block's own correction is worth knowing before anyone reaches for
+hardware: §95 and §96 both recommend waiting for the TX1, and **both over-gated**, because the
+experiments that produce a verdict need no silicon. Tier A's results are summarized above; Tier B
+remains genuinely gated on the counters and the board.
 
 ## Deliberately not in this register
 
@@ -220,6 +273,31 @@ If the number moved, **the finding is the movement**, not the new value. Say wha
 what, in notes/benchmarks.md where the series lives, and leave this register holding only the date.
 
 ## BUGS
+
+- **E1, E3's latency half, and E4 need a real cache, and this tree has one accelerator that
+  provides one.** "Tier A needs no silicon" is true of the experiments' *design*, but a Rust
+  benchmark still needs somewhere with real caches to run on, and today that is HVF, aarch64-only.
+  `cargo xtask bench --riscv` always runs under TCG (no riscv64 accelerator exists in this tree),
+  so all three self-skip there rather than print a fiction, the same self-skip shape
+  `real_single_hart_or_skip` in `kernel/src/bench.rs` already uses for the icount case. This is not
+  the Tier B kind of gap (a counter or an authority question that does not exist yet); it is that
+  this specific instrument needs hardware this tree already has, on one architecture. E3's static
+  footprint measurement is unaffected: it is `objdump`-based and needs no accelerator on either ISA.
+  Milestone 127's board, when it lands, is the natural second data point, not a blocker for a
+  first one.
+
+- **E2's naive reading was wrong, and finding that out is itself worth recording.**
+  `sched::thread_count()` taken partway through the full test suite (279 `#[test_case]`s in one
+  continuous boot) read 95 and 82 on the two ISAs, both dominated by threads earlier, unrelated
+  tests left allocated. The fix (a baseline taken at the top of the same test, the census reported
+  as a delta) is in `kernel/src/user/tests.rs` and `riscv_virtio_tests.rs`; any future instrumented
+  count of "how many threads does X create" taken from inside the shared-boot suite should take the
+  same delta rather than trust an absolute `thread_count()` reading.
+
+- **E4's background load (8 pairs, 16 threads) sits inside E1's own flat region.** A null result at
+  that load is expected given E1's curve, not independent evidence against displacement; a load
+  nearer E1's knee (32 to 96 threads) is the stronger version of this experiment and was not taken,
+  for time rather than for a reason.
 
 - **A `dated` row goes stale silently, which is the whole point and is also the limitation.** This
   register makes the staleness visible to a reader who opens the file; it makes it visible to

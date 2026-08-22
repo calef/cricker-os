@@ -1739,6 +1739,13 @@ fn a_reopened_socket_id_connects_again_over_tcp() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn a_host_process_connects_to_the_guest_and_is_answered() {
+    // E2's baseline (milestone 134): `sched::thread_count()` counts every live thread in the
+    // WHOLE boot, and the full suite runs 279 `#[test_case]`s in one continuous boot rather than
+    // one per test, so an absolute reading taken here would include whatever earlier tests left
+    // allocated (a first attempt read 95, most of which turned out to be exactly that). Taking the
+    // delta against this baseline is what isolates "how many threads did wiring THIS topology
+    // create" from "how many threads exist in the boot at this point in the suite".
+    let e2_baseline_threads = sched::thread_count();
     // Seed the share through the FS service before the adapter exists: the file must be on the
     // filesystem before the prober's first session can open it.
     let fs = fs_service::start(
@@ -1805,6 +1812,26 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };
+    // E2 (milestone 134, design/roadmap/134-the-measurements-that-decide.md): the thread census on
+    // the customer path. Every process this boot's customer-facing topology needs is already
+    // spawned by this point (the FS service's block server and FS server, if `had_fs`; `net_stack`;
+    // the echo client; the SMB adapter; the mDNS responder; the credential service, if `cred` is
+    // `Some`), and none of them spawns another kernel thread per connection or per request (each is
+    // a single-threaded event loop over its own endpoint), so this count is already the peak: it
+    // does not grow further as the host prober's connections arrive. See notes/benchmarks.md and
+    // this milestone's register entry for what this settles. Reported as a delta against
+    // `e2_baseline_threads` (see this function's top), not as the absolute reading: the absolute
+    // count includes whatever earlier tests in this suite's one continuous boot left allocated,
+    // which is not this measure's subject.
+    crate::println!(
+        "    (E2 thread census: {} threads created by wiring this customer-path topology \
+         ({} live now, {e2_baseline_threads} live before this test wired anything): main + block \
+         server + FS server (had_fs={had_fs}) + net_stack + echo client + SMB adapter + mDNS \
+         responder + credential service (present={}))",
+        sched::thread_count().saturating_sub(e2_baseline_threads),
+        sched::thread_count(),
+        cred.is_some(),
+    );
     let verdict = sched::ipc_recv(report)[0];
     assert_eq!(
         verdict, NET_CLIENT_OK,
