@@ -462,12 +462,18 @@ is written at a threshold the tree crossed **the day before this was written** r
 slack: every sample before 2026-08-18 would have failed it, 2026-08-16 included at 111.7. That is
 what makes it a ratchet instead of decoration.
 
-**At most 17 `unsafe impl Send`/`Sync` claims** <!--count-at-most:unsafe-thread-safety-claims-->,
+**At most 18 `unsafe impl Send`/`Sync` claims** <!--count-at-most:unsafe-thread-safety-claims-->,
 and this one has no headroom at all. Each is a hand-written assertion that the compiler is wrong
 about a type, which is the most consequential unsafe in the tree: a wrong one is a data race that
 no test reliably reproduces. The population moved twice in three weeks, so a zero-slack ceiling
 costs a lane one line and buys a written reason for every addition. That is the same trade
 `bench/baseline-aarch64.txt` makes and this tree already respects.
+
+Raised from 17 to 18 by milestone 134's Tier A lane (2026-08-22): `kernel/src/bench.rs`'s
+`Racy<T>` (E4, application working-set displacement) is a second instance of `sched.rs`'s existing
+corruption-canary idiom, one `unsafe impl<T> Sync for Racy<T> {}` guarded by the same argument
+that one already carries, a scratch buffer one thread at a time touches, serialized by the caller
+rather than by a lock. Same shape, same reasoning, a different file.
 
 **No target for `kernel/src/arch/`**, which is 139 blocks and rising. Driving that number down means
 either writing assembly wrong or moving it out of `arch/`, and DECISIONS rule 1 says arch code
