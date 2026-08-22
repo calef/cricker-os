@@ -8,8 +8,9 @@ use crate::sched;
 const ROLE_NAVIGATE: u64 = 1;
 
 /// The bits every navigating shell must report whatever it was rooted in: `pwd` at its root,
-/// `..` clamped, `/` naming its own root and stopping there, a listing, and the whole `mkdir` / create / `rm`
-/// sequence including the two halves of "unlink is not revoke".
+/// `..` clamped, `/` naming its own root and stopping there, a listing, and the whole
+/// `mkdir` / create / `rm` / `touch` sequence including the two halves of "unlink is not revoke"
+/// and the two halves of `touch`'s own "create absent, leave present alone".
 const ALWAYS: u64 = nb::PWD_IS_ROOT
     | nb::CLAMPED_AT_ROOT
     // The namespace half (2026-08-18): `/` is the root of your own namespace, and it stops there.
@@ -25,7 +26,11 @@ const ALWAYS: u64 = nb::PWD_IS_ROOT
     // The two halves of "no single call takes a subtree away", added with `RMDIR`: a directory
     // with a name in it is refused, and the same call works once the name is out.
     | nb::RMDIR_REFUSED_NON_EMPTY
-    | nb::RMDIR_REMOVED_EMPTY;
+    | nb::RMDIR_REMOVED_EMPTY
+    // `touch`'s two-fold contract: creates an absent name, and a second call on a name that now
+    // holds a body leaves it exactly as it was.
+    | nb::TOUCH_CREATED
+    | nb::TOUCH_PRESERVED;
 
 /// Wire a `fs_subtree_caretaker` holding a capability to `root` and run the shell's navigation
 /// script inside it. `run` keeps the names it creates distinct across runs sharing one image.

@@ -846,6 +846,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   remembered, and why we need no special case for `/` where Unix ships one. Since 2026-08-17 it runs
   at the interactive prompt for a name one directory down, and the shape it still cannot be given is
   a grant on the root of the shell's own namespace.
+- [`touch`: create if absent](touch.md): milestone 47's other builtin split by what needs a
+  decision and what does not. The create half needed nothing new (`fs_proto::fs::CREATE`, already
+  built for milestone 31 phase 2) and is a builtin in `mkdir`'s category rather than `rm`'s, since it
+  takes no more than the directory capability the shell already holds. The mtime half (bumping an
+  existing name's timestamp, and `-t`'s sharper ability to lie about history) is not built, because
+  `fs_proto` carries no verb for it and whether "set to now" is the write right already held or a
+  separate authority is an open question the roadmap block names rather than answers.
 
 - [Navigating with no global namespace](shell-navigation.md): milestone 47's commands: `cd`, `pwd`,
   `ls`, `mkdir`, `rm` as **builtins** (which retires the worry that a listing *program* would hold the

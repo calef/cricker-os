@@ -473,7 +473,7 @@ pub mod fs {
     /// server's handle table is per *server*, so handles cannot be invalidated for clients the
     /// server cannot enumerate. A holder of a directory handle whose name this verb removes keeps a
     /// handle onto a node the engine has freed, and its next request through it fails (`ENOENT`)
-    /// rather than reaching something else. See the BUGS section of notes/rm-recursion.md.
+    /// rather than reaching something else. See the BUGS section of notes/rm.md.
     pub const RMDIR: u64 = 13;
 
     /// **Read one extended attribute of the node a handle names** (milestone 57).
@@ -2636,6 +2636,15 @@ pub mod fixture {
         /// The one name inside [`NAV_EMPTY`], which is what makes the first `RMDIR` a refusal. It is
         /// unlinked before the second, so nothing of it survives either.
         pub const NAV_INSIDE: &str = "in";
+        /// The file a navigating shell `touch`es twice: once absent (proving the create half),
+        /// once present with a body already in it (proving the second call is a no-op rather than
+        /// a truncate). Left behind, run-indexed like the names above, so the host check can find
+        /// it and confirm the second `touch` did not disturb what the first write put there.
+        pub const NAV_TOUCH: &str = "nav-touch";
+        /// What a navigating shell writes into [`NAV_TOUCH`] before touching it a second time, and
+        /// what must still be there after: the only claim `touch` on an existing name makes is
+        /// that it changes nothing.
+        pub const NAV_TOUCH_BODY: &[u8] = b"CRK47-TOUCH: a second touch must not disturb this\n";
 
         /// **The directory milestone 50's redirection witness works in**, a sibling of [`SUB`] for
         /// the same reason that one has siblings: a shell that writes files needs somewhere its
@@ -2937,6 +2946,13 @@ pub mod fixture {
         /// absolute path meets the same wall `..` does, because your root is the only root there
         /// is and there is no level above it to name.
         pub const ABSOLUTE_CLAMPED_AT_ROOT: u64 = 1 << 22;
+        /// `touch` on a name that was not there created it: the name now opens and its size is
+        /// zero. The create half of milestone 47's `touch`, made a measurement rather than a claim.
+        pub const TOUCH_CREATED: u64 = 1 << 23;
+        /// `touch` on a name that was already there, holding [`super::tree::NAV_TOUCH_BODY`],
+        /// left it holding exactly that afterward. Without this bit, [`TOUCH_CREATED`] is equally
+        /// true of a `touch` that quietly truncates whatever it finds.
+        pub const TOUCH_PRESERVED: u64 = 1 << 24;
     }
 
     /// **What the globbing witness reports** (milestone 47's globbing lane): a bitmap, for the same

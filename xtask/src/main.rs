@@ -5668,7 +5668,11 @@ fn redoxfs_subtree_was_confined() -> bool {
 /// must not be, the name it kept must be, and neither may have appeared in the root.
 ///
 /// The pair is what makes it non-vacuous. A shell that created nothing satisfies "the removed name
-/// is absent" perfectly, so the kept name has to be there beside it.
+/// is absent" perfectly, so the kept name has to be there beside it. `touch`'s name is checked the
+/// same lightweight way as `NAV_DIR`'s: present, and not leaked to the root. Its *content* claim
+/// (a second `touch` does not truncate what the first write put there) is checked in-guest, by the
+/// shell that holds the handle to read it back with; this file has no run index to reconstruct the
+/// exact name a body-reading check through `redoxfs_reads_back` would need.
 fn shell_navigation_landed(root: &[String], home: &[String]) -> bool {
     use fs_proto::fixture::tree;
     let count = |dir: &[String], prefix: &str| dir.iter().filter(|n| n.starts_with(prefix)).count();
@@ -5678,6 +5682,14 @@ fn shell_navigation_landed(root: &[String], home: &[String]) -> bool {
             "milestone-47 navigation check: a shell's root holds {home:?}, with nothing a \
              navigating shell made in it. \"what it removed is gone\" is true of a shell that \
              created nothing, so this proves nothing without it.",
+        );
+        return false;
+    }
+    if count(home, tree::NAV_TOUCH) == 0 {
+        eprintln!(
+            "MILESTONE-47 NAVIGATION FAILED: a shell's root holds no `{}` name, so its `touch` \
+             never reached the platter: {home:?}",
+            tree::NAV_TOUCH,
         );
         return false;
     }
@@ -5693,6 +5705,7 @@ fn shell_navigation_landed(root: &[String], home: &[String]) -> bool {
         n.starts_with(tree::NAV_KEPT)
             || n.starts_with(tree::NAV_GONE)
             || n.starts_with(tree::NAV_DIR)
+            || n.starts_with(tree::NAV_TOUCH)
     };
     if let Some(name) = root.iter().find(leaked) {
         eprintln!(

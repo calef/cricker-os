@@ -777,6 +777,7 @@ pub fn write_help(out: &mut dyn FnMut(&[u8])) {
     out(b"  pwd                     where you are, relative to YOUR root\n");
     out(b"  ls [path]               list a directory you can reach\n");
     out(b"  mkdir <path>            make a directory\n");
+    out(b"  touch <path>            create an empty file if it is not there (else do nothing)\n");
     out(
         b"  apropos <word>          name the installed pages that mention it (it grants nothing)\n",
     );
@@ -2108,7 +2109,7 @@ mod tests {
         // prompt can find.
         let text = shown(write_help);
         for verb in [
-            "help", "echo", "caps", "time", "xargs", "cd", "pwd", "ls", "mkdir",
+            "help", "echo", "caps", "time", "xargs", "cd", "pwd", "ls", "mkdir", "touch",
         ] {
             assert!(text.contains(verb), "help does not mention {verb}");
             // And it really is a verb this shell answers, rather than a word in a sentence.
