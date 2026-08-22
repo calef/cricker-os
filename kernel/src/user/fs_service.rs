@@ -40,9 +40,11 @@ const FS_STACK_PAGES: u64 = 96;
 const STACK_POISON: u64 = 0xC71C_5E57_C71C_5E57;
 
 // The VAs each process expects its mappings at. Each MUST match that program's source.
-const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
-const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block page (fs_server.rs BLK_PAGE)
-const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fs_server.rs FILE_PAGE)
+const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 1 + BLK_PAGES pages (crates/virtio)
+const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block region (fs_server.rs BLK_PAGE)
+// FS server's file region (fs_server.rs FILE_PAGE): BLK_PAGES pages above BLK_PAGE_FS, so growing
+// the block channel (milestone 138 step 4) cannot walk into it.
+const FILE_PAGE_FS: u64 = BLK_PAGE_FS + (BLK_PAGES as u64) * FRAME_SIZE;
 const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fs_test_client.rs FILE_VA)
 
 /// A std program's half of the same agreement (notes/abi.md §4, notes/std.md). Both constants
@@ -67,6 +69,10 @@ fn frame() -> u64 {
 /// **How many pages the file channel spans**, straight from the contract, so this wiring cannot
 /// disagree with the two programs that speak it.
 const FILE_PAGES: usize = fs_proto::fs::TRANSFER_PAGES;
+
+/// **How many pages the blk channel spans** (milestone 138 step 4), straight from the contract, the
+/// same reason [`FILE_PAGES`] is.
+const BLK_PAGES: usize = fs_proto::blk::TRANSFER_BLOCKS;
 
 /// **The file channel: [`FILE_PAGES`] fresh, zeroed, physically contiguous frames**, returned by
 /// the base physical address (milestone 138 step 3).
@@ -267,34 +273,38 @@ fn wire_servers(
 /// deliberately leaves a filesystem half-written cannot touch the image every other FS test
 /// depends on. Returns `(blk_ep, blk_ready, blk_shared)`.
 ///
-/// The DMA region is TWO contiguous pages: page 0 for the rings, request header and status
-/// (block-server-private), page 1 for the 4096-byte data buffer. Page 1 is ALSO the block page
-/// shared with the FS server, so the device DMAs a whole filesystem block straight into the FS
-/// server's page, one request per block, no copy.
+/// The DMA region is `1 + BLK_PAGES` contiguous pages: page 0 for the rings, request header and
+/// status (block-server-private), and `BLK_PAGES` pages for the data buffer (milestone 138 step 4;
+/// it was one page through step 3). Those data pages are ALSO the block region shared with the FS
+/// server, so the device DMAs up to `BLK_PAGES` contiguous filesystem blocks straight into the FS
+/// server's region in one request, no per-block loop and no copy.
+///
 /// Bring one virtio-mmio block device up under a confined userspace block server, and hand back the
 /// three things a client needs: the request endpoint, the readiness endpoint, and the physical
-/// frame of the page the transfers land in.
+/// base address of the region the transfers land in.
 ///
 /// `pub(super)` because milestone 57's `disk_service` wires a fourth disk the same way. The FS
 /// server is no longer the only thing that wants "a block device, served over IPC, by a process
-/// that owns the DMA and nothing else".
+/// that owns the DMA and nothing else". Its two clients (`disk_surveyor`, `disk_partitioner`) only
+/// ever map the first data page and only ever send single-block requests, so they are unmodified
+/// by the region's growth, the same compatibility [`fs_proto::blk::TRANSFER_BLOCKS`] documents.
 pub(super) fn spawn_block_server(
     blk_image: &'static [u8],
     dev: crate::virtio::VirtioMmioDevice,
 ) -> (EpId, EpId, u64) {
-    let dma = crate::memory::alloc_contiguous(2)
-        .expect("no 2-page DMA region for the block server")
+    let dma = crate::memory::alloc_contiguous(1 + BLK_PAGES)
+        .expect("no DMA region for the block server")
         .addr();
-    // SAFETY: two fresh contiguous frames via the direct map; zero so neither stale descriptors
-    // nor stale file bytes are ever visible to the device or the FS server.
+    // SAFETY: 1 + BLK_PAGES fresh contiguous frames via the direct map; zero so neither stale
+    // descriptors nor stale file bytes are ever visible to the device or the FS server.
     unsafe {
         core::ptr::write_bytes(
             mmu::phys_to_virt(dma) as *mut u8,
             0,
-            2 * FRAME_SIZE as usize,
+            (1 + BLK_PAGES) * FRAME_SIZE as usize,
         );
     };
-    let blk_shared = dma + FRAME_SIZE; // page 1 of the region is the shared block page
+    let blk_shared = dma + FRAME_SIZE; // the data pages start right after the rings page
 
     let blk_ep = crate::sched::create_endpoint(); // FS server WRITE (CALL) -> block server READ
     let blk_ready = crate::sched::create_endpoint(); // block server WRITE -> the kernel test RECVs
@@ -307,10 +317,22 @@ pub(super) fn spawn_block_server(
             mmio_phys: dev.mmio_phys,
         },
         dma,
-        2 * FRAME_SIZE, // both pages: the device may touch the rings AND the data buffer
-        None,           // virtio-mmio has no IOMMU in front of it
+        (1 + BLK_PAGES) as u64 * FRAME_SIZE, // every page: the device may touch the rings AND the data buffer
+        None,                                // virtio-mmio has no IOMMU in front of it
     );
     crate::sched::spawn(move || {
+        // The rings page, then the BLK_PAGES data pages, contiguous at DMA_VA.
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; 1 + BLK_PAGES];
+        maps[0] = Mapping {
+            va: DMA_VA,
+            phys: dma,
+            flags: Flags::user_data(),
+        };
+        map_channel(&mut maps[1..], DMA_VA + FRAME_SIZE, blk_shared, BLK_PAGES);
         run(
             blk_image,
             Spawn {
@@ -323,20 +345,7 @@ pub(super) fn spawn_block_server(
                     virtio_cap(vid),                    // slot 2: the confined transport
                     endpoint_cap(blk_ready, Rights::WRITE), // slot 3: signal readiness once
                 ],
-                maps: &[
-                    // Both DMA pages, contiguous at DMA_VA; page 1 (DMA_VA + FRAME_SIZE) is the
-                    // shared block buffer, the same frame the FS server maps at BLK_PAGE_FS.
-                    Mapping {
-                        va: DMA_VA,
-                        phys: dma,
-                        flags: Flags::user_data(),
-                    },
-                    Mapping {
-                        va: DMA_VA + FRAME_SIZE,
-                        phys: blk_shared,
-                        flags: Flags::user_data(),
-                    },
-                ],
+                maps: &maps,
             },
         )
     })
@@ -388,21 +397,19 @@ fn spawn_fs_server(fs_server_image: &'static [u8], cfg: FsServer) {
         *f = poisoned_stack_frame(cfg.slot, i);
     }
     crate::sched::spawn(move || {
-        // Build the mapping list: the two shared pages, then the extra stack pages.
+        // Build the mapping list: the two shared channels, then the extra stack pages. The FS
+        // server maps the whole of both, the one party that must for each: it drives every block
+        // the blk channel can carry (up to `fs_proto::blk::TRANSFER_BLOCKS`, milestone 138 step 4)
+        // and serves whatever length a client asks for on the file channel, up to
+        // `fs_proto::fs::TRANSFER_MAX` (step 3). A client maps only what it uses of the file
+        // channel; nothing else maps the blk channel at all.
         let mut maps = [Mapping {
             va: 0,
             phys: 0,
             flags: Flags::user_data(),
-        }; 1 + FILE_PAGES + FS_STACK_PAGES as usize];
-        maps[0] = Mapping {
-            va: BLK_PAGE_FS,
-            phys: cfg.blk_shared,
-            flags: Flags::user_data(),
-        };
-        // **The FS server maps the whole file channel**, and it is the one party that must: it
-        // serves whatever length a client asks for, up to `fs_proto::fs::TRANSFER_MAX`, and its
-        // clamp is what keeps a request inside the region. A client maps only what it uses.
-        let n = 1 + map_channel(&mut maps[1..], FILE_PAGE_FS, cfg.file_shared, FILE_PAGES);
+        }; BLK_PAGES + FILE_PAGES + FS_STACK_PAGES as usize];
+        let n0 = map_channel(&mut maps, BLK_PAGE_FS, cfg.blk_shared, BLK_PAGES);
+        let n = n0 + map_channel(&mut maps[n0..], FILE_PAGE_FS, cfg.file_shared, FILE_PAGES);
         for (i, &phys) in stack.iter().enumerate() {
             maps[n + i] = Mapping {
                 va: super::USER_STACK_VA - (i as u64 + 1) * FRAME_SIZE,
