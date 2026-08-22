@@ -974,17 +974,17 @@ pub fn run_net(dma_phys: u64) -> ! {
 /// request plus the one-shot Reply that names the caller. IRQ (1) and VIRTIO (2) are as every role.
 const BLK_REQ: u64 = 0;
 
-/// Where the kernel maps the page shared with the FS server (the block buffer). Distinct from the
-/// DMA region, which the FS server must never see, and from [`DMA_VA`].
+/// Where the kernel maps the data region shared with the FS server (the block buffer). Distinct
+/// from the DMA region, which the FS server must never see, and from [`DMA_VA`].
 ///
-/// The block server's DMA region is **two contiguous pages** (`kernel/src/user/fs_service.rs`):
-/// page 0 holds the rings, request header, and status (block-server-private), and page 1 is the
-/// 4096-byte data buffer, which IS the page shared with the FS server. So one virtio request moves a
-/// whole filesystem block (eight sectors) and the device DMAs it straight into the FS server's page,
-/// with no per-sector loop and no copy. `BLK_OFF_DATA` is that page-1 offset.
+/// The block server's DMA region is **`1 + blk::TRANSFER_BLOCKS` contiguous pages**
+/// (`kernel/src/user/fs_service.rs`): page 0 holds the rings, request header, and status
+/// (block-server-private), and pages `1..=blk::TRANSFER_BLOCKS` are the data buffer, which IS the
+/// region shared with the FS server. So one virtio request moves up to `blk::TRANSFER_BLOCKS`
+/// contiguous filesystem blocks and the device DMAs them straight into the FS server's region as a
+/// single descriptor, with no per-block loop and no copy (milestone 138 step 4; it was one page and
+/// one block until then). `BLK_OFF_DATA` is that page-1 offset.
 const BLK_OFF_DATA: u64 = 0x1000;
-/// One filesystem block in the data buffer: eight 512-byte sectors.
-const BLK_DATA_LEN: u32 = 4096;
 
 /// The block server's readiness endpoint (slot 3): SEND once after the device is up, so the test
 /// can tell a device-bring-up hang from a first-read hang. See `kernel/src/user/fs_service.rs`.
@@ -1011,15 +1011,21 @@ pub fn run_blk_server(dma_phys: u64) -> ! {
     // client can tell a real round trip from a constant yes: see `fs_proto::blk::FLUSH`.
     let mut flushes: i64 = 0;
     loop {
-        // RECV_CAP: (first word, the Reply cap's slot, second word = the block index).
+        // RECV_CAP: (first word, the Reply cap's slot, second word = the starting block index).
         let (w0, reply, block) = user_rt::recv_cap(BLK_REQ);
+        // **Clamp, the same defence the file channel's server-side clamp is** (milestone 138 step
+        // 4, mirroring step 3's `fs_service.rs` clamp): every caller today sends at most
+        // `blk::TRANSFER_BLOCKS` (the field cannot encode more), but a request is never trusted to
+        // stay inside the region it shares just because the packing allows a larger number to be
+        // spelled at all.
+        let count = blk::req_blocks(w0).min(blk::TRANSFER_BLOCKS) as u64;
         let r0: i64 = match fs_proto::op(w0) {
             blk::READ => {
-                blk_read(dma_phys, block);
+                blk_read(dma_phys, block, count);
                 0
             }
             blk::WRITE => {
-                blk_write(dma_phys, block);
+                blk_write(dma_phys, block, count);
                 0
             }
             blk::SIZE => disk_size_bytes(),
@@ -1084,20 +1090,32 @@ fn complete_blk(used_before: u16) {
     }
 }
 
-/// Read one filesystem block (eight sectors, 4096 bytes) in a SINGLE virtio request. The device
-/// DMAs straight into page 1 of the DMA region, which is the FS server's block page, so there is no
-/// per-sector loop and no copy. Contrast the read path above, which the small-buffer driver roles
-/// use one 512-byte sector at a time; the FS server reads hundreds of blocks at open, so the eight-
-/// fold reduction in device round trips is what keeps it inside the test's watchdog.
-fn blk_read(dma_phys: u64, block: u64) {
-    let used_before = submit_blk(dma_phys, block * blk::SECTORS_PER_BLOCK, VIRTIO_BLK_T_IN);
+/// Read `count` contiguous filesystem blocks starting at `block` in a SINGLE virtio request. The
+/// device DMAs straight into the data pages of the DMA region, which is the FS server's shared
+/// region, so there is no per-block loop and no copy. Contrast the read path above, which the
+/// small-buffer driver roles use one 512-byte sector at a time; the FS server reads hundreds of
+/// blocks at open, and moves up to `blk::TRANSFER_BLOCKS` of them per request since milestone 138
+/// step 4, both for the same reason: a device round trip costs far more than the transfer itself.
+fn blk_read(dma_phys: u64, block: u64, count: u64) {
+    let used_before = submit_blk(
+        dma_phys,
+        block * blk::SECTORS_PER_BLOCK,
+        VIRTIO_BLK_T_IN,
+        count,
+    );
     complete_blk(used_before);
 }
 
-/// Write one filesystem block from page 1 (the FS server filled it before this request) in a single
-/// virtio request. The one direction flag differs from the read; the addresses are identical.
-fn blk_write(dma_phys: u64, block: u64) {
-    let used_before = submit_blk(dma_phys, block * blk::SECTORS_PER_BLOCK, VIRTIO_BLK_T_OUT);
+/// Write `count` contiguous filesystem blocks from the data pages (the FS server filled them before
+/// this request) in a single virtio request. The one direction flag differs from the read; the
+/// addresses are identical.
+fn blk_write(dma_phys: u64, block: u64, count: u64) {
+    let used_before = submit_blk(
+        dma_phys,
+        block * blk::SECTORS_PER_BLOCK,
+        VIRTIO_BLK_T_OUT,
+        count,
+    );
     complete_blk(used_before);
 }
 
@@ -1170,23 +1188,28 @@ fn complete_flush(used_before: u16) -> bool {
     dma_read::<u8>(OFF_STATUS) == 0
 }
 
-/// Build and publish the three-descriptor chain for a whole-block (4096-byte) transfer and ring the
-/// device through the kernel. Mirrors [`submit_block`] but with the data descriptor spanning a full
-/// block at [`BLK_OFF_DATA`] (page 1, the shared page) instead of one sector. Returns the used-ring
-/// index from before the submit, which [`complete_block`] compares against.
-fn submit_blk(dma_phys: u64, sector: u64, req_type: u32) -> u16 {
+/// Build and publish the three-descriptor chain for a `count`-block transfer and ring the device
+/// through the kernel. Mirrors [`submit_block`] but with the data descriptor spanning `count`
+/// contiguous blocks at [`BLK_OFF_DATA`] (the shared data pages) instead of one sector. **One
+/// descriptor for the whole transfer, whatever `count` is** (milestone 138 step 4): virtio-blk
+/// places no requirement on a data descriptor's length beyond a whole number of sectors, so
+/// widening it is the entire batching mechanism, the same shape step 3 used for the file channel's
+/// length field. Returns the used-ring index from before the submit, which [`complete_block`]
+/// compares against.
+fn submit_blk(dma_phys: u64, sector: u64, req_type: u32, count: u64) -> u16 {
     dma_write::<u32>(OFF_HEADER, req_type);
     dma_write::<u32>(OFF_HEADER + 4, 0);
     dma_write::<u64>(OFF_HEADER + 8, sector);
     dma_write::<u8>(OFF_STATUS, 0xff);
 
     let data_flags = if req_type == VIRTIO_BLK_T_IN {
-        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE // read: the device fills the block page
+        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE // read: the device fills the data pages
     } else {
-        VIRTQ_DESC_F_NEXT // write: the device consumes the block page
+        VIRTQ_DESC_F_NEXT // write: the device consumes the data pages
     };
+    let data_len = count * blk::BLOCK_SIZE as u64;
     write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_NEXT, 1);
-    write_desc(1, dma_phys + BLK_OFF_DATA, BLK_DATA_LEN, data_flags, 2);
+    write_desc(1, dma_phys + BLK_OFF_DATA, data_len as u32, data_flags, 2);
     write_desc(2, dma_phys + OFF_STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
 
     let used_before: u16 = dma_read::<u16>(OFF_USED + 2);

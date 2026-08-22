@@ -153,14 +153,21 @@ fn read(handle: u64, offset: u64, n: usize) -> usize {
 /// reads the same block over and over. Self-timed, reported home like
 /// `os_primitives_benchmarker`'s primitives.
 ///
-/// **"Warm, not disk latency" is what this comment used to claim, and it was wrong.** There is no
-/// warm: `IpcDisk` is a bare `Disk` with no `DiskCache` around it, so re-reading one block re-reads
-/// it from the device every time, and the ~204 us this reports is the device round trip.
-/// kernel/src/bench.rs and notes/benchmarks.md were corrected on 2026-08-04 and this copy of the
-/// claim survived; milestone 38 found it by measuring a *sequential* read against it and getting
-/// the same per-block cost, which is exactly what a path with no cache does. `motd` is 69 bytes and
-/// lives inline in its node, so this reads the node rather than a record: it is the cheapest read
-/// the server can serve, and the throughput role's 4 KiB reads cost about seven times it.
+/// **"Warm, not disk latency" is what this comment used to claim, and it was wrong when it was
+/// written.** Through milestone 138 step 1 there was no warm: `IpcDisk` was a bare `Disk` with no
+/// cache around it, so re-reading one block re-read it from the device every time, and the ~204 us
+/// this reported was the device round trip. kernel/src/bench.rs and notes/benchmarks.md were
+/// corrected on 2026-08-04 and this copy of the claim survived; milestone 38 found it by measuring
+/// a *sequential* read against it and getting the same per-block cost, which is exactly what a path
+/// with no cache does.
+///
+/// **It is warm now, and this time the word is accurate.** Step 2 wrapped `IpcDisk` in
+/// `fs_server::CachedDisk`, which answers a repeated single-block read (the tree walk this loop's
+/// every request repeats, since `motd` lives inline in its node and rides entirely on that walk)
+/// from memory. Measured (`sh bench/cache-slots-sweep.sh`): 210,490 ns to 9,474, 22.2x. This role's
+/// own report still reads correctly as "the FS-server contract's cost above a raw endpoint call",
+/// only warm rather than cold now; `motd` is 69 bytes and lives inline in its node, so this reads
+/// the node rather than a record.
 const BENCH_ITERS: u64 = 2000;
 const BENCH_WARMUP: u64 = 64;
 

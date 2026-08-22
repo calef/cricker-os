@@ -25,13 +25,14 @@
 //! Both protocols are an endpoint `CALL`: the client sends two words and blocks until the server
 //! replies through the one-shot Reply capability the kernel mints. Bulk bytes never ride in the
 //! words. They travel in a region the two parties share, one per channel. For blk IPC that region
-//! is exactly [`PAGE`] bytes and holds one filesystem block; for file IPC it is
-//! [`fs::TRANSFER_PAGES`] contiguous pages ([`fs::TRANSFER_MAX`] bytes) and holds a name (on open)
-//! or file data (on read/write).
+//! is [`blk::TRANSFER_BLOCKS`] contiguous pages ([`blk::TRANSFER_MAX`] bytes) and holds up to that
+//! many filesystem blocks; for file IPC it is [`fs::TRANSFER_PAGES`] contiguous pages
+//! ([`fs::TRANSFER_MAX`] bytes) and holds a name (on open) or file data (on read/write).
 //!
-//! **The file channel was one page until milestone 138 step 3**, and that, rather than anything in
-//! the packing, is what made 4 KiB the transfer unit; see [`fs::TRANSFER_PAGES`] for what changed
-//! and for the one thing the change does not check.
+//! **Both channels were one page until milestone 138**: the file channel through step 3, the blk
+//! channel through step 4. Neither change touched the packing; see [`fs::TRANSFER_PAGES`] and
+//! [`blk::TRANSFER_BLOCKS`] for what changed and, for the file channel, the one thing it does not
+//! check.
 //!
 //! ## The error boundary
 //!
@@ -149,12 +150,13 @@
 #![no_std]
 
 /// One page, in bytes. Also one RedoxFS block (`redoxfs::BLOCK_SIZE`), so a block move is a page
-/// move and the frame the kernel maps into both address spaces holds exactly one block.
+/// move and one frame of the direct map holds exactly one block.
 ///
-/// **This is the blk channel's whole size and the file channel's unit**, and the two stopped being
-/// the same thing at milestone 138 step 3: a `blk` request still moves exactly one of these, while
-/// a file request moves up to [`fs::TRANSFER_PAGES`] of them. A file read or write larger than
-/// [`fs::TRANSFER_MAX`] is still chunked by the caller.
+/// **This is the unit both channels are built from, and neither channel's whole size any more**:
+/// a `blk` request moves up to [`blk::TRANSFER_BLOCKS`] of these (milestone 138 step 4) and a file
+/// request moves up to [`fs::TRANSFER_PAGES`] (step 3). A file read or write larger than
+/// [`fs::TRANSFER_MAX`], or a `Disk` call spanning more than [`blk::TRANSFER_MAX`], is still
+/// chunked by the caller.
 pub const PAGE: usize = 4096;
 
 /// Where a request packs its opcode: bits 63:56 of the first `CALL` word, the same position
@@ -186,16 +188,20 @@ pub const fn reply_errno(r0: i64) -> Option<i32> {
 
 /// **The block-IPC protocol** (FS server → block server). Three synchronous methods shaped exactly
 /// like the RedoxFS `Disk` trait the FS server implements over it: read a block, write a block, ask
-/// the size. The unit of transfer is one filesystem block ([`PAGE`] bytes); the block server splits
-/// each into the eight 512-byte virtio sectors the device actually moves.
+/// the size. The unit of transfer is one filesystem block ([`PAGE`] bytes) as [`blk::SIZE`] and
+/// [`blk::FLUSH`] see it; [`blk::READ`] and [`blk::WRITE`] may carry up to [`blk::TRANSFER_BLOCKS`]
+/// of them in one request (milestone 138 step 4). The block server splits whatever it moves into
+/// the 512-byte virtio sectors the device actually transfers, as a single descriptor spanning the
+/// whole request rather than one per block.
 pub mod blk {
     use super::PAGE;
 
-    /// Read filesystem block `w1` from the disk into the shared page. Reply `r0` = 0 on success, or
-    /// [`super::reply_err`] on failure; the [`PAGE`] bytes land in the shared page.
+    /// Read [`req_blocks`] filesystem blocks starting at `w1` from the disk into the shared
+    /// region. Reply `r0` = 0 on success, or [`super::reply_err`] on failure; the bytes land at the
+    /// start of the shared region, block `w1` first.
     pub const READ: u64 = 1;
-    /// Write the [`PAGE`] bytes now in the shared page to filesystem block `w1`. Reply `r0` = 0 on
-    /// success, or [`super::reply_err`] on failure.
+    /// Write [`req_blocks`] filesystem blocks, now in the shared region, to the disk starting at
+    /// `w1`. Reply `r0` = 0 on success, or [`super::reply_err`] on failure.
     pub const WRITE: u64 = 2;
     /// Ask the disk's size in bytes. `w1` ignored. Reply `r0` = the size (always non-negative here).
     pub const SIZE: u64 = 3;
@@ -229,14 +235,68 @@ pub mod blk {
     /// place a block-protocol errno is visible above the FS server. See that verb for the argument.
     pub const FLUSH: u64 = 4;
 
-    /// One filesystem block, in bytes: the transfer unit and the shared-page size. Equal to
-    /// `redoxfs::BLOCK_SIZE`; asserted against it in the block server so a future RedoxFS bump that
-    /// changed the block size would fail to build rather than silently corrupt.
+    /// One filesystem block, in bytes: the transfer unit [`SIZE`] and [`FLUSH`] see and the unit
+    /// [`req_blocks`] counts in. Equal to `redoxfs::BLOCK_SIZE`; asserted against it in the block
+    /// server so a future RedoxFS bump that changed the block size would fail to build rather than
+    /// silently corrupt.
     pub const BLOCK_SIZE: usize = PAGE;
 
-    /// The number of 512-byte virtio sectors in one filesystem block (`BLOCK_SIZE / 512 = 8`). The
-    /// block server issues this many sector transfers per blk request.
+    /// The number of 512-byte virtio sectors in one filesystem block (`BLOCK_SIZE / 512 = 8`).
     pub const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE as u64) / 512;
+
+    /// **How many blocks the shared region spans, and the most one [`READ`] or [`WRITE`] may carry**
+    /// (milestone 138 step 4). Chosen equal to `fs::TRANSFER_PAGES` on purpose: it is the same
+    /// number for the same reason, and a full 64 KiB file request now fans out to exactly one blk
+    /// request per RedoxFS `Disk::read_at`/`write_at` call up to this many contiguous blocks, rather
+    /// than one per block.
+    ///
+    /// # Why this is the whole of the change, the same way step 3's was
+    ///
+    /// The request word had 56 bits below the opcode and used none of them; [`req`] packs the count
+    /// there and nothing about the block index in the second word changes. **The shared region did
+    /// limit a transfer to one block**, because the device DMAs straight into it and a request
+    /// larger than the region would overrun a buffer nobody sized for it. Growing the region to
+    /// [`TRANSFER_BLOCKS`] contiguous pages, and reading the count out of the request word instead
+    /// of assuming one, is the entire mechanism: no new opcode, no descriptor beyond the one that
+    /// already carried a whole block, only a longer one.
+    ///
+    /// # Compatibility, the same property step 3's channel has
+    ///
+    /// A caller that has never heard of this constant sends [`super::req`]`(op)`, whose low bits are
+    /// all zero, which [`req_blocks`] reads back as **one** block: the pre-step-4 behaviour exactly.
+    /// `disk_surveyor`, `disk_partitioner` and `mkfs` all call the block protocol this way and are
+    /// unmodified by this step, the same compatibility step 3 gave `swish` and the caretakers.
+    pub const TRANSFER_BLOCKS: usize = 16;
+
+    /// The largest payload one [`READ`] or [`WRITE`] may carry, in bytes: the whole shared region
+    /// ([`TRANSFER_BLOCKS`] blocks). The block server clamps every request's count to this.
+    pub const TRANSFER_MAX: usize = TRANSFER_BLOCKS * BLOCK_SIZE;
+
+    /// Pack a blk request's first word: opcode (bits 63:56, [`super::OP_SHIFT`]) and a block count
+    /// (bits 7:0, stored as `blocks - 1` so the all-zero word every pre-step-4 caller already sends
+    /// still decodes as one block). `blocks` must be in `1..=TRANSFER_BLOCKS`.
+    pub const fn req(op: u64, blocks: usize) -> u64 {
+        assert!(blocks >= 1 && blocks <= TRANSFER_BLOCKS);
+        (op << super::OP_SHIFT) | (blocks as u64 - 1)
+    }
+
+    /// The block count of a blk request word: [`req`]'s inverse. A word built by
+    /// [`super::req`]`(op)`, which every caller before this step sends, decodes as 1.
+    pub const fn req_blocks(w0: u64) -> usize {
+        ((w0 & 0xff) + 1) as usize
+    }
+
+    /// **The channel's arithmetic, checked by the build rather than by a test**, for
+    /// `fs::TRANSFER_MAX`'s reason: this contract has no test harness at EL0, and a build is the
+    /// only artifact that can be wrong about it there.
+    const _: () = {
+        assert!(TRANSFER_BLOCKS >= 1);
+        assert!(TRANSFER_BLOCKS <= 256); // the 8-bit count field's range
+        assert!(TRANSFER_MAX == TRANSFER_BLOCKS * BLOCK_SIZE);
+        // `req`'s all-zero-low-bits compatibility case: a caller that never heard of `req_blocks`
+        // sends `super::req(op)`, whose low bits are 0, and that must still mean one block.
+        assert!(req_blocks(super::req(READ)) == 1);
+    };
 }
 
 /// **The file-service protocol** (client → FS server). The contract is capability-shaped from birth
@@ -3454,6 +3514,36 @@ mod tests {
             assert_eq!(op(rw0), blk::WRITE);
             assert_eq!(rw1, block);
         }
+    }
+
+    /// **milestone 138 step 4**: a caller that packs a block count survives the round trip, and a
+    /// caller that never heard of one (every caller through step 3, via the plain [`req`]) still
+    /// decodes as exactly one block, which is the whole of the compatibility claim
+    /// `blk::TRANSFER_BLOCKS`'s doc makes.
+    #[test]
+    fn blk_request_carries_a_block_count_and_defaults_to_one() {
+        for blocks in [1usize, 2, blk::TRANSFER_BLOCKS] {
+            let w0 = blk::req(blk::READ, blocks);
+            assert_eq!(op(w0), blk::READ);
+            assert_eq!(blk::req_blocks(w0), blocks);
+        }
+        // A pre-step-4 caller's word (the plain, one-argument `req`) decodes as one block.
+        assert_eq!(blk::req_blocks(req(blk::READ)), 1);
+        // `blk::req(op, 1)` and `req(op)` are wire-identical, which is the compatibility property
+        // stated: a caller that upgrades to naming one block explicitly changes nothing on the wire.
+        assert_eq!(blk::req(blk::READ, 1), req(blk::READ));
+    }
+
+    #[test]
+    #[should_panic]
+    fn blk_request_refuses_a_count_of_zero() {
+        blk::req(blk::READ, 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn blk_request_refuses_a_count_past_the_transfer_limit() {
+        blk::req(blk::READ, blk::TRANSFER_BLOCKS + 1);
     }
 
     #[test]

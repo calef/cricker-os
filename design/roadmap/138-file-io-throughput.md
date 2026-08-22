@@ -1,25 +1,32 @@
 # 138. Close the read gap: a 4 KiB request must stop moving 128 KiB
 
-**Status: PARTIAL.** Steps 1 and 3 of four are **built and measured**. Step 1 (2026-08-18): the
-record level is 1, a 4 KiB read is **5.13x** faster and a 4 KiB write **3.01x**, and the per-request
-residual it leaves is **206 us on a read (72% of it) and 690 us on a write (87%)**. Step 3
-(2026-08-19), taken before step 2 because that residual said to: a request carries **64 KiB**, a
-sequential write is **8.02x** and a read **5.67x**, and the residual changed owner rather than
-shrinking, from the file contract to the block contract. See notes/benchmarks.md,
-notes/fs-server.md and vendor/README.md divergence 5. Steps 2 and 4 are not started.
+**Status: BUILT.** All four steps are **built and measured**. Step 1 (2026-08-18): the record level
+is 1, a 4 KiB read is **5.13x** faster and a 4 KiB write **3.01x**, and the per-request residual it
+leaves is **206 us on a read (72% of it) and 690 us on a write (87%)**. Step 3 (2026-08-19), taken
+before step 2 because that residual said to: a request carries **64 KiB**, a sequential write is
+**8.02x** and a read **5.67x**, and the residual changed owner rather than shrinking, from the file
+contract to the block contract. Step 4 (2026-08-19): the blk contract carries **16 blocks**, and the
+win (1.16x to 1.55x) is far smaller than the block count predicts, because steps 1 and 3 already
+shrank what one blk request can batch and the majority of a request's remaining cost is the
+unbatchable tree walk step 2 targets. Step 2 (2026-08-19), last and largest: a 64-block cache over
+that tree walk, **22.2x on a repeated inline read** and **1.37x to 1.64x on the throughput phases**.
+**Combined, all four steps against milestone 38's original baseline: 70.9x on sequential read
+throughput**, measured head to head rather than by multiplying separately-measured ratios. See
+notes/benchmarks.md, notes/fs-server.md and vendor/README.md divergence 5.
 Minted 2026-08-18 by calef, on milestone 38's measurement: *"Against
 buffered Linux we are three orders of magnitude behind on reads. We need a milestone to optimize and
 close the gap."*
 
-**Gate: NONE.** Decided by calef 2026-08-18: take all four steps in the order below, measuring at
-each. This gate read `DECISION` while the options were unpriced; the sweep (PR #338) and the
-metadata identification (PR #348) priced them, and the decision followed. The original reasoning is
+**Why this needed no per-step gate, and why the decision that got it there can be trusted.** This
+milestone's gate read `DECISION` while the options were unpriced; the sweep (PR #338) and the
+metadata identification (PR #348) priced them, and calef's 2026-08-18 decision to take all four
+steps in order, measuring at each, followed and needed nothing further. The original reasoning is
 kept below because it is why the answer can be trusted: both candidate fixes are things two programs
 agree on, which the *move fast on
 what can be undone* tenet puts in the irreversible column, and milestone 38's own `BUGS` entry says
 so: *"the fix is not in this server: it is either a multi-page transfer on the contract, or a record
-level chosen to match the transfer unit, and both are decisions rather than patches."* The two must
-be priced against each other before either is built.
+level chosen to match the transfer unit, and both are decisions rather than patches."* The two had
+to be priced against each other before either was built.
 
 **In brief.** Every 4 KiB file request moves **128 KiB**, in both directions. A read fetches a whole
 RedoxFS record (32 blocks); a write reads the record, changes 4 KiB and writes a new copy, because
@@ -154,9 +161,9 @@ Four pieces, and the ordering is set by what each one unblocks rather than by si
 | | what | measured or modelled effect |
 |---|---|---|
 | **1** | **option 2**, the record level | **DONE 2026-08-18, measured**: 4 KiB read 2.68 -> **13.76 MiB/s**, write 1.63 -> **4.90**. The modelled 15.8 was level 0's figure; this shipped at level 1, which keeps lz4 and halves the space cost for 8.7% of the read speed. **And there is no one-way door after all**: the created level and the largest readable level are now separate constants, so nothing stored at any level 0 to 5 becomes unreadable and the next change cannot orphan this one's data |
-| **2** | **the metadata cache**, the five blocks | on its own worth 15%; with a small record it is **4.7x**. The two are multiplicative and neither is worth much alone. **Re-priced twice since**: 3.2x measured after step 1, and **1.33x on a 64 KiB read after step 3**, which turns out to target the same term |
+| **2** | **the metadata cache**, the five blocks | **DONE 2026-08-19, measured**: a 64-slot write-through cache over the tree walk, **22.2x on a repeated inline read, 1.37x to 1.64x on the throughput phases**, taken after step 4. The block's 4.7x model and its two re-pricings (3.2x after step 1, 1.33x after step 3) all assumed the walk repeated *within* one file-level request; it does not (RedoxFS walks the tree once per `Server` call, not once per record), so the real payoff is across separate requests to the same handle, which every phase of the throughput bench makes and which the measured numbers price directly |
 | **3** | **option 1**, multi-page transfer on the file contract | **DONE 2026-08-19, measured**: modelled 75 MiB/s, measured **80.30 on a read and 42.77 on a write**, 5.67x and 8.02x. The wire change is one constant: the length field was always 40 bits and the shared page was what bounded a transfer. This is the customer path |
-| **4** | **the block contract**, one request per 4 KiB today | the ~100 MiB/s ceiling behind all three. Recorded in notes/fs-server.md's BUGS and not yet a milestone. **After step 3 it is the binding constraint rather than a wall behind one**: a read measures 80.30 MiB/s against it and is 74% block trips |
+| **4** | **the block contract**, one request per 4 KiB today | **DONE 2026-08-19, measured**: the blk channel carries 16 blocks, **1.16x to 1.55x**, far below the naive 16x because steps 1 and 3 already shrank each record to 2 blocks, so step 4 batches only a record's own body and cannot batch across the many records one 64 KiB request spans. Most of what remains per record (5 of 6 to 7 blk calls) is the tree walk, which step 2 then closes |
 
 **Then re-measure and re-decide.** The numbers above are a model calibrated against the sweep (it
 reproduces the measured 837 us per 64 KiB as 832), not a prediction anybody should spend four
@@ -287,6 +294,104 @@ per 64 KiB, which predicts that step 1's 5.13x does not survive as a ratio at th
 runs it the level shipped in step 1 is chosen on 4 KiB evidence for a system that no longer moves
 4 KiB by default.
 
+## Step 4, built and measured: the blk contract carries 16 blocks, and the win is smaller than the
+## block count predicts (2026-08-19)
+
+Step 3's own residual pointed here: after it, a read was 74% single-block trips through
+`fs_proto::blk`, one per filesystem block, against the ~100 MiB/s ceiling notes/fs-server.md's
+`BUGS` section had already named. `fs_proto::blk::TRANSFER_BLOCKS` goes from an unwritten 1 to 16
+(the same number as `fs::TRANSFER_PAGES`, for the same reason): the region the FS server and the
+block server share grows to 64 KiB of contiguous pages, `IpcDisk` batches contiguous whole-block
+runs into one blk `CALL`, and the block server issues one virtio descriptor for the whole batch
+instead of one per block. Nothing in the request word's packing changed, the same shape step 3's
+change had: 56 bits below the opcode had never been used, and a block count fits in a handful of
+them.
+
+**10 interleaved rounds each** (`sh bench/blk-transfer-sweep.sh 10 1 16`), on a shared, noisy
+machine (other lanes building and testing concurrently, `uptime` load 15 to 21 throughout, well
+above earlier sweeps' 3.6 to 9). Median of 10 rounds, because 8 of 10 landed within 6% of the
+established quiet `fs_read` baseline and the discipline is to discard load rather than average it
+in, which with mostly-quiet rounds means the median already does that job:
+
+| phase | 1 block/CALL | 16 blocks/CALL | speedup |
+|---|---|---|---|
+| `fs_seq_write` | 1,544,228 ns | **1,335,376** | **1.16x** |
+| `fs_rand_write` | 2,101,313 | **1,539,488** | **1.37x** |
+| `fs_seq_read` | 811,724 | **527,420** | **1.54x** |
+| `fs_rand_read` | 848,706 | **546,541** | **1.55x** |
+| `fs_record_read` | 843,448 | **545,040** | **1.55x** |
+
+**Why this is nowhere near 16x, and it is a finding about steps 1 and 3, not a flaw here.** The
+record level is 1 (step 1): an 8 KiB record, two blocks. RedoxFS walks its tree **once per
+file-level `Server` call**, then loops over however many records that call's transfer spans, each
+with its **own** `Disk::read_at`. A 64 KiB request (step 3) spans 8 records, so step 4 batches each
+record's own body (2 blocks, one call instead of two) but cannot batch **across** records, because
+each record's body is a separate call the engine issues on its own. Per record: 5 unbatchable
+metadata reads + 1 data call (was 2); 8 x 6 = 48 calls per request, down from 8 x 7 = 56, a
+1.17x call-count ratio that lines up with the measured write speedups almost exactly. Reads show a
+larger ratio because a read's cost is almost entirely blk calls, so the same eight eliminated round
+trips are a bigger fraction of it. **The majority of what remains, 5 of 6 to 7 calls per record, is
+the tree walk**, which is exactly step 2's target and is why it is taken next rather than left for
+later. notes/benchmarks.md has the full account, including the arithmetic that predicts the
+absolute savings from the per-block cost this page already measured twice.
+
+Crash consistency re-run: unchanged, 0 silently wrong, for the structural reason step 3's re-run
+gave (the host-side model is below `IpcDisk`'s batching); the device-level crash injector keeps its
+own one-block-per-`CALL` path unconditionally, so the real device test's coverage is unchanged by
+this step rather than merely re-run.
+
+## Step 2, built and measured: a 64-block cache over the tree walk, and it is the largest number in
+## this milestone (2026-08-19)
+
+`fs_server::CachedDisk` wraps `IpcDisk` in a small direct-mapped, write-through cache of
+single-block reads, 64 slots (`CACHE_SLOTS`), about 257 KiB. Only a `buffer.len() == BLOCK` read
+consults it; a record body (already batched by step 4) bypasses it. A write updates or invalidates
+the written block's slot, only after the inner disk confirms the write landed. RedoxFS's
+copy-on-write allocator never rewrites a live address in place, so the only way a cached address's
+content can change is through that same write path, which is what makes a bare write-through cache
+correct with no generation counter or fencing scheme. Six host tests cover hit/miss, write-through
+freshness, short-write invalidation, slot-collision safety and multi-block bypass, in milliseconds,
+no emulator.
+
+**8 interleaved rounds each** (`sh bench/cache-slots-sweep.sh 8 1 64`), same machine, `uptime` load
+15 to 19. Capacity 1 approximates "off" (the tree walk touches five *different* blocks per call, so
+a one-slot cache thrashes and rarely survives to the next call) rather than being a true zero; both
+`fs::TRANSFER_PAGES` and `blk::TRANSFER_BLOCKS` are at their shipped settings for both points, so
+this isolates the cache's own marginal contribution:
+
+| phase | 1 slot (~off) | 64 slots | speedup |
+|---|---|---|---|
+| `fs_read` (repeated inline read) | 210,490 ns | **9,474** | **22.2x** |
+| `fs_seq_write` | 1,387,898 | **936,583** | **1.48x** |
+| `fs_rand_write` | 1,487,736 | **1,087,904** | **1.37x** |
+| `fs_seq_read` | 514,419 | **329,168** | **1.56x** |
+| `fs_rand_read` | 542,605 | **331,732** | **1.64x** |
+| `fs_record_read` | 560,088 | **341,504** | **1.64x** |
+
+**`fs_read`'s 22.2x retires the "no cache anywhere" claim** milestone 38 demonstrated and both this
+document and notes/fs-server.md stated as an architectural property: it was true of the build
+measured then and it is not true of the build this tree ships now. `motd` lives inline in its node,
+so its whole content rides on the tree walk with no separate record read, and a warm cache answers
+it close to the bare IPC floor this document already estimated at ~13 us. See notes/fs-server.md's
+own correction for what still holds (a different file's first access, or any file's first access in
+a fresh session, stays fully uncached).
+
+**Combined, all four steps against milestone 38's original baseline, measured head to head rather
+than by multiplying separately-measured ratios**: `fs_seq_read` 1,509,270 ns per 4 KiB (2.68 MiB/s)
+to 329,168 ns per 64 KiB (189.9 MiB/s), **70.9x**. The remaining gap to buffered Linux (7,141 MiB/s)
+is the page-cache gap this milestone was never scoped to close; see "What is out of scope,
+deliberately", below, and "The question underneath" for the frontier past it.
+
+Crash consistency re-run: unchanged, 0 silently wrong. The host-side model is below `CachedDisk` too
+(it drives `BlockDisk<Recording>` directly), and at the device level the property that matters is
+argued rather than merely re-run: milestone 37's recovery mount is a fresh process, so it builds a
+fresh, cold cache and can never observe anything the killed process's cache held.
+
+**What was not measured.** The two caches (`blk::TRANSFER_BLOCKS` and `CACHE_SLOTS`) were swept
+independently, each at the other's shipped value, not against each other; and 64 slots was sized
+against the tree spine and the crash-test heap budget, not against a sweep of the capacity itself.
+notes/benchmarks.md's `BUGS` entries for both steps name these as the first things to run next.
+
 ## The question underneath, which is worth more than any of the four
 
 **Does this architecture have a disk-read liability that cannot be overcome?** calef, the same day,
@@ -308,8 +413,11 @@ address-space crossing at all**.
 
 So the honest statement of the frontier: **against uncached Linux this design reaches parity;
 against the page cache it does not, and the reason is structural rather than lazy.** Every gap found
-so far (a 128 KiB record, a page-sized file contract, a block-sized block contract, no cache) is an
-implementation choice Linux also had to solve. The 13 us is the first thing that is not.
+so far (a 128 KiB record, a page-sized file contract, a block-sized block contract, no metadata
+cache) was an implementation choice Linux also had to solve, and all four are now closed steps. The
+13 us is the first thing that is not, and it survives untouched by all four: it is the IPC round
+trip and the server's own work, and no batching or caching of what travels over that round trip
+removes the round trip itself.
 
 **And the way past it, if it is ever worth taking, is capability-shaped**: stop doing a round trip
 per request and grant the client frames it can read directly, which is what Linux's `mmap` over the
@@ -321,12 +429,24 @@ accumulation rather than by one argument at the end.
 
 ## What is out of scope, deliberately
 
-**A cache is not this milestone.** There is no cache anywhere in the read path today, which milestone
-38 established rather than assumed: sequential, random and record-aligned reads agree within 3%, and
-`fs_test_client`'s claim to measure a "warm" read was wrong and is corrected. Adding one would move
-the buffered-Linux comparison more than either fix above, and it is a larger design with its own
-coherency and confinement questions. If it is wanted, it is its own milestone and this block should
-not quietly grow into it.
+**Superseded in part by step 2 (2026-08-19).** This section originally said "a cache is not this
+milestone," written before calef's 2026-08-18 decision named the metadata cache as step 2 and before
+step 4's measurement showed the tree walk was most of what remained. What is built is narrower than
+what this paragraph warned against, and the distinction is the one worth keeping precise:
+
+**A *data* cache is still not this milestone.** Nothing here caches a record body or gives a client
+`mmap`-shaped access to bytes the server already fetched; every record read is still a round trip
+(batched by step 4, never answered from memory), which is the property "The question underneath"
+argues is the actual frontier past this milestone's four steps. That is the design with its own
+coherency and confinement questions this paragraph warned about, and it remains somebody else's
+milestone if it is ever wanted.
+
+**A small, single-process *metadata* cache is step 2**, and it does not raise those questions: it
+lives entirely inside one FS server's address space, one open file's tree spine is five blocks, the
+cache holds 64, and RedoxFS's copy-on-write allocator is what makes a bare write-through cache
+correct with no coherency protocol between processes to design. `fs_test_client`'s "warm read" claim
+was wrong when milestone 38 corrected it and is right again now, for a different, stated reason: see
+`fs_test_client.rs`'s own updated comment and notes/fs-server.md's correction.
 
 ## Why it matters
 
@@ -382,3 +502,24 @@ measurements rather than asserted, and this is the measurement that most weakens
   afternoon. The throughput figures reproduce the earlier sweep's two-term fit to within 3% from a
   different run on a different day, which is the strongest independent check available without a
   second machine, and it is not a second machine.
+- **Steps 2 and 4 were measured on a shared, noisy machine**, `uptime` load 15 to 21 throughout both
+  sweeps, well above the 3.6 to 9 the earlier steps ran at. The `fs_read` control and the two-term
+  model's internal agreement (a predicted ~296 us saving from step 4 matching a measured 284 to
+  302 us across three independent phases) are the evidence these are real signals; they are not the
+  single-tenant, quiet-machine conditions steps 1 and 3 had.
+- **The two caches this milestone now has were never swept against each other.** `blk::TRANSFER_BLOCKS`
+  (step 4) and `CACHE_SLOTS` (step 2) were each measured alone, at the other's shipped value.
+  Whether a smaller blk batch with a larger metadata cache (or the reverse) reaches the same total
+  for less DMA-region size or less heap is open; `bench/blk-transfer-sweep.sh` and
+  `bench/cache-slots-sweep.sh` can both answer it, run together, and nobody has.
+- **Neither `blk::TRANSFER_BLOCKS = 16` nor `CACHE_SLOTS = 64` was swept for where its own curve
+  bends.** Both were chosen by symmetry or by sizing against a known working set (the file channel's
+  own size; the tree spine's own size plus the crash-test heap budget), the same reasoning step 1's
+  level and step 3's transfer size originally used before being swept properly. `sh
+  bench/blk-transfer-sweep.sh N 1 2 4 8 16` and `sh bench/cache-slots-sweep.sh N 1 4 16 64 256` are
+  the experiments and each is one command.
+- **`CachedDisk`'s 64 slots were sized against a small test fixture and milestone 37's crash-test
+  heap budget, not against a real deployment's node count.** notes/fs-server.md's own "same five
+  blocks" finding says a 65,536-node filesystem's full tree spine is 259 blocks; 64 slots holds one
+  open file's spine comfortably and thrashes once enough distinct files are open at once to collide
+  across the tree's shared upper levels. Nobody has measured a multi-file workload against it.

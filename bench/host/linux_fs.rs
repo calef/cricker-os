@@ -7,10 +7,17 @@
 //!
 //! # What it measures, and why there are two variants of everything
 //!
-//! nife's FS server holds no cache of any kind: `IpcDisk` is a bare `Disk` with no `DiskCache`
-//! around it, so every block a read needs is a virtio round trip, and every write is its own
-//! RedoxFS transaction that commits before the reply. Linux is the opposite by default: the page
-//! cache absorbs reads and writeback absorbs writes, and a 1 MiB file fits in it entirely.
+//! nife's FS server holds no **data** cache: a record body is always a virtio round trip (batched
+//! since milestone 138 step 4, but never answered from memory), and every write is its own RedoxFS
+//! transaction that commits before the reply. It does hold a small **metadata** cache since step 2
+//! (`fs_server::CachedDisk`, 64 blocks, ~257 KiB): a repeated read of the same file's tree spine
+//! answers from memory rather than a second round trip, which is why `fs_read` (a repeated read of
+//! one small inline file) is no longer comparable to a cold read the way it was when this file's
+//! comment last described it as cacheless. The phases this file runs are dominated by record
+//! bodies, which the metadata cache never touches, so the comparison below is still the honest one
+//! for what it measures; it would not be for a workload that mostly reopens hot metadata. Linux is
+//! the opposite by default in both dimensions: the page cache absorbs data reads and writeback
+//! absorbs writes, and a 1 MiB file fits in it entirely.
 //!
 //! So a single ext4 number would answer a question nobody asked. This runs each phase twice:
 //!

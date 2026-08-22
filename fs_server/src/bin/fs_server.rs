@@ -2,11 +2,15 @@
 //!
 //! The sans-IO core is [`fs_server::Server`]; this file is only the two IO edges it needs and the
 //! runtime a dedicated binary carries. Below it, the [`IpcDisk`] turns the RedoxFS `Disk` trait into
-//! a **blk-IPC client**: a `read_at`/`write_at`/`size` is a `CALL` to the block server, one
-//! filesystem block per shared page. Above it, [`serve`] turns file-service requests from clients
-//! into `Server` calls and answers through the one-shot Reply the kernel mints. The allocator is the
-//! untyped-backed heap, so every byte RedoxFS allocates is paid from this process's own budget,
-//! which is the whole reason phase 2 waited on milestone 27's `GlobalAlloc`.
+//! a **blk-IPC client**: a `read_at`/`write_at`/`size` is one or more `CALL`s to the block server,
+//! up to `blk::TRANSFER_BLOCKS` contiguous filesystem blocks per call (milestone 138 step 4).
+//! `IpcDisk` is itself wrapped in [`fs_server::CachedDisk`] (step 2), which answers a repeated
+//! single-block read (the tree spine `Transaction::read_tree_and_addr` walks fresh on every
+//! `Server::read`/`write`/...) from memory instead of a second round trip. Above both, [`serve`]
+//! turns file-service requests from clients into `Server` calls and answers through the one-shot
+//! Reply the kernel mints. The allocator is the untyped-backed heap, so every byte RedoxFS
+//! allocates is paid from this process's own budget, which is the whole reason phase 2 waited on
+//! milestone 27's `GlobalAlloc`.
 //!
 //! # Capability contract (notes/fs-server.md, notes/abi.md §4)
 //! - **slot 0**: an untyped budget, the heap's (RedoxFS is alloc-heavy; nothing runs without it).
@@ -14,7 +18,8 @@
 //! - **slot 2**: the file-service endpoint, `READ`. Clients `CALL` here; this is the directory
 //!   capability, bound in the server to the image's root (phase 2). A client without it opens
 //!   nothing.
-//! - **[`BLK_PAGE`]**: a page shared with the block server (the block buffer).
+//! - **[`BLK_PAGE`]**: the base of the block channel shared with the block server, `blk::TRANSFER_MAX`
+//!   bytes of contiguous pages (the block buffer).
 //! - **[`FILE_PAGE`]**: the base of the file channel shared with the client, `fs::TRANSFER_MAX`
 //!   bytes of contiguous pages (a name on open, file bytes on read/write).
 //!
@@ -26,8 +31,8 @@
 
 extern crate alloc;
 
-use fs_proto::{blk, fs, op, reply_err, req, xattr};
-use fs_server::Server;
+use fs_proto::{blk, fs, op, reply_err, xattr};
+use fs_server::{CachedDisk, Server};
 use redoxfs::Disk;
 use syscall::error::{EINVAL, EIO, Error, Result};
 use user_rt::{call, invoke, recv_cap, send};
@@ -42,13 +47,16 @@ const READY: u64 = 3;
 /// Where the kernel maps the two shared regions. Above the program image (0x40_0000) and the heap
 /// (0x4000_0000 + a few MiB), so nothing collides.
 ///
-/// [`FILE_PAGE`] is `fs::TRANSFER_MAX` bytes wide rather than one page (milestone 138 step 3), and
-/// it is the higher of the two so that growing it cannot walk into [`BLK_PAGE`]. Nothing else this
-/// process maps is within 8 MiB above it.
+/// [`BLK_PAGE`] is `blk::TRANSFER_MAX` bytes wide rather than one page (milestone 138 step 4) and
+/// [`FILE_PAGE`] is `fs::TRANSFER_MAX` bytes wide rather than one page (step 3); [`FILE_PAGE`] sits
+/// above [`BLK_PAGE`] by exactly `blk::TRANSFER_MAX` so growing either region stays inside the 8 MiB
+/// nothing else this process maps comes within.
 const BLK_PAGE: u64 = 0x5000_0000;
-const FILE_PAGE: u64 = 0x5000_1000;
+const FILE_PAGE: u64 = BLK_PAGE + blk::TRANSFER_MAX as u64;
 
-/// One filesystem block / one shared page, in bytes. The transfer unit both directions.
+/// One filesystem block, in bytes: the unit [`BLK_PAGE`] is carved into. The transfer unit for
+/// [`fs::READDIR`] and every other verb whose reply the server itself sizes; a [`fs::READ`] or
+/// [`fs::WRITE`] moves up to `fs::TRANSFER_MAX` of these through [`FILE_PAGE`] instead.
 const BLOCK: usize = blk::BLOCK_SIZE;
 
 /// The heap cap. RedoxFS keeps a compress buffer sized by `RECORD_SIZE` (128 KiB, still the ceiling after milestone
@@ -57,6 +65,18 @@ const BLOCK: usize = blk::BLOCK_SIZE;
 /// tree structures; a few MiB is comfortable for the small images phase 2 serves. The untyped the
 /// kernel grants is the real ceiling.
 const HEAP_MAX: u64 = 8 * 1024 * 1024;
+
+/// **How many single blocks [`fs_server::CachedDisk`] holds** (milestone 138 step 2). One open
+/// file's tree spine is five blocks (notes/fs-server.md, "the same five blocks every time"); 64
+/// gives more than twelve times that so several open handles stay hot at once without thrashing
+/// each other out, at `64 * (8 + BLOCK) = 262,656` bytes, about 257 KiB.
+///
+/// **One constant for every FS server this build starts**, including milestone 37's two crash-test
+/// instances, whose heap budget is a fraction of [`HEAP_MAX`] (`CRASH_BUDGET_PAGES` in
+/// `kernel/src/user/fs_service.rs`, 2 MiB). 257 KiB is comfortable there too, next to RedoxFS's own
+/// measured high-water of a few hundred KiB, so there is no second number to keep in sync with a
+/// budget this file cannot see.
+const CACHE_SLOTS: usize = 64;
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
@@ -128,43 +148,43 @@ mod inject {
 struct IpcDisk;
 
 impl IpcDisk {
-    /// One blk `CALL`: opcode, block index. Returns the reply's first word as a signed result
-    /// (negative is an error, per the wire convention). The bulk rides in [`BLK_PAGE`].
-    fn blk(op_code: u64, block: u64) -> i64 {
+    /// One blk `CALL` for `count` contiguous blocks starting at `block` (milestone 138 step 4):
+    /// opcode and count pack into the first word ([`fs_proto::blk::req`]), the starting block index
+    /// is the second. Returns the reply's first word as a signed result (negative is an error, per
+    /// the wire convention). The bulk rides in [`BLK_PAGE`], `count * BLOCK` bytes of it.
+    fn blk_n(op_code: u64, block: u64, count: usize) -> i64 {
         // SAFETY: `call` traps to the kernel, which validates the endpoint in slot BLK.
-        let (r0, _) = call(BLK, req(op_code), block);
+        let (r0, _) = call(BLK, blk::req(op_code, count), block);
         r0 as i64
     }
 
-    /// Copy `n` bytes out of the shared block page (a completed read landed there).
+    /// [`Self::blk_n`] for exactly one block: every call this file made before milestone 138 step
+    /// 4, and still the right shape for [`blk::SIZE`] and [`blk::FLUSH`], which ignore the count.
+    fn blk(op_code: u64, block: u64) -> i64 {
+        Self::blk_n(op_code, block, 1)
+    }
+
+    /// Copy `n` bytes out of the shared block region (a completed read landed there, at its start).
     fn from_page(dst: &mut [u8]) {
-        // SAFETY: BLK_PAGE is a mapped, writable page of exactly BLOCK bytes; `dst` is no larger.
+        // SAFETY: BLK_PAGE is a mapped, writable region of exactly blk::TRANSFER_MAX bytes; `dst`
+        // is no larger (every caller passes at most blk::TRANSFER_BLOCKS * BLOCK).
         unsafe {
             core::ptr::copy_nonoverlapping(BLK_PAGE as *const u8, dst.as_mut_ptr(), dst.len())
         }
     }
 
-    /// Copy `src` into the shared block page (to be written). `src` is at most one block.
+    /// Copy `src` into the shared block region (to be written), at its start. `src` is at most
+    /// `blk::TRANSFER_MAX` bytes.
     fn to_page(src: &[u8]) {
-        // SAFETY: as above; `src` is no larger than the page.
+        // SAFETY: as above; `src` is no larger than the region.
         unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), BLK_PAGE as *mut u8, src.len()) }
     }
-}
 
-impl Disk for IpcDisk {
-    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
-        // RedoxFS reads whole blocks (and multi-block records), always block-aligned; we still
-        // chunk defensively so a short tail is read correctly.
-        for (i, chunk) in buffer.chunks_mut(BLOCK).enumerate() {
-            if Self::blk(blk::READ, block + i as u64) < 0 {
-                return Err(Error::new(EIO));
-            }
-            Self::from_page(chunk);
-        }
-        Ok(buffer.len())
-    }
-
-    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+    /// **The write path exactly as it stood before milestone 138 step 4**: one CALL per block, so
+    /// the crash injector can stop between any two of them, and [`VERIFY_WRITES`] can read every
+    /// one straight back. [`Disk::write_at`] falls back to this whenever either might apply; see
+    /// that method for why batching cannot serve them.
+    fn write_at_unbatched(block: u64, buffer: &[u8]) -> Result<usize> {
         for (i, chunk) in buffer.chunks(BLOCK).enumerate() {
             let b = block + i as u64;
             // The crash injection (milestone 37), and the only line the ordinary path pays for it.
@@ -213,6 +233,89 @@ impl Disk for IpcDisk {
                     panic!();
                 }
             }
+        }
+        Ok(buffer.len())
+    }
+}
+
+impl Disk for IpcDisk {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        // **Batch whole blocks, up to blk::TRANSFER_BLOCKS per CALL** (milestone 138 step 4). Every
+        // request pays a fixed per-CALL term (the IPC round trip and the block server's own work),
+        // and fewer CALLs for the same payload is the whole optimization; it costs nothing else
+        // because the device already moves the whole batch in one virtio descriptor. RedoxFS reads
+        // whole blocks (and multi-block records), always block-aligned, but a short final chunk (a
+        // compressed record) is still possible and is still read as one whole block with only the
+        // requested bytes copied out.
+        //
+        // **This does not touch the five repeated tree-spine reads**: `Transaction::read_tree_and_addr`
+        // issues them as five separate single-block `read_at` calls from different points in the
+        // walk, not one call this loop could batch. [`CachedDisk`] (milestone 138 step 2, below
+        // this `Disk` impl) is what removes them, by answering a repeat from memory before this
+        // method is ever reached.
+        let mut off = 0usize;
+        let mut b = block;
+        while off < buffer.len() {
+            let remaining = buffer.len() - off;
+            let full_blocks = (remaining / BLOCK).min(blk::TRANSFER_BLOCKS);
+            if full_blocks > 0 {
+                let n = full_blocks * BLOCK;
+                if Self::blk_n(blk::READ, b, full_blocks) < 0 {
+                    return Err(Error::new(EIO));
+                }
+                Self::from_page(&mut buffer[off..off + n]);
+                off += n;
+                b += full_blocks as u64;
+                continue;
+            }
+            // Only a sub-block tail remains (remaining < BLOCK): one whole-block read, partial copy.
+            if Self::blk(blk::READ, b) < 0 {
+                return Err(Error::new(EIO));
+            }
+            Self::from_page(&mut buffer[off..]);
+            off = buffer.len();
+        }
+        Ok(buffer.len())
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        // **The crash injector needs single-block granularity, and a diagnostic readback does too.**
+        // The injector's whole mechanism is "let K block writes through, corrupt block K+1, die",
+        // which a batched multi-block virtio request cannot do (the device completes the descriptor
+        // whole or not at all); `VERIFY_WRITES` reads each block straight back to catch a lossy
+        // transport, one CALL per block. Both stay on the pre-step-4 path unconditionally, which
+        // costs nothing in the ordinary case: `AT_WRITE` is 0 on every FS server but milestone 37's
+        // own dedicated crash-test instance, and `VERIFY_WRITES` is a diagnostic, off by default.
+        if VERIFY_WRITES || inject::AT_WRITE.load(core::sync::atomic::Ordering::Relaxed) != 0 {
+            return Self::write_at_unbatched(block, buffer);
+        }
+        let mut off = 0usize;
+        let mut b = block;
+        while off < buffer.len() {
+            let remaining = buffer.len() - off;
+            let full_blocks = (remaining / BLOCK).min(blk::TRANSFER_BLOCKS);
+            if full_blocks > 0 {
+                let n = full_blocks * BLOCK;
+                Self::to_page(&buffer[off..off + n]);
+                if Self::blk_n(blk::WRITE, b, full_blocks) < 0 {
+                    return Err(Error::new(EIO));
+                }
+                off += n;
+                b += full_blocks as u64;
+                continue;
+            }
+            // A short final chunk: read-modify-write, one block, as ever. A partial final block
+            // would clobber the rest of the block otherwise; RedoxFS does not send one today, but a
+            // Disk owes the courtesy.
+            let tail = &buffer[off..];
+            if Self::blk(blk::READ, b) < 0 {
+                return Err(Error::new(EIO));
+            }
+            Self::to_page(tail);
+            if Self::blk(blk::WRITE, b) < 0 {
+                return Err(Error::new(EIO));
+            }
+            off = buffer.len();
         }
         Ok(buffer.len())
     }
@@ -271,7 +374,7 @@ fn reply(reply_slot: u64, r0: i64) {
 /// The serve loop. Blocks on the file-service endpoint, dispatches one request, replies, repeats.
 /// This is the **only** place a RedoxFS error becomes a wire value ([`reply_err`]); everything
 /// below it speaks `syscall::error::Result`.
-fn serve(server: &mut Server<IpcDisk>) -> ! {
+fn serve(server: &mut Server<CachedDisk<IpcDisk>>) -> ! {
     loop {
         // RECV_CAP delivers (first word, the Reply cap's slot, second word). The Reply names the
         // caller; endpoint-only naming means we never learn who they are, only how to answer.
@@ -478,7 +581,9 @@ pub extern "C" fn _start(crash_at_write: u64, crash_after_blocks: u64, crash_tea
 
     // Open the image over blk IPC and bind to its root. A bad image (or a block server that never
     // answers correctly) faults here, which the kernel reports; the server never creates.
-    let mut server = match Server::open(IpcDisk) {
+    // CachedDisk wraps IpcDisk to hold the tree spine's single-block reads in memory (milestone 138
+    // step 2); the CALLs themselves are unchanged, batched where step 4 already batches them.
+    let mut server = match Server::open(CachedDisk::new(IpcDisk, CACHE_SLOTS)) {
         Ok(s) => s,
         Err(_) => panic!(), // not a RedoxFS image, or the disk misbehaved: die legibly.
     };
