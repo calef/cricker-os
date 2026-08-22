@@ -163,6 +163,7 @@ place instead of moving text between two systems. Numbers 68 to 73 are the six t
 | 102 | DECIDED | [A Frame names a run of pages](102-frame-names-a-run.md) |
 | 104 | DECIDED | [The rich-text font is DejaVu Sans Mono, and the palette is Solarized](104-the-font-and-the-palette.md) |
 | 103 | SUPERSEDED BY 102 | [What a `Frame` names](103-what-a-frame-names.md) |
+| 105 | DECIDED | [`std::thread::spawn` stays declined, until a customer needs it](105-thread-spawn-decline-for-now.md) |
 
 Two blocks that lived among the decisions are not decisions and moved out with the split, the same
 way milestone 76 moved four essays out of the roadmap: [the open design

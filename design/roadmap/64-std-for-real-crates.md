@@ -89,8 +89,8 @@ two programs agree on) and is recorded in notes/std.md rather than guessed at he
 **What remains, and why each one stops here rather than being unfinished.** Rank 2, the
 `std::os::unix` fallthrough, wants a **uid** and a **file mtime set** that this system does not have
 in the form the crates ask for, and answering would be a Unix fiction over a capability refusal.
-Rank 3, `thread::spawn`, is this block's own unanswered scheduling question (see BUGS) and has **no
-build failures behind it**. Rank 19, `Metadata::modified`, is one field in `FSTAT`'s reply away and
+Rank 3, `thread::spawn`, is this block's own scheduling question, **now decided (§105): declined for
+now**, for want of a customer (see BUGS), and has **no build failures behind it**. Rank 19, `Metadata::modified`, is one field in `FSTAT`'s reply away and
 that makes it a wire-format change. **Rank 21, `TcpListener`, is the exception to this whole
 paragraph and is the next lane's work**: it was a contract gap when the list was written and stopped
 being one at milestone 107, so what is left is a PAL binding (`bind` -> `OP_LISTEN` on a socket id
@@ -229,21 +229,22 @@ and "a server runs".
 - **The PAL patches std's own source**, so every function added here is more surface for
   `toolchain drift` to break against a future nightly. That is a real recurring cost and the reason
   to add only what a probe demands.
-- **Threads open a scheduling question this project has not answered.** `std::thread::spawn` implies
-  a thread the program owns; the kernel has TCBs and a budget model, and which of those a `std`
-  thread is has never been decided. **This is why rank 3 is still open after the second pass**, and
-  the measurement makes the case for deciding it rather than building it: all four of the crates
-  behind that rank (`rayon`, `crossbeam-channel`, `tokio`, `ignore`) already compile and link, so
-  nothing is blocked on the code and everything is blocked on the answer. A PAL that guessed would
-  ship the decision as an implementation detail. **The fork is written up in full in
-  notes/thread-spawn-fork.md** (pull request #394, 2026-08-22): `Tcb::CONFIGURE` consumes the
-  `Aspace` capability it binds and the `Thread` struct owns it outright, so no two TCBs can share
-  one address space today, which is what a `std` thread actually needs. The two real shapes a fix
-  could take (a kernel-level shared VSpace, which is seL4's own answer and the lineage
+- **Threads opened a scheduling question this project has now answered: declined, for now.**
+  `std::thread::spawn` implies a thread the program owns; the kernel has TCBs and a budget model,
+  and which of those a `std` thread is stayed open after the second pass, because all four of the
+  crates behind rank 3 (`rayon`, `crossbeam-channel`, `tokio`, `ignore`) already compile and link, so
+  nothing was blocked on the code and everything was blocked on the answer. **The fork is written up
+  in full in notes/thread-spawn-fork.md** (pull request #394, 2026-08-22): `Tcb::CONFIGURE` consumes
+  the `Aspace` capability it binds and the `Thread` struct owns it outright, so no two TCBs can share
+  one address space today, which is what a `std` thread actually needs. Two real shapes a fix could
+  take were costed (a kernel-level shared VSpace, seL4's own answer and the lineage
   `objtype::ASPACE` already cites, versus sibling processes kept aliased by replicated frame
-  mappings) and their measured costs are there; the second one's apparent cheapness (no syscall
-  touched) does not survive contact with what a growing heap needs from an allocator. Milestone
-  149's Rayon-parallel NPB-Rust variants are the concrete thing waiting on this being decided.
+  mappings, whose apparent cheapness, no syscall touched, does not survive contact with what a
+  growing heap needs from an allocator) alongside declining outright. **calef decided 2026-08-22
+  (§105): decline.** No customer for real shared-memory threads exists yet; `thread::spawn` stays
+  `Unsupported` permanently rather than pending, and milestone 149's Rayon-parallel NPB-Rust variants
+  stay out of scope until one does. §105 is the record; nothing here forecloses building the
+  seL4-shaped option later.
 - **`env` is a table nobody seeds.** The environment backend added in the second pass is honest and
   it is also a stub in one direction: a program can set its own variables and cannot be *given* one,
   because there is no endowment to carry it. That is milestone 47's namespace, and until it lands

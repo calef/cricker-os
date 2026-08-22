@@ -53,12 +53,12 @@ than a claim it has to make itself.
   costs, since some of the same shapes that needed `unsafe` under Rayon may need it again here for
   different reasons (a capability system with no ambient shared mutable state is a different
   starting point than a thread pool over a flat address space).
-- **The Rayon-parallel variants all need milestone 64's rank-3 fork resolved first**: `thread::spawn`
-  is still an open scheduling question nothing in this tree has answered, and Rayon's work-stealing
-  pool is exactly the kind of consumer milestone 64's own BUGS section says is waiting on that
-  decision. **Sequential NPB-Rust is buildable the moment `File::open`-free, thread-free `std` is
-  enough** (which milestone 64 says EP-shaped code already is); the parallel variants are gated on
-  64's own open fork, not on anything new this milestone introduces.
+- **The Rayon-parallel variants needed milestone 64's rank-3 fork resolved first, and it is now
+  decided against them (§105, 2026-08-22): `thread::spawn` stays declined for want of a customer.**
+  Rayon's work-stealing pool is exactly the kind of consumer that decision named as the thing staying
+  out of scope. **Sequential NPB-Rust is buildable the moment `File::open`-free, thread-free `std` is
+  enough** (which milestone 64 says EP-shaped code already is); the parallel variants are out of scope
+  until §105 is revisited, not blocked on anything new this milestone introduces.
 
 ## STREAM: write it clean rather than take the GPL crate
 
@@ -117,9 +117,9 @@ literature without visiting a second source.
 
 ## What this does not decide
 
-- **Whether NPB's parallel variants ever land on nife.** They are gated on milestone 64's
-  `thread::spawn` fork, which this milestone does not attempt to resolve; it only names that
-  dependency so it is not silently assumed away.
+- **Whether NPB's parallel variants ever land on nife.** They were gated on milestone 64's
+  `thread::spawn` fork, now decided against them for now (§105): out of scope until a real
+  shared-memory-threading customer appears.
 - **HPCC/HPL's fate.** A from-scratch BLAS is a project-sized undertaking on its own (dense
   linear-algebra kernels are exactly the "spec is the whole of correctness" boundary case decision
   46 draws for crypto in the other direction: LAPACK-grade numerics correctness is won by decades of
@@ -140,9 +140,10 @@ literature without visiting a second source.
 - **The sequential-only scope is a real limitation for an "HPC" claim, not a stylistic choice.**
   HPC benchmarks exist to characterize parallel and distributed performance; a sequential EP run
   says something honest about single-core floating point and nothing about the multi-node or
-  multi-core story any real HPC center actually cares about. This milestone's own gating on
-  milestone 64's thread fork is the reason the parallel half waits, and that wait should not be
-  quietly forgotten once the sequential numbers look good.
+  multi-core story any real HPC center actually cares about. Milestone 64's thread fork is now
+  decided against building shared-memory threads for now (§105), which makes the parallel half's
+  absence a scope decision rather than an open gap, and that should not be quietly forgotten once
+  the sequential numbers look good.
 - **No estimate of effort.** Porting NPB-Rust's sequential kernels is bounded by how much of `std`
   each one touches (milestone 64's own measurement method: build it, let the failures name the
   work), and this milestone has not yet run that measurement against any of the eight kernels.
