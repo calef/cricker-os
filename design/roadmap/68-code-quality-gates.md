@@ -1,14 +1,17 @@
 # 68. Code-quality gates: one lint policy, and the lints that lost
 
 **Status: PARTIAL.** The lint policy landed 2026-08-02. The doc-example half **closed 2026-08-17**;
-the `missing_docs` half is a ratchet with a 401-item worklist and one open policy question, which is
-why the block is still PARTIAL rather than BUILT. See notes/doc-coverage.md.
+the `missing_docs` half is a ratchet with a worklist (401 items across 32 crates on 2026-08-17, **235
+across 7 crates as of a 2026-08-22 follow-up lane**) and one open policy question, which is why the
+block is still PARTIAL rather than BUILT. See notes/doc-coverage.md.
 
 **Gate: DECISION.** One policy question is left, and it is the last thing between this block and
 `BUILT`: whether `missing_docs` belongs in `[workspace.lints.rust]` with a per-crate
 `#![allow(missing_docs)]` opt-*out*, instead of the per-crate `#![warn(missing_docs)]` opt-*in* this
-pass landed. The section below states both sides. **Nothing is blocked on the answer**: the 401-item
-worklist can be burned down either way and 23 crates are gated today.
+pass landed. The section below states both sides. **Nothing is blocked on the answer**: the worklist
+can be burned down either way, and the 2026-08-22 lane did exactly that, closing 169 items across 25
+crates (24 crates that had items, plus one, `pgrep`, that had none but had never opted in) and leaving
+50 of the 57 crates under `crates/` gated, against 23 when this block was last touched.
 
 What is now checked rather than counted, which is the change that matters most here: **the examples
 are enforced by `cargo test --doc`** and the item docs by `script/lint`'s `-D warnings` in the crates
@@ -80,12 +83,12 @@ assert.
 ## The `missing_docs` half: a ratchet, a worklist, and one question for calef
 
 **401 undocumented public items across 32 of the 55 crates** (2026-08-17). Adopting the lint
-tree-wide is a commitment to write those 401 first, so it is not adopted tree-wide. What is adopted is
-`#![warn(missing_docs)]` in **the 23 crates that are already clean**, which under `script/lint`'s
-`-D warnings` means they cannot regress. Six of the remaining crates are one item from clean.
+tree-wide is a commitment to write those 401 first, so it was not adopted tree-wide at first. What was
+adopted then is `#![warn(missing_docs)]` in **the 23 crates that were already clean**, which under
+`script/lint`'s `-D warnings` means they cannot regress.
 
-**Two measurement traps caught this lane and are worth the paragraph**, because both make a number
-look authoritative while being wrong.
+**Two measurement traps caught the first lane and are worth the paragraph**, because both make a
+number look authoritative while being wrong.
 
 `rustdoc --show-coverage` and `missing_docs` **do not measure the same thing**, and this block used
 the first to justify deferring the second. Six crates report 100% documented and still have hits, in
@@ -96,12 +99,22 @@ And **cargo replays cached diagnostics**, so a per-package loop attributes other
 the selected crate. That produced a first answer of 647 items across 38 crates, which is wrong and
 looked entirely plausible. Measure it as one workspace-wide invocation into a clean target directory.
 
+**A follow-up lane burned the worklist down on 2026-08-22**, re-measuring the trap-avoiding way before
+and after every batch: the honest count had drifted to 404 across 31 crates in the five days since,
+and the lane closed 169 of those, crate by crate, writing real doc comments (not filler) for every
+item and turning on `#![warn(missing_docs)]` on each crate it brought to zero. **235 items remain,
+across 7 crates**: `isa` (54), `smb_proto` (52), `mdns_proto` (41), `pci` (24), `gpt` (23),
+`grant_plan` (22), `compositor` (19). 50 of the 57 crates under `crates/` now carry the opt-in, up
+from 23. See notes/doc-coverage.md for the full crate list and the per-crate worklist table.
+
 **The open question** is whether the lint should instead go in `[workspace.lints.rust]` with an
 explicit `#![allow(missing_docs)]` in each crate that is not ready. That is higher on AGENTS.md's
 ladder, since the default becomes on and the opt-out list is a worklist that can only shrink, and it
 is the only version that covers a crate created tomorrow. It also contradicts a rule written in that
 table's own comment ("adding a lint to this table is a decision to fix every existing violation
-first"), so inverting it for one lint is a policy change and not a lane's to make.
+first"), so inverting it for one lint is a policy change and not a lane's to make. The 2026-08-22
+lane's pull request carries a six-questions writeup and a recommendation for calef to weigh, now that
+the worklist a switch would need `#[allow]` for is 7 crates rather than 32.
 
 ## What closing the unsafe half taught
 

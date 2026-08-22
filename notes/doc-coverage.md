@@ -81,51 +81,54 @@ Measure it that way or not at all: cargo replays cached diagnostics, and a per-p
 other crates' warnings as the selected crate's. A first attempt at this measurement said 647 across
 38 crates for exactly that reason.
 
-Adopting the lint tree-wide is a commitment to write those 401 first, so it is not adopted tree-wide.
-What is adopted is **a per-crate opt-in in the 23 crates that are already clean**, spelled
+Adopting the lint tree-wide is a commitment to write those 401 first, so it was not adopted tree-wide
+at first. A milestone 68 follow-up lane re-measured on 2026-08-22 (the trap-avoiding way: one
+workspace-wide `cargo clippy --workspace --lib -- -W missing_docs` into a clean target directory) and
+found the honest count had already drifted to 404 across 31 crates, five days on. That lane closed 169
+of those 404, crate by crate, re-measuring the same way after every batch: **235 items remain, across
+7 of the 57 crates under `crates/`**. The other 50 carry the per-crate opt-in, spelled
 `#![warn(missing_docs)]` beside each crate's `#![no_std]`. Under `script/lint`'s `-D warnings` that is
 a hard gate, so those crates cannot regress:
 
-`bitfont`, `block_roster`, `canary_gate`, `clock_proto`, `component_plan`, `coremark`, `cpu_set`,
-`cred_proto`, `entropy_proto`, `gfx_proto`, `glob`, `manual`, `mdns_config`, `ntlm`, `ntp_proto`,
-`ps`, `sink_proto`, `steal_request`, `swish`, `system_initializer`, `user_heap`, `user_rt`,
-`wake_handshake`.
+`abi`, `asid`, `bitfont`, `block_roster`, `c_seam`, `calendar`, `canary_gate`, `capability`,
+`clock_proto`, `component_plan`, `coremark`, `cpu_set`, `cred`, `cred_proto`, `dma_validator`, `dtb`,
+`elf`, `entropy_proto`, `frames`, `fs_proto`, `gfx_proto`, `glob`, `intrusive`, `ipc`, `line_editor`,
+`manual`, `mdns_config`, `measured_boot`, `nifefs`, `ntlm`, `ntp_proto`, `nvme`, `paging`, `pgrep`,
+`ps`, `regions`, `sink_proto`, `slots`, `socket_proto`, `steal_request`, `supervision_proto`,
+`swap_proto`, `swish`, `system_initializer`, `timetable`, `user_heap`, `user_rt`, `video_terminal`,
+`virtio`, `wake_handshake`.
 
 The worklist, largest first, so the next person can take one crate and turn its line on:
 
-| Crate | Items | Crate | Items |
-|---|---|---|---|
-| `isa` | 54 | `nvme` | 8 |
-| `smb_proto` | 52 | `swap_proto` | 7 |
-| `mdns_proto` | 41 | `elf` | 7 |
-| `pci` | 24 | `calendar` | 7 |
-| `gpt` | 23 | `supervision_proto` | 6 |
-| `grant_plan` | 22 | `frames` | 6 |
-| `compositor` | 19 | `dma_validator` | 6 |
-| `fs_proto` | 15 | `cred` | 6 |
-| `socket_proto` | 14 | `intrusive` | 5 |
-| `video_terminal` | 13 | `slots` | 4 |
-| `paging` | 13 | `dtb` | 4 |
-| `capability` | 11 | `c_seam` | 4 |
-| `abi` | 11 | `measured_boot` | 3 |
-| `nifefs` | 10 | `line_editor` | 2 |
-|  |  | `virtio`, `regions`, `ipc`, `asid` | 1 each |
+| Crate | Items |
+|---|---|
+| `isa` | 54 |
+| `smb_proto` | 52 |
+| `mdns_proto` | 41 |
+| `pci` | 24 |
+| `gpt` | 23 |
+| `grant_plan` | 22 |
+| `compositor` | 19 |
 
-Six crates are one item from clean, which makes them the cheapest work in this table and the place to
-start.
+Every crate that was one item from clean on 2026-08-17, and every crate under about a dozen items, is
+now closed. What remains is seven substantially larger crates (19 to 54 items each); none is close to
+clean, so there is no more "cheapest item" shortcut left in this table.
 
 Outside `crates/`: **`xtask` has 176**, **`user` has 50**, and **`kernel` has 2** (both
-`#[macro_export]` macros in `console.rs`, documented by this pass). The kernel's near-zero count is
-not a surprise once you look: it is a binary, so almost nothing in it is public API. It does not carry
-the attribute anyway, because on a binary crate the lint reaches only exported macros, which is a
-small return for a line in a file every lane touches.
+`#[macro_export]` macros in `console.rs`, documented in the original pass). Unmeasured by this
+follow-up lane, since `--lib` (required to avoid the cache-replay trap) does not reach a `[[bin]]`-only
+package, and none of xtask/user/kernel were touched. The kernel's near-zero count is not a surprise
+once you look: it is a binary, so almost nothing in it is public API. It does not carry the attribute
+anyway, because on a binary crate the lint reaches only exported macros, which is a small return for a
+line in a file every lane touches.
 
 ## The decision this leaves open
 
 Whether `missing_docs` should go in `[workspace.lints.rust]` with an explicit
-`#![allow(missing_docs)]` in each of the 32 crates that are not ready, instead of the opt-in above.
+`#![allow(missing_docs)]` in each of the 7 crates that are not ready, instead of the opt-in above.
 That is higher on AGENTS.md's ladder, because the default becomes on and the opt-out list is a
 greppable worklist that can only shrink, and it is what would cover a crate created tomorrow. It also
 contradicts a rule written in that table's own comment: *"adding a lint to this table is a decision to
 fix every existing violation first. Nothing goes in this table to see what it finds."* Inverting that
-for one lint is a policy change, so it is calef's and not a lane's.
+for one lint is a policy change, so it is calef's and not a lane's; see the pull request that closed
+this worklist down to 7 crates for the six-questions writeup and a recommendation.
