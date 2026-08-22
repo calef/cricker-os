@@ -1860,6 +1860,10 @@ fn wide(m: [u64; 3]) -> [u64; 5] {
 /// Callable by a kernel thread directly (this function) or by a user thread through the `SEND`
 /// method on an endpoint capability (see syscall.rs). Same code underneath.
 pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
+    // E3's footprint-perturbation experiment (milestone 134): reachable but never taken; see
+    // `crate::fastpath_pad` for what this is and why it costs nothing when the feature is off.
+    #[cfg(feature = "fastpath_pad")]
+    crate::fastpath_pad::maybe_pad();
     let msg = wide(msg);
     let block = {
         let mut guard = SCHED.lock();

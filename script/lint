@@ -113,7 +113,7 @@ cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloa
 # by `cargo xtask` and checked by nobody. Parity is a gate, not an aspiration (DECISIONS §19), and
 # that applies to the gate itself.
 for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
-    for feat in shell bench initboot smb_serve icount board; do
+    for feat in shell bench initboot smb_serve icount board fastpath_pad; do
         echo "==> clippy: kernel --features $feat ($tgt)"
         cargo clippy -p kernel --features "$feat" --target "$tgt" -- -D warnings
     done

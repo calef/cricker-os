@@ -169,3 +169,11 @@ smb_serve = []
 # ceiling catches what the no-progress heartbeat cannot see (testing.rs). It is EXPECTED TO FAIL the
 # run, so it is not part of the normal suite; see notes/scheduler.md for the command that runs it.
 watchdog_probe = []
+# E3's footprint-perturbation experiment (milestone 134,
+# design/roadmap/134-the-measurements-that-decide.md): adds a large, reachable-but-never-taken
+# function to the IPC fastpath's call graph, roughly doubling `ipc_fastpath`'s measured footprint,
+# so `script/fastpath-footprint --features fastpath_pad` and `cargo xtask bench --real
+# --extra-features fastpath_pad` can compare the padded build against the un-padded baseline while
+# the two run byte-identical IPC work. Off by default: an ordinary build never links the padding
+# in. See kernel/src/fastpath_pad.rs. Name provisional.
+fastpath_pad = []
