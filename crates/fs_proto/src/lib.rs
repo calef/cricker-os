@@ -147,10 +147,6 @@
 //! `fs` is this tree's own word for the service, from `fs_server` through `fs_test_client`.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// One page, in bytes. Also one RedoxFS block (`redoxfs::BLOCK_SIZE`), so a block move is a page
 /// move and the frame the kernel maps into both address spaces holds exactly one block.

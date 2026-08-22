@@ -12,10 +12,6 @@
 // `ChildEndowment::new()` is an empty endowment, and a `Default` impl would give a second spelling for the
 // same thing in a crate whose whole job is that two binaries agree on one spelling.
 #![allow(clippy::new_without_default)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 //! **The supervision tree: the shared half** (milestone 22 phase B.2).
 //!
 //! Three programs make up the tree that shrinks init's authority (`root_supervisor`, `spawner`, `sub_server_supervisor`,

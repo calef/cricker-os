@@ -55,11 +55,6 @@
 //! device family's own name from the specification and would sit in the tenet's protected group if
 //! anyone had filed it there; nobody has. Introduced 2026-07-14 with milestone 9's block driver.
 
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
-
 use abi::irq;
 use fs_proto::blk;
 use user_rt::{exit, invoke, send};

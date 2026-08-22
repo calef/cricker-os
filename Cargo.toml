@@ -129,6 +129,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 #
 # See notes/unsafe-obligations.md for the survey, and for the three things neither lint can reach.
 unsafe_op_in_unsafe_fn = "warn"
+# Workspace-wide as of DECISIONS §107 (2026-08-22), a deliberate, recorded exception to §61's own
+# rule against adding a lint before every existing violation is fixed: the worklist had shrunk from
+# 32 crates to 7 by the time this landed, so the cost is 7 `#[allow(missing_docs)]` lines, not an
+# open-ended commitment. Those 7 (`isa`, `smb_proto`, `mdns_proto`, `pci`, `gpt`, `grant_plan`,
+# `compositor`) carry the allow explicitly, citing their own item count; see notes/doc-coverage.md
+# for the tracked worklist.
+missing_docs = "warn"
 
 [workspace.lints.clippy]
 # --- The one this project most obviously wanted. Every `unsafe` block states the invariant that

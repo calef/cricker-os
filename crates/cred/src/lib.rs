@@ -119,10 +119,6 @@
 //! `credentialer` in full and left this crate as it stood, without saying so.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// The memory-hard scratch unit, re-exported so a caller can size its buffer without naming our
 /// dependency. One [`Block`] is 1 KiB, which is also Argon2's `m_cost` unit.

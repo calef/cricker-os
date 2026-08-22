@@ -138,6 +138,9 @@
 //! rather than a collision: the crate is that program's logic, lifted out to be host-testable.
 
 #![no_std]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 19-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 
 // ================================================================================================
 // The screen.

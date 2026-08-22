@@ -156,10 +156,6 @@
 //! declaration is only half of it; the wiring is the other half and is where the checking lives).
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// **How many capabilities one component may declare.** A [`Plan`] is a value in a `no_std` program
 /// with no allocator, so this is a hard bound rather than a hint: a manifest past it is

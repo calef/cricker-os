@@ -65,10 +65,6 @@
 //! hashing, so the new name also buys the recognition a reader arrives with.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 // The crate is `no_std` because the kernel links it. Its tests run on the host and want `Vec` and
 // `String` to build tampered inputs, so the test build pulls `std` back in explicitly.

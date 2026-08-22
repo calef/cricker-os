@@ -16,6 +16,9 @@
 
 #![no_std]
 #![no_main]
+// Not the crates/ library surface milestone 68's ratchet tracks (DECISIONS §107): the kernel binary
+// is one crate root behind an ABI boundary, not a documented API.
+#![allow(missing_docs)]
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]

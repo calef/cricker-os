@@ -59,10 +59,6 @@
 //! (Address Space IDentifier) as the reason.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// One more than the largest ASID we hand out. 8-bit ASIDs: every aarch64 implementation has at
 /// least these, and 255 usable numbers exceed `MAX_SPACES` (160) with room.

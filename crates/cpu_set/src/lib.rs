@@ -30,10 +30,6 @@
 //! assert_eq!(cpu_set::nth_in(vf2, 3), Some(1)); // wraps around the set
 //! ```
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// Iterator over the set bit positions of a mask, ascending. See [`cpus_in`].
 #[derive(Clone, Copy)]

@@ -84,10 +84,6 @@
 //! crate is that program's logic (DECISIONS §63); it was lifted out on 2026-08-02 by milestone 70.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 pub mod sequence;
 

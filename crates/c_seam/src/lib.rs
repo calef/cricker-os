@@ -87,11 +87,6 @@
 //! while being none of them, which is one of the cases that produced the rule). The `c_` prefix
 //! means "written in C" (DECISIONS §31).
 
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
-
 /// The page size, which is the grant's size too. One page is enough: the seam is what is under test,
 /// not throughput.
 pub const PAGE: u64 = 4096;

@@ -83,10 +83,6 @@
 //! DMA-confinement validator": it had named itself a noun and carried a verb).
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// Bit 0: this descriptor chains to another (`next` names it). The validator follows the chain,
 /// bounded by the queue size, so a `next` cycle cannot spin forever.

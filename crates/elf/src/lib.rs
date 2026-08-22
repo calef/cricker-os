@@ -77,10 +77,6 @@
 //! exists to buy.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// `\x7fELF`.
 const MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];

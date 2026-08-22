@@ -125,6 +125,10 @@
 //! `credentialer_test_client` are in the same boat. Recorded here rather than acted on.
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 extern crate alloc;

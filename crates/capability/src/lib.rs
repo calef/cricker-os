@@ -53,10 +53,6 @@
 //! `CSpace` itself stays, because it is seL4's own spelling.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// What you may do with a capability.
 ///

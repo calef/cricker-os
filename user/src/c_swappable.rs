@@ -22,6 +22,10 @@
 //! two cases that made naming a ratified act.
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,

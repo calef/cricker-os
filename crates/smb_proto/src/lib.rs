@@ -1,4 +1,7 @@
 #![cfg_attr(not(test), no_std)]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 52-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 //! **The SMB2 wire format, and the server logic that speaks it** (milestone 54).
 //!
 //! macOS mounts SMB natively, and milestone 55 (a Time Machine target) requires SMB regardless, so

@@ -119,10 +119,6 @@
 //! rules, and never on this crate.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// The widest domain a survey can produce: the kernel's entire thread table (`MAX_THREADS` in
 /// `kernel/src/sched.rs`, 128 as of milestone 126).

@@ -121,10 +121,6 @@
 //! implements (DEC's Video Terminals) and `display_terminal` for its role.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 pub mod keymap;
 pub mod script;

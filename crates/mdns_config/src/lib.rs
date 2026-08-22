@@ -1,8 +1,4 @@
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 //! **What this machine advertises, as a document a person edits** (milestone 55's responder).
 //!
 //! `mdns_proto` takes the whole advertisement as data and hard-codes none of it, deliberately: the

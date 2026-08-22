@@ -53,10 +53,6 @@
 //! into `os_primitives_benchmarker`.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// One byte through a CRC16 (CoreMark's polynomial and bit order). Every work item folds its result
 /// here; the dependency chain is what stops the optimizer from deleting the computation.

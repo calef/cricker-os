@@ -64,6 +64,9 @@
 //! protected list names, and nothing records the choice.
 
 #![no_std]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 54-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 
 pub mod aarch64;
 pub mod cpu_list;

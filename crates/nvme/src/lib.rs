@@ -92,11 +92,6 @@
 //! driver-logic crate after the family it drives. The kernel's `nvme` module is this crate's
 //! volatile half, the crate/module name-sharing convention AGENTS.md records for `compositor`.
 
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
-
 /// Register offsets in BAR0 (NVMe 1.4 §3.1). All are 4-byte registers or 8-byte registers the
 /// kernel accesses as two 4-byte halves (the spec permits either for the 64-bit ones).
 pub mod regs {

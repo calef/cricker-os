@@ -83,10 +83,6 @@
 //! made.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// `"blkrostr"` little-endian, at offset 0. A page that does not start with this is not a roster,
 /// and in particular a zeroed frame is not an empty one.

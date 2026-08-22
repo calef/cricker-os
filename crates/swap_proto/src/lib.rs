@@ -68,11 +68,6 @@
 //! claims: calef ruled on the rule, and never on this crate.
 //! The stem is milestone 23's word for live replacement, which no record weighs against another.
 
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
-
 use user_rt::invoke;
 
 // ===========================================================================================

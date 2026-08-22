@@ -115,10 +115,6 @@
 //! The stem is the service's own word (`clock`, DECISIONS §43), which is itself unrecorded.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 // The atomics are loom's under `--cfg loom` and the real ones otherwise, which is what lets
 // `script/interleaving-check` replay this seqlock under every interleaving the C11 model permits

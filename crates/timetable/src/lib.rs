@@ -63,7 +63,6 @@
 //! `metronome` (names the tick and says nothing about the grant, which is the half that matters).
 
 #![no_std]
-#![warn(missing_docs)]
 
 use grant_plan::expand::Expansion;
 use grant_plan::{Endowment, Holdings, Refusal};

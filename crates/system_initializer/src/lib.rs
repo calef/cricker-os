@@ -1,8 +1,4 @@
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 // `Result<_, ()>` throughout the build path, for `supervision_proto`'s reason: every failure here is
 // a syscall that already returned its own error through the ABI, and a second, richer error would be
 // inventing detail the kernel did not provide. See that crate's head comment.

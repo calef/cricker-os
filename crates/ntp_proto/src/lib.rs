@@ -136,10 +136,6 @@
 //! The stem is RFC 5905's own name for the protocol, so there was nothing to choose.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// The UDP port NTP runs on. Here for the client that will eventually open the socket; this crate
 /// never opens one.
