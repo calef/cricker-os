@@ -79,13 +79,13 @@ static TEST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
 
 /// **A test's fixture is not there, on this machine, and that is not this test's fault.**
 ///
-/// Milestone 145 (notes/visionfive2.md's bench narrative): the on-board test-suite exit
-/// (milestone 16a) ran the `#[test_case]` suite on the VisionFive 2 for the first time, and
-/// found roughly thirty tests that correctly expect a synthetic device only `xtask`'s QEMU
-/// runners attach (virtio-rng, virtio-gpu, an NVMe controller, ...). None of them was wrong;
-/// none of them had ever needed to run anywhere else. `Testable::run` had no way to record a
-/// third outcome besides pass (return) and fail (panic), so a test with no fixture had exactly
-/// one honest option: crash the whole suite, which is what `nvme.rs`'s end-to-end test did.
+/// Milestone 145: the on-board test-suite exit (milestone 16a) ran the `#[test_case]` suite on
+/// the VisionFive 2 for the first time, and found roughly thirty tests that correctly expect a
+/// synthetic device only `xtask`'s QEMU runners attach (virtio-rng, virtio-gpu, an NVMe
+/// controller, ...). None of them was wrong; none of them had ever needed to run anywhere else.
+/// `Testable::run` had no way to record a third outcome besides pass (return) and fail (panic),
+/// so a test with no fixture had exactly one honest option: crash the whole suite, which is what
+/// `nvme.rs`'s end-to-end test did.
 ///
 /// The boot tour already has the shape this borrows: `main.rs` prints "skipped (no 'outlaw'
 /// program in the initrd)" instead of asserting a fixture that may not be there. `skip!()` is
