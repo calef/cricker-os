@@ -11,12 +11,12 @@ enumerable by a reader.
 **Gate: NONE.** The first increment needs nothing that does not exist: milestone 51's clock service
 is enough to port FTQ today, on both boards, with no PMU and no new kernel surface. The *bound*
 argument that follows the measurement is where this milestone earns its number, and it needs no
-decision to start either — it needs the kernel's own preemption sources enumerated, which is reading
+decision to start either: it needs the kernel's own preemption sources enumerated, which is reading
 code that is already written.
 
 **In brief.** OS noise is the interference a running compute thread experiences from anything other
 than its own instructions: timer ticks, interrupt delivery, other threads, softirq-shaped kernel
-work. At HPC scale it is not a curiosity — Petrini et al.'s ASCI Q study showed noise amplifying
+work. At HPC scale it is not a curiosity: Petrini et al.'s ASCI Q study showed noise amplifying
 across a barrier-synchronized job of thousands of nodes into slowdowns wildly disproportionate to
 the noise's own size on one node, which is why lightweight kernels (IBM's CNK, Cray's CNL) exist as
 a category. Every tool that quantifies it today (Netgauge's FTQ port, LLNL's `system-noise` FWQ
@@ -33,13 +33,13 @@ counters and profilers, milestone 147's territory, not about scheduler/interrupt
 cited here only for the board it happens to already report real numbers on: **the VisionFive V2's
 JH7110, the same board calef has wired to his bench for milestone 16a**, appears in the paper's
 Table 2 (NPB Class B, Mop/s) alongside the SG2042, VisionFive V1, SiFive U740 and others. That table
-is a useful sanity check for milestone 149's NPB comparison, not for this milestone's noise claim —
+is a useful sanity check for milestone 149's NPB comparison, not for this milestone's noise claim;
 the paper is silent on OS noise entirely, which is worth stating plainly so this milestone's
 citation of it does not overclaim support it does not offer.
 
 ## Two phases, and the first needs no decision
 
-### Phase A — measure, and compare (buildable today)
+### Phase A: measure, and compare (buildable today)
 
 - **Port FTQ** (BSD-licensed, plain C, the serial variant needs no threads) as a nife user program
   against milestone 51's clock service. `notes/benchmarks.md` already has the discipline (matched
@@ -54,19 +54,19 @@ citation of it does not overclaim support it does not offer.
   underneath a compute thread the way Linux's does. If the measurement disagrees, that disagreement
   is the finding, not a reason to discard the run.
 
-### Phase B — enumerate, and bound (the differentiator)
+### Phase B: enumerate, and bound (the differentiator)
 
 **A histogram is a claim about one run; an enumeration is a claim about every run.** Phase B is
 walking the kernel's own preemption sources and pricing each one, which is possible here specifically
-because the kernel is small enough to read completely — the same property that makes milestone 132's
-call-graph walk and milestone 84's stack high-water mark tractable at all:
+because the kernel is small enough to read completely (the same property that makes milestone 132's
+call-graph walk and milestone 84's stack high-water mark tractable at all):
 
 - **Every interrupt source the confined scheduler can take**: the timer tick (bounded, periodic,
   known period), IPC delivery (milestone 101 already measures this path's cost), and device
   interrupts routed to a confined driver (milestone 108's frame-capability drivers name exactly which
   ones exist). List them exhaustively; a fourth one appearing later is this gate's job to catch.
-- **A worst-case cost per source**, not an average. The fastpath-footprint gate's method — walk the
-  release disassembly rather than trust a benchmark that could get lucky — is the right instrument
+- **A worst-case cost per source**, not an average. The fastpath-footprint gate's method (walk the
+  release disassembly rather than trust a benchmark that could get lucky) is the right instrument
   here too: an interrupt handler's own worst-case path length is a static property of the compiled
   binary, not a sampled one.
 - **A published bound**, in the same register-of-measures discipline milestone 134 already keeps:
@@ -83,7 +83,7 @@ is not linear in its effect at scale (Petrini's finding), so a center wants a **
 sample. No general-purpose kernel offers one, because none is verified and none is small enough for
 a human to enumerate its own preemption sources with confidence. **nife's verification path (Kani
 over the capability core, loom over the concurrency-sensitive paths, the fastpath-footprint gate's
-call-graph method) is not a testing convenience here — it is the mechanism that makes Phase B's
+call-graph method) is not a testing convenience here: it is the mechanism that makes Phase B's
 "and no others exist" a checkable claim rather than an assertion.** That is the sentence to put next
 to the histogram, and it is the sentence a lightweight-kernel HPC customer has never been able to
 get from Cray, Intel, or Linaro's tools, because those tools profile a kernel none of them verify.

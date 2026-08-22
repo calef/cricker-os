@@ -5,8 +5,8 @@ what would a performance-analysis story look like that CrayPat, Intel VTune and 
 tell, given that all three are built on their host OS's ambient perf-counter interface
 (`perf_event_open` or a vendor driver reachable by any sufficiently-privileged process).
 
-**Gate: MILESTONE 75, DECISION.** Milestone 75 already asks the prior question — whether the cycle
-counter is ambient or a capability — for one consumer (`sel4bench`). This milestone is what that
+**Gate: MILESTONE 75, DECISION.** Milestone 75 already asks the prior question (whether the cycle
+counter is ambient or a capability) for one consumer (`sel4bench`). This milestone is what that
 decision buys once there is a second consumer: a profiler. It cannot be scoped until 75 answers
 what the grant unit even is, and it adds its own decision, below, about what a profiling session may
 name.
@@ -17,7 +17,7 @@ authority: `perf_event_open` targets any pid the caller's privilege reaches, gat
 name that in practice is "root, or nothing"). A profiling tool with that access on a shared HPC node
 can, in principle, sample a neighboring tenant's job. This is not a hypothetical: cache-timing and
 counter-based side channels between co-scheduled tenants are the reason `perf_event_paranoid`
-exists at all, and its own defence is coarse — disable unprivileged profiling everywhere, which is
+exists at all, and its own defence is coarse: disable unprivileged profiling everywhere, which is
 why HPC centers frequently run it at `-1` in practice for exactly the tools this milestone answers.
 
 **Independent confirmation this is a real, named gap rather than a nife-specific concern**: Brown,
@@ -28,7 +28,7 @@ profiling tooling is a significant weakness for HPC... there are no mainstream p
 that support RISC-V, which is due to a mixture of the software side by the tool developers but also
 the hardware events that are made available by RISC-V CPUs."* That second clause matters for scope
 here: the paper's own read is that the gap is not purely a software/OS-integration problem the way
-this milestone frames it (ambient perf interface versus capability), but partly a hardware one —
+this milestone frames it (ambient perf interface versus capability), but partly a hardware one:
 some RISC-V silicon may simply not expose the event set (cache misses, branch mispredicts, and so
 on) a profiling session would want to name. Milestone 74's own ISA-discovery pattern (`Isa`,
 built at boot, probing what is actually present rather than assuming a fixed event catalogue) is
@@ -69,12 +69,12 @@ counter set":
   should be able to hold a *set* from day one so it is not re-designed the day a second event type is
   asked for, but the set is still a capability's contents, not an ambient enable bit.
 - **The read is a syscall against a held capability**, not a register the kernel opened to EL0
-  wholesale. This is the fork 75 already frames as "trap-and-check on the register read" — the
+  wholesale. This is the fork 75 already frames as "trap-and-check on the register read": the
   profiler never gets ambient `PMUSERENR_EL0`/`scounteren` access; every read is checked against the
   capability it presented.
 
 **If 75 chooses option 1 (ambient) or option 3 (kernel-mediated)**, this milestone still has a
-question to answer — whether a profiling *session* (as opposed to the single ported counter) should
+question to answer: whether a profiling *session* (as opposed to the single ported counter) should
 reopen the ambient-vs-capability fork on its own evidence, since a general profiler is a much larger
 side-channel surface than one benchmark harness reading one counter. Recorded here so the fork does
 not silently inherit 75's answer for a different-sized risk, which is exactly the mistake 75 itself
@@ -86,7 +86,7 @@ was carved out to avoid making about the generic timer.
 Forge structurally cannot make, because none of them run under a kernel where "may this profiler
 observe that target" is a checked capability rather than a privilege level. The demo: two confined
 workloads on one board, a profiler holding a capability over only one of them, and a negative
-control — the profiler attempts to read the other's counters and is refused at the type level, the
+control: the profiler attempts to read the other's counters and is refused at the type level, the
 same shape milestone 123's demonstration already asks every capability claim to carry.
 
 ## What this does not decide
