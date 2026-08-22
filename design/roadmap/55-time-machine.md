@@ -128,6 +128,87 @@ green it caught with a source-address filter and recorded.
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
 "a file server".
 
+## The path to BUILT, ordered and gated (scoped 2026-08-22)
+
+This is the milestone's own scoping lane, run against the six-questions framework AGENTS.md asks a
+fork to answer before it reaches calef. **The finding is that there is no fork left to bring him.**
+Both irreversible decisions this block ever carried are already decided (the SMB3 subset, 2026-08-15;
+the metadata stream-versus-sidecar split, §99, 2026-08-18), the mDNS wire protocol was written rather
+than taken as a dependency and is built, and what remains is one gate: contact with a real Mac. That
+gate is not code waiting to be written, it is **hardware waiting to exist**, and it has a dependency
+chain worth making explicit because nothing in this block currently names it.
+
+### Complete, and what closed each piece
+
+1. **The scoping decision itself**, calef, 2026-08-15: the SMB3 subset Time Machine needs, not a
+   general server. **Gate: NONE**, above.
+2. **Discovery**, pull request #246, 2026-08-16: `crates/mdns_proto`, `crates/mdns_config`, and
+   `user/src/mdns_responder.rs` answer `_smb._tcp`, `_adisk._tcp` and `_device-info._tcp` against the
+   measured reference, both ISAs. Written, not vendored: it is a from-scratch parser and responder over
+   an existing `smoltcp` feature flag, not a new dependency, which is §46's "write it, it's on the
+   verification path" read correctly the first time. See notes/mdns.md.
+3. **The `AAPL` create context and the Time Machine flag**, pull request #292, 2026-08-17: the bit
+   that makes macOS accept the share at all.
+4. **Identity**, inherited from milestone 54, pull request #274, 2026-08-17: NTLMv2 while the adapter
+   holds no key.
+5. **The Apple-metadata fork, answered rather than built**, §99, 2026-08-18: option 1 (say nothing,
+   let the client write `._` sidecars, zero new code), and the workload that actually wants named
+   streams split out as its own milestone, 137. The load-bearing finding survives repeating: **a Time
+   Machine backup is a sparse bundle, directories and band files, and never touches this surface at
+   all.** Milestone 55 carried it by proximity, not by requirement.
+6. **Durability**, pull request #311, 2026-08-18: `FULL_SYNC` is now a claim backed by a real device
+   `VIRTIO_BLK_T_FLUSH`, witnessed by a flush count that only a real round trip can advance.
+7. **Throughput**, 2026-08-19: the 64 KiB transfer reaches the mount; measured 4.8x write / 2.4x read
+   through the host SMB prober. `socket_proto::DATA_MAX` is now the binding ceiling and already carries
+   its own promotion trigger in notes/smb.md's BUGS, which step C below is what fires it.
+
+### Remaining: one gate, and it is transitively blocked on a milestone that is not this one
+
+**Nothing left here is a design decision.** The remaining work is real-Mac contact, and three things
+stand between here and it, in dependency order. This block's existing "Nothing here has met a Mac"
+paragraph (below) names the QEMU limitation; it does not name the harder blocker underneath it, which
+this scoping pass found by reading milestone 53 rather than assuming a board and a cable would do.
+
+**Step A. A real NIC driver, on some board.** Every network driver in the tree is `virtio-net`, which
+only exists under QEMU; real silicon has none. Milestone 53 ("The board's own peripherals: network and
+storage on real silicon") is **Status: PARTIAL, Gate: HARDWARE**, and its own text is direct: "this is
+where virtio stops carrying us." What it still owes is the JH7110's Synopsys DesignWare GMAC driver on
+the VisionFive 2 (the riscv64 board already on the desk since 2026-08-14) and the PLDA XpressRICH
+root-complex work that carries the NVMe driver to the real M.2 slot. **aarch64 has no board at all
+yet**; notes/aarch64-board-survey.md is still choosing one. So the realistic near-term path to a real
+Mac is through riscv64, not aarch64, purely because that is where hardware already exists. That is a
+sequencing observation, not a design fork: it costs nothing to reverse if an aarch64 board arrives
+first, and it does not change what either driver has to do.
+
+**Step B. Multicast on a real segment.** slirp cannot carry it, so nothing about discovery has been
+proven end to end; the closest this tree has come is an injected query that accidentally escaped
+QEMU's NAT and came back from the real router, which is evidence the segment exists and not evidence
+the responder works on it. Once Step A gives a board a real interface, this step is `dns-sd -B
+_adisk._tcp` from a real Mac against the running responder, on the real family segment.
+
+**Step C. A real backup, and a real power cut.** This project's own standard for durability claims is
+"tested by actually cutting power" (milestone 53's storage half), which a QEMU flush count cannot
+stand in for. That needs milestone 53's NVMe path on real silicon, not just the network half, so a
+full validation of this milestone's `FULL_SYNC` claim waits on more of 53 than discovery alone does.
+A narrower first experiment (mount, small write, clean unmount) needs only Step A and could run before
+persistent storage lands, and separating those two experiments is worth doing explicitly rather than
+waiting for all of 53 to call any of it started.
+
+**Adjacent, not blocking: milestone 131.** The share this milestone builds still admits guests, and a
+family backup target that admits guests is not one calef would trust with the only copy. Milestone 131
+("A share is configured, not compiled, and its secret arrives from somewhere") is what closes that,
+and it is **not** a prerequisite for the protocol-correctness gate above: the first real Mac contact
+can and should happen against the guest share this tree already has, the same way every QEMU gate does
+today. It is a prerequisite for the day this stops being a lab experiment and starts being the family's
+actual backup target, which is a distinct milestone this block should stop trying to also be.
+
+**What this scoping pass did not find**: an irreversible fork inside milestone 55 itself that needs
+calef's decision before Steps A through C can start. The mDNS library question, the vendor-versus-write
+question, and the Apple-metadata question that this lane's brief asked about are all already answered
+in the sections above, most of them months before this pass began. The one sequencing call made here
+(riscv64 before aarch64, because the hardware already exists) is offered as a recommendation rather
+than a question, per AGENTS.md's own rule that a reversible fork gets a recommendation, not a lane.
+
 ## The reference implementation is known, and calef supplied its exact configuration
 
 **calef's router is a GL.iNet GL-BE9300 (Flint 3) running OpenWrt, serving three family Time Machine
@@ -251,6 +332,13 @@ beats deriving them from the RFC.
 
 ## The remaining scope risk is still worth measuring directly
 
+**Superseded 2026-08-22, and left standing because it shows the delta between assumption and
+measurement.** This section is the milestone's original framing, written before the capture it asks
+for had happened. Every capture it calls for has since happened: the router is confirmed full Samba
+with `vfs_fruit` (below), the mDNS records are captured (notes/mdns.md), and the SMB3 subset question
+it poses at the end is the one decided 2026-08-15 and recorded at the top of this block. Read it as
+the record of what was unknown, not as a live task list; "The path to BUILT" above is the current one.
+
 **calef's router serves Time Machine over SMB today (2026-07-30).** That is a working reference
 implementation on his own network, so the requirement list below stops being something to guess at.
 **The first task of this milestone needs no board and no code**: capture the SMB session between the
@@ -283,9 +371,11 @@ It does not survive contact: Samba assumes `fork`, threads, and an enormous POSI
 milestone 52 records that we have no `fork` and that getting one is not cheap. Worth stating, because
 it is an honest limit of the C-seam story rather than a gap nobody noticed.
 
-**The scoping decision to make first**, before any code: whether to implement the subset of SMB3 that
-Time Machine needs, or a more general SMB3 server. The subset is much smaller and much less useful for
-anything else; the general one is a project in its own right.
+~~**The scoping decision to make first**, before any code: whether to implement the subset of SMB3
+that Time Machine needs, or a more general SMB3 server.~~ **Decided 2026-08-15**, at the top of this
+block: the subset. The general server is milestone 137's question to reopen if it ever wants one, not
+this milestone's.
 
-**Effort: not estimated, and deliberately so.** Anyone picking this up should re-scope it from scratch
-against a verified requirement list rather than trusting this block.
+~~**Effort: not estimated, and deliberately so.**~~ **Superseded 2026-08-22.** Effort from here to
+BUILT is now bounded rather than open: it is milestone 53's hardware gate (Steps A through C above),
+not an unscoped rewrite. "The path to BUILT" above is the current re-scope this note asked for.
