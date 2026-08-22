@@ -75,6 +75,28 @@ straight to the screen rather than through its own result endpoint could hand it
 lose the ability to redirect that program at all."* Phase 3, the graphical viewer, waits on the
 display ladder as the block says below.
 
+**2026-08-22: the fork is worked through, not just named.** DECISIONS §101 (notification objects),
+decided 2026-08-20, ratified the *direction*: the `terminal_sink_caretaker` narrowing is "the right
+short-term move" and stays valid as the permanent shape even once the notification object lands,
+but it explicitly left milestone 40's own fork undecided: "That is milestone 40's fork, and this
+decision does not take it." notes/tail-output-narrowing.md answers CLAUDE.md's six questions
+against it: confirms the premise against `grant_plan::check_chain` rather than trusting this
+block's own framing, prices the two previously-refused alternatives (a pull-based source, a
+buffering stage) against measured numbers already in notes/pipes.md, and finds two things not
+previously in the tree. The shell can reuse DECISIONS §26's already-built fault endpoint as its
+completion signal instead of reading the child's bytes, and moving output off the shell's own read
+loop opens a narrower race than notes/manual.md named, between a child's exit and its own trailing
+delivery through the caretaker.
+
+**Decided (§106, 2026-08-22): take it.** Checking `SINK_BIT`'s existing contract
+(`crates/grant_plan/src/spawnproto.rs`) found the fork's own write-up had overpriced it: the child's
+output slot is already opaque to the program ("the shell delegates an endpoint and init puts it
+where the result endpoint would have gone, so the child writes to a pipe or a file sink without
+knowing which"), so no program's manifest changes, only shell-and-init default-routing logic. **The
+status does not move yet**: this decision authorizes phase 3's caretaker-narrowing increment to a
+concrete spec (the narrowing rule, the §26 fault-endpoint reuse, the caretaker-hop race carried as a
+known interim per BUGS below); 40 stays PARTIAL until that increment is built.
+
 **In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
 **Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
@@ -162,3 +184,15 @@ need a browser engine, which is a mountain with no thesis behind it.
 **Sequencing.** Phase 1 wants milestone 31 phase 2 finished (per-file grants make `doc <file>` the
 demonstration it should be) and nothing else; it can precede the packaging work and be wired into it
 later. **Effort: 1 lane estimated per phase**, three phases, and they can land separately.
+
+## BUGS
+
+- **The caretaker-hop display race is a known, accepted interim, not fixed by §106.** Once the
+  `terminal_sink_caretaker` narrowing ships, a page's last line and the shell's next `$ ` prompt can
+  interleave under contention: kernel exit-delivery (DECISIONS §26) tells the shell a child is dead,
+  but the caretaker's own trailing `CALL` to `line_editor` is a second, independent call with no
+  ordering primitive against the shell's next prompt. A display glitch, not a confinement or
+  correctness failure (no capability changes hands, no byte reaches the wrong reader). Tracked at
+  milestone 151 (notification objects), DECISIONS §101's kernel build, which lets the shell `WAIT`
+  on "the caretaker's queue for this client has drained" instead of racing it. See
+  notes/tail-output-narrowing.md for the full finding.
