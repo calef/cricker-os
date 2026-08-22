@@ -13,12 +13,14 @@ those are calef's.
 worklist; that mechanism was built the same day and **run 5 is the evidence it works**. Run 5 then
 said the only remaining thing was a cadence, and **calef decided it on 2026-08-18: monthly.**
 
-**So of the two outstanding things this block named, the second is closed and the first is not.**
-Nothing scheduled a run; something does now (`## The cadence lane` below). What remains is the
-milestone's own sentence, *fix what the run finds, then run it again*: run 5's seven handoffs are
-recorded rather than fixed, and B4 failed with eight entries, the most any run has produced. That is
-ordinary lane work with no decision owed, which is why the gate is `NONE` and why the status is
-`PARTIAL` rather than `BUILT`.
+**Update, 2026-08-22 (`## The second handoffs lane` below): five of run 5's seven handoffs are now
+landed, and the cadence has been checked and is honest that nothing is owed yet** (`script/stranger-
+test --due` reports 26 days remaining as of this writing, four days into the thirty). What remains is
+the milestone's own sentence, *fix what the run finds, then run it again*, and "again" is now purely a
+matter of the calendar rather than of anyone's attention: the mechanism built 2026-08-18 is the thing
+that will say when. Status stays `PARTIAL` because the mechanism has not yet fired a real run 6 under
+the cadence, which is the one thing that has never happened and the one thing that would move this to
+`BUILT`.
 
 **This block previously said "a gate would be the thing that moves this, and writing one is not a
 lane's call either, because it would be a gate on somebody's attention rather than on the tree."
@@ -487,6 +489,62 @@ whole mechanism a lie.
 
 **What would make this `BUILT`.** Run 5's handoffs landed, and run 6 conducted under the cadence
 rather than because somebody thought of it. The second is the one that has never happened.
+
+## The second handoffs lane, 2026-08-22
+
+**Status stays `PARTIAL`.** This lane took run 5's seven handoffs, landed the ones that were code
+or prose fixes, gave the one design fork nominated by three successive strangers a tracked home, and
+checked whether the cadence built 2026-08-18 actually owes a run. It found run 5 had not, in fact,
+fully handed off: five of seven items were still open four days later, which is what this lane closes.
+
+1. **`std_aborts()`'s dep-info paths are now asserted to be under this worktree's own `farm_dir()`,
+   done.** `foreign_std_sources()` in `xtask/src/main.rs` canonicalizes every path
+   `compiled_std_sources()` found and compares it against the farm, and `std_aborts()` calls it before
+   doing anything else. A contaminated build now fails with the machine explanation run 5 asked for
+   (the account-wide `nife-dev` link pointed at a different worktree) and the recovery command (`rm
+   -rf std_exerciser/target && cargo xtask std-exerciser`), instead of naming a file and a line inside
+   a checkout that was never handed to the caller. Not yet exercised against a real contaminated farm
+   in this lane, since reproducing run 5's race would mean deliberately racing another worktree's
+   `xtask std-src`; the existing `std-aborts` host coverage and a clean `script/test` are what verify
+   it here.
+2. **The argument-plus-input manifest fork: unchanged, correctly.** It was already recorded in
+   `notes/adding-a-program.md`'s `BUGS` with the file and the test it turns red, and that recording is
+   the tracked home the finding needs; deciding whether the combination is wanted is a design fork
+   above a lane, not a gap this lane could close by picking an answer.
+3. **`CONTRIBUTING.md` now says `script/gates` runs five stages, done.** It names `script/icount` and
+   `script/test --hvf` by name and points at notes/load-sensitive-assertions.md for the HVF leg's
+   known flake, instead of undercounting by two.
+4. **The two stale counts, done, and both had drifted further since run 5 measured them.**
+   `script/setup`'s comment now says `nightly-2026-08-22`, the pin as of this lane rather than the
+   `nightly-2026-07-26` it had said since before run 5 (the pin had already moved twice more in the
+   four days between). `README.md`'s reading order now says 425 markdown files and 145 notes; the
+   actual count had grown to 413/145 by run 5's own measurement and 425/145 by this one, while the
+   page still said 403/143. The fact that a count fixed by run 5's handoff lane on 2026-08-18 (see
+   `## The handoffs lane, 2026-08-18` above, a different count of a different kind) had already gone
+   stale again by 2026-08-22 is the same finding this tree keeps making about duplicated facts, not a
+   new one.
+5. **Where `script/apropos` should be named: unchanged, correctly.** Its own `BUGS` section already
+   records that five runs have missed it and says why it is calef's call rather than a lane's: naming
+   a place in the reading order is a claim about what matters. Nothing here decides that.
+6. **Handoff 4/6, nominated by three successive strangers, now has a tracked home: minted as
+   milestone 150**, "Adding a program should not need eight hand-maintained lists"
+   (`design/roadmap/150-program-declaration-data.md`, provisional number; 147, 148 and 149 were
+   already claimed by other lanes' pull requests, one of them merged into this lane's own base
+   commit). `notes/adding-a-program.md`'s `BUGS` section now points at 150 instead of at this
+   milestone's own handoff list, which was a circular reference: the mechanism it asked for is not
+   something milestone 117 itself builds.
+7. **The cadence: already answered and built by 2026-08-18, unchanged.** Confirmed rather than
+   re-done: `script/stranger-test --due` reports "not due for another 26 days" as of 2026-08-22, four
+   days into the thirty since run 5. No run was conducted in this lane, on purpose, because inventing
+   one the cadence does not yet owe would be exactly the failure `## The cadence lane` above names:
+   closing a cadence by doing work that was not due rather than by the calendar actually asking for
+   it. `script/stranger-test --check` and `script/roadmap --check` both pass against the record as
+   this lane leaves it.
+
+**What remains for `BUILT`.** Nothing left in this lane's control. The next thing that can move this
+milestone is a run 6, conducted when `script/stranger-test --due` next exits 1, roughly 2026-09-17 on
+the current record. Everything else run 5 asked for either has a tracked home now or was never a
+lane's call to make.
 
 ## Scope note
 
