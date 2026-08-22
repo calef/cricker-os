@@ -3314,22 +3314,36 @@ mod tests {
 
     /// The interrupt `an_interrupt_becomes_a_message` raises.
     #[cfg(target_arch = "aarch64")]
-    const DELIVERY_IRQ: u32 = 1; // an SGI: software-triggerable, no hardware behind it
+    fn delivery_irq() -> u32 {
+        1 // an SGI: software-triggerable, no hardware behind it
+    }
     /// The interrupt `an_interrupt_that_arrives_before_the_wait_is_not_lost` raises. A different SGI
-    /// from `DELIVERY_IRQ` so the two tests cannot see each other's routes.
+    /// from `delivery_irq` so the two tests cannot see each other's routes.
     #[cfg(target_arch = "aarch64")]
-    const PENDING_IRQ: u32 = 2;
+    fn pending_irq() -> u32 {
+        2
+    }
 
     /// The NS16550's PLIC source on QEMU `virt`. A board constant, hardcoded identically on
     /// main.rs's boot-tour and shell paths; another board would give its UART a different number,
     /// and this is one of the places that would have to learn it from the device tree.
+    ///
+    /// On the VisionFive 2 the boot summary reads `uart irq : source 32 (device tree)`, so
+    /// `DELIVERY_IRQ = 10` causes `raise_uart_interrupt` on IRQ 10 to never reach the thread
+    /// waiting on the route bound to the real IRQ 32. The test now reads the DTB-driven value the
+    /// rest of the kernel already uses (`user::uart_irq_and_source`); on QEMU `virt` that gives 10
+    /// (via the fallback `UART_RX_INTID`), on the VF2 it gives 32.
     #[cfg(target_arch = "riscv64")]
-    const DELIVERY_IRQ: u32 = 10;
+    fn delivery_irq() -> u32 {
+        crate::user::uart_irq_and_source().0
+    }
     /// **The same source, deliberately.** RISC-V has exactly one line these tests can assert by
     /// hand, so unlike aarch64's two SGIs the two tests share it. They do not collide: each rebinds
     /// the route to its own endpoint before raising, and each quiets the line before it returns.
     #[cfg(target_arch = "riscv64")]
-    const PENDING_IRQ: u32 = 10;
+    fn pending_irq() -> u32 {
+        crate::user::uart_irq_and_source().0
+    }
 
     /// Enable the test interrupt at the controller. Nothing is raised yet.
     #[cfg(target_arch = "aarch64")]
@@ -3359,7 +3373,8 @@ mod tests {
         // any other source would silently raise the wrong interrupt and then wait for one that
         // never came, which reads as a kernel bug rather than a test bug.
         debug_assert_eq!(
-            intid, DELIVERY_IRQ,
+            intid,
+            delivery_irq(),
             "riscv can only raise the console UART's own line by hand"
         );
         crate::console::raise_uart_interrupt();
@@ -4703,8 +4718,8 @@ mod tests {
         static WOKE: AtomicBool = AtomicBool::new(false);
 
         let ep = super::create_endpoint();
-        super::bind_irq(DELIVERY_IRQ, ep);
-        arm_test_irq(DELIVERY_IRQ);
+        super::bind_irq(delivery_irq(), ep);
+        arm_test_irq(delivery_irq());
 
         super::spawn(move || {
             super::ipc_recv(ep); // blocks until the interrupt fires
@@ -4722,7 +4737,7 @@ mod tests {
         );
 
         // Fire it. The controller delivers it, the handler routes it to `ep`, the waiter wakes.
-        raise_test_irq(DELIVERY_IRQ);
+        raise_test_irq(delivery_irq());
 
         let woke = spin_until(|| WOKE.load(Ordering::SeqCst));
         quiet_test_irq();
@@ -4810,12 +4825,12 @@ mod tests {
         use crate::arch::exceptions::ROUTED_IRQS;
 
         let ep = super::create_endpoint();
-        super::bind_irq(PENDING_IRQ, ep);
-        arm_test_irq(PENDING_IRQ);
+        super::bind_irq(pending_irq(), ep);
+        arm_test_irq(pending_irq());
 
         // Fire it with NOBODY waiting. The signal must be counted.
         let routed = ROUTED_IRQS.load(Ordering::Relaxed);
-        raise_test_irq(PENDING_IRQ);
+        raise_test_irq(pending_irq());
         // Wait for the handler to have actually run, rather than for a fixed number of yields: a
         // yield elapses in no real time on an idle core (DECISIONS §28), and under SMP the interrupt
         // may be taken on another core entirely, so counting yields here would be counting nothing.

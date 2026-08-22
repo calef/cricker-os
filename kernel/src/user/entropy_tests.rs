@@ -4,14 +4,14 @@ use super::*;
 
 /// Reach the service on `bus`, wiring it if this is the first test to ask, and check its
 /// startup report when this call is the one that wired it.
-fn start(bus: Bus) -> entropy_service::Wiring {
+///
+/// Returns `None` if the bus has no virtio-rng device (milestone 145: correct on a bare board
+/// boot, which has no equivalent of the runner's `NIFE_RNG`-gated `-device virtio-rng` line);
+/// callers must `skip!()` at their own call site rather than have this helper do it, because
+/// `skip!()` returns from its immediate caller and a helper is not the test.
+fn start(bus: Bus) -> Option<entropy_service::Wiring> {
     let image = program("entropy").expect("no entropy program in the initrd archive");
-    let w = entropy_service::ensure(image, bus).unwrap_or_else(|| {
-        panic!(
-            "no virtio-rng device on the {bus:?} bus: is NIFE_RNG missing from the test leg, \
-             or the -device virtio-rng line from the runner?"
-        )
-    });
+    let w = entropy_service::ensure(image, bus)?;
     if let Some(report) = w.wait_for_ready() {
         assert_eq!(
             report[0],
@@ -25,7 +25,7 @@ fn start(bus: Bus) -> entropy_service::Wiring {
             "the entropy service came up on {bus:?} but the device gave it no bytes at all",
         );
     }
-    w
+    Some(w)
 }
 
 /// Draw `WORDS` eight-byte words through the request endpoint, asserting every draw is full.
@@ -69,7 +69,9 @@ fn assert_unpredictable(words: &[u64; WORDS], what: &str) {
 /// bytes off a real random-number generator, 512 of them, across a refill, all different.
 #[test_case]
 fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_mmio() {
-    let w = start(Bus::Mmio);
+    let Some(w) = start(Bus::Mmio) else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let words = draw(&w);
     assert_unpredictable(&words, "mmio");
 }
@@ -79,7 +81,9 @@ fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_mmio() {
 /// guessable, so an unconfined device writing it is worth asserting against rather than hoping.
 #[test_case]
 fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_pcie() {
-    let w = start(Bus::Pci);
+    let Some(w) = start(Bus::Pci) else {
+        crate::testing::skip!("no virtio-rng device on the pcie bus (NIFE_RNG not set?)");
+    };
     assert!(
         w.confined_by_iommu,
         "the PCIe RNG is present but not behind the IOMMU: the buffer the device writes the \
@@ -95,8 +99,12 @@ fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_pcie() {
 /// previous contents). Also the cheapest proof that two services can hold two devices at once.
 #[test_case]
 fn two_entropy_services_on_two_devices_do_not_produce_the_same_bytes() {
-    let mmio = start(Bus::Mmio);
-    let pci = start(Bus::Pci);
+    let Some(mmio) = start(Bus::Mmio) else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
+    let Some(pci) = start(Bus::Pci) else {
+        crate::testing::skip!("no virtio-rng device on the pcie bus (NIFE_RNG not set?)");
+    };
     let a = draw(&mmio);
     let b = draw(&pci);
     for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
@@ -114,7 +122,9 @@ fn two_entropy_services_on_two_devices_do_not_produce_the_same_bytes() {
 /// killing the service, which the draw afterwards proves.
 #[test_case]
 fn a_reply_never_delivers_more_bytes_than_it_says() {
-    let w = start(Bus::Mmio);
+    let Some(w) = start(Bus::Mmio) else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
 
     let mut buf = [0xAAu8; 8];
     assert_eq!(w.get(3, &mut buf), 3, "asked for three bytes");

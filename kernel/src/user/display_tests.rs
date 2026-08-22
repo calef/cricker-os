@@ -189,8 +189,9 @@ fn a_backing_outside_the_grant_is_refused_by_the_iommu() {
     // Drain any stale fault first, so what we observe is this test's.
     while crate::iommu::take_fault().is_some() {}
 
-    let (report, victim) = display_service::start_backing_escape(display)
-        .expect("no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg?");
+    let Some((report, victim)) = display_service::start_backing_escape(display) else {
+        crate::testing::skip!("no virtio-gpu-pci function on the bus (NIFE_GPU not set?)");
+    };
     assert!(
         crate::iommu::active(),
         "a virtio-gpu is present but the IOMMU is not active: nothing would refuse this escape, \
@@ -287,10 +288,9 @@ fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
     let display_terminal =
         program("display_terminal").expect("no display_terminal program in the initrd archive");
 
-    let w = display_service::start_terminal(display, display_terminal).expect(
-        "no virtio-gpu-pci function on the bus: is NIFE_GPU missing from the test leg, or \
-         the -device virtio-gpu-pci line from the runner?",
-    );
+    let Some(w) = display_service::start_terminal(display, display_terminal) else {
+        crate::testing::skip!("no virtio-gpu-pci function on the bus (NIFE_GPU not set?)");
+    };
 
     // The driver came up. Taken first: these are rendezvous SENDs, so the driver is parked here.
     let [tag, geometry, ..] = sched::ipc_recv(w.driver_report);
@@ -409,10 +409,9 @@ fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
 #[test_case]
 fn a_keystroke_from_a_virtio_keyboard_becomes_a_terminal_byte() {
     let kbd = program("kbd").expect("no kbd program in the initrd archive");
-    let mut w = keyboard_service::start(kbd).expect(
-        "no virtio-input function on the bus: is NIFE_KBD missing from the test leg, or the \
-         -device virtio-keyboard-pci line from the runner?",
-    );
+    let Some(mut w) = keyboard_service::start(kbd) else {
+        crate::testing::skip!("no virtio-input function on the bus (NIFE_KBD not set?)");
+    };
     assert!(
         crate::iommu::active(),
         "a keyboard is present but the IOMMU is not active: the device's event buffers are \

@@ -611,10 +611,15 @@ fn a_host_process_connects_to_the_guest_and_is_answered() {
     // The credential service, milestone 65's, sealed: the aarch64 twin documents why this is here
     // and what it proves. Parity is the whole point of this file (DECISIONS §19): the same
     // credentialer binary, the same Argon2id, the same NTLMv2 arithmetic, the same host prober.
-    let cred = had_fs.then(|| {
-        let (w, _, _) = super::credential_tests::provisioned();
-        (w.verify, super::credential_service::verify_frame())
-    });
+    //
+    // `provisioned()` returning `None` (no virtio-rng device; milestone 145) folds into the same
+    // `Option` this closure already produces for `had_fs == false`: `start_net_stack_with_smb`
+    // takes `cred: Option<...>` for exactly this reason, so a board boot with no RNG runs the
+    // net/SMB exchange without NTLMv2 credentials rather than skipping the whole test.
+    let cred = had_fs
+        .then(super::credential_tests::provisioned)
+        .flatten()
+        .map(|(w, _, _)| (w.verify, super::credential_service::verify_frame()));
     let Some((report, smb_report, mdns_report, net)) = virtio_service::start_net_stack_with_smb(
         net_stack_image(),
         smb_server_image(),

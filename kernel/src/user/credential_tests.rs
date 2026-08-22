@@ -22,20 +22,29 @@ use super::*;
 /// calls this to get the verify endpoint. Calling it from either place is safe in either order,
 /// which is what the once-per-boot latch below is for; what would not be safe is a *second*
 /// wiring, and there is no way to ask for one.
-pub(super) fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
+///
+/// Returns `None` if the mmio virtio-rng device this depends on is not attached (milestone 145:
+/// correct on a bare board boot with no `NIFE_RNG`-equivalent). The `None` result is itself
+/// memoized alongside the success case, so a board boot's first caller pays for the failed probe
+/// once and every later caller (including the SMB gate) gets the same answer immediately rather
+/// than retrying a device that is not coming.
+pub(super) fn provisioned() -> Option<(cs::Wiring, [u64; 3], [u64; 3])> {
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     // Plain atomics rather than a lock or a `Once`: the only writer is the test thread, and
     // the tree's `spin` is built without the `once` feature. Release/Acquire on `DONE` is what
     // publishes the nine words next to it (rule 4: assume weak ordering).
     static DONE: AtomicBool = AtomicBool::new(false);
+    static OK: AtomicBool = AtomicBool::new(false);
     #[allow(clippy::declare_interior_mutable_const)]
     const ZERO: AtomicU64 = AtomicU64::new(0);
     static SAVED: [AtomicU64; 9] = [ZERO; 9];
 
     if !DONE.load(Ordering::Acquire) {
         let rng = program("entropy").expect("no entropy program in the initrd archive");
-        let e = entropy_service::ensure(rng, entropy_service::Bus::Mmio)
-            .expect("no virtio-rng device on the mmio bus");
+        let Some(e) = entropy_service::ensure(rng, entropy_service::Bus::Mmio) else {
+            DONE.store(true, Ordering::Release);
+            return None;
+        };
         if let Some(r) = e.wait_for_ready() {
             assert_eq!(
                 r[0],
@@ -62,10 +71,14 @@ pub(super) fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
         ]) {
             slot.store(v, Ordering::Relaxed);
         }
+        OK.store(true, Ordering::Release);
         DONE.store(true, Ordering::Release);
     }
+    if !OK.load(Ordering::Acquire) {
+        return None;
+    }
     let v = |i: usize| SAVED[i].load(Ordering::Relaxed);
-    (
+    Some((
         cs::Wiring {
             ready: v(0),
             verify: v(1),
@@ -73,7 +86,7 @@ pub(super) fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
         },
         [v(3), v(4), v(5)],
         [v(6), v(7), v(8)],
-    )
+    ))
 }
 
 /// **Phase one lands, and the store's capacity is real.** Three identities go in, the fourth is
@@ -84,7 +97,9 @@ pub(super) fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
 /// that a `SEAL` was answered.
 #[test_case]
 fn provisioning_fills_the_store_and_the_seal_closes_it() {
-    let (_, report, ready) = provisioned();
+    let Some((_, report, ready)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     assert_eq!(report[0], cs::RPT_DONE, "the provisioner did not report");
     let codes = report[1];
     // Three logins, then three shares. Six secrets, not three people with two credentials each:
@@ -150,7 +165,9 @@ fn provisioning_fills_the_store_and_the_seal_closes_it() {
 /// and a comparison that ignores the pairing.
 #[test_case]
 fn a_client_gets_a_correct_yes_or_no_and_nothing_else() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let r = cs::client(cli, &w, cs::ROLE_HONEST);
@@ -194,7 +211,9 @@ fn a_client_gets_a_correct_yes_or_no_and_nothing_else() {
 /// a guard, it is a word arriving at a loop that implements one opcode.
 #[test_case]
 fn the_same_endowment_cannot_write_the_store() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let r = cs::client(cli, &w, cs::ROLE_ATTACKER);
@@ -271,7 +290,9 @@ fn the_same_endowment_cannot_write_the_store() {
 /// Here the SMB server's whole endowment is an endpoint, and revoking it ends the access.
 #[test_case]
 fn an_smb_server_authenticates_a_session_without_ever_holding_the_key() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let r = cs::client(cli, &w, cs::ROLE_NTLM);
@@ -338,7 +359,9 @@ fn an_smb_server_authenticates_a_session_without_ever_holding_the_key() {
 /// of the three is there.
 #[test_case]
 fn no_ntlm_key_material_survives_in_the_shared_frame() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let _ = cs::client(cli, &w, cs::ROLE_NTLM);
@@ -390,7 +413,9 @@ fn no_ntlm_key_material_survives_in_the_shared_frame() {
 /// exact shape of the `argon2` cost-overflow panic `cred::Cost::new` exists to prevent.
 #[test_case]
 fn the_service_survives_everything_the_attacker_did() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let _ = cs::client(cli, &w, cs::ROLE_ATTACKER);
@@ -413,7 +438,9 @@ fn the_service_survives_everything_the_attacker_did() {
 /// change that broke the second.
 #[test_case]
 fn the_shared_frame_holds_nothing_after_an_answer() {
-    let (w, _, _) = provisioned();
+    let Some((w, _, _)) = provisioned() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let cli = program("credentialer_test_client")
         .expect("no credentialer_test_client program in the initrd archive");
     let _ = cs::client(cli, &w, cs::ROLE_HONEST);
