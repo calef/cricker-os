@@ -46,6 +46,15 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
+# The built binary is dynamically linked against libslirp, and actions/cache only restores $prefix,
+# never apt state. A fresh runner therefore has the cached QEMU binary but not the .so it needs to
+# even print --version, so the warm-cache check below reads "cannot open shared object file" as
+# "QEMU is broken" and pays a full ~4 minute rebuild on every single job, on every single run,
+# regardless of whether the binary itself was cached. One `apt-get install` of the runtime package
+# (not `-dev`, and cheap: it is already on the image's package list) fixes the version check without
+# touching the slow path at all.
+sudo apt-get install -y libslirp0 >/dev/null
+
 # The warm-cache path. `--version` prints "QEMU emulator version X.Y.Z"; match the whole token so
 # 11.0.2 never satisfies a request for 11.0.20.
 if [ -x "$prefix/bin/qemu-system-riscv64" ]; then
