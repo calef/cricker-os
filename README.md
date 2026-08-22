@@ -50,8 +50,8 @@ Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
 ## Start here
 
-**A reading order, which is what this page used to leave you to guess at.** There are 403 markdown
-files here and 143 of them are notes; the problem a newcomer has is not missing documents, it is
+**A reading order, which is what this page used to leave you to guess at.** There are 427 markdown
+files here and 145 of them are notes; the problem a newcomer has is not missing documents, it is
 that nothing says which one is first. Read these in this order and stop when you have what you came
 for.
 

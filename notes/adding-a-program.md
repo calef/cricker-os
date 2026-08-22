@@ -254,9 +254,10 @@ $ triple 21
   2 corrected it on 2026-08-16; milestone 130 falsified step 4 on 2026-08-17; run 3 found it wrong on
   2026-08-18. The fact it describes lives in seven hand-maintained places and this page is an eighth.
   By the ladder in AGENTS.md that is a rung-four answer to a rung-one problem, and rewriting the
-  prose a fourth time will not change it. The tracked home for the mechanism is milestone 117's
-  handoff "adding a program should not need five hand-maintained lists": a `Prog` variant could carry
-  its archive name and its manifest as data, and both initrd tables could be generated from it.
+  prose a fourth time will not change it. The tracked home for the mechanism is milestone 150
+  ("Adding a program should not need eight hand-maintained lists," minted provisionally 2026-08-22 by
+  milestone 117's handoffs lane, nominated by three successive strangers): a `Prog` variant could
+  carry its archive name and its manifest as data, and both initrd tables could be generated from it.
 - **There is an eighth edit site and it depends on your manifest, so the count above is a lower
   bound.** Found 2026-08-18 by milestone 117's fifth stranger, which deliberately picked the one
   manifest combination nothing in the tree had used: a **required argument together with a required

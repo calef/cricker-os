@@ -100,15 +100,17 @@ them costs more than getting them wrong.
 git checkout -b fix/short-description        # or milestone/, feature/, roadmap/, decisions/,
                                              # toolchain/, ci/, bench/, integration/, audit/
 # ...work, committing as pieces prove out...
-script/gates                                 # fmt, lint, and the tests: the three a PR must pass
+script/gates                                 # the five checks a PR must pass
 git push -u origin HEAD
 gh pr create --draft                         # then mark it ready when the gates are green
 ```
 
 `script/lint` refuses a branch prefix outside that set, so the first line saves you a red check.
-**`script/gates` is the one command to remember**: it runs `script/fmt --check`, `script/lint` and
-`script/test` in that order, cheapest first, so a formatting slip costs twenty seconds rather than
-ten minutes.
+**`script/gates` is the one command to remember**: it runs `script/fmt --check`, `script/lint`,
+`script/icount`, `script/test` and `script/test --hvf` in that order, cheapest first, so a
+formatting slip costs twenty seconds rather than the whole run. `--hvf` (the aarch64 suite on the
+physical core) is the slowest stage and the one most likely to flake on a contended host; see
+notes/load-sensitive-assertions.md if it does.
 
 Pull requests land through GitHub's merge queue, which batches and rebases them, so you do not need
 to keep your branch current by hand.
