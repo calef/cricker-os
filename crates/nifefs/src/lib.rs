@@ -81,6 +81,10 @@
 //! milestone 120, 2026-08-15); the run-together reasoning carried over unchanged.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The block size, and the alignment of everything.
 pub const BLOCK: usize = 512;
@@ -145,9 +149,12 @@ pub const ENTRIES_IN_FIRST_BLOCK: usize = (BLOCK - HEADER_LEN) / ENTRY_LEN;
 /// gone (see [`Fs`]), so the only price of a bigger directory now is image bytes.
 pub const MAX_FILES: usize = (DIR_BLOCKS * BLOCK - HEADER_LEN) / ENTRY_LEN;
 
+/// Why [`Fs::parse`] refused an image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
+    /// The first eight bytes are not the archive magic.
     BadMagic,
+    /// The directory claims more entries than [`MAX_FILES`] allows.
     TooManyFiles,
     /// A name longer than [`NAME_LEN`] bytes. Refused rather than truncated: two names agreeing in
     /// their first `NAME_LEN` bytes would otherwise become one entry, and the loader would fetch
@@ -177,8 +184,12 @@ pub enum Error {
 /// One file: a name, and where its bytes are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry {
+    /// NUL-padded on disk; use [`name_str`](Self::name_str) or [`name_eq`](Self::name_eq) rather
+    /// than reading this directly.
     pub name: [u8; NAME_LEN],
+    /// The block where this file's data begins.
     pub start_block: u32,
+    /// The file's length in bytes.
     pub len: u32,
 }
 
@@ -189,6 +200,7 @@ impl Entry {
         core::str::from_utf8(&self.name[..end]).ok()
     }
 
+    /// Whether this entry's name is exactly `name`.
     pub fn name_eq(&self, name: &str) -> bool {
         self.name_str() == Some(name)
     }
@@ -210,6 +222,9 @@ pub struct Fs<'a> {
 }
 
 impl<'a> Fs<'a> {
+    /// Validate the whole directory up front: magic, entry count, and every entry's data bounds.
+    /// A returned `Fs` has nothing left to check; decoding an entry and every lookup built on it
+    /// trust this pass completely.
     pub fn parse(image: &'a [u8]) -> Result<Self, Error> {
         // The directory blocks must be present before any entry offset (up to HEADER_LEN +
         // MAX_FILES*ENTRY_LEN, which sits inside DIR_BLOCKS) is read; this guard is what makes
@@ -243,10 +258,12 @@ impl<'a> Fs<'a> {
         Ok(Fs { image, count })
     }
 
+    /// How many files the directory holds.
     pub fn len(&self) -> usize {
         self.count
     }
 
+    /// Whether the directory holds no files.
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }

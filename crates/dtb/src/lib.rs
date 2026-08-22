@@ -24,11 +24,17 @@
 //! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// A contiguous span of physical memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
+    /// The physical address of the first byte.
     pub start: u64,
+    /// Length in bytes.
     pub size: u64,
 }
 
@@ -53,6 +59,7 @@ impl Region {
     }
 }
 
+/// Why parsing the blob failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// The first four bytes weren't `0xd00dfeed`. Either the pointer is wrong or the
@@ -132,6 +139,9 @@ impl<'a> Dtb<'a> {
         Self::from_bytes(bytes)
     }
 
+    /// Parse a blob already in hand as a safe slice, rather than through an unchecked pointer.
+    /// This is what [`from_ptr`](Self::from_ptr) delegates to once it has trusted the header
+    /// enough to build one, and it is the entry point every host test uses directly.
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         let magic = be32(bytes, 0)?;
         if magic != MAGIC {

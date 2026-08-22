@@ -133,6 +133,10 @@
 //! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 use core::marker::PhantomData;
 
@@ -144,6 +148,7 @@ pub use aarch64::Aarch64;
 pub use domain::{DmaRegion, build_identity_domain};
 pub use sv39::Sv39;
 
+/// 4 KiB, the page size every format here maps in.
 pub const PAGE_SIZE: u64 = 4096;
 
 /// Entries per table. 4096 bytes / 8 bytes. The same for every format we support.
@@ -157,6 +162,8 @@ pub const ENTRIES: usize = 512;
 #[repr(C, align(4096))]
 #[derive(Clone)]
 pub struct PageTable {
+    /// The raw entries, in the format's own encoding. Decode with the `PageFormat` in use rather
+    /// than reading these directly.
     pub entries: [u64; ENTRIES],
 }
 
@@ -167,6 +174,7 @@ impl Default for PageTable {
 }
 
 impl PageTable {
+    /// A table of all-zero entries: every slot not-present.
     pub const fn new() -> Self {
         Self {
             entries: [0; ENTRIES],
@@ -254,18 +262,22 @@ impl Flags {
         self.0
     }
 
+    /// Whether this mapping is writable.
     pub const fn is_writable(self) -> bool {
         self.0 & CAP_WRITE != 0
     }
 
+    /// Whether this mapping is executable in kernel (supervisor) mode.
     pub const fn is_kernel_executable(self) -> bool {
         self.0 & CAP_KERNEL_EXEC != 0
     }
 
+    /// Whether this mapping is executable in user mode.
     pub const fn is_user_executable(self) -> bool {
         self.0 & CAP_USER_EXEC != 0
     }
 
+    /// Whether user mode may access this mapping at all.
     pub const fn is_user_accessible(self) -> bool {
         self.0 & CAP_USER != 0
     }
@@ -439,6 +451,7 @@ impl TlbFlush {
         core::mem::forget(self);
     }
 
+    /// The virtual address this obligation covers.
     pub fn address(&self) -> u64 {
         self.va
     }
@@ -461,6 +474,7 @@ impl Drop for TlbFlush {
     }
 }
 
+/// Why [`Mapper::map`] or [`Mapper::unmap`] refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
     /// Ran out of frames while building intermediate tables.
@@ -532,10 +546,12 @@ where
         }
     }
 
+    /// The physical address of the top-level table.
     pub fn root(&self) -> u64 {
         self.root
     }
 
+    /// Which half of the address space this mapper builds into.
     pub fn half(&self) -> Half {
         self.half
     }

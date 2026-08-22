@@ -119,6 +119,10 @@
 //! `credentialer` in full and left this crate as it stood, without saying so.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The memory-hard scratch unit, re-exported so a caller can size its buffer without naming our
 /// dependency. One [`Block`] is 1 KiB, which is also Argon2's `m_cost` unit.
@@ -192,7 +196,10 @@ pub enum Error {
 /// same [`Verdict::Mismatch`]; see `cred_proto`'s module docs for why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
+    /// The presented secret hashed to the stored value.
     Match,
+    /// Either the account was not found or the secret was wrong; the two are made
+    /// indistinguishable on purpose (see the enum docs).
     Mismatch,
 }
 
@@ -261,12 +268,15 @@ impl Cost {
         c.params().ok().map(|_| c)
     }
 
+    /// Memory cost in KiB.
     pub const fn m_kib(&self) -> u32 {
         self.m_kib
     }
+    /// Number of passes.
     pub const fn t(&self) -> u32 {
         self.t
     }
+    /// Parallelism (lanes).
     pub const fn p(&self) -> u32 {
         self.p
     }
@@ -575,6 +585,7 @@ impl<const N: usize> Store<N> {
         self.used
     }
 
+    /// Whether the store currently holds no identities.
     pub fn is_empty(&self) -> bool {
         self.used == 0
     }

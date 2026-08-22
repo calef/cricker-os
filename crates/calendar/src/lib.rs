@@ -113,6 +113,10 @@
 //! decision to write it rather than vendor it; nothing records the choice of word.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The lowest supported year, 0000. See the module docs for why the range is what it is.
 pub const MIN_YEAR: i32 = 0;
@@ -245,12 +249,19 @@ const fn civil_from_days(days: i64) -> (i32, u8, u8) {
 /// convention, and [`Weekday::iso_number`] gives the ISO 8601 one, where Monday is 1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Weekday {
+    /// ISO 8601 day 7.
     Sunday,
+    /// ISO 8601 day 1, the week's first day per [`Weekday::iso_number`].
     Monday,
+    /// ISO 8601 day 2.
     Tuesday,
+    /// ISO 8601 day 3.
     Wednesday,
+    /// ISO 8601 day 4.
     Thursday,
+    /// ISO 8601 day 5.
     Friday,
+    /// ISO 8601 day 6.
     Saturday,
 }
 

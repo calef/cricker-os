@@ -53,6 +53,10 @@
 //! `CSpace` itself stays, because it is seL4's own spelling.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// What you may do with a capability.
 ///
@@ -64,8 +68,11 @@
 pub struct Rights(u32);
 
 impl Rights {
+    /// No rights at all.
     pub const NONE: Rights = Rights(0);
+    /// The right to read the object's contents.
     pub const READ: Rights = Rights(1 << 0);
+    /// The right to modify the object's contents.
     pub const WRITE: Rights = Rights(1 << 1);
 
     /// The right to **pass this capability on**. Without it, you may use a thing and not lend it.
@@ -102,6 +109,8 @@ impl Rights {
     /// widening this mask produces a right that cannot survive being passed on.
     pub const ALL: Rights = Rights(0b1111);
 
+    /// The raw bit pattern, for carrying rights across a boundary as an integer (a syscall
+    /// register). [`from_bits`](Self::from_bits) is the inverse.
     pub const fn bits(self) -> u32 {
         self.0
     }
@@ -115,10 +124,13 @@ impl Rights {
         Rights(bits & Rights::ALL.0)
     }
 
+    /// Every right either side holds.
     pub const fn union(self, other: Rights) -> Rights {
         Rights(self.0 | other.0)
     }
 
+    /// Only the rights both sides hold. The one operation on the delegation path: it can only
+    /// narrow, never widen, which is the monotonicity the whole model rests on.
     pub const fn intersect(self, other: Rights) -> Rights {
         Rights(self.0 & other.0)
     }
@@ -137,7 +149,9 @@ impl Rights {
 /// A capability: **an object, and what you may do with it.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cap<O> {
+    /// What this capability names.
     pub object: O,
+    /// What the holder may do with it.
     pub rights: Rights,
 }
 
@@ -216,6 +230,7 @@ pub const fn survey_includes(fault_ep: Option<u64>, invoked_ep: u64) -> bool {
     matches!(fault_ep, Some(ep) if ep == invoked_ep)
 }
 
+/// Why a cspace operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// **The slot is empty.** Note what this is *not*: it is not "permission denied." There is
@@ -255,10 +270,12 @@ impl<O: Copy, const N: usize> CSpace<O, N> {
         }
     }
 
+    /// The table's fixed capacity, `N`. Never changes; a cspace's size is part of its type.
     pub const fn len(&self) -> usize {
         N
     }
 
+    /// Whether every slot is currently empty.
     pub fn is_empty(&self) -> bool {
         self.slots.iter().all(|s| s.is_none())
     }

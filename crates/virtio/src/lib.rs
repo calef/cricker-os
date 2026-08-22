@@ -55,6 +55,11 @@
 //! device family's own name from the specification and would sit in the tenet's protected group if
 //! anyone had filed it there; nobody has. Introduced 2026-07-14 with milestone 9's block driver.
 
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
+
 use abi::irq;
 use fs_proto::blk;
 use user_rt::{exit, invoke, send};
@@ -247,6 +252,11 @@ fn init_with_features(driver_features_lo: u32, want_flush: bool) -> bool {
     flush
 }
 
+/// The whole driver, called once from `_start` with the DMA page's physical address in hand.
+/// Negotiates the device, reads the superblock and the `motd` file off the disk, sends the
+/// file's first eight bytes back to the kernel so it can check them, and exits. Never returns:
+/// this is a one-shot test driver, not a resident service, so it does not loop waiting for more
+/// work. See the module docs for why the example above is `no_run` rather than executed.
 pub fn run(dma_phys: u64) -> ! {
     init();
 

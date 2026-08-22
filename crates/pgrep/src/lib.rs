@@ -145,6 +145,10 @@
 //! the same, and a lane that finds a better word for it should take it.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// **A state's bit in a [`Selector`] mask is one shifted left by its `abi::survey` code**, which is
 /// why there are four of them and why bit 0 is unused: `abi::survey::DONE` is zero and is the cursor

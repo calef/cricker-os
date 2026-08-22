@@ -59,6 +59,10 @@
 //! (Address Space IDentifier) as the reason.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// One more than the largest ASID we hand out. 8-bit ASIDs: every aarch64 implementation has at
 /// least these, and 255 usable numbers exceed `MAX_SPACES` (160) with room.
@@ -72,6 +76,8 @@ pub struct Allocator {
 }
 
 impl Allocator {
+    /// An allocator with only ASID 0 taken, reserved forever for "no user address space". `const`
+    /// so the kernel can build it at compile time rather than at boot.
     pub const fn new() -> Self {
         let mut bitmap = [0u64; ASIDS / 64];
         bitmap[0] = 1; // ASID 0: reserved for "no user address space", forever

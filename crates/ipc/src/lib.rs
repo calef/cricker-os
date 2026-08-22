@@ -106,6 +106,10 @@
 //! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 use core::ptr::NonNull;
 
@@ -182,6 +186,8 @@ impl<T> core::fmt::Debug for Recv<T> {
 }
 
 impl<T: Node> Endpoint<T> {
+    /// An idle endpoint: both wait queues empty, no pending signal. `const` so the kernel can
+    /// build the endpoint table at compile time rather than at boot.
     pub const fn new() -> Self {
         Self {
             senders: Fifo::new(),

@@ -1,4 +1,8 @@
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 //! The socket contract wire format, shared by the net server (`net_stack`) and its clients (milestone
 //! 30, piece 3 phase B; DECISIONS §25).
 //!
@@ -144,14 +148,23 @@
 //! on 2026-07-31 under rule 7, taking the spelling the suffix rule already required.
 
 /// Operations. The opcode is the low byte of the request word; the socket id is the next byte.
-pub const OP_ATTACH_FRAME: u64 = 1; // SEND_CAP: delegate the shared frame for this socket id
-pub const OP_OPEN_UDP: u64 = 2; // CALL: create a UDP socket, bind an ephemeral local port
-pub const OP_OPEN_TCP: u64 = 3; // CALL: create a TCP socket
-pub const OP_SENDTO: u64 = 4; // CALL: UDP send; dst in the frame header, payload in the frame
-pub const OP_RECV: u64 = 5; // CALL: block until a datagram/segment arrives, write it to the frame
-pub const OP_CONNECT: u64 = 6; // CALL: TCP connect to the frame's dst; reply the outcome
-pub const OP_SEND: u64 = 7; // CALL: TCP send; payload in the frame
-pub const OP_CLOSE: u64 = 8; // CALL: close the socket and drop its frame mapping
+///
+/// `SEND_CAP`: delegate the shared frame for this socket id.
+pub const OP_ATTACH_FRAME: u64 = 1;
+/// `CALL`: create a UDP socket, bind an ephemeral local port.
+pub const OP_OPEN_UDP: u64 = 2;
+/// `CALL`: create a TCP socket.
+pub const OP_OPEN_TCP: u64 = 3;
+/// `CALL`: UDP send; dst in the frame header, payload in the frame.
+pub const OP_SENDTO: u64 = 4;
+/// `CALL`: block until a datagram/segment arrives, write it to the frame.
+pub const OP_RECV: u64 = 5;
+/// `CALL`: TCP connect to the frame's dst; reply the outcome.
+pub const OP_CONNECT: u64 = 6;
+/// `CALL`: TCP send; payload in the frame.
+pub const OP_SEND: u64 = 7;
+/// `CALL`: close the socket and drop its frame mapping.
+pub const OP_CLOSE: u64 = 8;
 /// `CALL(req(OP_LISTEN, sid), port)`: bind `port` on socket id `sid` and start listening there.
 /// Replies one of the [`LISTEN_GRANTED`] outcomes. Names provisional (milestone 107).
 pub const OP_LISTEN: u64 = 9;
@@ -170,9 +183,11 @@ pub const OP_BIND_UDP: u64 = 11;
 pub const fn req(op: u64, sid: u64) -> u64 {
     op | (sid << 8)
 }
+/// The opcode packed by [`req`].
 pub const fn req_op(word: u64) -> u64 {
     word & 0xff
 }
+/// The socket id packed by [`req`].
 pub const fn req_sid(word: u64) -> u64 {
     (word >> 8) & 0xff
 }
@@ -180,8 +195,10 @@ pub const fn req_sid(word: u64) -> u64 {
 /// Reply words. Non-negative is success (RECV returns the length here); the connect outcomes are
 /// their own small vocabulary so the client can tell "refused" from "connected".
 pub const REP_OK: u64 = 0;
+/// `OP_CONNECT` succeeded.
 pub const CONNECT_ESTABLISHED: u64 = 0;
-pub const CONNECT_REFUSED: u64 = 1; // the peer sent RST, or the connect otherwise failed/closed
+/// The peer sent RST, or the connect otherwise failed or closed.
+pub const CONNECT_REFUSED: u64 = 1;
 /// A failure sentinel (an unknown socket id, a bad op, or a server-side timeout). High bit set so
 /// it is never mistaken for a length or a connect outcome.
 pub const REP_ERR: u64 = 1 << 32;
@@ -242,8 +259,11 @@ pub const fn udp_grant_allows(grant: u64, port: u16) -> bool {
 
 /// Frame header offsets.
 pub const OFF_DST_IP: u64 = 0x000;
+/// The destination port, right after the destination IP.
 pub const OFF_DST_PORT: u64 = 0x004;
+/// The payload length.
 pub const OFF_LEN: u64 = 0x006;
+/// Where the payload bytes start.
 pub const OFF_PAYLOAD: u64 = 0x008;
 
 /// The most sockets **one `Stack` endpoint** may hold at once, which is not the same as one client:
@@ -289,6 +309,7 @@ pub mod fixture {
     /// echo would pass even if the guest were only reflecting the host's own bytes, and the point
     /// of the gate is that the guest *composed* an answer to a connection it did not make.
     pub const IN_MSG: &[u8] = b"nife-in!";
+    /// What the guest answers with, composed rather than echoed (see the field-group docs).
     pub const OUT_MSG: &[u8] = b"nife-out!";
 
     /// How many connections one listener serves before the client stops. **Two, and the second is

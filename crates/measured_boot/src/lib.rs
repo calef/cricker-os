@@ -65,6 +65,10 @@
 //! hashing, so the new name also buys the recognition a reader arrives with.
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 // The crate is `no_std` because the kernel links it. Its tests run on the host and want `Vec` and
 // `String` to build tampered inputs, so the test build pulls `std` back in explicitly.
@@ -118,6 +122,7 @@ impl Default for Sha256 {
 }
 
 impl Sha256 {
+    /// The initial state: `H0` loaded, no bytes absorbed yet.
     pub const fn new() -> Self {
         Self {
             h: H0,
@@ -232,7 +237,9 @@ pub fn sha256(bytes: &[u8]) -> Digest {
 /// key management. Names are the nifefs archive names (`"init"`, `"system_initializer"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measurement {
+    /// The nifefs archive name this digest was measured for (`"init"`, `"system_initializer"`).
     pub name: &'static str,
+    /// The expected SHA-256 of the program's bytes.
     pub digest: Digest,
 }
 

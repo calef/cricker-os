@@ -73,6 +73,10 @@
 //! Nothing records who chose it.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// 4 KiB. The unit the MMU translates in ([notes/mmu.md]), so it is the unit we
 /// allocate in.
@@ -110,18 +114,23 @@ impl Frame {
         Frame(addr - addr % FRAME_SIZE)
     }
 
+    /// The physical address of this frame's first byte.
     pub const fn addr(self) -> u64 {
         self.0
     }
 }
 
+/// A snapshot of an allocator's occupancy, from [`FrameAllocator::stats`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
+    /// Frames the allocator tracks in total.
     pub total: usize,
+    /// Frames currently marked used.
     pub used: usize,
 }
 
 impl Stats {
+    /// Frames currently available: `total - used`.
     pub fn free(&self) -> usize {
         self.total - self.used
     }
@@ -188,6 +197,7 @@ impl<'a> FrameAllocator<'a> {
         }
     }
 
+    /// The allocator's current occupancy.
     pub fn stats(&self) -> Stats {
         Stats {
             total: self.total,

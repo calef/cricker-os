@@ -139,6 +139,10 @@
 //! a noun).
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// The IPC framing of the terminal contract (notes/terminal-contract.md): opcodes, flags, and
 /// limits shared by the discipline server, its clients, and the kernel-side tests. This is a
@@ -220,6 +224,8 @@ pub mod proto {
 /// Where echo bytes go. The server implements this over its console channel; the tests
 /// implement it over a terminal model.
 pub trait Sink {
+    /// Write echo bytes out. Called synchronously from the byte-feeding methods below, so a
+    /// `Sink` that blocks blocks the whole discipline.
     fn put(&mut self, bytes: &[u8]);
 }
 
@@ -285,6 +291,7 @@ impl Default for LineDisc {
 }
 
 impl LineDisc {
+    /// An empty discipline: no line in progress, no history, prompt unset.
     pub fn new() -> Self {
         LineDisc {
             buf: [0; LINE_MAX],

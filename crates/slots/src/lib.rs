@@ -69,6 +69,10 @@
 //! Nothing records who chose it.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// A fixed-capacity table whose entries are named by `(generation, slot)` pairs packed in a
 /// `u64`: generation in the high 32 bits, slot in the low 32.
@@ -89,6 +93,7 @@ pub struct Table<T, const N: usize> {
 }
 
 impl<T, const N: usize> Table<T, N> {
+    /// An empty table: every slot free, every generation at 0.
     pub const fn new() -> Self {
         // A compile-time guard on the packing: slots must fit in the low 32 bits.
         const { assert!(N > 0 && N <= u32::MAX as usize) };
@@ -138,6 +143,7 @@ impl<T, const N: usize> Table<T, N> {
         self.slots[slot].as_ref()
     }
 
+    /// [`get`](Self::get), mutably.
     pub fn get_mut(&mut self, name: u64) -> Option<&mut T> {
         let slot = self.slot_of(name)?;
         self.slots[slot].as_mut()
@@ -153,10 +159,13 @@ impl<T, const N: usize> Table<T, N> {
         Some(value)
     }
 
+    /// The number of live entries. O(1): maintained on every insert and remove rather than
+    /// counted by walking `slots`.
     pub fn len(&self) -> usize {
         self.live
     }
 
+    /// Whether the table currently holds no live entries.
     pub fn is_empty(&self) -> bool {
         self.live == 0
     }

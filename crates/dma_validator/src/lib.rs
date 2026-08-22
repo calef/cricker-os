@@ -83,6 +83,10 @@
 //! DMA-confinement validator": it had named itself a noun and carried a verb).
 
 #![no_std]
+// milestone 68's doc ratchet: every public item in this crate is documented, and
+// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
+// crates that are not there yet.
+#![warn(missing_docs)]
 
 /// Bit 0: this descriptor chains to another (`next` names it). The validator follows the chain,
 /// bounded by the queue size, so a `next` cycle cannot spin forever.
@@ -117,7 +121,10 @@ pub fn in_region(base: u64, size: u64, addr: u64, len: u64) -> bool {
 /// 64-bit words and decodes the fields the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Desc {
+    /// The buffer's guest-physical address, the first 64-bit word.
     pub addr: u64,
+    /// Length, flags and next-index packed into the second 64-bit word; decode with
+    /// [`buf_len`](Self::buf_len), [`flags`](Self::flags) and [`next`](Self::next).
     pub word: u64,
 }
 
@@ -134,9 +141,12 @@ impl Desc {
     pub const fn next(self) -> u16 {
         ((self.word >> 48) & 0xffff) as u16
     }
+    /// Whether `F_INDIRECT` is set: the buffer holds a table of further descriptors rather than
+    /// data, which this validator refuses to chase (see the confinement decision above).
     pub const fn is_indirect(self) -> bool {
         self.flags() & F_INDIRECT != 0
     }
+    /// Whether `F_NEXT` is set: [`next`](Self::next) names another descriptor in the chain.
     pub const fn has_next(self) -> bool {
         self.flags() & F_NEXT != 0
     }
@@ -300,7 +310,9 @@ fn shadow_one_head(
 pub const LAYOUT_QSIZE: u16 = 8;
 /// Offsets of a queue's three rings, relative to its ring block.
 pub const DESC_OFF: u64 = 0x000;
+/// Offset of the avail ring: past the descriptor table, `6 + 2*QSIZE` bytes in.
 pub const AVAIL_OFF: u64 = 0x080; // 6 + 2*QSIZE
+/// Offset of the used ring: past the avail ring, `6 + 8*QSIZE` bytes in.
 pub const USED_OFF: u64 = 0x100; // 6 + 8*QSIZE
 /// The whole ring area of one queue must fit under this; a queue's data buffers live above it.
 pub const RING_END: u64 = USED_OFF + 6 + 8 * LAYOUT_QSIZE as u64;
