@@ -236,8 +236,24 @@ impl Ns16550 {
     ///
     /// Test builds only: a production caller would be a transmit-interrupt console, which this is
     /// deliberately not.
+    ///
+    /// **Waits for `LSR.THRE` first** (bench, 2026-08-21, VisionFive 2). A real 16550's
+    /// THRE-interrupt is edge-triggered inside the chip: setting `ETBEI` while THRE is *already*
+    /// 1 asserts at once, exactly as this function's doc above assumed, but setting it while THRE
+    /// is still 0 only arms the interrupt for the *next* 0->1 transition, which may not come for a
+    /// polling console with nothing queued to send. QEMU's model has no transmission latency, so
+    /// THRE reads back 1 the instant the previous byte's write instruction retires and the race
+    /// window this closes never opens there; real serial hardware still shifting out the boot
+    /// banner (or, on this board, this very driver's own diagnostic prints) can have THRE at 0 for
+    /// real time. Bounded the same way `init`'s busy-quirk drain is: a spin this size only ever
+    /// trips on silicon not answering at all.
     #[cfg(test)]
     pub fn enable_tx_interrupt(&self) {
+        let mut spins = 1_000_000u32;
+        while self.read(LSR) & LSR_THRE == 0 && spins > 0 {
+            core::hint::spin_loop();
+            spins -= 1;
+        }
         self.write(IER, IER_ETBEI);
     }
 

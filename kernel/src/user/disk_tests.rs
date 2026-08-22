@@ -243,10 +243,12 @@ const R_NO_FS: u64 = 0x_4E_4F_46_53_00;
 ///
 /// The mmio transport, because both `virt` machines offer it with nothing in the way and this test
 /// is not about the bus; `entropy_tests` runs the same service over both.
-fn entropy_endpoint() -> crate::sched::EpId {
+///
+/// Returns `None` if the mmio virtio-rng device is not attached (milestone 145: correct on a bare
+/// board boot with no `NIFE_RNG`-equivalent).
+fn entropy_endpoint() -> Option<crate::sched::EpId> {
     let image = program("entropy").expect("no entropy program in the initrd archive");
-    let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)
-        .expect("no virtio-rng on the mmio bus: is NIFE_RNG missing from this test leg?");
+    let w = entropy_service::ensure(image, entropy_service::Bus::Mmio)?;
     if let Some(report) = w.wait_for_ready() {
         assert_eq!(
             report[0],
@@ -255,7 +257,7 @@ fn entropy_endpoint() -> crate::sched::EpId {
             report[0],
         );
     }
-    w.request
+    Some(w.request)
 }
 
 /// **The machine partitions a disk and puts a filesystem on it, and can do neither without the
@@ -288,15 +290,17 @@ fn entropy_endpoint() -> crate::sched::EpId {
 fn the_write_half_needs_a_disk_and_an_entropy_endpoint_and_holds_nothing_else() {
     let Some(disk) = disk_service::blank_disk(fs_service::blk_server_image()) else {
         // No fifth mmio block device: this boot did not build the blank image. A fact about the
-        // machine, not a failure.
-        return;
+        // machine, not a failure (milestone 145: reported as skipped rather than a silent "ok").
+        crate::testing::skip!("no blank-disk fixture attached (this boot did not build one)");
     };
     if let Some(ready) = disk.blk_ready {
         // Past device bring-up, so a hang below is a hang in a write rather than in the driver.
         let [word, ..] = crate::sched::ipc_recv(ready);
         assert_eq!(word, fs_proto::fixture::READY);
     }
-    let entropy = entropy_endpoint();
+    let Some(entropy) = entropy_endpoint() else {
+        crate::testing::skip!("no virtio-rng device on the mmio bus (NIFE_RNG not set?)");
+    };
     let maker = program("mkfs").expect("no mkfs program in the initrd archive");
     use fs_proto::fixture::blank;
 
