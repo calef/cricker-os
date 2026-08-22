@@ -47,6 +47,10 @@
 //! author makes rather than a convention, so there was no rule to apply.
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 use fs_proto::{dir, dirent, fixture, fs, grant};

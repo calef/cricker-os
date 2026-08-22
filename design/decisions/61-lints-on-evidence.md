@@ -64,9 +64,11 @@ the same well-formed-but-wrong blind spot CLAUDE.md already records for `§N` ci
 it is written down here rather than only fixed: the check that would catch it is a comparison of
 heading order against numeric order, and it does not exist yet.
 
-`missing_docs` is absent for the reason above: item coverage is 67-94% across the crates and nothing
-warns on it, so adopting it is a commitment to write the missing docs first. It belongs with the
-doc-example work in milestone 68's remaining half rather than on its own.
+`missing_docs` was absent for the reason above at this decision's writing (2026-08-03): item
+coverage was 67-94% and adopting it meant an open-ended commitment. **Superseded by §107
+(2026-08-22)**: three burn-down passes shrank the worklist from 32 crates to 7, changing the cost
+enough that calef took it as a considered exception to this section's own rule, recorded explicitly
+there rather than silently reversing it here.
 
 `undocumented_unsafe_blocks` WAS the standing example here and is now a gate: all 205 undocumented
 blocks were read and commented, and the lint is in `[workspace.lints]`. The episode that produced

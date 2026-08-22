@@ -17,6 +17,10 @@
 //! thing, which `blk` is.
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 // The virtio module names `crate::{check, invoke, send}`; in `hello` those are its helpers, here

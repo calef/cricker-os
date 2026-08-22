@@ -1,4 +1,7 @@
 #![no_std]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 41-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 //! **The mDNS/DNS-SD wire format** (RFC 6762, RFC 6763), as pure computation, for milestone 55's
 //! Time Machine advertisement.
 //!

@@ -130,13 +130,16 @@ pub const REPORT_FAILED: u64 = 9;
 /// `send(req, REQ_BUILD, attempt, 0)` -> `(REP_BUILT, 0, 0)` or `(REP_FAILED, 0, 0)`.
 pub const REQ_BUILD: u64 = 1;
 
+/// Reply code: the build succeeded.
 pub const REP_BUILT: u64 = 1;
+/// Reply code: the build failed (out of budget, a bad image, or a loader refusal).
 pub const REP_FAILED: u64 = 3;
 
 // ===========================================================================================
 // The loader.
 // ===========================================================================================
 
+/// The page size the loader maps in.
 pub const PAGE: u64 = 4096;
 
 /// Where a child's stack top sits. One address for every process this system builds, which is what
@@ -399,12 +402,16 @@ fn fill_and_map(
     Ok(())
 }
 
+/// Retype one page of `ut` into a kernel object of `objtype` (`abi::objtype`), returning the
+/// capability slot it landed in.
 pub fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
     // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
+/// Retype one page of `ut` into a plain `Frame` capability, unmapped, returning the slot it
+/// landed in.
 pub fn retype_frame_from(ut: u64) -> Result<u64, ()> {
     // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
@@ -429,6 +436,8 @@ pub fn untyped_destroy(ut: u64) -> bool {
     unsafe { invoke(ut, abi::untyped::DESTROY, 0, 0, 0) == 0 }
 }
 
+/// Make `tcb` runnable, with `a0`, `a1`, `a2` in its entry registers. `false` if the thread was
+/// not fully configured (no bound address space or no entry point) and the kernel refused.
 pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
     // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, a0, a1, a2) == 0 }

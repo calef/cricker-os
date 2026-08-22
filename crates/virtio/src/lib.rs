@@ -247,6 +247,11 @@ fn init_with_features(driver_features_lo: u32, want_flush: bool) -> bool {
     flush
 }
 
+/// The whole driver, called once from `_start` with the DMA page's physical address in hand.
+/// Negotiates the device, reads the superblock and the `motd` file off the disk, sends the
+/// file's first eight bytes back to the kernel so it can check them, and exits. Never returns:
+/// this is a one-shot test driver, not a resident service, so it does not loop waiting for more
+/// work. See the module docs for why the example above is `no_run` rather than executed.
 pub fn run(dma_phys: u64) -> ! {
     init();
 

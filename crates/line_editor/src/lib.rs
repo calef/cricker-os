@@ -220,6 +220,8 @@ pub mod proto {
 /// Where echo bytes go. The server implements this over its console channel; the tests
 /// implement it over a terminal model.
 pub trait Sink {
+    /// Write echo bytes out. Called synchronously from the byte-feeding methods below, so a
+    /// `Sink` that blocks blocks the whole discipline.
     fn put(&mut self, bytes: &[u8]);
 }
 
@@ -285,6 +287,7 @@ impl Default for LineDisc {
 }
 
 impl LineDisc {
+    /// An empty discipline: no line in progress, no history, prompt unset.
     pub fn new() -> Self {
         LineDisc {
             buf: [0; LINE_MAX],

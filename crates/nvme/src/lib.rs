@@ -157,7 +157,9 @@ pub fn cc_enabled() -> u32 {
 /// heads odd (NVMe 1.4 §3.1.24-25).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Doorbell {
+    /// The submission queue's tail doorbell: even index.
     SubmissionTail,
+    /// The completion queue's head doorbell: odd index.
     CompletionHead,
 }
 
@@ -175,15 +177,19 @@ pub fn doorbell(qid: u16, which: Doorbell, dstrd: u32) -> u64 {
 
 /// Admin opcodes (NVMe 1.4 §5).
 pub const ADMIN_CREATE_IO_SQ: u8 = 0x01;
+/// Create an I/O completion queue.
 pub const ADMIN_CREATE_IO_CQ: u8 = 0x05;
+/// Fetch a controller or namespace data structure ([`CNS_CONTROLLER`], [`CNS_NAMESPACE`]).
 pub const ADMIN_IDENTIFY: u8 = 0x06;
 
 /// NVM (I/O) opcodes (NVMe 1.4 §6).
 pub const NVM_WRITE: u8 = 0x01;
+/// Read logical blocks.
 pub const NVM_READ: u8 = 0x02;
 
 /// Identify CNS values: the namespace data structure, and the controller's.
 pub const CNS_NAMESPACE: u32 = 0x00;
+/// The controller's own identify data structure, rather than a namespace's.
 pub const CNS_CONTROLLER: u32 = 0x01;
 
 /// One 64-byte submission queue entry, as the sixteen dwords the driver writes. `#[repr(C)]` so
@@ -302,6 +308,7 @@ pub struct Completion {
 }
 
 impl Completion {
+    /// Decode the four dwords the controller wrote into a completion queue slot.
     pub fn from_dwords(dw: [u32; 4]) -> Self {
         Completion {
             result: dw[0],
@@ -378,6 +385,7 @@ pub struct CqState {
 }
 
 impl CqState {
+    /// A fresh ring of `entries` slots, phase starting true (see the struct docs).
     pub fn new(entries: u16) -> Self {
         assert!(entries >= 2);
         CqState {

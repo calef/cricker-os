@@ -301,15 +301,19 @@ pub const fn survey_counts(ready: u64, running: u64, blocked: u64, dead: u64) ->
     saturate(ready) | (saturate(running) << 8) | (saturate(blocked) << 16) | (saturate(dead) << 24)
 }
 
+/// The ready count packed into a [`survey_counts`] word.
 pub const fn survey_ready(w: u64) -> u64 {
     w & 0xff
 }
+/// The running count packed into a [`survey_counts`] word.
 pub const fn survey_running(w: u64) -> u64 {
     (w >> 8) & 0xff
 }
+/// The blocked count packed into a [`survey_counts`] word.
 pub const fn survey_blocked(w: u64) -> u64 {
     (w >> 16) & 0xff
 }
+/// The dead count packed into a [`survey_counts`] word.
 pub const fn survey_dead(w: u64) -> u64 {
     (w >> 24) & 0xff
 }
@@ -318,6 +322,7 @@ pub const fn survey_dead(w: u64) -> u64 {
 // The wiring: pages and addresses every process in the system agrees on.
 // ===========================================================================================
 
+/// The page size every mapping below is sized and aligned to.
 pub const PAGE: u64 = 4096;
 
 /// The shared log page, mapped read/write into the operator and into each instance. One byte per
@@ -346,12 +351,15 @@ pub const SWAP_TRIGGER: u64 = 20;
 /// v2 computes it in C (DECISIONS §31's seam). A client that cannot tell them apart except by the
 /// version word is the milestone's claim in its strongest form.
 pub const V1: u64 = 1;
+/// The C-computed digest.
 pub const V2: u64 = 2;
 
 /// `chatty`'s roles. One binary, because an attacker that shares the honest client's code and
 /// capabilities is a fair test of the boundary rather than a different program failing for its own
 /// reasons.
 pub const ROLE_CLIENT: u64 = 0;
+/// The attacker: the same code and capabilities as [`ROLE_CLIENT`], testing the boundary rather
+/// than a program written to fail for its own reasons.
 pub const ROLE_USURPER: u64 = 1;
 /// The producer on the queued channel: the same conversation, one rung up the latency ladder.
 pub const ROLE_PRODUCER: u64 = 2;
@@ -359,6 +367,8 @@ pub const ROLE_PRODUCER: u64 = 2;
 /// `swapper`'s roles. Three systems, one operator, because they share every helper: the loader, the
 /// endowments, the log page and the reporting.
 pub const ROLE_DIRECT: u64 = 0;
+/// The queued channel's system: the producer/consumer variant, one rung up the latency ladder
+/// from [`ROLE_DIRECT`].
 pub const ROLE_QUEUED: u64 = 1;
 /// **The hung component** (milestone 23's third residual, notes/hung-component.md). The direct
 /// channel's system, with one difference: the incumbent stops answering instead of being drained, so
@@ -545,10 +555,12 @@ pub const fn tag(version: u64, seq: u64) -> u64 {
     (version << 32) | (seq & 0xffff_ffff)
 }
 
+/// The answering instance's version packed into a [`tag`] word.
 pub const fn tag_version(w: u64) -> u64 {
     w >> 32
 }
 
+/// The sequence number packed into a [`tag`] word.
 pub const fn tag_seq(w: u64) -> u64 {
     w & 0xffff_ffff
 }
@@ -591,6 +603,7 @@ pub fn log_put(seq: u64, version: u64) {
     unsafe { core::ptr::write_volatile((LOG_VA as *mut u8).add(seq as usize), version as u8) };
 }
 
+/// Read back the version byte [`log_put`] wrote at `seq`.
 pub fn log_get(seq: u64) -> u64 {
     // SAFETY: as `log_put`.
     unsafe { core::ptr::read_volatile((LOG_VA as *const u8).add(seq as usize)) as u64 }

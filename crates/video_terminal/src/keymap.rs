@@ -76,6 +76,7 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
+    /// Neither shift key held.
     pub const fn new() -> Keyboard {
         Keyboard {
             left: false,

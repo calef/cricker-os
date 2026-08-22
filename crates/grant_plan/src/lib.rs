@@ -69,6 +69,9 @@
 //! things use it, so naming it for one consumer would repeat `dwarden`'s defect.
 
 #![no_std]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 22-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 
 pub mod expand;
 pub mod jobframe;

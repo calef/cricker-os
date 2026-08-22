@@ -128,6 +128,7 @@ pub const INPUT: &[u8] = b"nife foreign component\0";
 pub fn pattern_ro(i: usize) -> u8 {
     (i.wrapping_mul(31).wrapping_add(7) & 0xff) as u8
 }
+/// The far witness page's generator; see [`pattern_ro`] for why it differs.
 pub fn pattern_far(i: usize) -> u8 {
     (i.wrapping_mul(17).wrapping_add(3) & 0xff) as u8
 }
@@ -152,8 +153,14 @@ pub fn expected_checksum(bytes: &[u8]) -> u32 {
 // proven if the honest run comes *after* the crashes.
 // ===========================================================================================
 
+/// Attempt 0: `c_seam_overrun`, an off-by-one write that lands one byte into the read-only
+/// witness page and faults on the permission check.
 pub const ATTEMPT_OVERRUN: u64 = 0;
+/// Attempt 1: `c_seam_wild`, a write a whole page further out, landing on a virtual address
+/// this process has no mapping for at all and faulting on translation rather than permission.
 pub const ATTEMPT_WILD: u64 = 1;
+/// Attempt 2: `c_seam_transform`, the real work, run after both crashes to prove the
+/// supervisor's restart left the component actually usable rather than merely alive.
 pub const ATTEMPT_HONEST: u64 = 2;
 /// How many attempts a full run makes.
 pub const ATTEMPTS: u64 = 3;

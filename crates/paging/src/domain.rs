@@ -30,7 +30,9 @@ use crate::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
 /// A physical region a device is allowed to touch: `[base, base + size)`, 4 KiB aligned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaRegion {
+    /// Physical address of the first byte.
     pub base: u64,
+    /// Length in bytes.
     pub size: u64,
 }
 

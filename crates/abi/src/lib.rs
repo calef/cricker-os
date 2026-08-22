@@ -111,8 +111,14 @@
 
 #![no_std]
 
+/// `exit(code)`: terminate the calling thread. Authority over yourself, so this needs no
+/// capability; see the module docs for why it and its two siblings below are bare syscalls
+/// rather than invocations.
 pub const SYS_EXIT: u64 = 0;
+/// `yield()`: give up the CPU without blocking. Same authority-over-yourself reasoning as `exit`.
 pub const SYS_YIELD: u64 = 1;
+/// `invoke(cap, method, a0, a1, a2)`: the one syscall that acts on anything other than the
+/// calling thread. Every capability operation in the system goes through this number.
 pub const SYS_INVOKE: u64 = 2;
 
 /// `cap_delete(slot)`: drop a capability from the caller's own cspace, freeing the slot
@@ -365,7 +371,9 @@ pub mod aspace {
     /// code (milestone 19d, so a loader can lay down a child's `.text`). Code is W^X: mapped RX,
     /// never writable, and the kernel makes the I-cache coherent with the loader's data writes.
     pub const MAP_RO: u64 = 0;
+    /// Map read/write.
     pub const MAP_RW: u64 = 1;
+    /// Map executable code: RX, never writable (W^X).
     pub const MAP_CODE: u64 = 2;
 }
 
@@ -384,8 +392,11 @@ pub mod aspace {
 /// is the module the sweep's own trigger moved, since [`ENUMERATE`](self::rights::ENUMERATE)
 /// landed here on 2026-08-17.
 pub mod rights {
+    /// Read the object's contents.
     pub const READ: u64 = 1 << 0;
+    /// Modify the object's contents.
     pub const WRITE: u64 = 1 << 1;
+    /// Delegate a (possibly narrowed) copy of this capability to another cspace.
     pub const GRANT: u64 = 1 << 2;
 
     /// **Learn what exists, without acting on it** (milestone 126). The kernel-level twin of
@@ -430,6 +441,7 @@ pub mod fault {
     /// registers. Ordinary three-word IPC leaves w3 and w4 zero, so a supervisor is the only
     /// receiver that reads them.
     pub const EVENT_FAULT: u64 = 1;
+    /// `w0`: the thread called `exit` (or was reaped), rather than faulting.
     pub const EVENT_EXIT: u64 = 2;
 }
 
@@ -605,6 +617,8 @@ pub enum Error {
 }
 
 impl Error {
+    /// Decode a syscall's negative return value back into the `Error` it encodes. `None` for a
+    /// non-negative `v` (success) or a negative value with no assigned meaning.
     pub fn from_ret(v: i64) -> Option<Error> {
         Some(match v {
             -1 => Error::NoSuchSlot,

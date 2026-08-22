@@ -28,6 +28,10 @@
 //! right.
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server

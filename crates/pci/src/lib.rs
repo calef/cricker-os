@@ -78,6 +78,9 @@
 //! exists to buy.
 
 #![cfg_attr(not(test), no_std)]
+// milestone 68's ratchet is workspace-wide (§107); this crate opts out until its 24-item
+// worklist (notes/doc-coverage.md) is burned down.
+#![allow(missing_docs)]
 
 /// A function's address: (bus, device, function).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

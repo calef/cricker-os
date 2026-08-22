@@ -219,18 +219,23 @@ impl Attr {
     /// The rendition a reset terminal writes with.
     pub const DEFAULT: Attr = Attr(DEFAULT_FG | (DEFAULT_BG << 4));
 
+    /// Pack a rendition: `fg` masked to 4 bits, `bg` to 3, plus the reverse flag.
     pub const fn new(fg: u8, bg: u8, reverse: bool) -> Attr {
         Attr((fg & 0x0f) | ((bg & 0x07) << 4) | if reverse { 0x80 } else { 0 })
     }
 
+    /// The foreground palette index (bits 0..4).
     pub const fn fg(self) -> u8 {
         self.0 & 0x0f
     }
 
+    /// The background palette index (bits 4..7).
     pub const fn bg(self) -> u8 {
         (self.0 >> 4) & 0x07
     }
 
+    /// Whether the reverse-video bit is set. See [`colours`](Self::colours) for what it does to
+    /// the actual paint colours.
     pub const fn reverse(self) -> bool {
         self.0 & 0x80 != 0
     }
@@ -252,7 +257,9 @@ impl Default for Attr {
 /// One cell of the grid: a byte and how to paint it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
+    /// The character. Not UTF-8 aware: this is a byte-per-cell text-mode terminal.
     pub byte: u8,
+    /// How to paint it.
     pub attr: Attr,
 }
 
@@ -281,9 +288,13 @@ impl Default for Cell {
 /// which is a few extra glyph blits here and the wrong call at desktop resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CellRect {
+    /// Leftmost changed column.
     pub col: u32,
+    /// Topmost changed row.
     pub row: u32,
+    /// Width in cells.
     pub cols: u32,
+    /// Height in cells.
     pub rows: u32,
 }
 
@@ -432,10 +443,12 @@ impl Vt {
         }
     }
 
+    /// The grid's width in cells.
     pub const fn cols(&self) -> u32 {
         self.cols
     }
 
+    /// The grid's height in cells.
     pub const fn rows(&self) -> u32 {
         self.rows
     }

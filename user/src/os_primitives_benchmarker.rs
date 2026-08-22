@@ -22,6 +22,10 @@
 //! `bench/baseline.txt` holds the numbers, so the agent noun names the producer).
 
 #![no_std]
+// Program entry points, not the crates/ library surface milestone 68's ratchet tracks
+// (DECISIONS §107): each `[[bin]]` is its own crate root with one `_start`, and 58 of them
+// documenting an OS-facing ABI entry point is not what the lint is for.
+#![allow(missing_docs)]
 #![no_main]
 
 use user_rt::{cap_delete, exit, invoke, now, recv, send, yield_now};

@@ -136,10 +136,6 @@
 //! The stem is the contract's own word (DECISIONS §51), which that section uses and never defends.
 
 #![no_std]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// The opcode's position in the first word: bits 63:56, the same place `fs_proto` and
 /// `line_editor::proto` put theirs. One spelling for "the wire contract" across the tree.

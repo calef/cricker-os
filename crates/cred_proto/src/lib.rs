@@ -149,10 +149,6 @@
 //! it. Introduced 2026-07-31 with milestone 56.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 /// The shared-page size, in bytes. One host page, the same unit `fs_proto` moves, and far more
 /// than the [`MAX_IDENTITY`] + [`MAX_SECRET`] a request can fill.

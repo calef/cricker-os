@@ -1543,6 +1543,7 @@ pub mod grant {
     /// (`run wc report.txt`); write implies read, since a writer that cannot read back is a shape
     /// nothing has asked for.
     pub const READ: u64 = 1 << 0;
+    /// Implies [`READ`]: a writer that cannot read back is a shape nothing has asked for.
     pub const WRITE: u64 = 1 << 1;
 
     /// The longest granted name, in bytes. The name rides in **two `START` argument words** rather
@@ -2574,11 +2575,13 @@ pub mod fixture {
         pub const SUB: &str = "sub";
         /// A file inside it. Pinned by the post-run host check, so nothing may damage it.
         pub const INNER: &str = "inner";
+        /// What [`INNER`] holds.
         pub const INNER_BODY: &[u8] = b"CRK47-INNER: a file inside the granted subtree\n";
         /// A directory inside the grant: what a second descent descends into.
         pub const DEEPER: &str = "deeper";
         /// A file inside that, reachable only with two descents.
         pub const LEAF: &str = "leaf";
+        /// What [`LEAF`] holds.
         pub const LEAF_BODY: &[u8] = b"CRK47-LEAF: two descents below the granted directory\n";
         /// The granted directory's **sibling**. A capability to [`SUB`] must not reach it.
         pub const OTHER: &str = "other";
@@ -2592,6 +2595,7 @@ pub mod fixture {
         pub const ABS_INNER: &str = "/inner";
         /// [`SECRET`] as an absolute path. See [`ABS_INNER`].
         pub const ABS_SECRET: &str = "/secret";
+        /// What [`SECRET`] holds.
         pub const SECRET_BODY: &[u8] = b"CRK47-SECRET: in a sibling of the granted directory\n";
 
         /// The name the writable attacker creates inside its grant, with a run index appended so
@@ -2649,8 +2653,11 @@ pub mod fixture {
         /// Two files rather than none, so `ls > out.txt` writes a listing with something in it and
         /// the `wc` that counts it is counting more than the name of its own output file.
         pub const REDIR: &str = "redir";
+        /// The first of the two files inside [`REDIR`].
         pub const REDIR_ONE: &str = "alpha";
+        /// The second of the two files inside [`REDIR`].
         pub const REDIR_TWO: &str = "beta";
+        /// What both [`REDIR_ONE`] and [`REDIR_TWO`] hold.
         pub const REDIR_BODY: &[u8] = b"CRK50: a file the redirection witness lists\n";
 
         /// **The subtree the `rm` program is granted** (milestone 47's `rm -r`), a sibling of
@@ -2669,16 +2676,19 @@ pub mod fixture {
         pub const RMTREE: &str = "rmtree";
         /// A file beside the doomed tree, inside the grant. Nothing names it, so nothing removes it.
         pub const RM_KEEP: &str = "rm-keep";
+        /// What [`RM_KEEP`] holds.
         pub const RM_KEEP_BODY: &[u8] = b"CRK47-RM: inside the grant, and never named\n";
         /// The directory `rm -r` is pointed at.
         pub const RM_DOOMED: &str = "rm-doomed";
         /// Two files directly inside it, so the walk has something to unlink at the top level.
         pub const RM_ONE: &str = "rm-one";
+        /// The second of the two top-level files inside [`RM_DOOMED`].
         pub const RM_TWO: &str = "rm-two";
         /// A directory inside it, so the walk has to recurse and `RMDIR` has to run bottom-up.
         pub const RM_NESTED: &str = "rm-nested";
         /// The file at the bottom: the last thing unlinked and the deepest the walk goes.
         pub const RM_LEAF: &str = "rm-leaf";
+        /// What every file under [`RM_DOOMED`] holds.
         pub const RM_BODY: &[u8] = b"CRK47-RM: a file `rm -r` is expected to take away\n";
         /// A plain file beside the doomed tree, removed by a plain `rm` with no options. It is what
         /// makes **silence on success** falsifiable: that run must report a zero status and print
@@ -2706,7 +2716,9 @@ pub mod fixture {
         /// against the matcher by a host test, so the set the kernel test states literally is
         /// provably the expansion rather than a second opinion about it.
         pub const GLOB_PATTERN: &[u8] = b"gl-*.txt";
+        /// The first of the two names [`GLOB_PATTERN`] matches.
         pub const GLOB_ONE: &str = "gl-one.txt";
+        /// The second of the two names [`GLOB_PATTERN`] matches.
         pub const GLOB_TWO: &str = "gl-two.txt";
         /// A file in the same directory that the pattern does **not** match. It is the escape the
         /// nameset caretaker is attacked with: it exists, and the caretaker one hop up could remove
@@ -2718,6 +2730,7 @@ pub mod fixture {
         /// A file inside [`GLOB_DIR`], so the unmatched directory is not empty and a run that
         /// removed it would have had to walk it.
         pub const GLOB_INNER: &str = "gl-inner";
+        /// What every matched file holds.
         pub const GLOB_BODY: &[u8] = b"CRK47-GLOB: a name a pattern either matched or did not\n";
         /// A pattern that matches **nothing** here, so the empty-expansion refusal has something to
         /// be about. Same prefix as the others deliberately: it fails on the extension alone, which
@@ -2757,6 +2770,7 @@ pub mod fixture {
         /// A file in the same directory the pattern does not match, so "the batches are the match"
         /// is a claim about *which* names rather than about how many.
         pub const MANY_MISS: &str = "m-keep.log";
+        /// What every one of [`MANY_NAMES`] holds.
         pub const MANY_BODY: &[u8] = b"CRK109-XARGS: a name in a match too large to hand over\n";
 
         /// **The names the image root must still carry after a run**, checked by the post-run host
@@ -3107,6 +3121,8 @@ pub mod fixture {
         /// What the verifier found in [`NAME`] after the recovery mount, sent as its report's second
         /// word. Anything else, including silence, fails.
         pub const SAW_A: u64 = 0x0037_00A0;
+        /// What the verifier found if [`NAME`] held [`B`] after recovery: the crashed write landed
+        /// whole rather than being lost.
         pub const SAW_B: u64 = 0x0037_00B0;
         /// The file held something that was never one of the two payloads: a partial write, the
         /// pre-boot contents, or a length nobody asked for. This is the failure the test exists for.

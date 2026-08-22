@@ -144,7 +144,9 @@ use core::ptr::NonNull;
 /// nothing else. The queue threads its structure through these two methods, so a clever
 /// implementation is a corrupted queue.
 pub unsafe trait Node: Sized {
+    /// Read back the link stored by the most recent [`set_next`](Self::set_next).
     fn next(&self) -> Option<NonNull<Self>>;
+    /// Store the link. Plain storage only; see the trait's safety section.
     fn set_next(&mut self, next: Option<NonNull<Self>>);
 }
 
@@ -163,6 +165,7 @@ pub struct Fifo<T: Node> {
 unsafe impl<T: Node> Send for Fifo<T> {}
 
 impl<T: Node> Fifo<T> {
+    /// An empty queue.
     pub const fn new() -> Self {
         Self {
             head: None,
@@ -171,10 +174,12 @@ impl<T: Node> Fifo<T> {
         }
     }
 
+    /// Whether the queue currently holds no nodes.
     pub fn is_empty(&self) -> bool {
         self.head.is_none()
     }
 
+    /// The number of nodes currently queued. O(1): maintained on every push and pop.
     pub fn len(&self) -> usize {
         self.len
     }

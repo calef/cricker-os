@@ -182,6 +182,8 @@ impl<T> core::fmt::Debug for Recv<T> {
 }
 
 impl<T: Node> Endpoint<T> {
+    /// An idle endpoint: both wait queues empty, no pending signal. `const` so the kernel can
+    /// build the endpoint table at compile time rather than at boot.
     pub const fn new() -> Self {
         Self {
             senders: Fifo::new(),

@@ -118,6 +118,7 @@ impl Default for Sha256 {
 }
 
 impl Sha256 {
+    /// The initial state: `H0` loaded, no bytes absorbed yet.
     pub const fn new() -> Self {
         Self {
             h: H0,
@@ -232,7 +233,9 @@ pub fn sha256(bytes: &[u8]) -> Digest {
 /// key management. Names are the nifefs archive names (`"init"`, `"system_initializer"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Measurement {
+    /// The nifefs archive name this digest was measured for (`"init"`, `"system_initializer"`).
     pub name: &'static str,
+    /// The expected SHA-256 of the program's bytes.
     pub digest: Digest,
 }
 

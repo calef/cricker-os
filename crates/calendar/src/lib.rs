@@ -245,12 +245,19 @@ const fn civil_from_days(days: i64) -> (i32, u8, u8) {
 /// convention, and [`Weekday::iso_number`] gives the ISO 8601 one, where Monday is 1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Weekday {
+    /// ISO 8601 day 7.
     Sunday,
+    /// ISO 8601 day 1, the week's first day per [`Weekday::iso_number`].
     Monday,
+    /// ISO 8601 day 2.
     Tuesday,
+    /// ISO 8601 day 3.
     Wednesday,
+    /// ISO 8601 day 4.
     Thursday,
+    /// ISO 8601 day 5.
     Friday,
+    /// ISO 8601 day 6.
     Saturday,
 }
 

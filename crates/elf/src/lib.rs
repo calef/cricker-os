@@ -122,13 +122,16 @@ const PT_LOAD: u32 = 1;
 
 /// `p_flags`.
 pub const PF_X: u32 = 1;
+/// `p_flags`: writable.
 pub const PF_W: u32 = 2;
+/// `p_flags`: readable.
 pub const PF_R: u32 = 4;
 
 /// 64 bytes of ELF64 header, then program headers of 56 bytes each.
 const EHDR_SIZE: usize = 64;
 const PHDR_SIZE: usize = 56;
 
+/// Why [`Elf::parse`] refused a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// Smaller than an ELF header. Not even worth looking at.
@@ -206,12 +209,15 @@ pub struct Segment<'a> {
 }
 
 impl Segment<'_> {
+    /// Whether `PF_R` is set in [`flags`](Self::flags).
     pub fn is_readable(&self) -> bool {
         self.flags & PF_R != 0
     }
+    /// Whether `PF_W` is set in [`flags`](Self::flags).
     pub fn is_writable(&self) -> bool {
         self.flags & PF_W != 0
     }
+    /// Whether `PF_X` is set in [`flags`](Self::flags).
     pub fn is_executable(&self) -> bool {
         self.flags & PF_X != 0
     }
@@ -243,6 +249,9 @@ pub struct Elf<'a> {
 }
 
 impl<'a> Elf<'a> {
+    /// Validate the whole file up front: header, program header table bounds, and every segment's
+    /// bounds, permissions and address arithmetic. A `Ok(Elf)` has nothing left to check; every
+    /// later accessor and [`segments`](Self::segments) iteration step trusts this pass completely.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < EHDR_SIZE {
             return Err(Error::TooSmall);

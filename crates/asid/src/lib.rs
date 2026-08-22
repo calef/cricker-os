@@ -72,6 +72,8 @@ pub struct Allocator {
 }
 
 impl Allocator {
+    /// An allocator with only ASID 0 taken, reserved forever for "no user address space". `const`
+    /// so the kernel can build it at compile time rather than at boot.
     pub const fn new() -> Self {
         let mut bitmap = [0u64; ASIDS / 64];
         bitmap[0] = 1; // ASID 0: reserved for "no user address space", forever

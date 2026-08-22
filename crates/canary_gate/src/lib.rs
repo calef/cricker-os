@@ -95,10 +95,6 @@
 //! it is, the gate in front of the canary's shared state, per CLAUDE.md's naming tenet.
 
 #![cfg_attr(not(test), no_std)]
-// milestone 68's doc ratchet: every public item in this crate is documented, and
-// `script/lint`'s -D warnings keeps it that way. See notes/doc-coverage.md for the
-// crates that are not there yet.
-#![warn(missing_docs)]
 
 // The one line that makes this crate model-checkable. Under `--cfg loom` the atomic is loom's,
 // which records every access and lets the model checker replay the protocol under every
