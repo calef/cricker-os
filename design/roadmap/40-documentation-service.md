@@ -75,6 +75,23 @@ straight to the screen rather than through its own result endpoint could hand it
 lose the ability to redirect that program at all."* Phase 3, the graphical viewer, waits on the
 display ladder as the block says below.
 
+**2026-08-22: the fork is worked through, not just named.** DECISIONS §101 (notification objects),
+decided 2026-08-20, ratified the *direction*: the `terminal_sink_caretaker` narrowing is "the right
+short-term move" and stays valid as the permanent shape even once the notification object lands,
+but it explicitly left milestone 40's own fork undecided: "That is milestone 40's fork, and this
+decision does not take it." notes/tail-output-narrowing.md answers CLAUDE.md's six questions
+against it: confirms the premise against `grant_plan::check_chain` rather than trusting this
+block's own framing, prices the two previously-refused alternatives (a pull-based source, a
+buffering stage) against measured numbers already in notes/pipes.md, and finds two things not
+previously in the tree. The shell can reuse DECISIONS §26's already-built fault endpoint as its
+completion signal instead of reading the child's bytes, and moving output off the shell's own read
+loop opens a narrower race than notes/manual.md named, between a child's exit and its own trailing
+delivery through the caretaker. No recommendation is offered there: it is a spawn-protocol,
+two-programs-must-agree wire decision, which the *move fast on what can be undone* tenet puts on the
+expensive side, so it stays calef's. **The status does not move.** This lane answered the fork
+rather than building it, which is what it was asked for; 40 stays PARTIAL until a decision lands and
+phase 3 is built on it.
+
 **In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
 **Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
