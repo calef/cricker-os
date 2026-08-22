@@ -646,7 +646,10 @@ fn ipc_thread_scaling() {
     for &pairs in SCALE_PAIRS {
         let ticks = tp_best(&req[..pairs], &reply[..pairs], done, pairs);
         let threads = pairs * 2;
-        println!("bench: ipc_scale_{threads} {ticks} {}", pairs as u64 * TP_RTT);
+        println!(
+            "bench: ipc_scale_{threads} {ticks} {}",
+            pairs as u64 * TP_RTT
+        );
     }
 }
 

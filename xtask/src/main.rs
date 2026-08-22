@@ -7169,7 +7169,9 @@ fn bench() -> bool {
     // run with this set would just measure instruction-count noise and call it a finding.
     let extra_features = flag_value("--extra-features");
     if extra_features.is_some() && !real {
-        eprintln!("bench: --extra-features only makes sense with --real (no cache under TCG for it to move)");
+        eprintln!(
+            "bench: --extra-features only makes sense with --real (no cache under TCG for it to move)"
+        );
         return false;
     }
     let features = match &extra_features {
