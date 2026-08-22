@@ -224,6 +224,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   used to abort the process. Five std calls have now been found that **compile perfectly and kill
   the process**, the last of them `std::process::exit`, which is why the reading that found them is
   a check now (`cargo xtask std-aborts`, described in std.md).
+- [The `thread::spawn` fork](thread-spawn-fork.md): milestone 64's rank-3 gap, written up against
+  the six-questions framework ahead of a decision (pull request #394). Why a std thread needs one
+  shared, growable heap and nife gives every TCB a privately owned, consumed `AddressSpace`; the
+  two real shapes a fix could take (a kernel-level shared VSpace, seL4's own answer and this
+  kernel's stated lineage, versus sibling processes kept aliased by replicated frame mappings) and
+  why the second one's apparent "no syscall touched" cheapness collapses against what Rust's own
+  allocator needs from a live, growing heap; and why declining, for now, is the one option that
+  forecloses nothing later.
 - [Running a foreign language: the C seam](c-seam.md): milestone 36: memory-unsafe C, compiled by
   bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
   confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`
