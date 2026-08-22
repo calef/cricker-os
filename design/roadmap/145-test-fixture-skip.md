@@ -7,7 +7,7 @@ the integrator should confirm the number at merge.
 
 ## What this is
 
-Milestone 16a's on-board test-suite exit (§144's sibling finding, recorded in
+Milestone 16a's on-board test-suite exit (milestone 144's sibling finding, recorded in
 notes/visionfive2.md) ran the kernel's `#[test_case]` suite on the VisionFive 2 for the first
 time. After six real hardware-assumption bugs were found and fixed (PR #380), the suite hit a
 different kind of wall: `kernel/src/nvme.rs`'s end-to-end test expects a synthetic NVMe

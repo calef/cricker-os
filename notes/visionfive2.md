@@ -801,3 +801,41 @@ See design/roadmap/144-sandbox-screendump-gap.md for the separate, still-open fi
 *development sandbox*'s QEMU legs cannot reach the scanout/network referees at all (unrelated to
 this board's fixture gap; that one is about the host-side monitor connection, not about the guest
 having no device).
+
+**Milestone 145 built the skip mechanism the paragraph above called for, and re-running the suite
+under it surfaced two more real, board-only bugs (2026-08-21, same bench session).** With
+`skip!()` landed and applied to `nvme.rs`, `pci.rs`, `disk_tests.rs`, `display_tests.rs` and
+`entropy_tests.rs`'s fixture-dependent tests, the run got 59 tests further before the next real
+failure:
+
+6. **`kernel::sched::tests`'s two interrupt-delivery tests hardcoded `DELIVERY_IRQ = 10` /
+   `PENDING_IRQ = 10`**, QEMU virt's PLIC source for the console UART. The board's real source is
+   32 (the same fact the boot banner's `uart irq : source 32 (device tree)` line has stated since
+   the UART-IRQ work). Fixed by reading `user::uart_irq_and_source().0`, the DTB-driven value the
+   rest of the kernel already uses, instead of a QEMU-only literal.
+7. **`Ns16550::enable_tx_interrupt` (test builds only) raced the transmitter on real hardware.**
+   The mechanism's own doc comment states its precondition correctly: "a 16550 asserts its line
+   the moment `IER.ETBEI` is set while `LSR.THRE` is already set." QEMU's UART model has zero
+   transmission latency, so THRE reads back set the instant the previous write retires and the
+   precondition always holds there. Real 24 MHz serial hardware can have THRE genuinely clear for
+   measurable time (confirmed at the bench: `LSR=0x0` immediately after this test's own diagnostic
+   `println!` calls, which are still shifting out over the wire when the next instruction runs),
+   and a real 16550's THRE interrupt is edge-triggered inside the chip: setting `ETBEI` while
+   THRE is 0 only arms the interrupt for the *next* 0->1 transition, which may never come for a
+   polling console with nothing queued to send. Fixed by spinning on `LSR.THRE` before setting
+   `ETBEI`, the same bounded pattern `init`'s busy-quirk drain already uses. Confirmed at the
+   bench: `an_interrupt_becomes_a_message` (the test this function serves) now passes cleanly.
+
+**A third, still-open finding: `an_interrupt_that_arrives_before_the_wait_is_not_lost` (the second
+of the two interrupt-delivery tests, sharing IRQ 32 with the first by design) still fails on the
+board after the THRE fix**, with `ROUTED_IRQS` never incrementing and `SPURIOUS_IRQS` staying at
+zero, meaning the interrupt never reaches the trap handler at all rather than arriving unrouted.
+Bench-confirmed IER/LSR state right after `raise_test_irq` looks correct (`IER=0x2`,
+`LSR` showing THRE set), so the UART side of the mechanism is doing what it should; the PLIC/hart
+affinity path (`arch::irq::target_context`'s "assign once, then reuse" cache, `s_context_of`, or
+which hart is actually executing the test when the second call runs) is the next place to look,
+not the UART driver. Not chased further this session: each round costs a full bench cycle
+(rebuild the board test ELF, flash, reboot, transcribe), and the two confirmed fixes above were
+worth landing on their own. Whoever picks this up next should start by printing `crate::cpu::id()`
+and the assigned PLIC context inside `target_context` itself, on the board, rather than guessing
+from IER/LSR alone: the earlier data points at cross-hart delivery, not at the UART.
