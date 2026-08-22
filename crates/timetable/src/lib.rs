@@ -301,11 +301,11 @@ fn interval_nanos(s: &str) -> Option<u64> {
 /// nothing but a budget and four running jobs in one granted a clock, a directory and a terminal,
 /// and neither the document nor the program manifests can tell them apart.
 ///
-/// Every field is `false` or zero today, because the scheduler `user/src/timetable.rs` really does
-/// hold nothing but memory and its own children's channels. Adding a capability to it is then a
-/// visible edit here and a visible change in what the printed plan says, which is the property
-/// worth having: **widening a scheduler is a decision somebody makes on purpose**, not something an
-/// entry can talk it into.
+/// Every field but `mem_pages` is `false` today, because the scheduler `user/src/timetable.rs`
+/// really does hold nothing but memory and its own children's channels. Adding a capability to it
+/// is then a visible edit here and a visible change in what the printed plan says, which is the
+/// property worth having: **widening a scheduler is a decision somebody makes on purpose**, not
+/// something an entry can talk it into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Held {
     /// Pages of untyped this scheduler may split off for an entry's `--mem` grant. Zero means it
@@ -322,6 +322,24 @@ pub struct Held {
     /// true, and it is here rather than assumed so that the refusal has a reason a reader can find.
     pub interrupt: bool,
 }
+
+/// **What the shipped `user/src/timetable.rs` actually holds**, and the one `Held` value it and
+/// this crate's own host test both use, so the two cannot drift the way [`Registry::register`]'s
+/// module doc already warns a document and a spawn site can. `PLANNED_PROGRAMS` in
+/// `kernel/src/user/timetable_tests.rs` is the same idea applied to the archive; this is it applied
+/// to what the scheduler holds.
+///
+/// Four pages: enough to admit one `at-boot budgeter --mem 4` line as this milestone's proof that a
+/// grant can be backed at all, and small on purpose. Nothing about the mechanism needs a bigger
+/// number; picking one only because it looks more impressive would be gold-plating a demonstration
+/// that already makes its point at four.
+pub const SHIPPED_HELD: Held = Held {
+    mem_pages: 4,
+    clock: false,
+    domain: false,
+    dir: false,
+    interrupt: false,
+};
 
 /// **An authority the entry's plan needs and this scheduler does not hold.**
 ///
@@ -983,7 +1001,7 @@ mod tests {
     #[test]
     fn the_shipped_document_parses_and_says_what_it_claims() {
         let doc = parse(REFERENCE).expect("the shipped timetable must parse");
-        let reg = Registry::register(&doc, Held::default());
+        let reg = Registry::register(&doc, SHIPPED_HELD);
         // The document is written to show every answer registration can give, so every variant
         // must actually appear in it. A document that drifted into being all-happy-path would
         // still pass a "it parses" test and would have stopped demonstrating anything.
@@ -1343,7 +1361,7 @@ mod tests {
     /// reaches nothing beyond the plan, one for the whole initrd.
     ///
     /// **This test is also the mechanism behind a written list in another file**, which is why the
-    /// first assertion names `worker` rather than counting to one.
+    /// first assertion names `worker` and `budgeter` rather than counting to two.
     /// `kernel/src/user/timetable_tests.rs` builds the narrowed archive from a `PLANNED_PROGRAMS`
     /// list it does not compute, because computing it there means a `Registry` on a kernel stack and
     /// a `Registry` is 21632 bytes against a 4096-byte guard page (`script/stack-frame-check`). So
@@ -1354,29 +1372,31 @@ mod tests {
     #[test]
     fn the_archive_a_timetable_holds_is_measured_against_what_it_will_build() {
         let doc = parse(REFERENCE).expect("the shipped document parses");
-        let reg = Registry::register(&doc, Held::default());
+        let reg = Registry::register(&doc, SHIPPED_HELD);
 
-        // The shipped document admits `worker` twice and refuses everything else, so its plan is
-        // one program however many entries name it. Asserted **by name**, because a spawn site in
-        // another crate carries this same set as a written list and this is what keeps it true.
+        // The shipped document admits `worker` twice and `budgeter` once (the `--mem 4` line,
+        // backed by `SHIPPED_HELD`) and refuses everything else, so its plan is two programs
+        // however many entries name either. Asserted **by name**, because a spawn site in another
+        // crate carries this same set as a written list and this is what keeps it true.
         assert_eq!(
             reg.programs(),
-            1 << Prog::Worker.id(),
+            1 << Prog::Worker.id() | 1 << Prog::Budgeter.id(),
             "the shipped document's plan changed; \
              kernel/src/user/timetable_tests.rs's PLANNED_PROGRAMS must change with it",
         );
-        assert_eq!(Audit::of(&reg).planned(), 1);
+        assert_eq!(Audit::of(&reg).planned(), 2);
 
         // Narrowed to the plan: what the spawn site hands over after milestone 129's second
-        // stratum. `worker` and nothing else.
+        // stratum. `worker`, `budgeter`, and nothing else.
         let mut narrow = Audit::of(&reg);
         narrow.saw("worker");
+        narrow.saw("budgeter");
         assert!(narrow.is_exact());
-        assert_eq!(narrow.held(), 1);
+        assert_eq!(narrow.held(), 2);
         assert_eq!(narrow.beyond(), 0);
         assert_eq!(
             shown(|out| narrow.write(out)),
-            "timetable: the archive it holds carries exactly the 1 program its plan names\n",
+            "timetable: the archive it holds carries exactly the 2 programs its plan names\n",
         );
 
         // The whole initrd: what it used to be handed. Every program the plan refused is still an
@@ -1388,10 +1408,10 @@ mod tests {
         }
         assert!(!wide.is_exact());
         assert_eq!(wide.held(), 6);
-        assert_eq!(wide.beyond(), 5);
+        assert_eq!(wide.beyond(), 4);
         assert_eq!(
             shown(|out| wide.write(out)),
-            "timetable: the archive it holds carries 6 programs, 5 of them beyond its plan\n",
+            "timetable: the archive it holds carries 6 programs, 4 of them beyond its plan\n",
         );
 
         // A name this tree does not know is still authority, and counts against the plan rather

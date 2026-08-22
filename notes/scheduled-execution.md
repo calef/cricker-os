@@ -149,9 +149,10 @@ program, and never in the kernel.
 So the spawn site carries the program set as a written list, `PLANNED_PROGRAMS`, and the thing that
 keeps it equal to the plan is a **host test** rather than a comment:
 `the_archive_a_timetable_holds_is_measured_against_what_it_will_build` registers the same
-`user/timetable.conf` against the same `Held::default()` and asserts the plan is exactly that set, by
-name. Editing the document without editing the list fails in milliseconds with no emulator, and the
-program's own audit line then fails the cross-ISA test as well, so a wrong list goes red twice.
+`user/timetable.conf` against the same `timetable::SHIPPED_HELD` and asserts the plan is exactly that
+set, by name. Editing the document without editing the list fails in milliseconds with no emulator,
+and the program's own audit line then fails the cross-ISA test as well, so a wrong list goes red
+twice.
 
 That is rung two of AGENTS.md's ladder where the first draft of this reached for rung one, and the
 demotion is forced rather than chosen: the rung-one version does not fit on a kernel stack.
@@ -161,8 +162,8 @@ demotion is forced rather than chosen: the rung-one version does not fit on a ke
 one of two sentences after the plan:
 
 ```text
-timetable: the archive it holds carries exactly the 1 program its plan names
-timetable: the archive it holds carries 57 programs, 56 of them beyond its plan
+timetable: the archive it holds carries exactly the 2 programs its plan names
+timetable: the archive it holds carries 57 programs, 55 of them beyond its plan
 ```
 
 The second one is what the shipped program printed before this landed, and keeping both is the
@@ -265,13 +266,15 @@ architecture-specific, so the parity gate is met by literally the same test runn
 the real program on the real `user/timetable.conf`, reads the plan it prints, then watches what
 fires:
 
-- the plan names what an admitted `worker` will hold, and says "and nothing else";
+- the plan names what an admitted `worker` and an admitted `budgeter --mem 4` will each hold, and
+  says "and nothing else";
 - `date` and `ps` are refused for want of a clock and a process view, in the plan, before anything
   runs;
-- `budgeter` and `wc` carry the **prompt's own refusal sentences**, unchanged, which is the check
-  being the same check;
+- `budgeter` with no `--mem` and `wc` carry the **prompt's own refusal sentences**, unchanged, which
+  is the check being the same check;
 - the admitted entries fire, under supervision, and their answers arrive on the endpoint the plan
-  said they would hold;
+  said they would hold, `budgeter`'s included: its grant is nested inside its own instance's region
+  (below) and reclaimed before the loop fires anything else;
 - and the summary accounts for every child: `4 fires, 4 clean exits, 0 faults`, which is the reap
   working. A scheduler that leaked a region per fire would print the same fire count and then run out
   of budget instead of finishing.
@@ -281,6 +284,41 @@ compared to anything: a loaded host makes the test slower and cannot make it red
 (notes/load-sensitive-assertions.md; milestone 62 spent a week putting that property back into this
 tree and this is not the lane to take it out again).
 
+## A backable `--mem` grant, and why it runs alone
+
+Built 2026-08-22. `Held::mem_pages` was zero on the shipped scheduler, so an entry naming a memory
+grant was `Unbacked::Memory` even though the process held a budget; `timetable::SHIPPED_HELD.mem_pages`
+is now 4 and `timetable.conf`'s `at-boot budgeter --mem 4` is planned, backed, and fires.
+
+Milestone 129's block said to split the grant out of the *instance's own region*, "so that a
+single `Untyped::DESTROY` still reclaims both and a restart loop is not a leak". **The kernel
+refuses precisely that.** `regions::destroy_outcome` answers `Refused` for any region with a live
+child, `split_stays_within_budget_and_progresses`' sibling proof pins it, and
+`sched::reap_supervised` passes the refusal straight back as `NotPermitted`. So a corpse whose
+region carries a split grant is uncollectable through `reap` until the grant is destroyed first, by
+its own separate capability.
+
+The nesting is still the right shape, for a reason the block did not state. **A refused reap would
+be the only thing in this system that pairs a death with a grant**, because a supervisor learns a
+tid and nothing else: `supervision_proto::build_child` hands back a TCB capability, `abi::tcb` has
+no method that reads a tid out of one, and `abi::fault`'s five-word message carries no
+builder-chosen tag. `user/src/timetable.rs` does not lean on that ambiguous signal, though: it
+sidesteps the need to interpret a refusal at all by making the pairing structural. `fire_with_grant`
+and `collect_grant` are called back to back, with nothing else fired in between and everything
+already outstanding drained first, so the very next death on the supervision endpoint cannot be
+anyone else's and the grant is destroyed unconditionally rather than guessed at.
+
+That is the decision the block left open, made: **at most one `--mem` instance may be outstanding
+at a time.** A generation counter or a slot table could track more, but nothing here needs its
+child's tid for any other reason, so that would be speculative machinery for a document that
+schedules exactly one such entry. The cost lands on every *other* entry, not on `--mem` ones:
+`_start` is fully blocked in one syscall for as long as the grant-bearing instance takes to die, so
+an interval entry due during that window runs late rather than on schedule when the loop resumes
+(never dropped: `next_after`'s ordinary skip-not-catch-up rule covers a wait outlasting more than
+one period, same as any other stall). `timetable.conf`'s `at-boot budgeter --mem 4` fires before the
+first `every 150ms` tick can even become due, so the cross-ISA test does not exercise that cost; a
+document whose `--mem` entry shared the clock with a fast interval would.
+
 ## BUGS
 
 - **The narrowing is to the plan, not to one image per entry.** The archive the scheduler holds now
@@ -289,31 +327,11 @@ tree and this is not the lane to take it out again).
   rather than one of them. `user/src/spawner.rs` is the narrower shape and needs a capability per
   entry to reach here, which this tree does not have.
 
-- **`--mem` entries are refused, and the mechanism first sketched for backing one does not work.**
-  `Held::mem_pages` is zero on the shipped scheduler, so an entry naming a memory grant is
-  `Unbacked::Memory` even though the process holds a budget.
-
-  Milestone 129's block said to split the grant out of the *instance's own region*, "so that a
-  single `Untyped::DESTROY` still reclaims both and a restart loop is not a leak". **The kernel
-  refuses precisely that.** `regions::destroy_outcome` answers `Refused` for any region with a live
-  child, `split_stays_within_budget_and_progresses`' sibling proof pins it, and
-  `sched::reap_supervised` passes the refusal straight back as `NotPermitted`. So a corpse whose
-  region carries a split grant is uncollectable until the grant is destroyed first, and the pages of
-  *both* stay out of the budget until then: the nesting makes the leak worse rather than better if
-  nothing destroys the grant.
-
-  The nesting is still the right shape, for a reason the block did not state. **A refused reap is
-  the only thing in this system that pairs a death with a grant.** A supervisor learns a tid and
-  nothing else: `supervision_proto::build_child` hands back a TCB capability, `abi::tcb` has no
-  method that reads a tid out of one, and `abi::fault`'s five-word message carries no builder-chosen
-  tag. So a timetable holding several grants cannot tell which one belongs to the child that just
-  died, except by the refusal that only a grant-carrying region produces.
-
-  What is left is therefore a decision rather than wiring: **how many `--mem` instances may be
-  outstanding at once**, because the refusal identifies one. Serialising them (fire, then collect
-  before returning to the clock) is the small answer and costs a stall this program's other `BUGS`
-  entries already describe. `crates/timetable` plans and refuses memory grants against
-  `Held::mem_pages` today, and its host tests cover both directions.
+- **A `--mem` entry blocks everything else in the document while it runs.** See "A backable `--mem`
+  grant, and why it runs alone" above: the exclusivity that makes the pairing sound also means the
+  scheduler is fully unresponsive to its clock for as long as one grant-bearing instance takes to
+  die. Fine for a document with one such entry that fires at boot; a document leaning on `--mem`
+  entries competing with fast intervals would feel it.
 
 - **Nothing is persistent.** Entries die with the boot, which is fine for a heartbeat and wrong for a
   backup server's housekeeping. Milestone 129's block records this and points at whatever milestone
