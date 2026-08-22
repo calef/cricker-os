@@ -863,6 +863,28 @@ fn std_aborts() -> bool {
         return false;
     }
 
+    let foreign = foreign_std_sources(&compiled);
+    if !foreign.is_empty() {
+        eprintln!(
+            "std-aborts: the dep-info under std_exerciser/target names sources outside this \
+             worktree's own farm ({}):",
+            farm_dir().display()
+        );
+        for p in &foreign {
+            eprintln!("  {}", p.display());
+        }
+        eprintln!(
+            "\nstd-aborts: this is not a defect in the file or line above; it is the account-wide \
+             `nife-dev` rustup link having pointed at a DIFFERENT worktree's farm the last time \
+             `cargo xtask std-exerciser` ran here (two worktrees racing `xtask std-src` on one \
+             machine). Fix: rm -rf std_exerciser/target && cargo xtask std-exerciser, which \
+             rebuilds the dep-info against this worktree's own farm. Re-running without clearing it \
+             first reproduces this exact failure in about thirty seconds, because cargo considers \
+             the (foreign) build unit fresh. See notes/std.md's BUGS."
+        );
+        return false;
+    }
+
     let mut found = Vec::new();
     for path in &compiled {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -1135,6 +1157,34 @@ fn compiled_std_sources() -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// Which of `compiled` were not, in fact, compiled out of this worktree's own farm.
+///
+/// `nife-dev` is an account-wide `rustup toolchain link`: two worktrees racing `cargo xtask
+/// std-src` on one machine leave the loser's toolchain pointed at the winner's `target/nife-farm`,
+/// and `-Zbuild-std`'s dep-info then caches the winner's absolute paths as inputs to what looks
+/// like this worktree's own build. Left unchecked, [`std_aborts`] reads those paths, finds a body
+/// it has never seen, and reports it as a defect in this project's source with a file and a line
+/// number that in fact name a different checkout entirely. Comparing each path's canonical form
+/// against this worktree's own `farm_dir()` is the one comparison that turns that false accusation
+/// into a true statement about the machine. Found 2026-08-18 by milestone 117's fifth stranger, in
+/// its first `script/test` from a fresh clone, in its first ten minutes. See notes/std.md's BUGS.
+fn foreign_std_sources(compiled: &[PathBuf]) -> Vec<PathBuf> {
+    let Ok(farm) = farm_std_src().canonicalize() else {
+        // No farm resolves here at all. That is not this function's question: std_exerciser
+        // could not have produced the dep-info compiled_std_sources() read without one, and
+        // std_aborts()'s own empty-set check is what answers a farm that never got built.
+        return Vec::new();
+    };
+    compiled
+        .iter()
+        .filter(|p| match p.canonicalize() {
+            Ok(canon) => !canon.starts_with(&farm),
+            Err(_) => false,
+        })
+        .cloned()
+        .collect()
 }
 
 /// `.../library/std/src/sys/exit.rs` as `sys/exit.rs`, which is how std's own source refers to it.
